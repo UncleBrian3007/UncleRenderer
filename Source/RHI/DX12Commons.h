@@ -2,6 +2,8 @@
 #include <d3d12.h>
 #include <dxgi1_6.h>
 #include <wrl.h>
+#include <vector>
+#include <cstdint>
 
 using Microsoft::WRL::ComPtr;
 
