@@ -39,3 +39,10 @@
 
 # debug information files
 *.dwo
+
+*.exp
+.vs
+x64
+*.vcxproj.user
+/.gitignore
+/vs-chromium-project.txt

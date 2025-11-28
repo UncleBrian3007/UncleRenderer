@@ -9,15 +9,6 @@
       <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
       <Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions>
     </Filter>
-    <Filter Include="Core">
-      <UniqueIdentifier>{0F9E258E-B5F2-4BEE-9BE3-ED990AF34A19}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="RHI">
-      <UniqueIdentifier>{24D58884-3F0D-4B33-B9C2-BEA31A9A9D2F}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="Render">
-      <UniqueIdentifier>{C4B8EB1E-6CD9-44E6-9FA9-FB882B6A40F1}</UniqueIdentifier>
-    </Filter>
     <Filter Include="Source Files\Core">
       <UniqueIdentifier>{A9C42B0D-2D96-4D23-9AFE-748C5BE38D5D}</UniqueIdentifier>
     </Filter>
@@ -26,6 +17,9 @@
     </Filter>
     <Filter Include="Source Files\Render">
       <UniqueIdentifier>{D7C0BF87-8DBD-4E03-B2B4-6DBAC1405F3F}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\Scene">
+      <UniqueIdentifier>{7E36DB02-4582-4F47-B31D-6016C0647E83}</UniqueIdentifier>
     </Filter>
     <Filter Include="Header Files\Core">
       <UniqueIdentifier>{4E2D4E49-F7A9-43E2-A94C-109AC55B146F}</UniqueIdentifier>
@@ -36,12 +30,21 @@
     <Filter Include="Header Files\Render">
       <UniqueIdentifier>{E3D4012E-3CD0-4FFC-8CBA-5EB2002B2D8F}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Header Files\Scene">
+      <UniqueIdentifier>{FB4482EE-D16D-4056-9BF0-CB495EC0B1D6}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\Math">
+      <UniqueIdentifier>{E9A80031-0BCB-4C13-903E-0736CF42DF0D}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Source\Main.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="Source\Core\Application.cpp">
+      <Filter>Source Files\Core</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Core\Time.cpp">
       <Filter>Source Files\Core</Filter>
     </ClCompile>
     <ClCompile Include="Source\Core\Window.cpp">
@@ -53,18 +56,54 @@
     <ClCompile Include="Source\RHI\DX12CommandQueue.cpp">
       <Filter>Source Files\RHI</Filter>
     </ClCompile>
+    <ClCompile Include="Source\RHI\DX12DescriptorHeap.cpp">
+      <Filter>Source Files\RHI</Filter>
+    </ClCompile>
     <ClCompile Include="Source\RHI\DX12Device.cpp">
+      <Filter>Source Files\RHI</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\RHI\DX12Fence.cpp">
+      <Filter>Source Files\RHI</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\RHI\DX12Resource.cpp">
       <Filter>Source Files\RHI</Filter>
     </ClCompile>
     <ClCompile Include="Source\RHI\DX12SwapChain.cpp">
       <Filter>Source Files\RHI</Filter>
     </ClCompile>
+    <ClCompile Include="Source\Render\ForwardRenderer.cpp">
+      <Filter>Source Files\Render</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Render\FrameResources.cpp">
+      <Filter>Source Files\Render</Filter>
+    </ClCompile>
     <ClCompile Include="Source\Render\RenderGraph.cpp">
       <Filter>Source Files\Render</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Render\RenderPass.cpp">
+      <Filter>Source Files\Render</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Render\ShaderCompiler.cpp">
+      <Filter>Source Files\Render</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Scene\Camera.cpp">
+      <Filter>Source Files\Scene</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Scene\Material.cpp">
+      <Filter>Source Files\Scene</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Scene\Mesh.cpp">
+      <Filter>Source Files\Scene</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Scene\Transform.cpp">
+      <Filter>Source Files\Scene</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Source\Core\Application.h">
+      <Filter>Header Files\Core</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Core\Time.h">
       <Filter>Header Files\Core</Filter>
     </ClInclude>
     <ClInclude Include="Source\Core\Window.h">
@@ -79,14 +118,50 @@
     <ClInclude Include="Source\RHI\DX12Commons.h">
       <Filter>Header Files\RHI</Filter>
     </ClInclude>
+    <ClInclude Include="Source\RHI\DX12DescriptorHeap.h">
+      <Filter>Header Files\RHI</Filter>
+    </ClInclude>
     <ClInclude Include="Source\RHI\DX12Device.h">
+      <Filter>Header Files\RHI</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\RHI\DX12Fence.h">
+      <Filter>Header Files\RHI</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\RHI\DX12Resource.h">
       <Filter>Header Files\RHI</Filter>
     </ClInclude>
     <ClInclude Include="Source\RHI\DX12SwapChain.h">
       <Filter>Header Files\RHI</Filter>
     </ClInclude>
+    <ClInclude Include="Source\Render\ForwardRenderer.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Render\FrameResources.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
     <ClInclude Include="Source\Render\RenderGraph.h">
       <Filter>Header Files\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Render\RenderPass.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Render\ShaderCompiler.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Scene\Camera.h">
+      <Filter>Header Files\Scene</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Scene\Material.h">
+      <Filter>Header Files\Scene</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Scene\Mesh.h">
+      <Filter>Header Files\Scene</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Scene\Transform.h">
+      <Filter>Header Files\Scene</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Math\MathTypes.h">
+      <Filter>Header Files\Math</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

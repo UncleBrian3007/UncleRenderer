@@ -86,22 +86,47 @@
   <ItemGroup>
     <ClCompile Include="Source\Main.cpp" />
     <ClCompile Include="Source\Core\Application.cpp" />
+    <ClCompile Include="Source\Core\Time.cpp" />
     <ClCompile Include="Source\Core\Window.cpp" />
     <ClCompile Include="Source\RHI\DX12CommandContext.cpp" />
     <ClCompile Include="Source\RHI\DX12CommandQueue.cpp" />
+    <ClCompile Include="Source\RHI\DX12DescriptorHeap.cpp" />
     <ClCompile Include="Source\RHI\DX12Device.cpp" />
+    <ClCompile Include="Source\RHI\DX12Fence.cpp" />
+    <ClCompile Include="Source\RHI\DX12Resource.cpp" />
     <ClCompile Include="Source\RHI\DX12SwapChain.cpp" />
+    <ClCompile Include="Source\Render\ForwardRenderer.cpp" />
+    <ClCompile Include="Source\Render\FrameResources.cpp" />
     <ClCompile Include="Source\Render\RenderGraph.cpp" />
+    <ClCompile Include="Source\Render\RenderPass.cpp" />
+    <ClCompile Include="Source\Render\ShaderCompiler.cpp" />
+    <ClCompile Include="Source\Scene\Camera.cpp" />
+    <ClCompile Include="Source\Scene\Material.cpp" />
+    <ClCompile Include="Source\Scene\Mesh.cpp" />
+    <ClCompile Include="Source\Scene\Transform.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Source\Core\Application.h" />
+    <ClInclude Include="Source\Core\Time.h" />
     <ClInclude Include="Source\Core\Window.h" />
     <ClInclude Include="Source\RHI\DX12CommandContext.h" />
     <ClInclude Include="Source\RHI\DX12CommandQueue.h" />
     <ClInclude Include="Source\RHI\DX12Commons.h" />
+    <ClInclude Include="Source\RHI\DX12DescriptorHeap.h" />
     <ClInclude Include="Source\RHI\DX12Device.h" />
+    <ClInclude Include="Source\RHI\DX12Fence.h" />
+    <ClInclude Include="Source\RHI\DX12Resource.h" />
     <ClInclude Include="Source\RHI\DX12SwapChain.h" />
+    <ClInclude Include="Source\Render\ForwardRenderer.h" />
+    <ClInclude Include="Source\Render\FrameResources.h" />
     <ClInclude Include="Source\Render\RenderGraph.h" />
+    <ClInclude Include="Source\Render\RenderPass.h" />
+    <ClInclude Include="Source\Render\ShaderCompiler.h" />
+    <ClInclude Include="Source\Scene\Camera.h" />
+    <ClInclude Include="Source\Scene\Material.h" />
+    <ClInclude Include="Source\Scene\Mesh.h" />
+    <ClInclude Include="Source\Scene\Transform.h" />
+    <ClInclude Include="Source\Math\MathTypes.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
