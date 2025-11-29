@@ -10,7 +10,7 @@ public:
     FDX12SwapChain();
     ~FDX12SwapChain();
 
-    bool Initialize(FDX12Device* InDevice, HWND WindowHandle, uint32 Width, uint32 Height, uint32 BufferCount = 2);
+    bool Initialize(FDX12Device* InDevice, HWND WindowHandle, uint32 Width, uint32 Height, uint32 BufferCount = 3);
     bool Resize(FDX12Device* InDevice, uint32 Width, uint32 Height);
 
     IDXGISwapChain4* GetSwapChain() const { return SwapChain.Get(); }
@@ -21,6 +21,7 @@ public:
     DXGI_FORMAT GetFormat() const { return BackBufferFormat; }
     D3D12_RESOURCE_STATES GetBackBufferState(uint32 Index) const { return BackBufferStates[Index]; }
     void SetBackBufferState(uint32 Index, D3D12_RESOURCE_STATES State) { BackBufferStates[Index] = State; }
+    bool AllowsTearing() const { return bAllowTearing; }
 
 private:
     bool CreateSwapChain(FDX12Device* InDevice, HWND WindowHandle, uint32 Width, uint32 Height);
@@ -38,5 +39,6 @@ private:
 
     DXGI_FORMAT BackBufferFormat;
     uint32 BufferCount;
+    bool bAllowTearing;
 };
 

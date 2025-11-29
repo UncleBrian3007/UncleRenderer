@@ -3,6 +3,7 @@
 #include "../RHI/DX12Device.h"
 #include "../RHI/DX12SwapChain.h"
 #include "../RHI/DX12CommandContext.h"
+#include <dxgi1_6.h>
 #include <cstdint>
 
 FApplication::FApplication()
@@ -35,7 +36,7 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t H
         return false;
     }
 
-    if (!SwapChain->Initialize(Device.get(), MainWindow->GetHWND(), Width, Height, 2))
+    if (!SwapChain->Initialize(Device.get(), MainWindow->GetHWND(), Width, Height, 3))
     {
         return false;
     }
@@ -94,7 +95,8 @@ bool FApplication::RenderFrame()
 
     SwapChain->SetBackBufferState(BackBufferIndex, D3D12_RESOURCE_STATE_PRESENT);
 
-    HR_CHECK(SwapChain->GetSwapChain()->Present(1, 0));
+    const UINT PresentFlags = SwapChain->AllowsTearing() ? DXGI_PRESENT_ALLOW_TEARING : 0;
+    HR_CHECK(SwapChain->GetSwapChain()->Present(0, PresentFlags));
 
     const uint64 FenceValue = Device->GetGraphicsQueue()->Signal();
     Device->GetGraphicsQueue()->Wait(FenceValue);

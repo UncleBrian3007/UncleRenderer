@@ -1,4 +1,6 @@
 #include "DX12Device.h"
+#include "../Core/Logger.h"
+#include <string>
 
 FDX12Device::FDX12Device()
 {
@@ -36,6 +38,7 @@ bool FDX12Device::CreateFactory()
     }
 #endif
     HR_CHECK(CreateDXGIFactory2(Flags, IID_PPV_ARGS(Factory.GetAddressOf())));
+    CheckTearingSupport();
     return true;
 }
 
@@ -44,9 +47,7 @@ bool FDX12Device::PickAdapter()
     ComPtr<IDXGIAdapter1> TempAdapter;
     SIZE_T MaxVRAM = 0;
 
-    for (UINT i = 0;
-         Factory->EnumAdapters1(i, TempAdapter.GetAddressOf()) != DXGI_ERROR_NOT_FOUND;
-         ++i)
+    for (UINT i = 0; Factory->EnumAdapters1(i, TempAdapter.GetAddressOf()) != DXGI_ERROR_NOT_FOUND; ++i)
     {
         DXGI_ADAPTER_DESC1 Desc;
         TempAdapter->GetDesc1(&Desc);
@@ -78,4 +79,25 @@ bool FDX12Device::CreateCommandQueues()
 {
     GraphicsQueue = std::make_unique<FDX12CommandQueue>();
     return GraphicsQueue->Initialize(Device.Get(), EDX12QueueType::Direct);
+}
+
+bool FDX12Device::CheckTearingSupport()
+{
+    bAllowTearing = false;
+
+    ComPtr<IDXGIFactory5> Factory5;
+    if (SUCCEEDED(Factory.As(&Factory5)))
+    {
+        BOOL AllowTearing = FALSE;
+        if (SUCCEEDED(Factory5->CheckFeatureSupport(
+            DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+            &AllowTearing,
+            sizeof(AllowTearing))))
+        {
+            bAllowTearing = AllowTearing == TRUE;
+        }
+    }
+
+    LogInfo(std::string("DXGI_PRESENT_ALLOW_TEARING : ") + (bAllowTearing ? "Enabled" : "Disabled"));
+    return true;
 }

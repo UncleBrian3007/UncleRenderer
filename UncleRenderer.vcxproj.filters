@@ -44,7 +44,7 @@
     <ClCompile Include="Source\Core\Application.cpp">
       <Filter>Source Files\Core</Filter>
     </ClCompile>
-    <ClCompile Include="Source\Core\Time.cpp">
+    <ClCompile Include="Source\Core\Logger.cpp">
       <Filter>Source Files\Core</Filter>
     </ClCompile>
     <ClCompile Include="Source\Core\Window.cpp">
@@ -98,12 +98,15 @@
     <ClCompile Include="Source\Scene\Transform.cpp">
       <Filter>Source Files\Scene</Filter>
     </ClCompile>
+    <ClCompile Include="Source\Core\EngineTime.cpp">
+      <Filter>Source Files\Core</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Source\Core\Application.h">
       <Filter>Header Files\Core</Filter>
     </ClInclude>
-    <ClInclude Include="Source\Core\Time.h">
+    <ClInclude Include="Source\Core\Logger.h">
       <Filter>Header Files\Core</Filter>
     </ClInclude>
     <ClInclude Include="Source\Core\Window.h">
@@ -162,6 +165,9 @@
     </ClInclude>
     <ClInclude Include="Source\Math\MathTypes.h">
       <Filter>Header Files\Math</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Core\EngineTime.h">
+      <Filter>Header Files\Core</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>
