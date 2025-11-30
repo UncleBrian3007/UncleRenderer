@@ -36,6 +36,12 @@
     <Filter Include="Header Files\Math">
       <UniqueIdentifier>{E9A80031-0BCB-4C13-903E-0736CF42DF0D}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Source Files\ThirdParty">
+      <UniqueIdentifier>{b364e1e7-c9ba-4e77-b0cf-f0e46d7fe6e9}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\ThirdParty\imgui">
+      <UniqueIdentifier>{5d47012b-c5fc-4742-bf05-7e039cd034e6}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Source\Main.cpp">
@@ -101,9 +107,33 @@
     <ClCompile Include="Source\Core\EngineTime.cpp">
       <Filter>Source Files\Core</Filter>
     </ClCompile>
+    <ClCompile Include="ThirdParty\imgui\imgui.cpp">
+      <Filter>Source Files\ThirdParty\imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\imgui\imgui_demo.cpp">
+      <Filter>Source Files\ThirdParty\imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\imgui\imgui_draw.cpp">
+      <Filter>Source Files\ThirdParty\imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\imgui\backends\imgui_impl_dx12.cpp">
+      <Filter>Source Files\ThirdParty\imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\imgui\backends\imgui_impl_win32.cpp">
+      <Filter>Source Files\ThirdParty\imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\imgui\imgui_tables.cpp">
+      <Filter>Source Files\ThirdParty\imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\imgui\imgui_widgets.cpp">
+      <Filter>Source Files\ThirdParty\imgui</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Source\Core\Application.h">
+      <Filter>Header Files\Core</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Core\ImGuiSupport.h">
       <Filter>Header Files\Core</Filter>
     </ClInclude>
     <ClInclude Include="Source\Core\Logger.h">
@@ -168,6 +198,30 @@
     </ClInclude>
     <ClInclude Include="Source\Core\EngineTime.h">
       <Filter>Header Files\Core</Filter>
+    </ClInclude>
+    <ClInclude Include="ThirdParty\imgui\backends\imgui_impl_dx12.h" Condition="Exists('$(ProjectDir)ThirdParty\imgui\backends\imgui_impl_dx12.h')">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ThirdParty\imgui\backends\imgui_impl_win32.h" Condition="Exists('$(ProjectDir)ThirdParty\imgui\backends\imgui_impl_win32.h')">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ThirdParty\imgui\imconfig.h" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imconfig.h')">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ThirdParty\imgui\imgui.h" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imgui.h')">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ThirdParty\imgui\imgui_internal.h" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imgui_internal.h')">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ThirdParty\imgui\imstb_rectpack.h" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imstb_rectpack.h')">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ThirdParty\imgui\imstb_textedit.h" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imstb_textedit.h')">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ThirdParty\imgui\imstb_truetype.h" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imstb_truetype.h')">
+      <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

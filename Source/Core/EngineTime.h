@@ -8,7 +8,6 @@ class FTime
 public:
     FTime();
 
-    // 프레임 시간을 갱신하고 DeltaTime/FPS 값을 계산합니다.
     void Tick();
 
     double GetDeltaTimeSeconds() const { return DeltaTime; }

@@ -56,7 +56,7 @@
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>WIN32;_WINDOWS;_DEBUG;_UNICODE;UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>$(ProjectDir)Source;$(ProjectDir)Source\Core;$(ProjectDir)Source\RHI;$(ProjectDir)Source\Render;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)Source;$(ProjectDir)Source\Core;$(ProjectDir)Source\RHI;$(ProjectDir)Source\Render;$(ProjectDir)ThirdParty\imgui;$(ProjectDir)ThirdParty\imgui\backends;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
@@ -73,7 +73,7 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>WIN32;_WINDOWS;NDEBUG;_UNICODE;UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>$(ProjectDir)Source;$(ProjectDir)Source\Core;$(ProjectDir)Source\RHI;$(ProjectDir)Source\Render;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)Source;$(ProjectDir)Source\Core;$(ProjectDir)Source\RHI;$(ProjectDir)Source\Render;$(ProjectDir)ThirdParty\imgui;$(ProjectDir)ThirdParty\imgui\backends;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
@@ -105,9 +105,17 @@
     <ClCompile Include="Source\Scene\Material.cpp" />
     <ClCompile Include="Source\Scene\Mesh.cpp" />
     <ClCompile Include="Source\Scene\Transform.cpp" />
+    <ClCompile Include="ThirdParty\imgui\backends\imgui_impl_dx12.cpp" Condition="Exists('$(ProjectDir)ThirdParty\imgui\backends\imgui_impl_dx12.cpp')" />
+    <ClCompile Include="ThirdParty\imgui\backends\imgui_impl_win32.cpp" Condition="Exists('$(ProjectDir)ThirdParty\imgui\backends\imgui_impl_win32.cpp')" />
+    <ClCompile Include="ThirdParty\imgui\imgui.cpp" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imgui.cpp')" />
+    <ClCompile Include="ThirdParty\imgui\imgui_demo.cpp" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imgui_demo.cpp')" />
+    <ClCompile Include="ThirdParty\imgui\imgui_draw.cpp" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imgui_draw.cpp')" />
+    <ClCompile Include="ThirdParty\imgui\imgui_tables.cpp" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imgui_tables.cpp')" />
+    <ClCompile Include="ThirdParty\imgui\imgui_widgets.cpp" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imgui_widgets.cpp')" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Source\Core\Application.h" />
+    <ClInclude Include="Source\Core\ImGuiSupport.h" />
     <ClInclude Include="Source\Core\EngineTime.h" />
     <ClInclude Include="Source\Core\Logger.h" />
     <ClInclude Include="Source\Core\Window.h" />
@@ -129,6 +137,14 @@
     <ClInclude Include="Source\Scene\Mesh.h" />
     <ClInclude Include="Source\Scene\Transform.h" />
     <ClInclude Include="Source\Math\MathTypes.h" />
+    <ClInclude Include="ThirdParty\imgui\backends\imgui_impl_dx12.h" Condition="Exists('$(ProjectDir)ThirdParty\imgui\backends\imgui_impl_dx12.h')" />
+    <ClInclude Include="ThirdParty\imgui\backends\imgui_impl_win32.h" Condition="Exists('$(ProjectDir)ThirdParty\imgui\backends\imgui_impl_win32.h')" />
+    <ClInclude Include="ThirdParty\imgui\imconfig.h" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imconfig.h')" />
+    <ClInclude Include="ThirdParty\imgui\imgui.h" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imgui.h')" />
+    <ClInclude Include="ThirdParty\imgui\imgui_internal.h" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imgui_internal.h')" />
+    <ClInclude Include="ThirdParty\imgui\imstb_rectpack.h" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imstb_rectpack.h')" />
+    <ClInclude Include="ThirdParty\imgui\imstb_textedit.h" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imstb_textedit.h')" />
+    <ClInclude Include="ThirdParty\imgui\imstb_truetype.h" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imstb_truetype.h')" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
