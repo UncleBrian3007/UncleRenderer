@@ -1,4 +1,5 @@
 #include "Window.h"
+#include "ImGuiSupport.h"
 
 FWindow::FWindow()
     : WindowHandle(nullptr)
@@ -80,6 +81,11 @@ bool FWindow::ProcessMessages()
 
 LRESULT CALLBACK FWindow::WndProc(HWND Hwnd, UINT Message, WPARAM WParam, LPARAM LParam)
 {
+    if (ImGuiHandleWin32Message(Hwnd, Message, WParam, LParam))
+    {
+        return true;
+    }
+
     switch (Message)
     {
     case WM_DESTROY:
