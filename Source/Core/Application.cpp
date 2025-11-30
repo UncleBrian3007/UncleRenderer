@@ -119,6 +119,40 @@ bool FApplication::RenderFrame()
     return true;
 }
 
+bool FApplication::EnsureImGuiFontAtlas()
+{
+#if !WITH_IMGUI
+    return false;
+#else
+    if (!ImGuiCtx)
+    {
+        return false;
+    }
+
+    ImGuiIO& Io = ImGui::GetIO();
+    ImFontAtlas* Atlas = Io.Fonts;
+
+    if (!Atlas)
+    {
+        return false;
+    }
+
+    if (Atlas->IsBuilt())
+    {
+        return true;
+    }
+
+    // Recreate device objects to rebuild the font atlas texture.
+    ImGui_ImplDX12_InvalidateDeviceObjects();
+    if (!ImGui_ImplDX12_CreateDeviceObjects())
+    {
+        return false;
+    }
+
+    return Atlas->IsBuilt();
+#endif
+}
+
 bool FApplication::InitializeImGui(int32_t Width, int32_t Height)
 {
 #if !WITH_IMGUI
@@ -149,6 +183,11 @@ bool FApplication::InitializeImGui(int32_t Width, int32_t Height)
         ImGuiDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
         ImGuiDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
 
+    if (!ImGui_ImplDX12_CreateDeviceObjects())
+    {
+        return false;
+    }
+
     return true;
 #endif
 }
@@ -176,11 +215,16 @@ void FApplication::RenderUI()
         return;
     }
 
+    if (!EnsureImGuiFontAtlas())
+    {
+        return;
+    }
+
+    ImGuiIO& Io = ImGui::GetIO();
     ImGui_ImplDX12_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
-    ImGuiIO& Io = ImGui::GetIO();
     Io.DisplaySize = ImVec2(static_cast<float>(MainWindow->GetWidth()), static_cast<float>(MainWindow->GetHeight()));
     const ImVec2 WindowPos = ImVec2(Io.DisplaySize.x - 10.0f, 10.0f);
     const ImVec2 WindowPivot = ImVec2(1.0f, 0.0f);

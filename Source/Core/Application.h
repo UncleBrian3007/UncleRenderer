@@ -33,6 +33,7 @@ private:
     bool InitializeImGui(int32_t Width, int32_t Height);
     void ShutdownImGui();
     void RenderUI();
+    bool EnsureImGuiFontAtlas();
 
 private:
     std::unique_ptr<FWindow>           MainWindow;
