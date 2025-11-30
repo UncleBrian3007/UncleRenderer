@@ -142,6 +142,17 @@ bool FApplication::EnsureImGuiFontAtlas()
         return true;
     }
 
+	// Ensure there is at least one font in the atlas; otherwise, building will fail.
+	if (Atlas->Fonts.empty())
+	{
+		Atlas->AddFontDefault();
+	}
+
+	if (!Atlas->Build())
+	{
+		return false;
+	}
+
     // Recreate device objects to rebuild the font atlas texture.
     ImGui_ImplDX12_InvalidateDeviceObjects();
     if (!ImGui_ImplDX12_CreateDeviceObjects())
@@ -175,13 +186,20 @@ bool FApplication::InitializeImGui(int32_t Width, int32_t Height)
     HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(ImGuiDescriptorHeap.GetAddressOf())));
 
     ImGui_ImplWin32_Init(MainWindow->GetHWND());
-    ImGui_ImplDX12_Init(
-        Device->GetDevice(),
-        SwapChain->GetBackBufferCount(),
-        SwapChain->GetFormat(),
-        ImGuiDescriptorHeap.Get(),
-        ImGuiDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
-        ImGuiDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
+
+	ImGui_ImplDX12_InitInfo InitInfo = {};
+	InitInfo.Device = Device->GetDevice();
+	InitInfo.CommandQueue = Device->GetGraphicsQueue()->GetD3DQueue();
+	InitInfo.NumFramesInFlight = SwapChain->GetBackBufferCount();
+	InitInfo.RTVFormat = SwapChain->GetFormat();
+	InitInfo.DSVFormat = DXGI_FORMAT_UNKNOWN;
+	InitInfo.SrvDescriptorHeap = ImGuiDescriptorHeap.Get();
+#ifndef IMGUI_DISABLE_OBSOLETE_FUNCTIONS
+	InitInfo.LegacySingleSrvCpuDescriptor = ImGuiDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
+	InitInfo.LegacySingleSrvGpuDescriptor = ImGuiDescriptorHeap->GetGPUDescriptorHandleForHeapStart();
+#endif
+	ImGui_ImplDX12_Init(&InitInfo);
+
 
     if (!ImGui_ImplDX12_CreateDeviceObjects())
     {
