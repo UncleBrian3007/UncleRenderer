@@ -1,14 +1,11 @@
 #include "Mesh.h"
 
-// 메쉬 데이터는 단순히 보관만 합니다.
-
 FMesh FMesh::CreateCube(float Size)
 {
     FMesh Mesh;
 
     const float HalfSize = Size * 0.5f;
 
-    // 24개의 정점(각 면 4개)과 36개의 인덱스(각 면 2개의 삼각형)
     std::vector<FVertex> Vertices = {
         // +X
         { { HalfSize, -HalfSize, -HalfSize }, { 1.0f, 0.0f, 0.0f }, { 0.0f, 1.0f } },

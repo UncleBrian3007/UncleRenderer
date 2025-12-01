@@ -32,6 +32,7 @@ public:
 
 private:
     bool RenderFrame();
+    void HandleCameraInput(float DeltaSeconds);
     bool InitializeImGui(int32_t Width, int32_t Height);
     void ShutdownImGui();
     void RenderUI();
@@ -52,5 +53,9 @@ private:
 #endif
 
     bool bIsRunning;
+    float CameraYaw = 0.0f;
+    float CameraPitch = 0.0f;
+    bool bIsRotatingWithMouse = false;
+    POINT LastMousePosition = {};
 };
 

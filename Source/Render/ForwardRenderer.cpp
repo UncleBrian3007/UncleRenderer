@@ -5,6 +5,7 @@
 #include "../Scene/Camera.h"
 #include "../RHI/DX12Device.h"
 #include "../RHI/DX12CommandContext.h"
+#include "../Core/GpuDebugMarkers.h"
 #include <cstring>
 #include <string>
 #include <vector>
@@ -51,19 +52,24 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
 
 void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle, const FCamera& Camera, float DeltaTime)
 {
+    FScopedPixEvent RenderEvent(CmdContext.GetCommandList(), L"ForwardRenderer");
+
     UpdateSceneConstants(Camera, DeltaTime);
 
+    PixSetMarker(CmdContext.GetCommandList(), L"SetRenderTargets");
     CmdContext.SetRenderTarget(RtvHandle, &DepthStencilHandle);
     CmdContext.ClearDepth(DepthStencilHandle);
 
     ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
 
+    PixSetMarker(CommandList, L"BindPipeline");
     CommandList->SetPipelineState(PipelineState.Get());
     CommandList->SetGraphicsRootSignature(RootSignature.Get());
 
     CommandList->RSSetViewports(1, &Viewport);
     CommandList->RSSetScissorRects(1, &ScissorRect);
 
+    PixSetMarker(CommandList, L"DrawCube");
     CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     CommandList->IASetVertexBuffers(0, 1, &VertexBufferView);
     CommandList->IASetIndexBuffer(&IndexBufferView);
@@ -353,9 +359,9 @@ void FForwardRenderer::UpdateSceneConstants(const FCamera& Camera, float DeltaTi
     const FMatrix Projection = Camera.GetProjectionMatrix();
 
     FSceneConstants Constants = {};
-    XMStoreFloat4x4(&Constants.World, XMMatrixTranspose(World));
-    XMStoreFloat4x4(&Constants.View, XMMatrixTranspose(View));
-    XMStoreFloat4x4(&Constants.Projection, XMMatrixTranspose(Projection));
+    XMStoreFloat4x4(&Constants.World, World);
+    XMStoreFloat4x4(&Constants.View, View);
+    XMStoreFloat4x4(&Constants.Projection, Projection);
     Constants.BaseColor = { 1.0f, 0.7f, 0.4f };
     XMStoreFloat3(&Constants.LightDirection, XMVector3Normalize(XMVectorSet(-0.3f, -1.0f, -0.2f, 0.0f)));
 

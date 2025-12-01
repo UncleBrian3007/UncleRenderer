@@ -2,6 +2,7 @@
 #include "Window.h"
 #include "EngineTime.h"
 #include "ImGuiSupport.h"
+#include "GpuDebugMarkers.h"
 #include "../RHI/DX12Device.h"
 #include "../RHI/DX12SwapChain.h"
 #include "../RHI/DX12CommandContext.h"
@@ -10,10 +11,16 @@
 #include "../Scene/Camera.h"
 #include <dxgi1_6.h>
 #include <cstdint>
+#include <algorithm>
+#include <cmath>
 #include <DirectXMath.h>
 
 FApplication::FApplication()
     : bIsRunning(false)
+    , CameraYaw(0.0f)
+    , CameraPitch(0.0f)
+    , bIsRotatingWithMouse(false)
+    , LastMousePosition{}
 {
 }
 
@@ -59,6 +66,13 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t H
 
     Camera->SetPerspective(DirectX::XM_PIDIV4, static_cast<float>(Width) / static_cast<float>(Height), 0.1f, 1000.0f);
 
+    {
+        using namespace DirectX;
+        const XMVECTOR Forward = XMVector3Normalize(XMLoadFloat3(&Camera->GetForward()));
+        CameraPitch = asinf(XMVectorGetY(Forward));
+        CameraYaw = atan2f(XMVectorGetX(Forward), XMVectorGetZ(Forward));
+    }
+
     if (!ForwardRenderer->Initialize(Device.get(), Width, Height, SwapChain->GetFormat()))
     {
         return false;
@@ -92,6 +106,9 @@ int32_t FApplication::Run()
 bool FApplication::RenderFrame()
 {
     Time->Tick();
+    const float DeltaSeconds = static_cast<float>(Time->GetDeltaTimeSeconds());
+
+    HandleCameraInput(DeltaSeconds);
 
     const uint32 BackBufferIndex = SwapChain->GetCurrentBackBufferIndex();
     ID3D12Resource* BackBuffer = SwapChain->GetBackBuffer(BackBufferIndex);
@@ -100,6 +117,8 @@ bool FApplication::RenderFrame()
     const D3D12_RESOURCE_STATES PreviousState = SwapChain->GetBackBufferState(BackBufferIndex);
 
     CommandContext->BeginFrame();
+
+    FScopedPixEvent FrameEvent(CommandContext->GetCommandList(), L"Frame");
 
     CommandContext->TransitionResource(
         BackBuffer,
@@ -114,7 +133,7 @@ bool FApplication::RenderFrame()
 
     if (ForwardRenderer && Camera)
     {
-        ForwardRenderer->RenderFrame(*CommandContext, RtvHandle, *Camera, static_cast<float>(Time->GetDeltaTimeSeconds()));
+        ForwardRenderer->RenderFrame(*CommandContext, RtvHandle, *Camera, DeltaSeconds);
     }
 
     RenderUI();
@@ -124,6 +143,7 @@ bool FApplication::RenderFrame()
         D3D12_RESOURCE_STATE_RENDER_TARGET,
         D3D12_RESOURCE_STATE_PRESENT);
 
+    PixSetMarker(CommandContext->GetCommandList(), L"Present");
     CommandContext->CloseAndExecute();
 
     SwapChain->SetBackBufferState(BackBufferIndex, D3D12_RESOURCE_STATE_PRESENT);
@@ -135,6 +155,106 @@ bool FApplication::RenderFrame()
     Device->GetGraphicsQueue()->Wait(FenceValue);
 
     return true;
+}
+
+void FApplication::HandleCameraInput(float DeltaSeconds)
+{
+    if (!Camera)
+    {
+        return;
+    }
+
+    auto IsKeyDown = [](int32 VirtualKey) -> bool
+    {
+        return (GetAsyncKeyState(VirtualKey) & 0x8000) != 0;
+    };
+
+    using namespace DirectX;
+
+    const float MoveSpeed = 5.0f;
+    const float FovSpeed = XMConvertToRadians(45.0f);
+    const float MinFov = XMConvertToRadians(20.0f);
+    const float MaxFov = XMConvertToRadians(120.0f);
+    const float RotationSpeed = 0.005f;
+
+    const bool RightButtonDown = IsKeyDown(VK_RBUTTON);
+    if (RightButtonDown)
+    {
+        POINT CursorPos{};
+        if (GetCursorPos(&CursorPos))
+        {
+            if (!bIsRotatingWithMouse)
+            {
+                bIsRotatingWithMouse = true;
+                LastMousePosition = CursorPos;
+            }
+            else
+            {
+                const LONG DeltaX = CursorPos.x - LastMousePosition.x;
+                const LONG DeltaY = CursorPos.y - LastMousePosition.y;
+
+                CameraYaw += static_cast<float>(DeltaX) * RotationSpeed;
+                CameraPitch += static_cast<float>(DeltaY) * RotationSpeed;
+
+                const float PitchLimit = DirectX::XM_PIDIV2 - 0.01f;
+                CameraPitch = std::clamp(CameraPitch, -PitchLimit, PitchLimit);
+
+                const XMVECTOR DefaultForward = XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
+                const XMVECTOR DefaultUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+                const XMMATRIX Rotation = XMMatrixRotationRollPitchYaw(CameraPitch, CameraYaw, 0.0f);
+
+                XMVECTOR NewForwardVec = XMVector3Normalize(XMVector3TransformNormal(DefaultForward, Rotation));
+                XMVECTOR NewUpVec = XMVector3Normalize(XMVector3TransformNormal(DefaultUp, Rotation));
+
+                FFloat3 NewForward;
+                FFloat3 NewUp;
+                XMStoreFloat3(&NewForward, NewForwardVec);
+                XMStoreFloat3(&NewUp, NewUpVec);
+
+                Camera->SetForward(NewForward);
+                Camera->SetUp(NewUp);
+            }
+
+            LastMousePosition = CursorPos;
+        }
+    }
+    else
+    {
+        bIsRotatingWithMouse = false;
+    }
+
+    XMVECTOR Forward = XMVector3Normalize(XMLoadFloat3(&Camera->GetForward()));
+    XMVECTOR Up = XMVector3Normalize(XMLoadFloat3(&Camera->GetUp()));
+    XMVECTOR Right = XMVector3Normalize(XMVector3Cross(Up, Forward));
+
+    XMVECTOR MoveDirection = XMVectorZero();
+    if (IsKeyDown('W')) MoveDirection += Forward;
+    if (IsKeyDown('S')) MoveDirection -= Forward;
+    if (IsKeyDown('A')) MoveDirection -= Right;
+    if (IsKeyDown('D')) MoveDirection += Right;
+
+    if (!XMVector3Equal(MoveDirection, XMVectorZero()))
+    {
+        MoveDirection = XMVector3Normalize(MoveDirection);
+        XMVECTOR Position = XMLoadFloat3(&Camera->GetPosition());
+        Position += MoveDirection * MoveSpeed * DeltaSeconds;
+        FFloat3 NewPosition;
+        XMStoreFloat3(&NewPosition, Position);
+        Camera->SetPosition(NewPosition);
+    }
+
+    float FovY = Camera->GetFovY();
+    if (IsKeyDown(VK_OEM_PLUS) || IsKeyDown(VK_ADD))
+    {
+        FovY -= FovSpeed * DeltaSeconds;
+    }
+    if (IsKeyDown(VK_OEM_MINUS) || IsKeyDown(VK_SUBTRACT))
+    {
+        FovY += FovSpeed * DeltaSeconds;
+    }
+
+    FovY = std::clamp(FovY, MinFov, MaxFov);
+    Camera->SetFovY(FovY);
 }
 
 bool FApplication::EnsureImGuiFontAtlas()
