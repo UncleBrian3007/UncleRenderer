@@ -19,6 +19,8 @@ public:
     const std::vector<FVertex>& GetVertices() const { return Vertices; }
     const std::vector<uint32_t>& GetIndices() const { return Indices; }
 
+    static FMesh CreateCube(float Size = 1.0f);
+
 private:
     std::vector<FVertex> Vertices;
     std::vector<uint32_t> Indices;

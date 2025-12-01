@@ -11,6 +11,8 @@ public:
 
     bool Initialize();
 
+    D3D_SHADER_MODEL    GetShaderModel() const { return ShaderModel; }
+
     ID3D12Device*        GetDevice() const { return Device.Get(); }
     FDX12CommandQueue*   GetGraphicsQueue() { return GraphicsQueue.get(); }
 
@@ -19,11 +21,13 @@ public:
     bool                 IsTearingSupported() const { return bAllowTearing; }
 
 private:
+    bool LoadAgilitySDK();
     bool CreateFactory();
     bool PickAdapter();
     bool CreateDevice();
     bool CreateCommandQueues();
     bool CheckTearingSupport();
+    bool DetermineShaderModel();
 
 private:
     ComPtr<IDXGIFactory6> Factory;
@@ -33,4 +37,5 @@ private:
     std::unique_ptr<FDX12CommandQueue> GraphicsQueue;
 
     bool bAllowTearing = false;
+    D3D_SHADER_MODEL ShaderModel = D3D_SHADER_MODEL_6_0;
 };

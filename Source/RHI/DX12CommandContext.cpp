@@ -56,14 +56,19 @@ void FDX12CommandContext::TransitionResource(ID3D12Resource* Resource, D3D12_RES
     CommandList->ResourceBarrier(1, &Barrier);
 }
 
-void FDX12CommandContext::SetRenderTarget(const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle)
+void FDX12CommandContext::SetRenderTarget(const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle, const D3D12_CPU_DESCRIPTOR_HANDLE* DsvHandle)
 {
-    CommandList->OMSetRenderTargets(1, &RtvHandle, FALSE, nullptr);
+    CommandList->OMSetRenderTargets(1, &RtvHandle, FALSE, DsvHandle);
 }
 
 void FDX12CommandContext::ClearRenderTarget(const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle, const FLOAT Color[4])
 {
     CommandList->ClearRenderTargetView(RtvHandle, Color, 0, nullptr);
+}
+
+void FDX12CommandContext::ClearDepth(const D3D12_CPU_DESCRIPTOR_HANDLE& DsvHandle, float Depth, uint8 Stencil)
+{
+    CommandList->ClearDepthStencilView(DsvHandle, D3D12_CLEAR_FLAG_DEPTH, Depth, Stencil, 0, nullptr);
 }
 
 void FDX12CommandContext::CloseAndExecute()

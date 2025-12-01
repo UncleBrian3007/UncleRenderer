@@ -1,6 +1,6 @@
 #include "DX12Resource.h"
 
-bool FDX12Resource::InitializeBuffer(ID3D12Device* Device, uint64_t Size, D3D12_RESOURCE_FLAGS Flags, D3D12_RESOURCE_STATES InitialState)
+bool FDX12Resource::InitializeBuffer(ID3D12Device* Device, uint64_t Size, D3D12_HEAP_TYPE HeapType, D3D12_RESOURCE_FLAGS Flags, D3D12_RESOURCE_STATES InitialState)
 {
     if (Device == nullptr)
     {
@@ -8,7 +8,7 @@ bool FDX12Resource::InitializeBuffer(ID3D12Device* Device, uint64_t Size, D3D12_
     }
 
     D3D12_HEAP_PROPERTIES HeapProps = {};
-    HeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+    HeapProps.Type = HeapType;
     HeapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
     HeapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
     HeapProps.CreationNodeMask = 1;

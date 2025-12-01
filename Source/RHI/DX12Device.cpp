@@ -1,6 +1,65 @@
 #include "DX12Device.h"
 #include "../Core/Logger.h"
 #include <string>
+#include <sstream>
+#include <cwchar>
+#include <filesystem>
+#include <array>
+
+namespace
+{
+    std::string WStringToUtf8(const std::wstring& Str)
+    {
+        return std::filesystem::path(Str).u8string();
+    }
+
+    std::filesystem::path GetExecutableDirectory()
+    {
+        std::array<wchar_t, MAX_PATH> Buffer{};
+        DWORD Length = GetModuleFileNameW(nullptr, Buffer.data(), static_cast<DWORD>(Buffer.size()));
+        return std::filesystem::path(Buffer.data(), Buffer.data() + Length).remove_filename();
+    }
+
+    std::filesystem::path ResolveSDKDirectory()
+    {
+        std::filesystem::path SdkPath(D3D12SDKPath);
+        if (SdkPath.is_relative())
+        {
+            SdkPath = GetExecutableDirectory() / SdkPath;
+        }
+        return SdkPath.lexically_normal();
+    }
+
+    void LogLoadedModulePath(const wchar_t* ModuleName, const char* Label)
+    {
+        HMODULE Module = GetModuleHandleW(ModuleName);
+        if (!Module) return;
+
+        std::array<wchar_t, MAX_PATH> Buffer{};
+        DWORD Length = GetModuleFileNameW(Module, Buffer.data(), static_cast<DWORD>(Buffer.size()));
+        if (Length == 0) return;
+
+        std::wstring PathW(Buffer.data(), Buffer.data() + Length);
+        LogInfo(std::string(Label) + std::string(": ") + WStringToUtf8(PathW));
+    }
+
+    std::string ShaderModelToString(D3D_SHADER_MODEL ShaderModel)
+    {
+        switch (ShaderModel)
+        {
+        case D3D_SHADER_MODEL_5_1: return "5.1";
+        case D3D_SHADER_MODEL_6_0: return "6.0";
+        case D3D_SHADER_MODEL_6_1: return "6.1";
+        case D3D_SHADER_MODEL_6_2: return "6.2";
+        case D3D_SHADER_MODEL_6_3: return "6.3";
+        case D3D_SHADER_MODEL_6_4: return "6.4";
+        case D3D_SHADER_MODEL_6_5: return "6.5";
+        case D3D_SHADER_MODEL_6_6: return "6.6";
+        case D3D_SHADER_MODEL_6_7: return "6.7";
+        default: return "Unknown";
+        }
+    }
+}
 
 FDX12Device::FDX12Device()
 {
@@ -16,10 +75,41 @@ FDX12Device::~FDX12Device()
 
 bool FDX12Device::Initialize()
 {
+    LoadAgilitySDK();
     if (!CreateFactory()) return false;
     if (!PickAdapter())   return false;
     if (!CreateDevice())  return false;
+    if (!DetermineShaderModel()) return false;
     if (!CreateCommandQueues()) return false;
+
+    return true;
+}
+
+bool FDX12Device::LoadAgilitySDK()
+{
+    const std::filesystem::path ResolvedSdkPath = ResolveSDKDirectory();
+    const std::wstring ResolvedSdkPathW = ResolvedSdkPath.wstring();
+    const std::string ResolvedSdkPathUtf8 = ResolvedSdkPath.u8string();
+
+    if (D3D12SDKVersion > 0)
+    {
+        std::ostringstream Oss;
+        Oss << "Agility SDK Version: " << D3D12SDKVersion << ", Path: " << ResolvedSdkPathUtf8;
+        LogInfo(Oss.str());
+
+        if (!SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_USER_DIRS))
+        {
+            LogWarning("Failed to call SetDefaultDllDirectories");
+        }
+        else if (!AddDllDirectory(ResolvedSdkPathW.c_str()))
+        {
+            LogWarning("Failed to add Agility SDK DLL path. d3d12core.dll placement and permissions should be checked");
+        }
+    }
+    else if (!ResolvedSdkPath.empty())
+    {
+        LogWarning("SDK version is set to 0. Using the default D3D12 runtime.");
+    }
 
     return true;
 }
@@ -39,6 +129,11 @@ bool FDX12Device::CreateFactory()
 #endif
     HR_CHECK(CreateDXGIFactory2(Flags, IID_PPV_ARGS(Factory.GetAddressOf())));
     CheckTearingSupport();
+
+    std::ostringstream Oss;
+    const std::filesystem::path ResolvedSdkPath = ResolveSDKDirectory();
+    Oss << "D3D12SDKVersion: " << D3D12SDKVersion << ", Path: " << ResolvedSdkPath.u8string();
+    LogInfo(Oss.str());
     return true;
 }
 
@@ -72,6 +167,51 @@ bool FDX12Device::CreateDevice()
         D3D_FEATURE_LEVEL_12_1,
         IID_PPV_ARGS(Device.GetAddressOf())
     ));
+
+    LogLoadedModulePath(L"d3d12.dll", "D3D12.dll load path");
+    LogLoadedModulePath(L"d3d12core.dll", "D3D12Core.dll load path");
+    return true;
+}
+
+bool FDX12Device::DetermineShaderModel()
+{
+    const D3D_SHADER_MODEL DesiredShaderModel = D3D_SHADER_MODEL_6_7;
+    static const D3D_SHADER_MODEL Candidates[] =
+    {
+        DesiredShaderModel,
+        D3D_SHADER_MODEL_6_6,
+        D3D_SHADER_MODEL_6_5,
+        D3D_SHADER_MODEL_6_4,
+        D3D_SHADER_MODEL_6_3,
+        D3D_SHADER_MODEL_6_2,
+        D3D_SHADER_MODEL_6_1,
+        D3D_SHADER_MODEL_6_0,
+        D3D_SHADER_MODEL_5_1,
+    };
+
+    D3D12_FEATURE_DATA_SHADER_MODEL FeatureData = {};
+    ShaderModel = D3D_SHADER_MODEL_5_1;
+
+    for (D3D_SHADER_MODEL Candidate : Candidates)
+    {
+        FeatureData.HighestShaderModel = Candidate;
+        if (SUCCEEDED(Device->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &FeatureData, sizeof(FeatureData))))
+        {
+            ShaderModel = FeatureData.HighestShaderModel;
+            break;
+        }
+    }
+
+    std::ostringstream Oss;
+    Oss << "Requested shader model: " << ShaderModelToString(DesiredShaderModel)
+        << ", device supports up to: " << ShaderModelToString(ShaderModel);
+    LogInfo(Oss.str());
+
+    if (ShaderModel < DesiredShaderModel)
+    {
+        LogWarning("Falling back to lower shader model; consider updating the Agility SDK/runtime for SM 6.7 support.");
+    }
+
     return true;
 }
 

@@ -16,4 +16,5 @@ public:
 private:
     Microsoft::WRL::ComPtr<IDxcUtils> Utils;
     Microsoft::WRL::ComPtr<IDxcCompiler3> Compiler;
+    Microsoft::WRL::ComPtr<IDxcIncludeHandler> IncludeHandler;
 };

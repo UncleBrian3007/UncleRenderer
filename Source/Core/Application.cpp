@@ -6,8 +6,11 @@
 #include "../RHI/DX12SwapChain.h"
 #include "../RHI/DX12CommandContext.h"
 #include "../RHI/DX12Commons.h"
+#include "../Render/ForwardRenderer.h"
+#include "../Scene/Camera.h"
 #include <dxgi1_6.h>
 #include <cstdint>
+#include <DirectXMath.h>
 
 FApplication::FApplication()
     : bIsRunning(false)
@@ -31,6 +34,8 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t H
     SwapChain = std::make_unique<FDX12SwapChain>();
     CommandContext = std::make_unique<FDX12CommandContext>();
     Time = std::make_unique<FTime>();
+    ForwardRenderer = std::make_unique<FForwardRenderer>();
+    Camera = std::make_unique<FCamera>();
 
     if (!MainWindow->Create(InstanceHandle, Width, Height, L"UncleRenderer"))
     {
@@ -48,6 +53,13 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t H
     }
 
     if (!CommandContext->Initialize(Device.get(), Device->GetGraphicsQueue()))
+    {
+        return false;
+    }
+
+    Camera->SetPerspective(DirectX::XM_PIDIV4, static_cast<float>(Width) / static_cast<float>(Height), 0.1f, 1000.0f);
+
+    if (!ForwardRenderer->Initialize(Device.get(), Width, Height, SwapChain->GetFormat()))
     {
         return false;
     }
@@ -94,10 +106,16 @@ bool FApplication::RenderFrame()
         PreviousState,
         D3D12_RESOURCE_STATE_RENDER_TARGET);
 
-    CommandContext->SetRenderTarget(RtvHandle);
+    const D3D12_CPU_DESCRIPTOR_HANDLE* DsvHandle = ForwardRenderer ? &ForwardRenderer->GetDSVHandle() : nullptr;
+    CommandContext->SetRenderTarget(RtvHandle, DsvHandle);
 
     const float ClearColor[4] = { 0.05f, 0.10f, 0.20f, 1.0f };
     CommandContext->ClearRenderTarget(RtvHandle, ClearColor);
+
+    if (ForwardRenderer && Camera)
+    {
+        ForwardRenderer->RenderFrame(*CommandContext, RtvHandle, *Camera, static_cast<float>(Time->GetDeltaTimeSeconds()));
+    }
 
     RenderUI();
 

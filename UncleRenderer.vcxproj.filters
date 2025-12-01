@@ -199,29 +199,29 @@
     <ClInclude Include="Source\Core\EngineTime.h">
       <Filter>Header Files\Core</Filter>
     </ClInclude>
-    <ClInclude Include="ThirdParty\imgui\backends\imgui_impl_dx12.h" Condition="Exists('$(ProjectDir)ThirdParty\imgui\backends\imgui_impl_dx12.h')">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="ThirdParty\imgui\imconfig.h">
+      <Filter>Source Files\ThirdParty\imgui</Filter>
     </ClInclude>
-    <ClInclude Include="ThirdParty\imgui\backends\imgui_impl_win32.h" Condition="Exists('$(ProjectDir)ThirdParty\imgui\backends\imgui_impl_win32.h')">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="ThirdParty\imgui\imgui.h">
+      <Filter>Source Files\ThirdParty\imgui</Filter>
     </ClInclude>
-    <ClInclude Include="ThirdParty\imgui\imconfig.h" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imconfig.h')">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="ThirdParty\imgui\backends\imgui_impl_dx12.h">
+      <Filter>Source Files\ThirdParty\imgui</Filter>
     </ClInclude>
-    <ClInclude Include="ThirdParty\imgui\imgui.h" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imgui.h')">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="ThirdParty\imgui\backends\imgui_impl_win32.h">
+      <Filter>Source Files\ThirdParty\imgui</Filter>
     </ClInclude>
-    <ClInclude Include="ThirdParty\imgui\imgui_internal.h" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imgui_internal.h')">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="ThirdParty\imgui\imgui_internal.h">
+      <Filter>Source Files\ThirdParty\imgui</Filter>
     </ClInclude>
-    <ClInclude Include="ThirdParty\imgui\imstb_rectpack.h" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imstb_rectpack.h')">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="ThirdParty\imgui\imstb_rectpack.h">
+      <Filter>Source Files\ThirdParty\imgui</Filter>
     </ClInclude>
-    <ClInclude Include="ThirdParty\imgui\imstb_textedit.h" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imstb_textedit.h')">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="ThirdParty\imgui\imstb_textedit.h">
+      <Filter>Source Files\ThirdParty\imgui</Filter>
     </ClInclude>
-    <ClInclude Include="ThirdParty\imgui\imstb_truetype.h" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imstb_truetype.h')">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="ThirdParty\imgui\imstb_truetype.h">
+      <Filter>Source Files\ThirdParty\imgui</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

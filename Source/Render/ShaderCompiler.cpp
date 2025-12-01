@@ -1,11 +1,19 @@
 #include "ShaderCompiler.h"
 
 #include <cstring>
+#include <string>
+#include <vector>
+#include <Windows.h>
 
 FShaderCompiler::FShaderCompiler()
 {
     DxcCreateInstance(CLSID_DxcUtils, IID_PPV_ARGS(&Utils));
     DxcCreateInstance(CLSID_DxcCompiler, IID_PPV_ARGS(&Compiler));
+
+    if (Utils)
+    {
+        Utils->CreateDefaultIncludeHandler(&IncludeHandler);
+    }
 }
 
 bool FShaderCompiler::CompileFromFile(const std::wstring& FilePath, const std::wstring& EntryPoint, const std::wstring& Target, std::vector<uint8_t>& OutByteCode)
@@ -21,16 +29,39 @@ bool FShaderCompiler::CompileFromFile(const std::wstring& FilePath, const std::w
         return false;
     }
 
-    DxcBuffer SourceBuffer;
+    DxcBuffer SourceBuffer = {};
     SourceBuffer.Ptr = SourceBlob->GetBufferPointer();
     SourceBuffer.Size = SourceBlob->GetBufferSize();
     SourceBuffer.Encoding = DXC_CP_ACP;
 
-    LPCWSTR Arguments[] = { L"-Zpr" };
+    std::wstring EntryPointArg = L"-E" + EntryPoint;
+    std::wstring TargetArg = L"-T" + Target;
+
+    std::vector<LPCWSTR> Arguments;
+    Arguments.push_back(L"-Zpr");
+    Arguments.push_back(EntryPointArg.c_str());
+    Arguments.push_back(TargetArg.c_str());
+    Arguments.push_back(DXC_ARG_WARNINGS_ARE_ERRORS);
+
     Microsoft::WRL::ComPtr<IDxcResult> CompileResult;
-    HRESULT hr = Compiler->Compile(&SourceBuffer, Arguments, _countof(Arguments), nullptr, IID_PPV_ARGS(&CompileResult));
+    HRESULT hr = Compiler->Compile(&SourceBuffer, Arguments.data(), static_cast<uint32_t>(Arguments.size()), IncludeHandler.Get(), IID_PPV_ARGS(&CompileResult));
     if (FAILED(hr))
     {
+        return false;
+    }
+
+    HRESULT Status = S_OK;
+    CompileResult->GetStatus(&Status);
+    if (FAILED(Status))
+    {
+        Microsoft::WRL::ComPtr<IDxcBlobUtf8> ErrorBlob;
+        CompileResult->GetOutput(DXC_OUT_ERRORS, IID_PPV_ARGS(&ErrorBlob), nullptr);
+
+        if (ErrorBlob && ErrorBlob->GetStringLength() > 0)
+        {
+            OutputDebugStringA(ErrorBlob->GetStringPointer());
+        }
+
         return false;
     }
 

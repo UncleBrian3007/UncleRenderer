@@ -18,6 +18,8 @@ class FDX12Device;
 class FDX12SwapChain;
 class FDX12CommandContext;
 class FTime;
+class FForwardRenderer;
+class FCamera;
 
 class FApplication
 {
@@ -41,6 +43,8 @@ private:
     std::unique_ptr<FDX12SwapChain>    SwapChain;
     std::unique_ptr<FDX12CommandContext> CommandContext;
     std::unique_ptr<FTime>             Time;
+    std::unique_ptr<FForwardRenderer>  ForwardRenderer;
+    std::unique_ptr<FCamera>           Camera;
 
     ComPtr<ID3D12DescriptorHeap>       ImGuiDescriptorHeap;
 #if WITH_IMGUI
