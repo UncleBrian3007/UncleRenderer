@@ -18,7 +18,9 @@ class FDX12Device;
 class FDX12SwapChain;
 class FDX12CommandContext;
 class FTime;
+class FRenderer;
 class FForwardRenderer;
+class FDeferredRenderer;
 class FCamera;
 
 class FApplication
@@ -45,6 +47,8 @@ private:
     std::unique_ptr<FDX12CommandContext> CommandContext;
     std::unique_ptr<FTime>             Time;
     std::unique_ptr<FForwardRenderer>  ForwardRenderer;
+    std::unique_ptr<FDeferredRenderer> DeferredRenderer;
+    FRenderer*                         ActiveRenderer = nullptr;
     std::unique_ptr<FCamera>           Camera;
 
     ComPtr<ID3D12DescriptorHeap>       ImGuiDescriptorHeap;
@@ -57,5 +61,5 @@ private:
     float CameraPitch = 0.0f;
     bool bIsRotatingWithMouse = false;
     POINT LastMousePosition = {};
-};
+}; 
 

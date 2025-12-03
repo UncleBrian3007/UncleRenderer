@@ -1,7 +1,7 @@
 #include "ForwardRenderer.h"
 
 #include "ShaderCompiler.h"
-#include "../Scene/Mesh.h"
+#include "RendererUtils.h"
 #include "../Scene/Camera.h"
 #include "../RHI/DX12Device.h"
 #include "../RHI/DX12CommandContext.h"
@@ -43,12 +43,39 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
     ScissorRect.right = static_cast<LONG>(Width);
     ScissorRect.bottom = static_cast<LONG>(Height);
 
-    return CreateRootSignature(Device)
-        && CreatePipelineState(Device, BackBufferFormat)
-        && CreateDepthResources(Device, Width, Height)
-        && CreateCubeGeometry(Device)
-        && CreateConstantBuffer(Device)
-        && CreateDefaultGridTexture(Device);
+    if (!CreateRootSignature(Device) || !CreatePipelineState(Device, BackBufferFormat))
+    {
+        return false;
+    }
+
+    FDepthResources DepthResources = {};
+    if (!RendererUtils::CreateDepthResources(Device, Width, Height, DXGI_FORMAT_D24_UNORM_S8_UINT, DepthResources))
+    {
+        return false;
+    }
+    DepthBuffer = DepthResources.DepthBuffer;
+    DSVHeap = DepthResources.DSVHeap;
+    DepthStencilHandle = DepthResources.DepthStencilHandle;
+
+    if (!CreateCubeGeometry(Device))
+    {
+        return false;
+    }
+
+    FMappedConstantBuffer ConstantBufferResource = {};
+    if (!RendererUtils::CreateMappedConstantBuffer(Device, sizeof(FSceneConstants), ConstantBufferResource))
+    {
+        return false;
+    }
+    ConstantBuffer = ConstantBufferResource.Resource;
+    ConstantBufferMapped = ConstantBufferResource.MappedData;
+
+    if (!CreateDefaultGridTexture(Device))
+    {
+        return false;
+    }
+
+    return true;
 }
 
 void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle, const FCamera& Camera, float DeltaTime)
@@ -228,279 +255,29 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
     return true;
 }
 
-bool FForwardRenderer::CreateDepthResources(FDX12Device* Device, uint32_t Width, uint32_t Height)
-{
-    D3D12_RESOURCE_DESC Desc = {};
-    Desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    Desc.Alignment = 0;
-    Desc.Width = Width;
-    Desc.Height = Height;
-    Desc.DepthOrArraySize = 1;
-    Desc.MipLevels = 1;
-    Desc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
-    Desc.SampleDesc.Count = 1;
-    Desc.SampleDesc.Quality = 0;
-    Desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    Desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
-
-    D3D12_CLEAR_VALUE ClearValue = {};
-    ClearValue.Format = Desc.Format;
-    ClearValue.DepthStencil.Depth = 1.0f;
-    ClearValue.DepthStencil.Stencil = 0;
-
-    D3D12_HEAP_PROPERTIES HeapProps = {};
-    HeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
-    HeapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-    HeapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-    HeapProps.CreationNodeMask = 1;
-    HeapProps.VisibleNodeMask = 1;
-
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &HeapProps,
-        D3D12_HEAP_FLAG_NONE,
-        &Desc,
-        D3D12_RESOURCE_STATE_DEPTH_WRITE,
-        &ClearValue,
-        IID_PPV_ARGS(DepthBuffer.GetAddressOf())));
-
-    D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
-    HeapDesc.NumDescriptors = 1;
-    HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-    HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-    HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(DSVHeap.GetAddressOf())));
-
-    DepthStencilHandle = DSVHeap->GetCPUDescriptorHandleForHeapStart();
-
-    D3D12_DEPTH_STENCIL_VIEW_DESC DsvDesc = {};
-    DsvDesc.Format = Desc.Format;
-    DsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
-    DsvDesc.Flags = D3D12_DSV_FLAG_NONE;
-    DsvDesc.Texture2D.MipSlice = 0;
-
-    Device->GetDevice()->CreateDepthStencilView(DepthBuffer.Get(), &DsvDesc, DepthStencilHandle);
-    return true;
-}
-
 bool FForwardRenderer::CreateCubeGeometry(FDX12Device* Device)
 {
-    FMesh Cube = FMesh::CreateCube(1.0f);
-    IndexCount = static_cast<uint32_t>(Cube.GetIndices().size());
+    FCubeGeometryBuffers Geometry;
+    if (!RendererUtils::CreateCubeGeometry(Device, Geometry, 1.0f))
+    {
+        return false;
+    }
 
-    const UINT VertexBufferSize = static_cast<UINT>(Cube.GetVertices().size() * sizeof(FMesh::FVertex));
-    const UINT IndexBufferSize = static_cast<UINT>(Cube.GetIndices().size() * sizeof(uint32_t));
+    VertexBuffer = Geometry.VertexBuffer;
+    IndexBuffer = Geometry.IndexBuffer;
+    VertexBufferView = Geometry.VertexBufferView;
+    IndexBufferView = Geometry.IndexBufferView;
+    IndexCount = Geometry.IndexCount;
 
-    D3D12_HEAP_PROPERTIES UploadHeap = {};
-    UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
-    UploadHeap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-    UploadHeap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-    UploadHeap.CreationNodeMask = 1;
-    UploadHeap.VisibleNodeMask = 1;
-
-    D3D12_RESOURCE_DESC VertexDesc = {};
-    VertexDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    VertexDesc.Width = VertexBufferSize;
-    VertexDesc.Height = 1;
-    VertexDesc.DepthOrArraySize = 1;
-    VertexDesc.MipLevels = 1;
-    VertexDesc.Format = DXGI_FORMAT_UNKNOWN;
-    VertexDesc.SampleDesc.Count = 1;
-    VertexDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &UploadHeap,
-        D3D12_HEAP_FLAG_NONE,
-        &VertexDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        nullptr,
-        IID_PPV_ARGS(VertexBuffer.GetAddressOf())));
-
-    VertexBufferView.BufferLocation = VertexBuffer->GetGPUVirtualAddress();
-    VertexBufferView.StrideInBytes = sizeof(FMesh::FVertex);
-    VertexBufferView.SizeInBytes = VertexBufferSize;
-
-    void* VertexDataBegin = nullptr;
-    D3D12_RANGE EmptyRange = { 0, 0 };
-    HR_CHECK(VertexBuffer->Map(0, &EmptyRange, &VertexDataBegin));
-    memcpy(VertexDataBegin, Cube.GetVertices().data(), VertexBufferSize);
-    VertexBuffer->Unmap(0, nullptr);
-
-    D3D12_RESOURCE_DESC IndexDesc = VertexDesc;
-    IndexDesc.Width = IndexBufferSize;
-
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &UploadHeap,
-        D3D12_HEAP_FLAG_NONE,
-        &IndexDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        nullptr,
-        IID_PPV_ARGS(IndexBuffer.GetAddressOf())));
-
-    IndexBufferView.BufferLocation = IndexBuffer->GetGPUVirtualAddress();
-    IndexBufferView.Format = DXGI_FORMAT_R32_UINT;
-    IndexBufferView.SizeInBytes = IndexBufferSize;
-
-    void* IndexDataBegin = nullptr;
-    HR_CHECK(IndexBuffer->Map(0, &EmptyRange, &IndexDataBegin));
-    memcpy(IndexDataBegin, Cube.GetIndices().data(), IndexBufferSize);
-    IndexBuffer->Unmap(0, nullptr);
-
-    return true;
-}
-
-bool FForwardRenderer::CreateConstantBuffer(FDX12Device* Device)
-{
-    const uint32_t ConstantBufferSize = (sizeof(FSceneConstants) + 255) & ~255u;
-
-    D3D12_HEAP_PROPERTIES UploadHeap = {};
-    UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
-    UploadHeap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-    UploadHeap.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-    UploadHeap.CreationNodeMask = 1;
-    UploadHeap.VisibleNodeMask = 1;
-
-    D3D12_RESOURCE_DESC BufferDesc = {};
-    BufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    BufferDesc.Width = ConstantBufferSize;
-    BufferDesc.Height = 1;
-    BufferDesc.DepthOrArraySize = 1;
-    BufferDesc.MipLevels = 1;
-    BufferDesc.Format = DXGI_FORMAT_UNKNOWN;
-    BufferDesc.SampleDesc.Count = 1;
-    BufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &UploadHeap,
-        D3D12_HEAP_FLAG_NONE,
-        &BufferDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        nullptr,
-        IID_PPV_ARGS(ConstantBuffer.GetAddressOf())));
-
-    D3D12_RANGE EmptyRange = { 0, 0 };
-    HR_CHECK(ConstantBuffer->Map(0, &EmptyRange, reinterpret_cast<void**>(&ConstantBufferMapped)));
     return true;
 }
 
 bool FForwardRenderer::CreateDefaultGridTexture(FDX12Device* Device)
 {
-    const uint32_t Width = 256;
-    const uint32_t Height = 256;
-    const uint32_t CellSize = 32;
-
-    const uint32_t LightColor = 0xffb5b5b5;
-    const uint32_t DarkColor = 0xff5f5f5f;
-    std::vector<uint32_t> TextureData(Width * Height, LightColor);
-
-    for (uint32_t y = 0; y < Height; ++y)
+    if (!RendererUtils::CreateDefaultGridTexture(Device, GridTexture))
     {
-        const uint32_t CellY = y / CellSize;
-        for (uint32_t x = 0; x < Width; ++x)
-        {
-            const uint32_t CellX = x / CellSize;
-            const bool UseDark = ((CellX + CellY) % 2) == 0;
-            TextureData[y * Width + x] = UseDark ? DarkColor : LightColor;
-        }
+        return false;
     }
-
-    D3D12_RESOURCE_DESC TextureDesc = {};
-    TextureDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    TextureDesc.Alignment = 0;
-    TextureDesc.Width = Width;
-    TextureDesc.Height = Height;
-    TextureDesc.DepthOrArraySize = 1;
-    TextureDesc.MipLevels = 1;
-    TextureDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    TextureDesc.SampleDesc.Count = 1;
-    TextureDesc.SampleDesc.Quality = 0;
-    TextureDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    TextureDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
-
-    D3D12_HEAP_PROPERTIES DefaultHeap = {};
-    DefaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
-    DefaultHeap.CreationNodeMask = 1;
-    DefaultHeap.VisibleNodeMask = 1;
-
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &DefaultHeap,
-        D3D12_HEAP_FLAG_NONE,
-        &TextureDesc,
-        D3D12_RESOURCE_STATE_COPY_DEST,
-        nullptr,
-        IID_PPV_ARGS(GridTexture.GetAddressOf())));
-
-    D3D12_PLACED_SUBRESOURCE_FOOTPRINT Layout = {};
-    UINT NumRows = 0;
-    UINT64 RowSizeInBytes = 0;
-    UINT64 UploadBufferSize = 0;
-    Device->GetDevice()->GetCopyableFootprints(&TextureDesc, 0, 1, 0, &Layout, &NumRows, &RowSizeInBytes, &UploadBufferSize);
-
-    D3D12_HEAP_PROPERTIES UploadHeap = {};
-    UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
-    UploadHeap.CreationNodeMask = 1;
-    UploadHeap.VisibleNodeMask = 1;
-
-    D3D12_RESOURCE_DESC UploadDesc = {};
-    UploadDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    UploadDesc.Alignment = 0;
-    UploadDesc.Width = UploadBufferSize;
-    UploadDesc.Height = 1;
-    UploadDesc.DepthOrArraySize = 1;
-    UploadDesc.MipLevels = 1;
-    UploadDesc.Format = DXGI_FORMAT_UNKNOWN;
-    UploadDesc.SampleDesc.Count = 1;
-    UploadDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-    ComPtr<ID3D12Resource> UploadResource;
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &UploadHeap,
-        D3D12_HEAP_FLAG_NONE,
-        &UploadDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        nullptr,
-        IID_PPV_ARGS(UploadResource.GetAddressOf())));
-
-    uint8_t* MappedData = nullptr;
-    D3D12_RANGE EmptyRange = { 0, 0 };
-    HR_CHECK(UploadResource->Map(0, &EmptyRange, reinterpret_cast<void**>(&MappedData)));
-
-    for (UINT Row = 0; Row < NumRows; ++Row)
-    {
-        const uint8_t* SrcRow = reinterpret_cast<const uint8_t*>(&TextureData[Row * Width]);
-        memcpy(MappedData + Layout.Offset + Row * Layout.Footprint.RowPitch, SrcRow, Width * sizeof(uint32_t));
-    }
-
-    UploadResource->Unmap(0, nullptr);
-
-    ComPtr<ID3D12CommandAllocator> UploadAllocator;
-    ComPtr<ID3D12GraphicsCommandList> UploadList;
-    HR_CHECK(Device->GetDevice()->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(UploadAllocator.GetAddressOf())));
-    HR_CHECK(Device->GetDevice()->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, UploadAllocator.Get(), nullptr, IID_PPV_ARGS(UploadList.GetAddressOf())));
-
-    D3D12_TEXTURE_COPY_LOCATION DstLocation = {};
-    DstLocation.pResource = GridTexture.Get();
-    DstLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-    DstLocation.SubresourceIndex = 0;
-
-    D3D12_TEXTURE_COPY_LOCATION SrcLocation = {};
-    SrcLocation.pResource = UploadResource.Get();
-    SrcLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-    SrcLocation.PlacedFootprint = Layout;
-
-    UploadList->CopyTextureRegion(&DstLocation, 0, 0, 0, &SrcLocation, nullptr);
-
-    D3D12_RESOURCE_BARRIER Barrier = {};
-    Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    Barrier.Transition.pResource = GridTexture.Get();
-    Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    UploadList->ResourceBarrier(1, &Barrier);
-
-    HR_CHECK(UploadList->Close());
-
-    ID3D12CommandList* Lists[] = { UploadList.Get() };
-    Device->GetGraphicsQueue()->GetD3DQueue()->ExecuteCommandLists(1, Lists);
-    Device->GetGraphicsQueue()->Flush();
 
     D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
     HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
@@ -509,7 +286,7 @@ bool FForwardRenderer::CreateDefaultGridTexture(FDX12Device* Device)
     HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(TextureDescriptorHeap.GetAddressOf())));
 
     D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc = {};
-    SrvDesc.Format = TextureDesc.Format;
+    SrvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     SrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     SrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     SrvDesc.Texture2D.MipLevels = 1;
@@ -524,20 +301,8 @@ bool FForwardRenderer::CreateDefaultGridTexture(FDX12Device* Device)
 
 void FForwardRenderer::UpdateSceneConstants(const FCamera& Camera, float DeltaTime)
 {
-    using namespace DirectX;
+    const DirectX::XMFLOAT3 BaseColor = { 1.0f, 0.7f, 0.4f };
+    const DirectX::XMVECTOR LightDir = DirectX::XMVectorSet(-0.3f, -1.0f, -0.2f, 0.0f);
 
-    RotationAngle += DeltaTime * 0.5f;
-
-    const FMatrix World = XMMatrixRotationY(RotationAngle) * XMMatrixRotationX(RotationAngle * 0.5f);
-    const FMatrix View = Camera.GetViewMatrix();
-    const FMatrix Projection = Camera.GetProjectionMatrix();
-
-    FSceneConstants Constants = {};
-    XMStoreFloat4x4(&Constants.World, World);
-    XMStoreFloat4x4(&Constants.View, View);
-    XMStoreFloat4x4(&Constants.Projection, Projection);
-    Constants.BaseColor = { 1.0f, 0.7f, 0.4f };
-    XMStoreFloat3(&Constants.LightDirection, XMVector3Normalize(XMVectorSet(-0.3f, -1.0f, -0.2f, 0.0f)));
-
-    memcpy(ConstantBufferMapped, &Constants, sizeof(Constants));
+    RendererUtils::UpdateSceneConstants(Camera, DeltaTime, RotationAngle, BaseColor, LightDir, ConstantBufferMapped);
 }

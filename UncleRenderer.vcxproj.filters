@@ -42,6 +42,9 @@
     <Filter Include="Source Files\ThirdParty\imgui">
       <UniqueIdentifier>{5d47012b-c5fc-4742-bf05-7e039cd034e6}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Shaders">
+      <UniqueIdentifier>{679FC732-2C38-4DA1-BE90-4C0E19B9B0BA}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Source\Main.cpp">
@@ -76,6 +79,12 @@
     </ClCompile>
     <ClCompile Include="Source\RHI\DX12SwapChain.cpp">
       <Filter>Source Files\RHI</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Render\DeferredRenderer.cpp">
+      <Filter>Source Files\Render</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Render\RendererUtils.cpp">
+      <Filter>Source Files\Render</Filter>
     </ClCompile>
     <ClCompile Include="Source\Render\ForwardRenderer.cpp">
       <Filter>Source Files\Render</Filter>
@@ -166,6 +175,15 @@
     <ClInclude Include="Source\RHI\DX12SwapChain.h">
       <Filter>Header Files\RHI</Filter>
     </ClInclude>
+    <ClInclude Include="Source\Render\DeferredRenderer.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Render\RendererUtils.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Render\Renderer.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
     <ClInclude Include="Source\Render\ForwardRenderer.h">
       <Filter>Header Files\Render</Filter>
     </ClInclude>
@@ -223,5 +241,22 @@
     <ClInclude Include="ThirdParty\imgui\imstb_truetype.h">
       <Filter>Source Files\ThirdParty\imgui</Filter>
     </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Shaders\DeferredBasePass.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\DeferredLighting.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\ForwardPS.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\ForwardVS.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\FullscreenTriangle.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
   </ItemGroup>
 </Project>

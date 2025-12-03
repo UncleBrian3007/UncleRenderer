@@ -7,6 +7,8 @@
 #include "../RHI/DX12SwapChain.h"
 #include "../RHI/DX12CommandContext.h"
 #include "../RHI/DX12Commons.h"
+#include "../Render/Renderer.h"
+#include "../Render/DeferredRenderer.h"
 #include "../Render/ForwardRenderer.h"
 #include "../Scene/Camera.h"
 #include <dxgi1_6.h>
@@ -42,6 +44,7 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t H
     CommandContext = std::make_unique<FDX12CommandContext>();
     Time = std::make_unique<FTime>();
     ForwardRenderer = std::make_unique<FForwardRenderer>();
+    DeferredRenderer = std::make_unique<FDeferredRenderer>();
     Camera = std::make_unique<FCamera>();
 
     if (!MainWindow->Create(InstanceHandle, Width, Height, L"UncleRenderer"))
@@ -73,7 +76,16 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t H
         CameraYaw = atan2f(XMVectorGetX(Forward), XMVectorGetZ(Forward));
     }
 
-    if (!ForwardRenderer->Initialize(Device.get(), Width, Height, SwapChain->GetFormat()))
+    const bool bDeferredInitialized = DeferredRenderer->Initialize(Device.get(), Width, Height, SwapChain->GetFormat());
+    if (bDeferredInitialized)
+    {
+        ActiveRenderer = DeferredRenderer.get();
+    }
+    else if (ForwardRenderer->Initialize(Device.get(), Width, Height, SwapChain->GetFormat()))
+    {
+        ActiveRenderer = ForwardRenderer.get();
+    }
+    else
     {
         return false;
     }
@@ -126,15 +138,16 @@ bool FApplication::RenderFrame()
             PreviousState,
             D3D12_RESOURCE_STATE_RENDER_TARGET);
 
-        const D3D12_CPU_DESCRIPTOR_HANDLE* DsvHandle = ForwardRenderer ? &ForwardRenderer->GetDSVHandle() : nullptr;
+        const D3D12_CPU_DESCRIPTOR_HANDLE* DsvHandle = ActiveRenderer ? &ActiveRenderer->GetDSVHandle() : nullptr;
+
         CommandContext->SetRenderTarget(RtvHandle, DsvHandle);
 
         const float ClearColor[4] = { 0.05f, 0.10f, 0.20f, 1.0f };
         CommandContext->ClearRenderTarget(RtvHandle, ClearColor);
 
-        if (ForwardRenderer && Camera)
+        if (ActiveRenderer && Camera)
         {
-            ForwardRenderer->RenderFrame(*CommandContext, RtvHandle, *Camera, DeltaSeconds);
+            ActiveRenderer->RenderFrame(*CommandContext, RtvHandle, *Camera, DeltaSeconds);
         }
 
         RenderUI();
@@ -179,8 +192,8 @@ void FApplication::HandleCameraInput(float DeltaSeconds)
     const float MaxFov = XMConvertToRadians(120.0f);
     const float RotationSpeed = 0.005f;
 
-    const bool RightButtonDown = IsKeyDown(VK_RBUTTON);
-    if (RightButtonDown)
+    const bool LeftButtonDown = IsKeyDown(VK_LBUTTON);
+    if (LeftButtonDown)
     {
         POINT CursorPos{};
         if (GetCursorPos(&CursorPos))

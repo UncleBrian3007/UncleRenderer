@@ -106,8 +106,9 @@
     <ClCompile Include="Source\RHI\DX12Fence.cpp" />
     <ClCompile Include="Source\RHI\DX12Resource.cpp" />
     <ClCompile Include="Source\RHI\DX12SwapChain.cpp" />
+    <ClCompile Include="Source\Render\DeferredRenderer.cpp" />
+    <ClCompile Include="Source\Render\RendererUtils.cpp" />
     <ClCompile Include="Source\Render\ForwardRenderer.cpp" />
-    <ClCompile Include="Source\Render\FrameResources.cpp" />
     <ClCompile Include="Source\Render\RenderGraph.cpp" />
     <ClCompile Include="Source\Render\RenderPass.cpp" />
     <ClCompile Include="Source\Render\ShaderCompiler.cpp" />
@@ -138,8 +139,10 @@
     <ClInclude Include="Source\RHI\DX12Fence.h" />
     <ClInclude Include="Source\RHI\DX12Resource.h" />
     <ClInclude Include="Source\RHI\DX12SwapChain.h" />
+    <ClInclude Include="Source\Render\DeferredRenderer.h" />
+    <ClInclude Include="Source\Render\RendererUtils.h" />
+    <ClInclude Include="Source\Render\Renderer.h" />
     <ClInclude Include="Source\Render\ForwardRenderer.h" />
-    <ClInclude Include="Source\Render\FrameResources.h" />
     <ClInclude Include="Source\Render\RenderGraph.h" />
     <ClInclude Include="Source\Render\RenderPass.h" />
     <ClInclude Include="Source\Render\ShaderCompiler.h" />
@@ -159,6 +162,11 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
+    <None Include="Shaders\DeferredBasePass.hlsl" />
+    <None Include="Shaders\DeferredLighting.hlsl" />
+    <None Include="Shaders\ForwardPS.hlsl" />
+    <None Include="Shaders\ForwardVS.hlsl" />
+    <None Include="Shaders\FullscreenTriangle.hlsl" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
