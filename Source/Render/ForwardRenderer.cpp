@@ -47,7 +47,8 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
         && CreatePipelineState(Device, BackBufferFormat)
         && CreateDepthResources(Device, Width, Height)
         && CreateCubeGeometry(Device)
-        && CreateConstantBuffer(Device);
+        && CreateConstantBuffer(Device)
+        && CreateDefaultGridTexture(Device);
 }
 
 void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle, const FCamera& Camera, float DeltaTime)
@@ -66,6 +67,9 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
     CommandList->SetPipelineState(PipelineState.Get());
     CommandList->SetGraphicsRootSignature(RootSignature.Get());
 
+    ID3D12DescriptorHeap* Heaps[] = { TextureDescriptorHeap.Get() };
+    CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+
     CommandList->RSSetViewports(1, &Viewport);
     CommandList->RSSetScissorRects(1, &ScissorRect);
 
@@ -75,25 +79,54 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
     CommandList->IASetIndexBuffer(&IndexBufferView);
 
     CommandList->SetGraphicsRootConstantBufferView(0, ConstantBuffer->GetGPUVirtualAddress());
+    CommandList->SetGraphicsRootDescriptorTable(1, GridTextureGpuHandle);
 
     CommandList->DrawIndexedInstanced(IndexCount, 1, 0, 0, 0);
 }
 
 bool FForwardRenderer::CreateRootSignature(FDX12Device* Device)
 {
-    D3D12_ROOT_PARAMETER1 RootParams[1] = {};
+    D3D12_DESCRIPTOR_RANGE1 DescriptorRange = {};
+    DescriptorRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    DescriptorRange.NumDescriptors = 1;
+    DescriptorRange.BaseShaderRegister = 0;
+    DescriptorRange.RegisterSpace = 0;
+    DescriptorRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
+    DescriptorRange.OffsetInDescriptorsFromTableStart = 0;
+
+    D3D12_ROOT_PARAMETER1 RootParams[2] = {};
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[0].Descriptor.ShaderRegister = 0;
     RootParams[0].Descriptor.RegisterSpace = 0;
     RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
 
+    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    RootParams[1].DescriptorTable.NumDescriptorRanges = 1;
+    RootParams[1].DescriptorTable.pDescriptorRanges = &DescriptorRange;
+
+    D3D12_STATIC_SAMPLER_DESC SamplerDesc = {};
+    SamplerDesc.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    SamplerDesc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    SamplerDesc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    SamplerDesc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    SamplerDesc.MipLODBias = 0.0f;
+    SamplerDesc.MaxAnisotropy = 1;
+    SamplerDesc.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    SamplerDesc.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+    SamplerDesc.MinLOD = 0.0f;
+    SamplerDesc.MaxLOD = D3D12_FLOAT32_MAX;
+    SamplerDesc.ShaderRegister = 0;
+    SamplerDesc.RegisterSpace = 0;
+    SamplerDesc.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootDesc = {};
     RootDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
     RootDesc.Desc_1_1.NumParameters = _countof(RootParams);
     RootDesc.Desc_1_1.pParameters = RootParams;
-    RootDesc.Desc_1_1.NumStaticSamplers = 0;
-    RootDesc.Desc_1_1.pStaticSamplers = nullptr;
+    RootDesc.Desc_1_1.NumStaticSamplers = 1;
+    RootDesc.Desc_1_1.pStaticSamplers = &SamplerDesc;
     RootDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
     Microsoft::WRL::ComPtr<ID3DBlob> SerializedSig;
@@ -148,7 +181,7 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
     PsoDesc.RasterizerState = {};
     PsoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
     PsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
-    PsoDesc.RasterizerState.FrontCounterClockwise = FALSE;
+    PsoDesc.RasterizerState.FrontCounterClockwise = TRUE;
     PsoDesc.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
     PsoDesc.RasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
     PsoDesc.RasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
@@ -345,6 +378,147 @@ bool FForwardRenderer::CreateConstantBuffer(FDX12Device* Device)
 
     D3D12_RANGE EmptyRange = { 0, 0 };
     HR_CHECK(ConstantBuffer->Map(0, &EmptyRange, reinterpret_cast<void**>(&ConstantBufferMapped)));
+    return true;
+}
+
+bool FForwardRenderer::CreateDefaultGridTexture(FDX12Device* Device)
+{
+    const uint32_t Width = 256;
+    const uint32_t Height = 256;
+    const uint32_t CellSize = 32;
+
+    const uint32_t LightColor = 0xffb5b5b5;
+    const uint32_t DarkColor = 0xff5f5f5f;
+    std::vector<uint32_t> TextureData(Width * Height, LightColor);
+
+    for (uint32_t y = 0; y < Height; ++y)
+    {
+        const uint32_t CellY = y / CellSize;
+        for (uint32_t x = 0; x < Width; ++x)
+        {
+            const uint32_t CellX = x / CellSize;
+            const bool UseDark = ((CellX + CellY) % 2) == 0;
+            TextureData[y * Width + x] = UseDark ? DarkColor : LightColor;
+        }
+    }
+
+    D3D12_RESOURCE_DESC TextureDesc = {};
+    TextureDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    TextureDesc.Alignment = 0;
+    TextureDesc.Width = Width;
+    TextureDesc.Height = Height;
+    TextureDesc.DepthOrArraySize = 1;
+    TextureDesc.MipLevels = 1;
+    TextureDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    TextureDesc.SampleDesc.Count = 1;
+    TextureDesc.SampleDesc.Quality = 0;
+    TextureDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    TextureDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+    D3D12_HEAP_PROPERTIES DefaultHeap = {};
+    DefaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    DefaultHeap.CreationNodeMask = 1;
+    DefaultHeap.VisibleNodeMask = 1;
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &DefaultHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &TextureDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        nullptr,
+        IID_PPV_ARGS(GridTexture.GetAddressOf())));
+
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT Layout = {};
+    UINT NumRows = 0;
+    UINT64 RowSizeInBytes = 0;
+    UINT64 UploadBufferSize = 0;
+    Device->GetDevice()->GetCopyableFootprints(&TextureDesc, 0, 1, 0, &Layout, &NumRows, &RowSizeInBytes, &UploadBufferSize);
+
+    D3D12_HEAP_PROPERTIES UploadHeap = {};
+    UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    UploadHeap.CreationNodeMask = 1;
+    UploadHeap.VisibleNodeMask = 1;
+
+    D3D12_RESOURCE_DESC UploadDesc = {};
+    UploadDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    UploadDesc.Alignment = 0;
+    UploadDesc.Width = UploadBufferSize;
+    UploadDesc.Height = 1;
+    UploadDesc.DepthOrArraySize = 1;
+    UploadDesc.MipLevels = 1;
+    UploadDesc.Format = DXGI_FORMAT_UNKNOWN;
+    UploadDesc.SampleDesc.Count = 1;
+    UploadDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    ComPtr<ID3D12Resource> UploadResource;
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &UploadHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &UploadDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(UploadResource.GetAddressOf())));
+
+    uint8_t* MappedData = nullptr;
+    D3D12_RANGE EmptyRange = { 0, 0 };
+    HR_CHECK(UploadResource->Map(0, &EmptyRange, reinterpret_cast<void**>(&MappedData)));
+
+    for (UINT Row = 0; Row < NumRows; ++Row)
+    {
+        const uint8_t* SrcRow = reinterpret_cast<const uint8_t*>(&TextureData[Row * Width]);
+        memcpy(MappedData + Layout.Offset + Row * Layout.Footprint.RowPitch, SrcRow, Width * sizeof(uint32_t));
+    }
+
+    UploadResource->Unmap(0, nullptr);
+
+    ComPtr<ID3D12CommandAllocator> UploadAllocator;
+    ComPtr<ID3D12GraphicsCommandList> UploadList;
+    HR_CHECK(Device->GetDevice()->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(UploadAllocator.GetAddressOf())));
+    HR_CHECK(Device->GetDevice()->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, UploadAllocator.Get(), nullptr, IID_PPV_ARGS(UploadList.GetAddressOf())));
+
+    D3D12_TEXTURE_COPY_LOCATION DstLocation = {};
+    DstLocation.pResource = GridTexture.Get();
+    DstLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    DstLocation.SubresourceIndex = 0;
+
+    D3D12_TEXTURE_COPY_LOCATION SrcLocation = {};
+    SrcLocation.pResource = UploadResource.Get();
+    SrcLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    SrcLocation.PlacedFootprint = Layout;
+
+    UploadList->CopyTextureRegion(&DstLocation, 0, 0, 0, &SrcLocation, nullptr);
+
+    D3D12_RESOURCE_BARRIER Barrier = {};
+    Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    Barrier.Transition.pResource = GridTexture.Get();
+    Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    UploadList->ResourceBarrier(1, &Barrier);
+
+    HR_CHECK(UploadList->Close());
+
+    ID3D12CommandList* Lists[] = { UploadList.Get() };
+    Device->GetGraphicsQueue()->GetD3DQueue()->ExecuteCommandLists(1, Lists);
+    Device->GetGraphicsQueue()->Flush();
+
+    D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
+    HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    HeapDesc.NumDescriptors = 1;
+    HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(TextureDescriptorHeap.GetAddressOf())));
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc = {};
+    SrvDesc.Format = TextureDesc.Format;
+    SrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    SrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    SrvDesc.Texture2D.MipLevels = 1;
+    SrvDesc.Texture2D.MostDetailedMip = 0;
+    SrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+
+    Device->GetDevice()->CreateShaderResourceView(GridTexture.Get(), &SrvDesc, TextureDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
+    GridTextureGpuHandle = TextureDescriptorHeap->GetGPUDescriptorHandleForHeapStart();
+
     return true;
 }
 

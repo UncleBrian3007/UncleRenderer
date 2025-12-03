@@ -27,6 +27,7 @@ private:
     bool CreateDepthResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateCubeGeometry(FDX12Device* Device);
     bool CreateConstantBuffer(FDX12Device* Device);
+    bool CreateDefaultGridTexture(FDX12Device* Device);
     void UpdateSceneConstants(const FCamera& Camera, float DeltaTime);
 
     struct FSceneConstants
@@ -49,8 +50,11 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> ConstantBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> DepthBuffer;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> DSVHeap;
+    Microsoft::WRL::ComPtr<ID3D12Resource> GridTexture;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> TextureDescriptorHeap;
 
     D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilHandle{};
+    D3D12_GPU_DESCRIPTOR_HANDLE GridTextureGpuHandle{};
     D3D12_VERTEX_BUFFER_VIEW VertexBufferView{};
     D3D12_INDEX_BUFFER_VIEW IndexBufferView{};
     D3D12_VIEWPORT Viewport{};

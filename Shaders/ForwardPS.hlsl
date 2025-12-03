@@ -17,13 +17,17 @@ cbuffer SceneConstants : register(b0)
     float Padding1;
 };
 
+Texture2D GridTexture : register(t0);
+SamplerState GridSampler : register(s0);
+
 float4 PSMain(VSOutput Input) : SV_Target
 {
     float3 n = normalize(Input.Normal);
     float3 l = normalize(-LightDirection);
     float diffuse = saturate(dot(n, l));
 
-    float3 ambient = BaseColor * 0.1;
-    float3 lit = BaseColor * diffuse + ambient;
+    float3 albedo = GridTexture.Sample(GridSampler, Input.UV).rgb * BaseColor;
+    float3 ambient = albedo * 0.1;
+    float3 lit = albedo * diffuse + ambient;
     return float4(lit, 1.0);
 }

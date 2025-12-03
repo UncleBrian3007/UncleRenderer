@@ -118,32 +118,34 @@ bool FApplication::RenderFrame()
 
     CommandContext->BeginFrame();
 
-    FScopedPixEvent FrameEvent(CommandContext->GetCommandList(), L"Frame");
-
-    CommandContext->TransitionResource(
-        BackBuffer,
-        PreviousState,
-        D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-    const D3D12_CPU_DESCRIPTOR_HANDLE* DsvHandle = ForwardRenderer ? &ForwardRenderer->GetDSVHandle() : nullptr;
-    CommandContext->SetRenderTarget(RtvHandle, DsvHandle);
-
-    const float ClearColor[4] = { 0.05f, 0.10f, 0.20f, 1.0f };
-    CommandContext->ClearRenderTarget(RtvHandle, ClearColor);
-
-    if (ForwardRenderer && Camera)
     {
-        ForwardRenderer->RenderFrame(*CommandContext, RtvHandle, *Camera, DeltaSeconds);
+        FScopedPixEvent FrameEvent(CommandContext->GetCommandList(), L"Frame");
+
+        CommandContext->TransitionResource(
+            BackBuffer,
+            PreviousState,
+            D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+        const D3D12_CPU_DESCRIPTOR_HANDLE* DsvHandle = ForwardRenderer ? &ForwardRenderer->GetDSVHandle() : nullptr;
+        CommandContext->SetRenderTarget(RtvHandle, DsvHandle);
+
+        const float ClearColor[4] = { 0.05f, 0.10f, 0.20f, 1.0f };
+        CommandContext->ClearRenderTarget(RtvHandle, ClearColor);
+
+        if (ForwardRenderer && Camera)
+        {
+            ForwardRenderer->RenderFrame(*CommandContext, RtvHandle, *Camera, DeltaSeconds);
+        }
+
+        RenderUI();
+
+        CommandContext->TransitionResource(
+            BackBuffer,
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+            D3D12_RESOURCE_STATE_PRESENT);
+
+        PixSetMarker(CommandContext->GetCommandList(), L"Present");
     }
-
-    RenderUI();
-
-    CommandContext->TransitionResource(
-        BackBuffer,
-        D3D12_RESOURCE_STATE_RENDER_TARGET,
-        D3D12_RESOURCE_STATE_PRESENT);
-
-    PixSetMarker(CommandContext->GetCommandList(), L"Present");
     CommandContext->CloseAndExecute();
 
     SwapChain->SetBackBufferState(BackBufferIndex, D3D12_RESOURCE_STATE_PRESENT);
