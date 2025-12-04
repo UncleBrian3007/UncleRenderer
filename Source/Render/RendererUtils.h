@@ -4,6 +4,7 @@
 #include <d3d12.h>
 #include <DirectXMath.h>
 #include <cstdint>
+#include "../Math/MathTypes.h"
 
 class FDX12Device;
 class FCamera;
@@ -50,10 +51,10 @@ namespace RendererUtils
 {
     bool CreateMeshGeometry(FDX12Device* Device, const FMesh& Mesh, FMeshGeometryBuffers& OutGeometry);
     bool CreateCubeGeometry(FDX12Device* Device, FCubeGeometryBuffers& OutGeometry, float Size = 1.0f);
-    bool CreateDefaultSceneGeometry(FDX12Device* Device, FMeshGeometryBuffers& OutGeometry);
+    bool CreateDefaultSceneGeometry(FDX12Device* Device, FMeshGeometryBuffers& OutGeometry, FFloat3& OutCenter, float& OutRadius);
     bool CreateDefaultGridTexture(FDX12Device* Device, Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture);
     bool CreateDepthResources(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT Format, FDepthResources& OutDepthResources);
     bool CreateMappedConstantBuffer(FDX12Device* Device, uint64_t BufferSize, FMappedConstantBuffer& OutConstantBuffer);
-    void UpdateSceneConstants(const FCamera& Camera, float DeltaTime, float& RotationAngle, const DirectX::XMFLOAT3& BaseColor, const DirectX::XMVECTOR& LightDirection, uint8_t* ConstantBufferMapped);
+    void UpdateSceneConstants(const FCamera& Camera, const DirectX::XMFLOAT3& BaseColor, const DirectX::XMVECTOR& LightDirection, const DirectX::XMFLOAT3& SceneCenter, uint8_t* ConstantBufferMapped);
 }
 

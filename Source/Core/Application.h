@@ -35,6 +35,7 @@ public:
 private:
     bool RenderFrame();
     void HandleCameraInput(float DeltaSeconds);
+    void PositionCameraForScene();
     bool InitializeImGui(int32_t Width, int32_t Height);
     void ShutdownImGui();
     void RenderUI();

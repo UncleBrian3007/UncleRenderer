@@ -69,13 +69,6 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t H
 
     Camera->SetPerspective(DirectX::XM_PIDIV4, static_cast<float>(Width) / static_cast<float>(Height), 0.1f, 1000.0f);
 
-    {
-        using namespace DirectX;
-        const XMVECTOR Forward = XMVector3Normalize(XMLoadFloat3(&Camera->GetForward()));
-        CameraPitch = asinf(XMVectorGetY(Forward));
-        CameraYaw = atan2f(XMVectorGetX(Forward), XMVectorGetZ(Forward));
-    }
-
     const bool bDeferredInitialized = DeferredRenderer->Initialize(Device.get(), Width, Height, SwapChain->GetFormat());
     if (bDeferredInitialized)
     {
@@ -89,6 +82,8 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t H
     {
         return false;
     }
+
+    PositionCameraForScene();
 
     if (!InitializeImGui(Width, Height))
     {
@@ -186,7 +181,8 @@ void FApplication::HandleCameraInput(float DeltaSeconds)
 
     using namespace DirectX;
 
-    const float MoveSpeed = 5.0f;
+    const float SceneRadius = ActiveRenderer ? ActiveRenderer->GetSceneRadius() : 1.0f;
+    const float MoveSpeed = std::max(5.0f, SceneRadius * 0.5f);
     const float FovSpeed = XMConvertToRadians(45.0f);
     const float MinFov = XMConvertToRadians(20.0f);
     const float MaxFov = XMConvertToRadians(120.0f);
@@ -270,6 +266,42 @@ void FApplication::HandleCameraInput(float DeltaSeconds)
 
     FovY = std::clamp(FovY, MinFov, MaxFov);
     Camera->SetFovY(FovY);
+}
+
+void FApplication::PositionCameraForScene()
+{
+    if (!Camera)
+    {
+        return;
+    }
+
+    const float SceneRadius = ActiveRenderer ? ActiveRenderer->GetSceneRadius() : 1.0f;
+
+    const float AngularHalfHeight = Camera->GetFovY() * 0.25f;
+    const float Distance = SceneRadius / std::tan(AngularHalfHeight);
+
+    FFloat3 Position =
+    {
+        0.0f,
+        0.0f,
+        -Distance
+    };
+    Camera->SetPosition(Position);
+
+    const DirectX::XMVECTOR Eye = DirectX::XMLoadFloat3(&Camera->GetPosition());
+    const DirectX::XMVECTOR Target = DirectX::XMVectorZero();
+    const DirectX::XMVECTOR ForwardVec = DirectX::XMVector3Normalize(DirectX::XMVectorSubtract(Target, Eye));
+    const DirectX::XMVECTOR UpVec = DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+
+    FFloat3 Forward;
+    FFloat3 Up;
+    DirectX::XMStoreFloat3(&Forward, ForwardVec);
+    DirectX::XMStoreFloat3(&Up, UpVec);
+    Camera->SetForward(Forward);
+    Camera->SetUp(Up);
+
+    CameraPitch = asinf(DirectX::XMVectorGetY(ForwardVec));
+    CameraYaw = atan2f(DirectX::XMVectorGetX(ForwardVec), DirectX::XMVectorGetZ(ForwardVec));
 }
 
 bool FApplication::EnsureImGuiFontAtlas()

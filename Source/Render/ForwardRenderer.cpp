@@ -58,7 +58,7 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
     DSVHeap = DepthResources.DSVHeap;
     DepthStencilHandle = DepthResources.DepthStencilHandle;
 
-    if (!RendererUtils::CreateDefaultSceneGeometry(Device, MeshBuffers))
+    if (!RendererUtils::CreateDefaultSceneGeometry(Device, MeshBuffers, SceneCenter, SceneRadius))
     {
         return false;
     }
@@ -83,7 +83,7 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
 {
     FScopedPixEvent RenderEvent(CmdContext.GetCommandList(), L"ForwardRenderer");
 
-    UpdateSceneConstants(Camera, DeltaTime);
+    UpdateSceneConstants(Camera);
 
     PixSetMarker(CmdContext.GetCommandList(), L"SetRenderTargets");
     CmdContext.SetRenderTarget(RtvHandle, &DepthStencilHandle);
@@ -283,10 +283,10 @@ bool FForwardRenderer::CreateDefaultGridTexture(FDX12Device* Device)
     return true;
 }
 
-void FForwardRenderer::UpdateSceneConstants(const FCamera& Camera, float DeltaTime)
+void FForwardRenderer::UpdateSceneConstants(const FCamera& Camera)
 {
     const DirectX::XMFLOAT3 BaseColor = { 1.0f, 0.7f, 0.4f };
     const DirectX::XMVECTOR LightDir = DirectX::XMVectorSet(-0.3f, -1.0f, -0.2f, 0.0f);
 
-    RendererUtils::UpdateSceneConstants(Camera, DeltaTime, RotationAngle, BaseColor, LightDir, ConstantBufferMapped);
+    RendererUtils::UpdateSceneConstants(Camera, BaseColor, LightDir, SceneCenter, ConstantBufferMapped);
 }

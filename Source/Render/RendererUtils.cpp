@@ -1,3 +1,7 @@
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #include "RendererUtils.h"
 
 #include "../Scene/Mesh.h"
@@ -7,8 +11,46 @@
 #include "../RHI/DX12Commons.h"
 #include <vector>
 #include <cstring>
+#include <algorithm>
 
 using Microsoft::WRL::ComPtr;
+
+namespace
+{
+    void ComputeMeshBounds(const FMesh& Mesh, FFloat3& OutCenter, float& OutRadius)
+    {
+        const auto& Vertices = Mesh.GetVertices();
+        if (Vertices.empty())
+        {
+            OutCenter = FFloat3(0.0f, 0.0f, 0.0f);
+            OutRadius = 1.0f;
+            return;
+        }
+
+        FFloat3 Min = Vertices.front().Position;
+        FFloat3 Max = Vertices.front().Position;
+
+        for (const auto& Vertex : Vertices)
+        {
+            Min.x = std::min(Min.x, Vertex.Position.x);
+            Min.y = std::min(Min.y, Vertex.Position.y);
+            Min.z = std::min(Min.z, Vertex.Position.z);
+
+            Max.x = std::max(Max.x, Vertex.Position.x);
+            Max.y = std::max(Max.y, Vertex.Position.y);
+            Max.z = std::max(Max.z, Vertex.Position.z);
+        }
+
+        OutCenter = FFloat3(
+            0.5f * (Min.x + Max.x),
+            0.5f * (Min.y + Max.y),
+            0.5f * (Min.z + Max.z));
+
+        const DirectX::XMVECTOR Extents = DirectX::XMVectorSet(Max.x - Min.x, Max.y - Min.y, Max.z - Min.z, 0.0f);
+        OutRadius = DirectX::XMVectorGetX(DirectX::XMVector3Length(Extents)) * 0.5f;
+        OutRadius = std::max(OutRadius, 1.0f);
+    }
+}
 
 bool RendererUtils::CreateMeshGeometry(FDX12Device* Device, const FMesh& Mesh, FMeshGeometryBuffers& OutGeometry)
 {
@@ -82,15 +124,18 @@ bool RendererUtils::CreateCubeGeometry(FDX12Device* Device, FCubeGeometryBuffers
     return CreateMeshGeometry(Device, Cube, OutGeometry);
 }
 
-bool RendererUtils::CreateDefaultSceneGeometry(FDX12Device* Device, FMeshGeometryBuffers& OutGeometry)
+bool RendererUtils::CreateDefaultSceneGeometry(FDX12Device* Device, FMeshGeometryBuffers& OutGeometry, FFloat3& OutCenter, float& OutRadius)
 {
     FMesh LoadedMesh;
     if (FGltfLoader::LoadMeshFromFile(L"Assets/Duck/Duck.gltf", LoadedMesh))
     {
+        ComputeMeshBounds(LoadedMesh, OutCenter, OutRadius);
         return CreateMeshGeometry(Device, LoadedMesh, OutGeometry);
     }
 
-    return CreateCubeGeometry(Device, OutGeometry);
+    const FMesh Cube = FMesh::CreateCube();
+    ComputeMeshBounds(Cube, OutCenter, OutRadius);
+    return CreateMeshGeometry(Device, Cube, OutGeometry);
 }
 
 bool RendererUtils::CreateDefaultGridTexture(FDX12Device* Device, ComPtr<ID3D12Resource>& OutTexture)
@@ -308,7 +353,7 @@ bool RendererUtils::CreateMappedConstantBuffer(FDX12Device* Device, uint64_t Buf
     return true;
 }
 
-void RendererUtils::UpdateSceneConstants(const FCamera& Camera, float DeltaTime, float& RotationAngle, const DirectX::XMFLOAT3& BaseColor, const DirectX::XMVECTOR& LightDirection, uint8_t* ConstantBufferMapped)
+void RendererUtils::UpdateSceneConstants(const FCamera& Camera, const DirectX::XMFLOAT3& BaseColor, const DirectX::XMVECTOR& LightDirection, const DirectX::XMFLOAT3& SceneCenter, uint8_t* ConstantBufferMapped)
 {
     if (ConstantBufferMapped == nullptr)
     {
@@ -317,9 +362,7 @@ void RendererUtils::UpdateSceneConstants(const FCamera& Camera, float DeltaTime,
 
     using namespace DirectX;
 
-    RotationAngle += DeltaTime * 0.5f;
-
-    const XMMATRIX World = XMMatrixRotationY(RotationAngle) * XMMatrixRotationX(RotationAngle * 0.5f);
+    const XMMATRIX World = XMMatrixTranslation(-SceneCenter.x, -SceneCenter.y, -SceneCenter.z);
     const XMMATRIX View = Camera.GetViewMatrix();
     const XMMATRIX Projection = Camera.GetProjectionMatrix();
 

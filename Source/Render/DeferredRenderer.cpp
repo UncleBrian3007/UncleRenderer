@@ -75,7 +75,7 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
         return false;
     }
 
-    if (!RendererUtils::CreateDefaultSceneGeometry(Device, MeshBuffers))
+    if (!RendererUtils::CreateDefaultSceneGeometry(Device, MeshBuffers, SceneCenter, SceneRadius))
     {
         return false;
     }
@@ -98,7 +98,7 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
 
 void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle, const FCamera& Camera, float DeltaTime)
 {
-    UpdateSceneConstants(Camera, DeltaTime);
+    UpdateSceneConstants(Camera);
 
     ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
 
@@ -522,11 +522,11 @@ bool FDeferredRenderer::CreateDefaultGridTexture(FDX12Device* Device)
     return RendererUtils::CreateDefaultGridTexture(Device, GridTexture);
 }
 
-void FDeferredRenderer::UpdateSceneConstants(const FCamera& Camera, float DeltaTime)
+void FDeferredRenderer::UpdateSceneConstants(const FCamera& Camera)
 {
     const DirectX::XMFLOAT3 BaseColor = { 0.8f, 0.8f, 1.0f };
     const DirectX::XMVECTOR LightDir = DirectX::XMVectorSet(-0.5f, -1.0f, 0.2f, 0.0f);
 
-    RendererUtils::UpdateSceneConstants(Camera, DeltaTime, RotationAngle, BaseColor, LightDir, ConstantBufferMapped);
+    RendererUtils::UpdateSceneConstants(Camera, BaseColor, LightDir, SceneCenter, ConstantBufferMapped);
 }
 

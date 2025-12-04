@@ -21,13 +21,11 @@ public:
     bool Initialize(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT BackBufferFormat) override;
     void RenderFrame(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle, const FCamera& Camera, float DeltaTime) override;
 
-    const D3D12_CPU_DESCRIPTOR_HANDLE& GetDSVHandle() const override { return DepthStencilHandle; }
-
 private:
     bool CreateRootSignature(FDX12Device* Device);
     bool CreatePipelineState(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateDefaultGridTexture(FDX12Device* Device);
-    void UpdateSceneConstants(const FCamera& Camera, float DeltaTime);
+    void UpdateSceneConstants(const FCamera& Camera);
 
 private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSignature;
@@ -40,11 +38,9 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> GridTexture;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> TextureDescriptorHeap;
 
-    D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilHandle{};
     D3D12_GPU_DESCRIPTOR_HANDLE GridTextureGpuHandle{};
     D3D12_VIEWPORT Viewport{};
     D3D12_RECT ScissorRect{};
 
     uint8_t* ConstantBufferMapped = nullptr;
-    float RotationAngle = 0.0f;
 };
