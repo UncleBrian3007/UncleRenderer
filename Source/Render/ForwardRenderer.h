@@ -26,8 +26,6 @@ public:
 private:
     bool CreateRootSignature(FDX12Device* Device);
     bool CreatePipelineState(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
-    bool CreateSceneGeometry(FDX12Device* Device);
-    bool CreateCubeGeometry(FDX12Device* Device);
     bool CreateDefaultGridTexture(FDX12Device* Device);
     void UpdateSceneConstants(const FCamera& Camera, float DeltaTime);
 

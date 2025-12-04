@@ -4,7 +4,6 @@
 #include "RendererUtils.h"
 #include "../Scene/Camera.h"
 #include "../Scene/Mesh.h"
-#include "../Scene/GltfLoader.h"
 #include "../RHI/DX12Device.h"
 #include "../RHI/DX12CommandContext.h"
 #include "../Core/GpuDebugMarkers.h"
@@ -59,7 +58,7 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
     DSVHeap = DepthResources.DSVHeap;
     DepthStencilHandle = DepthResources.DepthStencilHandle;
 
-    if (!CreateSceneGeometry(Device))
+    if (!RendererUtils::CreateDefaultSceneGeometry(Device, MeshBuffers))
     {
         return false;
     }
@@ -254,30 +253,6 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
     PsoDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
 
     HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineState.GetAddressOf())));
-    return true;
-}
-
-bool FForwardRenderer::CreateSceneGeometry(FDX12Device* Device)
-{
-    FMesh LoadedMesh;
-    if (FGltfLoader::LoadMeshFromFile(L"Assets/Triangle.gltf", LoadedMesh))
-    {
-        return RendererUtils::CreateMeshGeometry(Device, LoadedMesh, MeshBuffers);
-    }
-
-    return CreateCubeGeometry(Device);
-}
-
-bool FForwardRenderer::CreateCubeGeometry(FDX12Device* Device)
-{
-    FCubeGeometryBuffers Geometry;
-    if (!RendererUtils::CreateCubeGeometry(Device, Geometry, 1.0f))
-    {
-        return false;
-    }
-
-    MeshBuffers = Geometry;
-
     return true;
 }
 

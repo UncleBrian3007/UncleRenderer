@@ -4,7 +4,6 @@
 #include "RendererUtils.h"
 #include "../Scene/Camera.h"
 #include "../Scene/Mesh.h"
-#include "../Scene/GltfLoader.h"
 #include "../RHI/DX12Device.h"
 #include "../RHI/DX12CommandContext.h"
 #include "../Core/GpuDebugMarkers.h"
@@ -76,7 +75,7 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
         return false;
     }
 
-    if (!CreateSceneGeometry(Device))
+    if (!RendererUtils::CreateDefaultSceneGeometry(Device, MeshBuffers))
     {
         return false;
     }
@@ -516,22 +515,6 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
     }
 
     return true;
-}
-
-bool FDeferredRenderer::CreateSceneGeometry(FDX12Device* Device)
-{
-    FMesh LoadedMesh;
-    if (FGltfLoader::LoadMeshFromFile(L"Assets/Triangle.gltf", LoadedMesh))
-    {
-        return RendererUtils::CreateMeshGeometry(Device, LoadedMesh, MeshBuffers);
-    }
-
-    return CreateCubeGeometry(Device);
-}
-
-bool FDeferredRenderer::CreateCubeGeometry(FDX12Device* Device)
-{
-    return RendererUtils::CreateCubeGeometry(Device, MeshBuffers);
 }
 
 bool FDeferredRenderer::CreateDefaultGridTexture(FDX12Device* Device)

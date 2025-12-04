@@ -50,6 +50,7 @@ namespace RendererUtils
 {
     bool CreateMeshGeometry(FDX12Device* Device, const FMesh& Mesh, FMeshGeometryBuffers& OutGeometry);
     bool CreateCubeGeometry(FDX12Device* Device, FCubeGeometryBuffers& OutGeometry, float Size = 1.0f);
+    bool CreateDefaultSceneGeometry(FDX12Device* Device, FMeshGeometryBuffers& OutGeometry);
     bool CreateDefaultGridTexture(FDX12Device* Device, Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture);
     bool CreateDepthResources(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT Format, FDepthResources& OutDepthResources);
     bool CreateMappedConstantBuffer(FDX12Device* Device, uint64_t BufferSize, FMappedConstantBuffer& OutConstantBuffer);

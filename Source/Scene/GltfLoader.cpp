@@ -355,12 +355,34 @@ bool FGltfLoader::LoadMeshFromFile(const std::wstring& FilePath, FMesh& OutMesh)
 
     const std::string Uri = GetStringField(&Buffers->ArrayValue[0], "uri");
     const std::string Prefix = "data:application/octet-stream;base64,";
-    if (Uri.compare(0, Prefix.size(), Prefix) != 0)
+
+    std::vector<uint8_t> BufferData;
+    if (Uri.compare(0, Prefix.size(), Prefix) == 0)
     {
-        return false;
+        BufferData = DecodeBase64(Uri.substr(Prefix.size()));
+    }
+    else
+    {
+        const std::filesystem::path BasePath = std::filesystem::path(FilePath).parent_path();
+        const std::filesystem::path BufferPath = BasePath / std::filesystem::path(Uri);
+
+        std::ifstream BinFile(BufferPath, std::ios::binary | std::ios::ate);
+        if (!BinFile.is_open())
+        {
+            return false;
+        }
+
+        const std::streamsize FileSize = BinFile.tellg();
+        if (FileSize <= 0)
+        {
+            return false;
+        }
+
+        BufferData.resize(static_cast<size_t>(FileSize));
+        BinFile.seekg(0, std::ios::beg);
+        BinFile.read(reinterpret_cast<char*>(BufferData.data()), FileSize);
     }
 
-    std::vector<uint8_t> BufferData = DecodeBase64(Uri.substr(Prefix.size()));
     if (BufferData.empty())
     {
         return false;

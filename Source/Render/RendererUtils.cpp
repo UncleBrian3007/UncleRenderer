@@ -1,6 +1,7 @@
 #include "RendererUtils.h"
 
 #include "../Scene/Mesh.h"
+#include "../Scene/GltfLoader.h"
 #include "../Scene/Camera.h"
 #include "../RHI/DX12Device.h"
 #include "../RHI/DX12Commons.h"
@@ -79,6 +80,17 @@ bool RendererUtils::CreateCubeGeometry(FDX12Device* Device, FCubeGeometryBuffers
 {
     const FMesh Cube = FMesh::CreateCube(Size);
     return CreateMeshGeometry(Device, Cube, OutGeometry);
+}
+
+bool RendererUtils::CreateDefaultSceneGeometry(FDX12Device* Device, FMeshGeometryBuffers& OutGeometry)
+{
+    FMesh LoadedMesh;
+    if (FGltfLoader::LoadMeshFromFile(L"Assets/Duck/Duck.gltf", LoadedMesh))
+    {
+        return CreateMeshGeometry(Device, LoadedMesh, OutGeometry);
+    }
+
+    return CreateCubeGeometry(Device, OutGeometry);
 }
 
 bool RendererUtils::CreateDefaultGridTexture(FDX12Device* Device, ComPtr<ID3D12Resource>& OutTexture)

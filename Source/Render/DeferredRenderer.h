@@ -29,8 +29,6 @@ private:
     bool CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateGBufferResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateDescriptorHeap(FDX12Device* Device);
-    bool CreateSceneGeometry(FDX12Device* Device);
-    bool CreateCubeGeometry(FDX12Device* Device);
     bool CreateDefaultGridTexture(FDX12Device* Device);
     void UpdateSceneConstants(const FCamera& Camera, float DeltaTime);
 
