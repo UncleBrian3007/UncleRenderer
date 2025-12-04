@@ -42,6 +42,8 @@ struct FSceneConstants
     float Padding0 = 0.0f;
     DirectX::XMFLOAT3 LightDirection;
     float Padding1 = 0.0f;
+    DirectX::XMFLOAT3 CameraPosition;
+    float Padding2 = 0.0f;
 };
 
 namespace RendererUtils

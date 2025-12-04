@@ -22,6 +22,8 @@ cbuffer SceneConstants : register(b0)
     float Padding0;
     float3 LightDirection;
     float Padding1;
+    float3 CameraPosition;
+    float Padding2;
 };
 
 Texture2D GridTexture : register(t0);
@@ -50,10 +52,11 @@ PSOutput PSMain(VSOutput Input)
 {
     PSOutput Output;
 
-    float3 normal = normalize(Input.Normal);
+    float3 normal = normalize(mul(Input.Normal, (float3x3)View));
     float3 albedo = GridTexture.Sample(GridSampler, Input.UV).rgb * BaseColor;
 
-    Output.GBufferA = float4(normalize(normal), 1.0);
+    float viewDepth = -mul(float4(Input.WorldPos, 1.0), View).z;
+    Output.GBufferA = float4(normalize(normal), viewDepth);
 
     const float specular = 0.04f;
     const float metallic = 0.0f;

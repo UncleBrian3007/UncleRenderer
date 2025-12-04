@@ -317,6 +317,7 @@ void RendererUtils::UpdateSceneConstants(const FCamera& Camera, float DeltaTime,
     XMStoreFloat4x4(&Constants.Projection, Projection);
     Constants.BaseColor = BaseColor;
     XMStoreFloat3(&Constants.LightDirection, XMVector3Normalize(LightDirection));
+    Constants.CameraPosition = Camera.GetPosition();
 
     memcpy(ConstantBufferMapped, &Constants, sizeof(Constants));
 }

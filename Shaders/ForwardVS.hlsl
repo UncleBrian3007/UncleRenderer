@@ -22,6 +22,8 @@ cbuffer SceneConstants : register(b0)
     float Padding0;
     float3 LightDirection;
     float Padding1;
+    float3 CameraPosition;
+    float Padding2;
 };
 
 VSOutput VSMain(VSInput Input)

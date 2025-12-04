@@ -13,6 +13,8 @@ cbuffer SceneConstants : register(b0)
     float Padding0;
     float3 LightDirection;
     float Padding1;
+    float3 CameraPosition;
+    float Padding2;
 };
 
 Texture2D GBufferA : register(t0);
@@ -36,14 +38,51 @@ VSOutput VSMain(uint VertexId : SV_VertexID)
 
 float4 PSMain(VSOutput Input) : SV_Target
 {
-    float3 normal = normalize(GBufferA.Sample(GBufferSampler, Input.UV).xyz);
+    float4 normalDepth = GBufferA.Sample(GBufferSampler, Input.UV);
+    float3 normal = normalize(normalDepth.xyz);
+    float depth = normalDepth.w;
     float4 smr = GBufferB.Sample(GBufferSampler, Input.UV);
     float3 albedo = GBufferC.Sample(GBufferSampler, Input.UV).rgb;
 
-    float3 lightDir = normalize(-LightDirection);
-    float diffuse = saturate(dot(normal, lightDir));
-    float3 ambient = albedo * 0.05;
+    const float PI = 3.14159265f;
 
-    float3 lit = albedo * diffuse + ambient + smr.x.xxx * 0.1;
-    return float4(lit, 1.0);
+    float roughness = smr.z;
+    float metallic = smr.y;
+    float3 F0 = lerp(smr.x.xxx, albedo, metallic);
+
+    float2 ndc = float2(Input.UV * 2.0f - 1.0f);
+    float viewZ = -depth;
+    float viewX = ndc.x * viewZ / Projection._11;
+    float viewY = -ndc.y * viewZ / Projection._22;
+    float3 viewPos = float3(viewX, viewY, viewZ);
+
+    float3 V = normalize(-viewPos);
+    float3 L = normalize(mul(float4(-LightDirection, 0.0f), View).xyz);
+    float3 H = normalize(V + L);
+
+    float NdotL = saturate(dot(normal, L));
+    float NdotV = saturate(dot(normal, V));
+    float NdotH = saturate(dot(normal, H));
+    float VdotH = saturate(dot(V, H));
+
+    float alpha = roughness * roughness;
+    float alpha2 = alpha * alpha;
+    float denom = (NdotH * NdotH) * (alpha2 - 1.0f) + 1.0f;
+    float D = alpha2 / max(PI * denom * denom, 1e-4f);
+
+    float k = (roughness + 1.0f);
+    k = (k * k) / 8.0f;
+    float Gv = NdotV / (NdotV * (1.0f - k) + k);
+    float Gl = NdotL / (NdotL * (1.0f - k) + k);
+    float G = Gv * Gl;
+
+    float3 F = F0 + (1.0f - F0) * pow(1.0f - VdotH, 5.0f);
+
+    float3 specular = (D * G * F) / max(4.0f * NdotL * NdotV, 1e-4f);
+    float3 kd = (1.0f - F) * (1.0f - metallic);
+    float3 diffuse = kd * albedo / PI;
+
+    float3 ambient = albedo * 0.03f;
+    float3 color = (diffuse + specular) * NdotL + ambient;
+    return float4(color, 1.0);
 }
