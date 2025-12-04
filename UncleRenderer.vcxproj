@@ -94,6 +94,7 @@
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="Source\Scene\GltfLoader.cpp" />
     <ClCompile Include="Source\Core\EngineTime.cpp" />
     <ClCompile Include="Source\Main.cpp" />
     <ClCompile Include="Source\Core\Application.cpp" />
@@ -147,6 +148,7 @@
     <ClInclude Include="Source\Render\RenderPass.h" />
     <ClInclude Include="Source\Render\ShaderCompiler.h" />
     <ClInclude Include="Source\Scene\Camera.h" />
+    <ClInclude Include="Source\Scene\GltfLoader.h" />
     <ClInclude Include="Source\Scene\Material.h" />
     <ClInclude Include="Source\Scene\Mesh.h" />
     <ClInclude Include="Source\Scene\Transform.h" />
@@ -167,6 +169,7 @@
     <None Include="Shaders\ForwardPS.hlsl" />
     <None Include="Shaders\ForwardVS.hlsl" />
     <None Include="Shaders\FullscreenTriangle.hlsl" />
+    <None Include="Assets\Triangle.gltf" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

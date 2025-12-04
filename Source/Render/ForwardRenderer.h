@@ -26,6 +26,7 @@ public:
 private:
     bool CreateRootSignature(FDX12Device* Device);
     bool CreatePipelineState(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
+    bool CreateSceneGeometry(FDX12Device* Device);
     bool CreateCubeGeometry(FDX12Device* Device);
     bool CreateDefaultGridTexture(FDX12Device* Device);
     void UpdateSceneConstants(const FCamera& Camera, float DeltaTime);
@@ -34,8 +35,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineState;
 
-    Microsoft::WRL::ComPtr<ID3D12Resource> VertexBuffer;
-    Microsoft::WRL::ComPtr<ID3D12Resource> IndexBuffer;
+    FMeshGeometryBuffers MeshBuffers{};
     Microsoft::WRL::ComPtr<ID3D12Resource> ConstantBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> DepthBuffer;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> DSVHeap;
@@ -44,12 +44,9 @@ private:
 
     D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilHandle{};
     D3D12_GPU_DESCRIPTOR_HANDLE GridTextureGpuHandle{};
-    D3D12_VERTEX_BUFFER_VIEW VertexBufferView{};
-    D3D12_INDEX_BUFFER_VIEW IndexBufferView{};
     D3D12_VIEWPORT Viewport{};
     D3D12_RECT ScissorRect{};
 
     uint8_t* ConstantBufferMapped = nullptr;
-    uint32_t IndexCount = 0;
     float RotationAngle = 0.0f;
 };

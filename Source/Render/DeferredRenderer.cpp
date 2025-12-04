@@ -3,6 +3,8 @@
 #include "ShaderCompiler.h"
 #include "RendererUtils.h"
 #include "../Scene/Camera.h"
+#include "../Scene/Mesh.h"
+#include "../Scene/GltfLoader.h"
 #include "../RHI/DX12Device.h"
 #include "../RHI/DX12CommandContext.h"
 #include "../Core/GpuDebugMarkers.h"
@@ -74,7 +76,7 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
         return false;
     }
 
-    if (!CreateCubeGeometry(Device))
+    if (!CreateSceneGeometry(Device))
     {
         return false;
     }
@@ -122,14 +124,14 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
     CommandList->RSSetScissorRects(1, &ScissorRect);
 
     CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    CommandList->IASetVertexBuffers(0, 1, &VertexBufferView);
-    CommandList->IASetIndexBuffer(&IndexBufferView);
+    CommandList->IASetVertexBuffers(0, 1, &MeshBuffers.VertexBufferView);
+    CommandList->IASetIndexBuffer(&MeshBuffers.IndexBufferView);
 
     CommandList->SetGraphicsRootConstantBufferView(0, ConstantBuffer->GetGPUVirtualAddress());
     CommandList->SetGraphicsRootDescriptorTable(1, GridTextureGpuHandle);
 
     CommandList->OMSetRenderTargets(3, GBufferRTVHandles, FALSE, &DepthStencilHandle);
-    CommandList->DrawIndexedInstanced(IndexCount, 1, 0, 0, 0);
+    CommandList->DrawIndexedInstanced(MeshBuffers.IndexCount, 1, 0, 0, 0);
 
     CmdContext.TransitionResource(GBufferA.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     CmdContext.TransitionResource(GBufferB.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -516,21 +518,20 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
     return true;
 }
 
-bool FDeferredRenderer::CreateCubeGeometry(FDX12Device* Device)
+bool FDeferredRenderer::CreateSceneGeometry(FDX12Device* Device)
 {
-    FCubeGeometryBuffers Geometry;
-    if (!RendererUtils::CreateCubeGeometry(Device, Geometry))
+    FMesh LoadedMesh;
+    if (FGltfLoader::LoadMeshFromFile(L"Assets/Triangle.gltf", LoadedMesh))
     {
-        return false;
+        return RendererUtils::CreateMeshGeometry(Device, LoadedMesh, MeshBuffers);
     }
 
-    VertexBuffer = Geometry.VertexBuffer;
-    IndexBuffer = Geometry.IndexBuffer;
-    VertexBufferView = Geometry.VertexBufferView;
-    IndexBufferView = Geometry.IndexBufferView;
-    IndexCount = Geometry.IndexCount;
+    return CreateCubeGeometry(Device);
+}
 
-    return true;
+bool FDeferredRenderer::CreateCubeGeometry(FDX12Device* Device)
+{
+    return RendererUtils::CreateCubeGeometry(Device, MeshBuffers);
 }
 
 bool FDeferredRenderer::CreateDefaultGridTexture(FDX12Device* Device)

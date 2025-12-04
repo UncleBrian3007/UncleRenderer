@@ -3,6 +3,8 @@
 #include "ShaderCompiler.h"
 #include "RendererUtils.h"
 #include "../Scene/Camera.h"
+#include "../Scene/Mesh.h"
+#include "../Scene/GltfLoader.h"
 #include "../RHI/DX12Device.h"
 #include "../RHI/DX12CommandContext.h"
 #include "../Core/GpuDebugMarkers.h"
@@ -57,7 +59,7 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
     DSVHeap = DepthResources.DSVHeap;
     DepthStencilHandle = DepthResources.DepthStencilHandle;
 
-    if (!CreateCubeGeometry(Device))
+    if (!CreateSceneGeometry(Device))
     {
         return false;
     }
@@ -100,15 +102,15 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
     CommandList->RSSetViewports(1, &Viewport);
     CommandList->RSSetScissorRects(1, &ScissorRect);
 
-    PixSetMarker(CommandList, L"DrawCube");
+    PixSetMarker(CommandList, L"DrawMesh");
     CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    CommandList->IASetVertexBuffers(0, 1, &VertexBufferView);
-    CommandList->IASetIndexBuffer(&IndexBufferView);
+    CommandList->IASetVertexBuffers(0, 1, &MeshBuffers.VertexBufferView);
+    CommandList->IASetIndexBuffer(&MeshBuffers.IndexBufferView);
 
     CommandList->SetGraphicsRootConstantBufferView(0, ConstantBuffer->GetGPUVirtualAddress());
     CommandList->SetGraphicsRootDescriptorTable(1, GridTextureGpuHandle);
 
-    CommandList->DrawIndexedInstanced(IndexCount, 1, 0, 0, 0);
+    CommandList->DrawIndexedInstanced(MeshBuffers.IndexCount, 1, 0, 0, 0);
 }
 
 bool FForwardRenderer::CreateRootSignature(FDX12Device* Device)
@@ -255,6 +257,17 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
     return true;
 }
 
+bool FForwardRenderer::CreateSceneGeometry(FDX12Device* Device)
+{
+    FMesh LoadedMesh;
+    if (FGltfLoader::LoadMeshFromFile(L"Assets/Triangle.gltf", LoadedMesh))
+    {
+        return RendererUtils::CreateMeshGeometry(Device, LoadedMesh, MeshBuffers);
+    }
+
+    return CreateCubeGeometry(Device);
+}
+
 bool FForwardRenderer::CreateCubeGeometry(FDX12Device* Device)
 {
     FCubeGeometryBuffers Geometry;
@@ -263,11 +276,7 @@ bool FForwardRenderer::CreateCubeGeometry(FDX12Device* Device)
         return false;
     }
 
-    VertexBuffer = Geometry.VertexBuffer;
-    IndexBuffer = Geometry.IndexBuffer;
-    VertexBufferView = Geometry.VertexBufferView;
-    IndexBufferView = Geometry.IndexBufferView;
-    IndexCount = Geometry.IndexCount;
+    MeshBuffers = Geometry;
 
     return true;
 }

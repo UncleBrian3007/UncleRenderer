@@ -9,18 +9,17 @@
 
 using Microsoft::WRL::ComPtr;
 
-bool RendererUtils::CreateCubeGeometry(FDX12Device* Device, FCubeGeometryBuffers& OutGeometry, float Size)
+bool RendererUtils::CreateMeshGeometry(FDX12Device* Device, const FMesh& Mesh, FMeshGeometryBuffers& OutGeometry)
 {
     if (Device == nullptr)
     {
         return false;
     }
 
-    const FMesh Cube = FMesh::CreateCube(Size);
-    OutGeometry.IndexCount = static_cast<uint32_t>(Cube.GetIndices().size());
+    OutGeometry.IndexCount = static_cast<uint32_t>(Mesh.GetIndices().size());
 
-    const UINT VertexBufferSize = static_cast<UINT>(Cube.GetVertices().size() * sizeof(FMesh::FVertex));
-    const UINT IndexBufferSize = static_cast<UINT>(Cube.GetIndices().size() * sizeof(uint32_t));
+    const UINT VertexBufferSize = static_cast<UINT>(Mesh.GetVertices().size() * sizeof(FMesh::FVertex));
+    const UINT IndexBufferSize = static_cast<UINT>(Mesh.GetIndices().size() * sizeof(uint32_t));
 
     D3D12_HEAP_PROPERTIES UploadHeap = {};
     UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
@@ -52,7 +51,7 @@ bool RendererUtils::CreateCubeGeometry(FDX12Device* Device, FCubeGeometryBuffers
     void* VertexData = nullptr;
     D3D12_RANGE EmptyRange = { 0, 0 };
     HR_CHECK(OutGeometry.VertexBuffer->Map(0, &EmptyRange, &VertexData));
-    memcpy(VertexData, Cube.GetVertices().data(), VertexBufferSize);
+    memcpy(VertexData, Mesh.GetVertices().data(), VertexBufferSize);
     OutGeometry.VertexBuffer->Unmap(0, nullptr);
 
     BufferDesc.Width = IndexBufferSize;
@@ -70,10 +69,16 @@ bool RendererUtils::CreateCubeGeometry(FDX12Device* Device, FCubeGeometryBuffers
 
     void* IndexData = nullptr;
     HR_CHECK(OutGeometry.IndexBuffer->Map(0, &EmptyRange, &IndexData));
-    memcpy(IndexData, Cube.GetIndices().data(), IndexBufferSize);
+    memcpy(IndexData, Mesh.GetIndices().data(), IndexBufferSize);
     OutGeometry.IndexBuffer->Unmap(0, nullptr);
 
     return true;
+}
+
+bool RendererUtils::CreateCubeGeometry(FDX12Device* Device, FCubeGeometryBuffers& OutGeometry, float Size)
+{
+    const FMesh Cube = FMesh::CreateCube(Size);
+    return CreateMeshGeometry(Device, Cube, OutGeometry);
 }
 
 bool RendererUtils::CreateDefaultGridTexture(FDX12Device* Device, ComPtr<ID3D12Resource>& OutTexture)

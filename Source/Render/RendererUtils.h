@@ -7,8 +7,9 @@
 
 class FDX12Device;
 class FCamera;
+class FMesh;
 
-struct FCubeGeometryBuffers
+struct FMeshGeometryBuffers
 {
     Microsoft::WRL::ComPtr<ID3D12Resource> VertexBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> IndexBuffer;
@@ -16,6 +17,8 @@ struct FCubeGeometryBuffers
     D3D12_INDEX_BUFFER_VIEW IndexBufferView{};
     uint32_t IndexCount = 0;
 };
+
+using FCubeGeometryBuffers = FMeshGeometryBuffers;
 
 struct FDepthResources
 {
@@ -43,6 +46,7 @@ struct FSceneConstants
 
 namespace RendererUtils
 {
+    bool CreateMeshGeometry(FDX12Device* Device, const FMesh& Mesh, FMeshGeometryBuffers& OutGeometry);
     bool CreateCubeGeometry(FDX12Device* Device, FCubeGeometryBuffers& OutGeometry, float Size = 1.0f);
     bool CreateDefaultGridTexture(FDX12Device* Device, Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture);
     bool CreateDepthResources(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT Format, FDepthResources& OutDepthResources);

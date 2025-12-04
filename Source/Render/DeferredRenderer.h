@@ -29,6 +29,7 @@ private:
     bool CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateGBufferResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateDescriptorHeap(FDX12Device* Device);
+    bool CreateSceneGeometry(FDX12Device* Device);
     bool CreateCubeGeometry(FDX12Device* Device);
     bool CreateDefaultGridTexture(FDX12Device* Device);
     void UpdateSceneConstants(const FCamera& Camera, float DeltaTime);
@@ -39,8 +40,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> BasePassPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> LightingPipeline;
 
-    Microsoft::WRL::ComPtr<ID3D12Resource> VertexBuffer;
-    Microsoft::WRL::ComPtr<ID3D12Resource> IndexBuffer;
+    FMeshGeometryBuffers MeshBuffers{};
     Microsoft::WRL::ComPtr<ID3D12Resource> ConstantBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> DepthBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> GridTexture;
@@ -55,13 +55,10 @@ private:
     D3D12_CPU_DESCRIPTOR_HANDLE GBufferRTVHandles[3]{};
     D3D12_GPU_DESCRIPTOR_HANDLE GridTextureGpuHandle{};
     D3D12_GPU_DESCRIPTOR_HANDLE GBufferGpuHandles[3]{};
-    D3D12_VERTEX_BUFFER_VIEW VertexBufferView{};
-    D3D12_INDEX_BUFFER_VIEW IndexBufferView{};
     D3D12_VIEWPORT Viewport{};
     D3D12_RECT ScissorRect{};
 
     uint8_t* ConstantBufferMapped = nullptr;
-    uint32_t IndexCount = 0;
     float RotationAngle = 0.0f;
 };
 
