@@ -59,6 +59,7 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
     DepthBuffer = DepthResources.DepthBuffer;
     DSVHeap = DepthResources.DSVHeap;
     DepthStencilHandle = DepthResources.DepthStencilHandle;
+    DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
 
     std::wstring BaseColorTexturePath;
     if (!RendererUtils::CreateDefaultSceneGeometry(Device, MeshBuffers, SceneCenter, SceneRadius, &BaseColorTexturePath))
@@ -87,6 +88,9 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
     FScopedPixEvent RenderEvent(CmdContext.GetCommandList(), L"ForwardRenderer");
 
     UpdateSceneConstants(Camera);
+
+    CmdContext.TransitionResource(DepthBuffer.Get(), DepthBufferState, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
 
     PixSetMarker(CmdContext.GetCommandList(), L"SetRenderTargets");
     CmdContext.SetRenderTarget(RtvHandle, &DepthStencilHandle);
@@ -241,7 +245,7 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
     PsoDesc.DepthStencilState = {};
     PsoDesc.DepthStencilState.DepthEnable = TRUE;
     PsoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-    PsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+    PsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
     PsoDesc.DepthStencilState.StencilEnable = FALSE;
     PsoDesc.DepthStencilState.StencilReadMask = D3D12_DEFAULT_STENCIL_READ_MASK;
     PsoDesc.DepthStencilState.StencilWriteMask = D3D12_DEFAULT_STENCIL_WRITE_MASK;

@@ -62,6 +62,6 @@ float4 PSMain(VSOutput Input) : SV_Target
     float3 lighting = EvaluatePBR(albedo, metallic, roughness, F0, normal, V, L);
 
     float3 ambient = albedo * 0.03f;
-    float3 color = lighting + ambient;
+    float3 color = lighting + ambient + 0.1;
     return float4(color, 1.0);
 }

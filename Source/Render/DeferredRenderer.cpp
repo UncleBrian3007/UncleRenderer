@@ -71,6 +71,7 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     DepthBuffer = DepthResources.DepthBuffer;
     DSVHeap = DepthResources.DSVHeap;
     DepthStencilHandle = DepthResources.DepthStencilHandle;
+    DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
 
     if (!CreateGBufferResources(Device, Width, Height))
     {
@@ -106,6 +107,9 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
     ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
 
     PixSetMarker(CommandList, L"GBuffer BasePass");
+
+    CmdContext.TransitionResource(DepthBuffer.Get(), DepthBufferState, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
 
     CmdContext.SetRenderTarget(GBufferRTVHandles[0], &DepthStencilHandle);
     CmdContext.ClearDepth(DepthStencilHandle);
@@ -346,7 +350,7 @@ bool FDeferredRenderer::CreateBasePassPipeline(FDX12Device* Device)
     PsoDesc.DepthStencilState = {};
     PsoDesc.DepthStencilState.DepthEnable = TRUE;
     PsoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-    PsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+    PsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
     PsoDesc.DepthStencilState.StencilEnable = FALSE;
     PsoDesc.DepthStencilState.StencilReadMask = D3D12_DEFAULT_STENCIL_READ_MASK;
     PsoDesc.DepthStencilState.StencilWriteMask = D3D12_DEFAULT_STENCIL_WRITE_MASK;

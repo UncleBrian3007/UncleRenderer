@@ -45,5 +45,7 @@ private:
     D3D12_VIEWPORT Viewport{};
     D3D12_RECT ScissorRect{};
 
+    D3D12_RESOURCE_STATES DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+
     uint8_t* ConstantBufferMapped = nullptr;
 };
