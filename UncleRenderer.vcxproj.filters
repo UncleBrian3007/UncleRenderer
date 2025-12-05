@@ -83,15 +83,18 @@
     <ClCompile Include="Source\RHI\DX12SwapChain.cpp">
       <Filter>Source Files\RHI</Filter>
     </ClCompile>
-    <ClCompile Include="Source\Render\DeferredRenderer.cpp">
-      <Filter>Source Files\Render</Filter>
-    </ClCompile>
-    <ClCompile Include="Source\Render\RendererUtils.cpp">
-      <Filter>Source Files\Render</Filter>
-    </ClCompile>
-    <ClCompile Include="Source\Render\ForwardRenderer.cpp">
-      <Filter>Source Files\Render</Filter>
-    </ClCompile>
+  <ClCompile Include="Source\Render\DeferredRenderer.cpp">
+    <Filter>Source Files\Render</Filter>
+  </ClCompile>
+  <ClCompile Include="Source\Render\RendererUtils.cpp">
+    <Filter>Source Files\Render</Filter>
+  </ClCompile>
+  <ClCompile Include="Source\Render\TextureLoader.cpp">
+    <Filter>Source Files\Render</Filter>
+  </ClCompile>
+  <ClCompile Include="Source\Render\ForwardRenderer.cpp">
+    <Filter>Source Files\Render</Filter>
+  </ClCompile>
     <ClCompile Include="Source\Render\FrameResources.cpp">
       <Filter>Source Files\Render</Filter>
     </ClCompile>
@@ -181,15 +184,18 @@
     <ClInclude Include="Source\RHI\DX12SwapChain.h">
       <Filter>Header Files\RHI</Filter>
     </ClInclude>
-    <ClInclude Include="Source\Render\DeferredRenderer.h">
-      <Filter>Header Files\Render</Filter>
-    </ClInclude>
-    <ClInclude Include="Source\Render\RendererUtils.h">
-      <Filter>Header Files\Render</Filter>
-    </ClInclude>
-    <ClInclude Include="Source\Render\Renderer.h">
-      <Filter>Header Files\Render</Filter>
-    </ClInclude>
+  <ClInclude Include="Source\Render\DeferredRenderer.h">
+    <Filter>Header Files\Render</Filter>
+  </ClInclude>
+  <ClInclude Include="Source\Render\RendererUtils.h">
+    <Filter>Header Files\Render</Filter>
+  </ClInclude>
+  <ClInclude Include="Source\Render\TextureLoader.h">
+    <Filter>Header Files\Render</Filter>
+  </ClInclude>
+  <ClInclude Include="Source\Render\Renderer.h">
+    <Filter>Header Files\Render</Filter>
+  </ClInclude>
     <ClInclude Include="Source\Render\ForwardRenderer.h">
       <Filter>Header Files\Render</Filter>
     </ClInclude>

@@ -5,9 +5,11 @@
 #include <d3d12.h>
 #include <DirectXMath.h>
 #include <cstdint>
+#include <string>
 #include "../Math/MathTypes.h"
 #include "Renderer.h"
 #include "RendererUtils.h"
+#include "TextureLoader.h"
 
 class FDX12Device;
 class FDX12CommandContext;
@@ -24,7 +26,7 @@ public:
 private:
     bool CreateRootSignature(FDX12Device* Device);
     bool CreatePipelineState(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
-    bool CreateDefaultGridTexture(FDX12Device* Device);
+    bool CreateSceneTexture(FDX12Device* Device, const std::wstring& TexturePath);
     void UpdateSceneConstants(const FCamera& Camera);
 
 private:
@@ -35,10 +37,11 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> ConstantBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> DepthBuffer;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> DSVHeap;
-    Microsoft::WRL::ComPtr<ID3D12Resource> GridTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> SceneTexture;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> TextureDescriptorHeap;
+    std::unique_ptr<FTextureLoader> TextureLoader;
 
-    D3D12_GPU_DESCRIPTOR_HANDLE GridTextureGpuHandle{};
+    D3D12_GPU_DESCRIPTOR_HANDLE SceneTextureGpuHandle{};
     D3D12_VIEWPORT Viewport{};
     D3D12_RECT ScissorRect{};
 

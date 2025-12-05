@@ -49,6 +49,8 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
         return false;
     }
 
+    TextureLoader = std::make_unique<FTextureLoader>(Device);
+
     FDepthResources DepthResources = {};
     if (!RendererUtils::CreateDepthResources(Device, Width, Height, DXGI_FORMAT_D24_UNORM_S8_UINT, DepthResources))
     {
@@ -58,7 +60,8 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
     DSVHeap = DepthResources.DSVHeap;
     DepthStencilHandle = DepthResources.DepthStencilHandle;
 
-    if (!RendererUtils::CreateDefaultSceneGeometry(Device, MeshBuffers, SceneCenter, SceneRadius))
+    std::wstring BaseColorTexturePath;
+    if (!RendererUtils::CreateDefaultSceneGeometry(Device, MeshBuffers, SceneCenter, SceneRadius, &BaseColorTexturePath))
     {
         return false;
     }
@@ -71,7 +74,7 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
     ConstantBuffer = ConstantBufferResource.Resource;
     ConstantBufferMapped = ConstantBufferResource.MappedData;
 
-    if (!CreateDefaultGridTexture(Device))
+    if (!CreateSceneTexture(Device, BaseColorTexturePath))
     {
         return false;
     }
@@ -107,7 +110,7 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
     CommandList->IASetIndexBuffer(&MeshBuffers.IndexBufferView);
 
     CommandList->SetGraphicsRootConstantBufferView(0, ConstantBuffer->GetGPUVirtualAddress());
-    CommandList->SetGraphicsRootDescriptorTable(1, GridTextureGpuHandle);
+    CommandList->SetGraphicsRootDescriptorTable(1, SceneTextureGpuHandle);
 
     CommandList->DrawIndexedInstanced(MeshBuffers.IndexCount, 1, 0, 0, 0);
 }
@@ -256,12 +259,15 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
     return true;
 }
 
-bool FForwardRenderer::CreateDefaultGridTexture(FDX12Device* Device)
+bool FForwardRenderer::CreateSceneTexture(FDX12Device* Device, const std::wstring& TexturePath)
 {
-    if (!RendererUtils::CreateDefaultGridTexture(Device, GridTexture))
+    ComPtr<ID3D12Resource> TextureResource;
+    if (!TextureLoader || !TextureLoader->LoadOrDefault(TexturePath, TextureResource))
     {
         return false;
     }
+
+    SceneTexture = TextureResource;
 
     D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
     HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
@@ -277,15 +283,15 @@ bool FForwardRenderer::CreateDefaultGridTexture(FDX12Device* Device)
     SrvDesc.Texture2D.MostDetailedMip = 0;
     SrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
 
-    Device->GetDevice()->CreateShaderResourceView(GridTexture.Get(), &SrvDesc, TextureDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
-    GridTextureGpuHandle = TextureDescriptorHeap->GetGPUDescriptorHandleForHeapStart();
+    Device->GetDevice()->CreateShaderResourceView(SceneTexture.Get(), &SrvDesc, TextureDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
+    SceneTextureGpuHandle = TextureDescriptorHeap->GetGPUDescriptorHandleForHeapStart();
 
     return true;
 }
 
 void FForwardRenderer::UpdateSceneConstants(const FCamera& Camera)
 {
-    const DirectX::XMFLOAT3 BaseColor = { 1.0f, 0.7f, 0.4f };
+    const DirectX::XMFLOAT3 BaseColor = { 1.0f, 1.0f, 1.0f };
     const DirectX::XMVECTOR LightDir = DirectX::XMVectorSet(-0.3f, -1.0f, -0.2f, 0.0f);
 
     RendererUtils::UpdateSceneConstants(Camera, BaseColor, LightDir, SceneCenter, ConstantBufferMapped);

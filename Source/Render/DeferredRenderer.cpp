@@ -61,6 +61,8 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
         return false;
     }
 
+    TextureLoader = std::make_unique<FTextureLoader>(Device);
+
     FDepthResources DepthResources = {};
     if (!RendererUtils::CreateDepthResources(Device, Width, Height, DXGI_FORMAT_D24_UNORM_S8_UINT, DepthResources))
     {
@@ -75,7 +77,8 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
         return false;
     }
 
-    if (!RendererUtils::CreateDefaultSceneGeometry(Device, MeshBuffers, SceneCenter, SceneRadius))
+    std::wstring BaseColorTexturePath;
+    if (!RendererUtils::CreateDefaultSceneGeometry(Device, MeshBuffers, SceneCenter, SceneRadius, &BaseColorTexturePath))
     {
         return false;
     }
@@ -88,7 +91,7 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     ConstantBuffer = ConstantBufferResource.Resource;
     ConstantBufferMapped = ConstantBufferResource.MappedData;
 
-    if (!CreateDefaultGridTexture(Device))
+    if (!CreateSceneTexture(Device, BaseColorTexturePath))
     {
         return false;
     }
@@ -127,7 +130,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
     CommandList->IASetIndexBuffer(&MeshBuffers.IndexBufferView);
 
     CommandList->SetGraphicsRootConstantBufferView(0, ConstantBuffer->GetGPUVirtualAddress());
-    CommandList->SetGraphicsRootDescriptorTable(1, GridTextureGpuHandle);
+    CommandList->SetGraphicsRootDescriptorTable(1, SceneTextureGpuHandle);
 
     CommandList->OMSetRenderTargets(3, GBufferRTVHandles, FALSE, &DepthStencilHandle);
     CommandList->DrawIndexedInstanced(MeshBuffers.IndexCount, 1, 0, 0, 0);
@@ -485,17 +488,17 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
     D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle = DescriptorHeap->GetCPUDescriptorHandleForHeapStart();
     D3D12_GPU_DESCRIPTOR_HANDLE GpuHandle = DescriptorHeap->GetGPUDescriptorHandleForHeapStart();
 
-    D3D12_SHADER_RESOURCE_VIEW_DESC GridSrvDesc = {};
-    GridSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    GridSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    GridSrvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    GridSrvDesc.Texture2D.MipLevels = 1;
+    D3D12_SHADER_RESOURCE_VIEW_DESC SceneSrvDesc = {};
+    SceneSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    SceneSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    SceneSrvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    SceneSrvDesc.Texture2D.MipLevels = 1;
 
-    if (GridTexture)
+    if (SceneTexture)
     {
-        Device->GetDevice()->CreateShaderResourceView(GridTexture.Get(), &GridSrvDesc, CpuHandle);
+        Device->GetDevice()->CreateShaderResourceView(SceneTexture.Get(), &SceneSrvDesc, CpuHandle);
     }
-    GridTextureGpuHandle = GpuHandle;
+    SceneTextureGpuHandle = GpuHandle;
 
     CpuHandle.ptr += DescriptorSize;
     GpuHandle.ptr += DescriptorSize;
@@ -517,14 +520,21 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
     return true;
 }
 
-bool FDeferredRenderer::CreateDefaultGridTexture(FDX12Device* Device)
+bool FDeferredRenderer::CreateSceneTexture(FDX12Device* Device, const std::wstring& TexturePath)
 {
-    return RendererUtils::CreateDefaultGridTexture(Device, GridTexture);
+    ComPtr<ID3D12Resource> TextureResource;
+    if (!TextureLoader || !TextureLoader->LoadOrDefault(TexturePath, TextureResource))
+    {
+        return false;
+    }
+
+    SceneTexture = TextureResource;
+    return true;
 }
 
 void FDeferredRenderer::UpdateSceneConstants(const FCamera& Camera)
 {
-    const DirectX::XMFLOAT3 BaseColor = { 0.8f, 0.8f, 1.0f };
+    const DirectX::XMFLOAT3 BaseColor = { 1.0f, 1.0f, 1.0f };
     const DirectX::XMVECTOR LightDir = DirectX::XMVectorSet(-0.5f, -1.0f, 0.2f, 0.0f);
 
     RendererUtils::UpdateSceneConstants(Camera, BaseColor, LightDir, SceneCenter, ConstantBufferMapped);

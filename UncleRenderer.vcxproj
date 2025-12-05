@@ -109,6 +109,7 @@
     <ClCompile Include="Source\RHI\DX12SwapChain.cpp" />
     <ClCompile Include="Source\Render\DeferredRenderer.cpp" />
     <ClCompile Include="Source\Render\RendererUtils.cpp" />
+    <ClCompile Include="Source\Render\TextureLoader.cpp" />
     <ClCompile Include="Source\Render\ForwardRenderer.cpp" />
     <ClCompile Include="Source\Render\RenderGraph.cpp" />
     <ClCompile Include="Source\Render\RenderPass.cpp" />
@@ -142,6 +143,7 @@
     <ClInclude Include="Source\RHI\DX12SwapChain.h" />
     <ClInclude Include="Source\Render\DeferredRenderer.h" />
     <ClInclude Include="Source\Render\RendererUtils.h" />
+    <ClInclude Include="Source\Render\TextureLoader.h" />
     <ClInclude Include="Source\Render\Renderer.h" />
     <ClInclude Include="Source\Render\ForwardRenderer.h" />
     <ClInclude Include="Source\Render\RenderGraph.h" />

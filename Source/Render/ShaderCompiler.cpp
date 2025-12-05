@@ -42,6 +42,7 @@ bool FShaderCompiler::CompileFromFile(const std::wstring& FilePath, const std::w
     Arguments.push_back(EntryPointArg.c_str());
     Arguments.push_back(TargetArg.c_str());
     Arguments.push_back(DXC_ARG_WARNINGS_ARE_ERRORS);
+    Arguments.push_back(L"-IShaders");
 
     Microsoft::WRL::ComPtr<IDxcResult> CompileResult;
     HRESULT hr = Compiler->Compile(&SourceBuffer, Arguments.data(), static_cast<uint32_t>(Arguments.size()), IncludeHandler.Get(), IID_PPV_ARGS(&CompileResult));

@@ -182,7 +182,7 @@ void FApplication::HandleCameraInput(float DeltaSeconds)
     using namespace DirectX;
 
     const float SceneRadius = ActiveRenderer ? ActiveRenderer->GetSceneRadius() : 1.0f;
-    const float MoveSpeed = std::max(5.0f, SceneRadius * 0.5f);
+    const float MoveSpeed = (std::max)(5.0f, SceneRadius * 0.5f);
     const float FovSpeed = XMConvertToRadians(45.0f);
     const float MinFov = XMConvertToRadians(20.0f);
     const float MaxFov = XMConvertToRadians(120.0f);

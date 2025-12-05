@@ -333,7 +333,7 @@ namespace
 
 }
 
-bool FGltfLoader::LoadMeshFromFile(const std::wstring& FilePath, FMesh& OutMesh)
+bool FGltfLoader::LoadMeshFromFile(const std::wstring& FilePath, FMesh& OutMesh, std::wstring* OutBaseColorTexturePath)
 {
     std::ifstream File(std::filesystem::path(FilePath), std::ios::binary);
     if (!File.is_open())
@@ -559,5 +559,42 @@ bool FGltfLoader::LoadMeshFromFile(const std::wstring& FilePath, FMesh& OutMesh)
 
     OutMesh.SetVertices(Vertices);
     OutMesh.SetIndices(Indices);
+
+    if (OutBaseColorTexturePath)
+    {
+        *OutBaseColorTexturePath = L"";
+
+        const FJsonValue* Materials = GetObjectField(&Root, "materials");
+        const FJsonValue* Textures = GetObjectField(&Root, "textures");
+        const FJsonValue* Images = GetObjectField(&Root, "images");
+
+        if (Materials && Materials->IsArray() && !Materials->ArrayValue.empty()
+            && Textures && Textures->IsArray() && !Textures->ArrayValue.empty()
+            && Images && Images->IsArray() && !Images->ArrayValue.empty())
+        {
+            const FJsonValue* Material = &Materials->ArrayValue[0];
+            const FJsonValue* Pbr = GetObjectField(Material, "pbrMetallicRoughness");
+            const FJsonValue* BaseColorTexture = GetObjectField(Pbr, "baseColorTexture");
+            const int64_t TextureIndex = GetIntField(BaseColorTexture, "index", -1);
+
+            if (TextureIndex >= 0)
+            {
+                const FJsonValue* Texture = GetArrayElem(Textures, static_cast<size_t>(TextureIndex));
+                const int64_t ImageIndex = GetIntField(Texture, "source", -1);
+                if (ImageIndex >= 0)
+                {
+                    const FJsonValue* Image = GetArrayElem(Images, static_cast<size_t>(ImageIndex));
+                    const std::string ImageUri = GetStringField(Image, "uri");
+                    if (!ImageUri.empty())
+                    {
+                        const std::filesystem::path BasePath = std::filesystem::path(FilePath).parent_path();
+                        const std::filesystem::path FullPath = BasePath / std::filesystem::path(ImageUri);
+                        *OutBaseColorTexturePath = FullPath.wstring();
+                    }
+                }
+            }
+        }
+    }
+
     return true;
 }
