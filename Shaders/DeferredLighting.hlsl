@@ -1,3 +1,5 @@
+#include "PBRCommon.hlsl"
+
 struct VSOutput
 {
     float4 Position : SV_Position;
@@ -44,8 +46,6 @@ float4 PSMain(VSOutput Input) : SV_Target
     float4 smr = GBufferB.Sample(GBufferSampler, Input.UV);
     float3 albedo = GBufferC.Sample(GBufferSampler, Input.UV).rgb;
 
-    const float PI = 3.14159265f;
-
     float roughness = smr.z;
     float metallic = smr.y;
     float3 F0 = lerp(smr.x.xxx, albedo, metallic);
@@ -58,31 +58,10 @@ float4 PSMain(VSOutput Input) : SV_Target
 
     float3 V = normalize(-viewPos);
     float3 L = normalize(mul(float4(-LightDirection, 0.0f), View).xyz);
-    float3 H = normalize(V + L);
 
-    float NdotL = saturate(dot(normal, L));
-    float NdotV = saturate(dot(normal, V));
-    float NdotH = saturate(dot(normal, H));
-    float VdotH = saturate(dot(V, H));
-
-    float alpha = roughness * roughness;
-    float alpha2 = alpha * alpha;
-    float denom = (NdotH * NdotH) * (alpha2 - 1.0f) + 1.0f;
-    float D = alpha2 / max(PI * denom * denom, 1e-4f);
-
-    float k = (roughness + 1.0f);
-    k = (k * k) / 8.0f;
-    float Gv = NdotV / (NdotV * (1.0f - k) + k);
-    float Gl = NdotL / (NdotL * (1.0f - k) + k);
-    float G = Gv * Gl;
-
-    float3 F = F0 + (1.0f - F0) * pow(1.0f - VdotH, 5.0f);
-
-    float3 specular = (D * G * F) / max(4.0f * NdotL * NdotV, 1e-4f);
-    float3 kd = (1.0f - F) * (1.0f - metallic);
-    float3 diffuse = kd * albedo / PI;
+    float3 lighting = EvaluatePBR(albedo, metallic, roughness, F0, normal, V, L);
 
     float3 ambient = albedo * 0.03f;
-    float3 color = (diffuse + specular) * NdotL + ambient;
+    float3 color = lighting + ambient;
     return float4(color, 1.0);
 }
