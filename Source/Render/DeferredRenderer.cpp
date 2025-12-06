@@ -7,6 +7,7 @@
 #include "../RHI/DX12Device.h"
 #include "../RHI/DX12CommandContext.h"
 #include "../Core/GpuDebugMarkers.h"
+#include "../Core/Logger.h"
 #include <cstring>
 #include <string>
 #include <vector>
@@ -38,8 +39,11 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
 {
     if (Device == nullptr)
     {
+        LogError("Deferred renderer initialization failed: device is null");
         return false;
     }
+
+    LogInfo("Deferred renderer initialization started");
 
     Viewport.TopLeftX = 0.0f;
     Viewport.TopLeftY = 0.0f;
@@ -53,11 +57,31 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     ScissorRect.right = static_cast<LONG>(Width);
     ScissorRect.bottom = static_cast<LONG>(Height);
 
-    if (!CreateBasePassRootSignature(Device)
-        || !CreateLightingRootSignature(Device)
-        || !CreateBasePassPipeline(Device)
-        || !CreateLightingPipeline(Device, BackBufferFormat))
+    LogInfo("Creating deferred renderer base pass root signature...");
+    if (!CreateBasePassRootSignature(Device))
     {
+        LogError("Deferred renderer initialization failed: base pass root signature creation failed");
+        return false;
+    }
+
+    LogInfo("Creating deferred renderer lighting root signature...");
+    if (!CreateLightingRootSignature(Device))
+    {
+        LogError("Deferred renderer initialization failed: lighting root signature creation failed");
+        return false;
+    }
+
+    LogInfo("Creating deferred renderer base pass pipeline...");
+    if (!CreateBasePassPipeline(Device))
+    {
+        LogError("Deferred renderer initialization failed: base pass pipeline creation failed");
+        return false;
+    }
+
+    LogInfo("Creating deferred renderer lighting pipeline...");
+    if (!CreateLightingPipeline(Device, BackBufferFormat))
+    {
+        LogError("Deferred renderer initialization failed: lighting pipeline creation failed");
         return false;
     }
 
@@ -66,6 +90,7 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     FDepthResources DepthResources = {};
     if (!RendererUtils::CreateDepthResources(Device, Width, Height, DXGI_FORMAT_D24_UNORM_S8_UINT, DepthResources))
     {
+        LogError("Deferred renderer initialization failed: depth resources creation failed");
         return false;
     }
     DepthBuffer = DepthResources.DepthBuffer;
@@ -75,18 +100,21 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
 
     if (!CreateGBufferResources(Device, Width, Height))
     {
+        LogError("Deferred renderer initialization failed: GBuffer resource creation failed");
         return false;
     }
 
     std::wstring BaseColorTexturePath;
     if (!RendererUtils::CreateDefaultSceneGeometry(Device, MeshBuffers, SceneCenter, SceneRadius, &BaseColorTexturePath))
     {
+        LogError("Deferred renderer initialization failed: default scene geometry creation failed");
         return false;
     }
 
     FMappedConstantBuffer ConstantBufferResource = {};
     if (!RendererUtils::CreateMappedConstantBuffer(Device, sizeof(FSceneConstants), ConstantBufferResource))
     {
+        LogError("Deferred renderer initialization failed: constant buffer creation failed");
         return false;
     }
     ConstantBuffer = ConstantBufferResource.Resource;
@@ -94,10 +122,18 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
 
     if (!CreateSceneTexture(Device, BaseColorTexturePath))
     {
+        LogError("Deferred renderer initialization failed: scene texture creation failed");
         return false;
     }
 
-    return CreateDescriptorHeap(Device);
+    if (!CreateDescriptorHeap(Device))
+    {
+        LogError("Deferred renderer initialization failed: descriptor heap creation failed");
+        return false;
+    }
+
+    LogInfo("Deferred renderer initialization completed");
+    return true;
 }
 
 void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle, const FCamera& Camera, float DeltaTime)

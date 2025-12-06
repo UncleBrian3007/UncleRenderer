@@ -7,6 +7,7 @@
 #include "../RHI/DX12Device.h"
 #include "../RHI/DX12CommandContext.h"
 #include "../Core/GpuDebugMarkers.h"
+#include "../Core/Logger.h"
 #include <cstring>
 #include <string>
 #include <vector>
@@ -29,8 +30,11 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
 {
     if (Device == nullptr)
     {
+        LogError("Forward renderer initialization failed: device is null");
         return false;
     }
+
+    LogInfo("Forward renderer initialization started");
 
     Viewport.TopLeftX = 0.0f;
     Viewport.TopLeftY = 0.0f;
@@ -44,8 +48,17 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
     ScissorRect.right = static_cast<LONG>(Width);
     ScissorRect.bottom = static_cast<LONG>(Height);
 
-    if (!CreateRootSignature(Device) || !CreatePipelineState(Device, BackBufferFormat))
+    LogInfo("Creating forward renderer root signature...");
+    if (!CreateRootSignature(Device))
     {
+        LogError("Forward renderer initialization failed: root signature creation failed");
+        return false;
+    }
+
+    LogInfo("Creating forward renderer pipeline state...");
+    if (!CreatePipelineState(Device, BackBufferFormat))
+    {
+        LogError("Forward renderer initialization failed: pipeline state creation failed");
         return false;
     }
 
@@ -54,6 +67,7 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
     FDepthResources DepthResources = {};
     if (!RendererUtils::CreateDepthResources(Device, Width, Height, DXGI_FORMAT_D24_UNORM_S8_UINT, DepthResources))
     {
+        LogError("Forward renderer initialization failed: depth resources creation failed");
         return false;
     }
     DepthBuffer = DepthResources.DepthBuffer;
@@ -64,12 +78,14 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
     std::wstring BaseColorTexturePath;
     if (!RendererUtils::CreateDefaultSceneGeometry(Device, MeshBuffers, SceneCenter, SceneRadius, &BaseColorTexturePath))
     {
+        LogError("Forward renderer initialization failed: default scene geometry creation failed");
         return false;
     }
 
     FMappedConstantBuffer ConstantBufferResource = {};
     if (!RendererUtils::CreateMappedConstantBuffer(Device, sizeof(FSceneConstants), ConstantBufferResource))
     {
+        LogError("Forward renderer initialization failed: constant buffer creation failed");
         return false;
     }
     ConstantBuffer = ConstantBufferResource.Resource;
@@ -77,9 +93,11 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
 
     if (!CreateSceneTexture(Device, BaseColorTexturePath))
     {
+        LogError("Forward renderer initialization failed: scene texture creation failed");
         return false;
     }
 
+    LogInfo("Forward renderer initialization completed");
     return true;
 }
 

@@ -1,6 +1,7 @@
 #include "DX12CommandContext.h"
 #include "DX12Device.h"
 #include "DX12CommandQueue.h"
+#include "../Core/Logger.h"
 
 FDX12CommandContext::FDX12CommandContext()
     : Device(nullptr)
@@ -17,6 +18,8 @@ bool FDX12CommandContext::Initialize(FDX12Device* InDevice, FDX12CommandQueue* I
     Device = InDevice;
     Queue = InQueue;
 
+    LogInfo("Command context initialization started");
+
     HR_CHECK(Device->GetDevice()->CreateCommandAllocator(
         D3D12_COMMAND_LIST_TYPE_DIRECT,
         IID_PPV_ARGS(CommandAllocator.GetAddressOf())));
@@ -29,6 +32,8 @@ bool FDX12CommandContext::Initialize(FDX12Device* InDevice, FDX12CommandQueue* I
         IID_PPV_ARGS(CommandList.GetAddressOf())));
 
     HR_CHECK(CommandList->Close());
+
+    LogInfo("Command context initialization complete");
     return true;
 }
 

@@ -2,6 +2,7 @@
 #include "Window.h"
 #include "EngineTime.h"
 #include "ImGuiSupport.h"
+#include "Logger.h"
 #include "GpuDebugMarkers.h"
 #include "../RHI/DX12Device.h"
 #include "../RHI/DX12SwapChain.h"
@@ -16,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <DirectXMath.h>
+#include <string>
 
 FApplication::FApplication()
     : bIsRunning(false)
@@ -28,16 +30,21 @@ FApplication::FApplication()
 
 FApplication::~FApplication()
 {
+    LogInfo("Application shutdown started");
     ShutdownImGui();
 
     if (Device)
     {
         Device->GetGraphicsQueue()->Flush();
     }
+
+    LogInfo("Application shutdown complete");
 }
 
 bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t Height)
 {
+    LogInfo("Application initialization started");
+
     MainWindow = std::make_unique<FWindow>();
     Device = std::make_unique<FDX12Device>();
     SwapChain = std::make_unique<FDX12SwapChain>();
@@ -47,59 +54,82 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t H
     DeferredRenderer = std::make_unique<FDeferredRenderer>();
     Camera = std::make_unique<FCamera>();
 
+    LogInfo("Creating window...");
     if (!MainWindow->Create(InstanceHandle, Width, Height, L"UncleRenderer"))
     {
+        LogError("Failed to create window");
         return false;
     }
 
+    LogInfo("Initializing D3D12 device...");
     if (!Device->Initialize())
     {
+        LogError("Failed to initialize D3D12 device");
         return false;
     }
 
+    LogInfo("Initializing swap chain...");
     if (!SwapChain->Initialize(Device.get(), MainWindow->GetHWND(), Width, Height, 3))
     {
+        LogError("Failed to initialize swap chain");
         return false;
     }
 
+    LogInfo("Initializing command context...");
     if (!CommandContext->Initialize(Device.get(), Device->GetGraphicsQueue()))
     {
+        LogError("Failed to initialize command context");
         return false;
     }
 
     Camera->SetPerspective(DirectX::XM_PIDIV4, static_cast<float>(Width) / static_cast<float>(Height), 0.1f, 1000.0f);
 
+    LogInfo("Attempting to initialize deferred renderer...");
     const bool bDeferredInitialized = DeferredRenderer->Initialize(Device.get(), Width, Height, SwapChain->GetFormat());
     if (bDeferredInitialized)
     {
+        LogInfo("Deferred renderer activated");
         ActiveRenderer = DeferredRenderer.get();
-    }
-    else if (ForwardRenderer->Initialize(Device.get(), Width, Height, SwapChain->GetFormat()))
-    {
-        ActiveRenderer = ForwardRenderer.get();
     }
     else
     {
-        return false;
+        LogWarning("Deferred renderer initialization failed; attempting forward renderer");
+
+        LogInfo("Attempting to initialize forward renderer...");
+        if (ForwardRenderer->Initialize(Device.get(), Width, Height, SwapChain->GetFormat()))
+        {
+            LogInfo("Forward renderer activated");
+            ActiveRenderer = ForwardRenderer.get();
+        }
+        else
+        {
+            LogError("Failed to initialize renderer: both deferred and forward renderers failed to initialize");
+            return false;
+        }
     }
 
     PositionCameraForScene();
 
     if (!InitializeImGui(Width, Height))
     {
+        LogError("Failed to initialize ImGui");
         return false;
     }
 
     bIsRunning = true;
+    LogInfo("Application initialization complete");
     return true;
 }
 
 int32_t FApplication::Run()
 {
+    LogInfo("Main loop started");
+
     while (bIsRunning)
     {
         if (!MainWindow->ProcessMessages())
         {
+            LogInfo("Detected window message loop exit");
             bIsRunning = false;
             break;
         }
@@ -107,11 +137,16 @@ int32_t FApplication::Run()
         bIsRunning = RenderFrame();
     }
 
+    LogInfo("Main loop ended");
     return 0;
 }
 
 bool FApplication::RenderFrame()
 {
+    static uint64 FrameIndex = 0;
+    ++FrameIndex;
+    LogVerbose("Frame start: " + std::to_string(FrameIndex));
+
     Time->Tick();
     const float DeltaSeconds = static_cast<float>(Time->GetDeltaTimeSeconds());
 
@@ -156,13 +191,18 @@ bool FApplication::RenderFrame()
     }
     CommandContext->CloseAndExecute();
 
+    LogVerbose("Preparing frame end: " + std::to_string(FrameIndex));
+
     SwapChain->SetBackBufferState(BackBufferIndex, D3D12_RESOURCE_STATE_PRESENT);
 
     const UINT PresentFlags = SwapChain->AllowsTearing() ? DXGI_PRESENT_ALLOW_TEARING : 0;
+    LogVerbose("Present called (Flags: " + std::to_string(PresentFlags) + ")");
     HR_CHECK(SwapChain->GetSwapChain()->Present(0, PresentFlags));
 
     const uint64 FenceValue = Device->GetGraphicsQueue()->Signal();
     Device->GetGraphicsQueue()->Wait(FenceValue);
+
+    LogVerbose("Frame completed: " + std::to_string(FrameIndex));
 
     return true;
 }
@@ -311,6 +351,7 @@ bool FApplication::EnsureImGuiFontAtlas()
 #else
     if (!ImGuiCtx)
     {
+        LogError("ImGui context is missing");
         return false;
     }
 
@@ -319,6 +360,7 @@ bool FApplication::EnsureImGuiFontAtlas()
 
     if (!Atlas)
     {
+        LogError("ImGui font atlas object is missing");
         return false;
     }
 
@@ -328,20 +370,22 @@ bool FApplication::EnsureImGuiFontAtlas()
     }
 
 	// Ensure there is at least one font in the atlas; otherwise, building will fail.
-	if (Atlas->Fonts.empty())
-	{
-		Atlas->AddFontDefault();
-	}
+        if (Atlas->Fonts.empty())
+        {
+                Atlas->AddFontDefault();
+        }
 
-	if (!Atlas->Build())
-	{
-		return false;
-	}
+        if (!Atlas->Build())
+        {
+                LogError("Failed to build ImGui font atlas");
+                return false;
+        }
 
     // Recreate device objects to rebuild the font atlas texture.
     ImGui_ImplDX12_InvalidateDeviceObjects();
     if (!ImGui_ImplDX12_CreateDeviceObjects())
     {
+        LogError("Failed to recreate ImGui device objects");
         return false;
     }
 
@@ -355,6 +399,8 @@ bool FApplication::InitializeImGui(int32_t Width, int32_t Height)
     // ImGui is not available; allow the application to continue without UI rendering.
     return true;
 #else
+    LogInfo("ImGui initialization started");
+
     IMGUI_CHECKVERSION();
     ImGuiCtx = ImGui::CreateContext();
 
@@ -388,9 +434,11 @@ bool FApplication::InitializeImGui(int32_t Width, int32_t Height)
 
     if (!ImGui_ImplDX12_CreateDeviceObjects())
     {
+        LogError("Failed to create ImGui device objects");
         return false;
     }
 
+    LogInfo("ImGui initialization complete");
     return true;
 #endif
 }
@@ -400,6 +448,7 @@ void FApplication::ShutdownImGui()
 #if WITH_IMGUI
     if (ImGuiCtx)
     {
+        LogInfo("ImGui shutdown");
         ImGui_ImplDX12_Shutdown();
         ImGui_ImplWin32_Shutdown();
         ImGui::DestroyContext(ImGuiCtx);

@@ -1,9 +1,32 @@
 #include "ShaderCompiler.h"
 
+#include "Core/Logger.h"
+
 #include <cstring>
 #include <string>
 #include <vector>
 #include <Windows.h>
+
+namespace
+{
+    std::string WStringToUtf8(const std::wstring& WStr)
+    {
+        if (WStr.empty())
+        {
+            return std::string();
+        }
+
+        int RequiredSize = WideCharToMultiByte(CP_UTF8, 0, WStr.c_str(), static_cast<int>(WStr.size()), nullptr, 0, nullptr, nullptr);
+        if (RequiredSize <= 0)
+        {
+            return std::string();
+        }
+
+        std::string Result(static_cast<size_t>(RequiredSize), '\0');
+        WideCharToMultiByte(CP_UTF8, 0, WStr.c_str(), static_cast<int>(WStr.size()), Result.data(), RequiredSize, nullptr, nullptr);
+        return Result;
+    }
+}
 
 FShaderCompiler::FShaderCompiler()
 {
@@ -20,12 +43,15 @@ bool FShaderCompiler::CompileFromFile(const std::wstring& FilePath, const std::w
 {
     if (!Utils || !Compiler)
     {
+        LogError("Shader compiler is not initialized.");
         return false;
     }
 
     Microsoft::WRL::ComPtr<IDxcBlobEncoding> SourceBlob;
     if (FAILED(Utils->LoadFile(FilePath.c_str(), nullptr, &SourceBlob)))
     {
+        const std::string NarrowPath = WStringToUtf8(FilePath);
+        LogError("Failed to load shader file: " + NarrowPath);
         return false;
     }
 
@@ -45,9 +71,15 @@ bool FShaderCompiler::CompileFromFile(const std::wstring& FilePath, const std::w
     Arguments.push_back(L"-IShaders");
 
     Microsoft::WRL::ComPtr<IDxcResult> CompileResult;
+    const std::string NarrowPath = WStringToUtf8(FilePath);
+    const std::string EntryPointUtf8 = WStringToUtf8(EntryPoint);
+    const std::string TargetUtf8 = WStringToUtf8(Target);
+    LogInfo("Compiling shader from file: " + NarrowPath + ", entry: " + EntryPointUtf8 + ", target: " + TargetUtf8);
+
     HRESULT hr = Compiler->Compile(&SourceBuffer, Arguments.data(), static_cast<uint32_t>(Arguments.size()), IncludeHandler.Get(), IID_PPV_ARGS(&CompileResult));
     if (FAILED(hr))
     {
+        LogError("DxcCompile failed for shader: " + NarrowPath);
         return false;
     }
 
@@ -61,6 +93,7 @@ bool FShaderCompiler::CompileFromFile(const std::wstring& FilePath, const std::w
         if (ErrorBlob && ErrorBlob->GetStringLength() > 0)
         {
             OutputDebugStringA(ErrorBlob->GetStringPointer());
+            LogError("Shader compilation errors: " + std::string(ErrorBlob->GetStringPointer(), ErrorBlob->GetStringLength()));
         }
 
         return false;
@@ -70,6 +103,7 @@ bool FShaderCompiler::CompileFromFile(const std::wstring& FilePath, const std::w
     CompileResult->GetOutput(DXC_OUT_OBJECT, IID_PPV_ARGS(&ShaderBlob), nullptr);
     if (!ShaderBlob)
     {
+        LogError("Shader compilation produced no output blob for: " + NarrowPath);
         return false;
     }
 

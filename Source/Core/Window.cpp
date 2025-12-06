@@ -1,5 +1,6 @@
 #include "Window.h"
 #include "ImGuiSupport.h"
+#include "Logger.h"
 
 FWindow::FWindow()
     : WindowHandle(nullptr)
@@ -33,6 +34,7 @@ bool FWindow::Create(HINSTANCE InstanceHandle, int32_t InWidth, int32_t InHeight
 
     if (!RegisterClassExW(&WndClass))
     {
+        LogError("Failed to register window class");
         return false;
     }
 
@@ -55,6 +57,7 @@ bool FWindow::Create(HINSTANCE InstanceHandle, int32_t InWidth, int32_t InHeight
 
     if (!WindowHandle)
     {
+        LogError("Failed to create window handle");
         return false;
     }
 

@@ -75,13 +75,15 @@ FDX12Device::~FDX12Device()
 
 bool FDX12Device::Initialize()
 {
+    LogInfo("DX12 device initialization started");
     LoadAgilitySDK();
-    if (!CreateFactory()) return false;
-    if (!PickAdapter())   return false;
-    if (!CreateDevice())  return false;
-    if (!DetermineShaderModel()) return false;
-    if (!CreateCommandQueues()) return false;
+    if (!CreateFactory()) { LogError("Failed to create DXGI factory"); return false; }
+    if (!PickAdapter())   { LogError("No suitable adapter found"); return false; }
+    if (!CreateDevice())  { LogError("Failed to create D3D12 device"); return false; }
+    if (!DetermineShaderModel()) { LogError("Failed to determine shader model"); return false; }
+    if (!CreateCommandQueues()) { LogError("Failed to create command queues"); return false; }
 
+    LogInfo("DX12 device initialization complete");
     return true;
 }
 
@@ -155,6 +157,12 @@ bool FDX12Device::PickAdapter()
             MaxVRAM = Desc.DedicatedVideoMemory;
             TempAdapter.As(&Adapter);
         }
+    }
+
+    if (!Adapter)
+    {
+        LogError("Could not find a hardware adapter");
+        return false;
     }
 
     return Adapter != nullptr;

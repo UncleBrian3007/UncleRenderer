@@ -25,6 +25,7 @@ bool FDX12SwapChain::Initialize(FDX12Device* InDevice, HWND WindowHandle, uint32
 
     if (!CreateSwapChain(InDevice, WindowHandle, Width, Height))
     {
+        LogError("Failed to create swap chain");
         return false;
     }
 
