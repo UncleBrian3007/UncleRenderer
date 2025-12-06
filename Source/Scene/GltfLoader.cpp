@@ -1,6 +1,7 @@
 #include "GltfLoader.h"
 #include "Mesh.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <cstring>
@@ -409,6 +410,7 @@ bool FGltfLoader::LoadMeshFromFile(const std::wstring& FilePath, FMesh& OutMesh,
     const int64_t PositionAccessorIndex = GetIntField(Attributes, "POSITION", -1);
     const int64_t NormalAccessorIndex = GetIntField(Attributes, "NORMAL", -1);
     const int64_t TexcoordAccessorIndex = GetIntField(Attributes, "TEXCOORD_0", -1);
+    const int64_t PrimitiveMode = GetIntField(Primitive, "mode", 4);
     const int64_t IndicesAccessorIndex = GetIntField(Primitive, "indices", -1);
 
     if (PositionAccessorIndex < 0 || IndicesAccessorIndex < 0)
@@ -518,8 +520,8 @@ bool FGltfLoader::LoadMeshFromFile(const std::wstring& FilePath, FMesh& OutMesh,
         Vertices.push_back(Vertex);
     }
 
-    std::vector<uint32_t> Indices;
-    Indices.reserve(static_cast<size_t>(IndexCount));
+    std::vector<uint32_t> RawIndices;
+    RawIndices.reserve(static_cast<size_t>(IndexCount));
 
     const int64_t ComponentType = GetIntField(IndexAccessor, "componentType", 5125);
     const size_t ComponentSize = (ComponentType == 5121) ? 1 : (ComponentType == 5123 ? 2 : 4);
@@ -554,7 +556,69 @@ bool FGltfLoader::LoadMeshFromFile(const std::wstring& FilePath, FMesh& OutMesh,
         }
         }
 
-        Indices.push_back(Index);
+        RawIndices.push_back(Index);
+    }
+
+    std::vector<uint32_t> Indices;
+    switch (PrimitiveMode)
+    {
+    case 4: // TRIANGLES
+    {
+        if (RawIndices.size() % 3 != 0)
+        {
+            return false;
+        }
+        Indices = RawIndices;
+        break;
+    }
+    case 5: // TRIANGLE_STRIP
+    {
+        if (RawIndices.size() < 3)
+        {
+            return false;
+        }
+        for (size_t i = 2; i < RawIndices.size(); ++i)
+        {
+            const bool bEven = (i % 2) == 0;
+            const uint32_t i0 = RawIndices[i - 2];
+            const uint32_t i1 = RawIndices[i - 1];
+            const uint32_t i2 = RawIndices[i];
+            if (bEven)
+            {
+                Indices.push_back(i0);
+                Indices.push_back(i1);
+                Indices.push_back(i2);
+            }
+            else
+            {
+                Indices.push_back(i1);
+                Indices.push_back(i0);
+                Indices.push_back(i2);
+            }
+        }
+        break;
+    }
+    case 6: // TRIANGLE_FAN
+    {
+        if (RawIndices.size() < 3)
+        {
+            return false;
+        }
+        for (size_t i = 2; i < RawIndices.size(); ++i)
+        {
+            Indices.push_back(RawIndices[0]);
+            Indices.push_back(RawIndices[i - 1]);
+            Indices.push_back(RawIndices[i]);
+        }
+        break;
+    }
+    default:
+        return false;
+    }
+
+    for (size_t i = 0; i + 2 < Indices.size(); i += 3)
+    {
+        std::swap(Indices[i + 1], Indices[i + 2]);
     }
 
     OutMesh.SetVertices(Vertices);

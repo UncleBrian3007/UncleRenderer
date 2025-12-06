@@ -26,8 +26,8 @@ cbuffer SceneConstants : register(b0)
     float Padding2;
 };
 
-Texture2D GridTexture : register(t0);
-SamplerState GridSampler : register(s0);
+Texture2D AlbedoTexture : register(t0);
+SamplerState AlbedoSampler : register(s0);
 
 VSOutput VSMain(VSInput Input)
 {
@@ -53,7 +53,7 @@ PSOutput PSMain(VSOutput Input)
     PSOutput Output;
 
     float3 normal = normalize(mul(Input.Normal, (float3x3)View));
-    float3 albedo = GridTexture.Sample(GridSampler, Input.UV).rgb * BaseColor;
+    float3 albedo = AlbedoTexture.Sample(AlbedoSampler, Input.UV).rgb * BaseColor;
 
     float viewDepth = -mul(float4(Input.WorldPos, 1.0), View).z;
     Output.GBufferA = float4(normalize(normal), viewDepth);

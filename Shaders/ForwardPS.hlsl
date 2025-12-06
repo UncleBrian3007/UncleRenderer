@@ -21,12 +21,12 @@ cbuffer SceneConstants : register(b0)
     float Padding2;
 };
 
-Texture2D GridTexture : register(t0);
-SamplerState GridSampler : register(s0);
+Texture2D AlbedoTexture : register(t0);
+SamplerState AlbedoSampler : register(s0);
 
 float4 PSMain(VSOutput Input) : SV_Target
 {
-    float3 albedo = GridTexture.Sample(GridSampler, Input.UV).rgb * BaseColor;
+    float3 albedo = AlbedoTexture.Sample(AlbedoSampler, Input.UV).rgb * BaseColor;
     float3 n = normalize(Input.Normal);
     float3 v = normalize(CameraPosition - Input.WorldPos);
     float3 l = normalize(-LightDirection);
