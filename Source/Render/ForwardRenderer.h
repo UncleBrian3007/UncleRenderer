@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <vector>
 #include <wrl.h>
 #include <d3d12.h>
 #include <DirectXMath.h>
@@ -26,14 +27,15 @@ public:
 private:
     bool CreateRootSignature(FDX12Device* Device);
     bool CreatePipelineState(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
-    bool CreateSceneTexture(FDX12Device* Device, const std::wstring& TexturePath);
-    void UpdateSceneConstants(const FCamera& Camera);
+    bool CreateSceneTextures(FDX12Device* Device, const std::vector<FSceneModelResource>& Models);
+    void UpdateSceneConstants(const FCamera& Camera, const DirectX::XMFLOAT4X4& WorldMatrix);
 
 private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineState;
 
-    FMeshGeometryBuffers MeshBuffers{};
+    std::vector<FSceneModelResource> SceneModels;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SceneTextures;
     Microsoft::WRL::ComPtr<ID3D12Resource> ConstantBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> DepthBuffer;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> DSVHeap;

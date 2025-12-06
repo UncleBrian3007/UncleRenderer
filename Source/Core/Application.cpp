@@ -315,21 +315,33 @@ void FApplication::PositionCameraForScene()
         return;
     }
 
+    const DirectX::XMFLOAT3 SceneCenter = ActiveRenderer ? ActiveRenderer->GetSceneCenter() : DirectX::XMFLOAT3{ 0.0f, 0.0f, 0.0f };
     const float SceneRadius = ActiveRenderer ? ActiveRenderer->GetSceneRadius() : 1.0f;
 
-    const float AngularHalfHeight = Camera->GetFovY() * 0.25f;
+    const float AngularHalfHeight = Camera->GetFovY() * 0.5f;
     const float Distance = SceneRadius / std::tan(AngularHalfHeight);
+
+    const float MinNearClip = 0.1f;
+    float NearClip = (std::max)(MinNearClip, Distance - SceneRadius * 1.5f);
+    float FarClip = Distance + SceneRadius * 2.0f;
+
+    if (NearClip >= FarClip)
+    {
+        FarClip = NearClip + SceneRadius * 2.0f;
+    }
+
+    Camera->SetPerspective(Camera->GetFovY(), Camera->GetAspectRatio(), NearClip, FarClip);
 
     FFloat3 Position =
     {
-        0.0f,
-        0.0f,
-        -Distance
+        SceneCenter.x,
+        SceneCenter.y,
+        SceneCenter.z - Distance
     };
     Camera->SetPosition(Position);
 
     const DirectX::XMVECTOR Eye = DirectX::XMLoadFloat3(&Camera->GetPosition());
-    const DirectX::XMVECTOR Target = DirectX::XMVectorZero();
+    const DirectX::XMVECTOR Target = DirectX::XMLoadFloat3(&SceneCenter);
     const DirectX::XMVECTOR ForwardVec = DirectX::XMVector3Normalize(DirectX::XMVectorSubtract(Target, Eye));
     const DirectX::XMVECTOR UpVec = DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
 

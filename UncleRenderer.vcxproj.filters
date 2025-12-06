@@ -113,6 +113,9 @@
     <ClCompile Include="Source\Scene\GltfLoader.cpp">
       <Filter>Source Files\Scene</Filter>
     </ClCompile>
+    <ClCompile Include="Source\Scene\SceneJsonLoader.cpp">
+      <Filter>Source Files\Scene</Filter>
+    </ClCompile>
     <ClCompile Include="Source\Scene\Material.cpp">
       <Filter>Source Files\Scene</Filter>
     </ClCompile>
@@ -217,6 +220,9 @@
     <ClInclude Include="Source\Scene\GltfLoader.h">
       <Filter>Header Files\Scene</Filter>
     </ClInclude>
+    <ClInclude Include="Source\Scene\SceneJsonLoader.h">
+      <Filter>Header Files\Scene</Filter>
+    </ClInclude>
     <ClInclude Include="Source\Scene\Material.h">
       <Filter>Header Files\Scene</Filter>
     </ClInclude>
@@ -272,6 +278,9 @@
     </None>
     <None Include="Shaders\FullscreenTriangle.hlsl">
       <Filter>Shaders</Filter>
+    </None>
+    <None Include="Assets\Scenes\Scene.json">
+      <Filter>Assets</Filter>
     </None>
     <None Include="Assets\Triangle.gltf">
       <Filter>Assets</Filter>

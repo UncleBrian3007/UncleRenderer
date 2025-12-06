@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <vector>
 #include <wrl.h>
 #include <d3d12.h>
 #include <DirectXMath.h>
@@ -29,8 +30,8 @@ private:
     bool CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateGBufferResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateDescriptorHeap(FDX12Device* Device);
-    bool CreateSceneTexture(FDX12Device* Device, const std::wstring& TexturePath);
-    void UpdateSceneConstants(const FCamera& Camera);
+    bool CreateSceneTextures(FDX12Device* Device, const std::vector<FSceneModelResource>& Models);
+    void UpdateSceneConstants(const FCamera& Camera, const DirectX::XMFLOAT4X4& WorldMatrix);
 
 private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> BasePassRootSignature;
@@ -38,7 +39,8 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> BasePassPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> LightingPipeline;
 
-    FMeshGeometryBuffers MeshBuffers{};
+    std::vector<FSceneModelResource> SceneModels;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SceneTextures;
     Microsoft::WRL::ComPtr<ID3D12Resource> ConstantBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> DepthBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> SceneTexture;
@@ -51,13 +53,13 @@ private:
     std::unique_ptr<FTextureLoader> TextureLoader;
 
     D3D12_CPU_DESCRIPTOR_HANDLE GBufferRTVHandles[3]{};
-    D3D12_GPU_DESCRIPTOR_HANDLE SceneTextureGpuHandle{};
     D3D12_GPU_DESCRIPTOR_HANDLE GBufferGpuHandles[3]{};
     D3D12_VIEWPORT Viewport{};
     D3D12_RECT ScissorRect{};
 
     D3D12_RESOURCE_STATES DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
 
+    DirectX::XMFLOAT4X4 SceneWorldMatrix{};
     uint8_t* ConstantBufferMapped = nullptr;
 };
 

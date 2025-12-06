@@ -5,6 +5,7 @@
 #include <DirectXMath.h>
 #include <cstdint>
 #include <string>
+#include <vector>
 #include "../Math/MathTypes.h"
 
 class FDX12Device;
@@ -48,13 +49,29 @@ struct FSceneConstants
     float Padding2 = 0.0f;
 };
 
+struct FSceneModelResource
+{
+    FMeshGeometryBuffers Geometry;
+    DirectX::XMFLOAT4X4 WorldMatrix{};
+    DirectX::XMFLOAT3 Center{ 0.0f, 0.0f, 0.0f };
+    float Radius = 1.0f;
+    std::wstring BaseColorTexturePath;
+    D3D12_GPU_DESCRIPTOR_HANDLE TextureHandle{};
+};
+
 namespace RendererUtils
 {
     bool CreateMeshGeometry(FDX12Device* Device, const FMesh& Mesh, FMeshGeometryBuffers& OutGeometry);
     bool CreateCubeGeometry(FDX12Device* Device, FCubeGeometryBuffers& OutGeometry, float Size = 1.0f);
     bool CreateDefaultSceneGeometry(FDX12Device* Device, FMeshGeometryBuffers& OutGeometry, FFloat3& OutCenter, float& OutRadius, std::wstring* OutTexturePath = nullptr);
+    bool CreateSceneModelsFromJson(
+        FDX12Device* Device,
+        const std::wstring& SceneFilePath,
+        std::vector<FSceneModelResource>& OutModels,
+        DirectX::XMFLOAT3& OutSceneCenter,
+        float& OutSceneRadius);
     bool CreateDepthResources(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT Format, FDepthResources& OutDepthResources);
     bool CreateMappedConstantBuffer(FDX12Device* Device, uint64_t BufferSize, FMappedConstantBuffer& OutConstantBuffer);
-    void UpdateSceneConstants(const FCamera& Camera, const DirectX::XMFLOAT3& BaseColor, const DirectX::XMVECTOR& LightDirection, const DirectX::XMFLOAT3& SceneCenter, uint8_t* ConstantBufferMapped);
+    void UpdateSceneConstants(const FCamera& Camera, const DirectX::XMFLOAT3& BaseColor, const DirectX::XMVECTOR& LightDirection, const DirectX::XMMATRIX& WorldMatrix, uint8_t* ConstantBufferMapped);
 }
 

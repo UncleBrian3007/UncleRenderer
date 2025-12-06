@@ -6,18 +6,28 @@
 
 #include "../Scene/Mesh.h"
 #include "../Scene/GltfLoader.h"
+#include "../Scene/SceneJsonLoader.h"
 #include "../Scene/Camera.h"
+#include "../Core/Logger.h"
 #include "../RHI/DX12Device.h"
 #include "../RHI/DX12Commons.h"
 #include <vector>
 #include <cstring>
 #include <algorithm>
+#include <array>
 #include <filesystem>
+#include <cmath>
 
 using Microsoft::WRL::ComPtr;
 
 namespace
 {
+    std::string PathToUtf8String(const std::filesystem::path& Path)
+    {
+        const auto Utf8 = Path.u8string();
+        return std::string(Utf8.begin(), Utf8.end());
+    }
+
     void ComputeMeshBounds(const FMesh& Mesh, FFloat3& OutCenter, float& OutRadius)
     {
         const auto& Vertices = Mesh.GetVertices();
@@ -144,6 +154,120 @@ bool RendererUtils::CreateDefaultSceneGeometry(FDX12Device* Device, FMeshGeometr
     return CreateMeshGeometry(Device, Cube, OutGeometry);
 }
 
+namespace
+{
+    void UpdateSceneBounds(const DirectX::XMFLOAT3& ModelCenter, float ModelRadius, DirectX::XMFLOAT3& OutMin, DirectX::XMFLOAT3& OutMax)
+    {
+        OutMin.x = std::min(OutMin.x, ModelCenter.x - ModelRadius);
+        OutMin.y = std::min(OutMin.y, ModelCenter.y - ModelRadius);
+        OutMin.z = std::min(OutMin.z, ModelCenter.z - ModelRadius);
+
+        OutMax.x = std::max(OutMax.x, ModelCenter.x + ModelRadius);
+        OutMax.y = std::max(OutMax.y, ModelCenter.y + ModelRadius);
+        OutMax.z = std::max(OutMax.z, ModelCenter.z + ModelRadius);
+    }
+}
+
+bool RendererUtils::CreateSceneModelsFromJson(
+    FDX12Device* Device,
+    const std::wstring& SceneFilePath,
+    std::vector<FSceneModelResource>& OutModels,
+    DirectX::XMFLOAT3& OutSceneCenter,
+    float& OutSceneRadius)
+{
+    OutModels.clear();
+
+    const std::filesystem::path ScenePath(SceneFilePath);
+    const std::string ScenePathUtf8 = PathToUtf8String(ScenePath);
+
+    std::vector<FSceneModelDesc> Models;
+    if (!FSceneJsonLoader::LoadScene(SceneFilePath, Models) || Models.empty())
+    {
+        LogError("Scene JSON did not provide any models: " + ScenePathUtf8);
+        return false;
+    }
+
+    DirectX::XMFLOAT3 SceneMin{ std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max() };
+    DirectX::XMFLOAT3 SceneMax{ std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest() };
+
+    for (const FSceneModelDesc& Model : Models)
+    {
+        std::filesystem::path MeshPath(Model.MeshPath);
+        if (!MeshPath.is_absolute())
+        {
+            std::filesystem::path AssetsRoot = ScenePath.parent_path().parent_path();
+            MeshPath = AssetsRoot / MeshPath;
+        }
+
+        FMesh LoadedMesh;
+        std::wstring TexturePath;
+        if (!FGltfLoader::LoadMeshFromFile(MeshPath, LoadedMesh, &TexturePath))
+        {
+            LogError("Failed to load mesh from scene: " + PathToUtf8String(MeshPath));
+            continue;
+        }
+
+        FSceneModelResource ModelResource = {};
+        if (!CreateMeshGeometry(Device, LoadedMesh, ModelResource.Geometry))
+        {
+            LogError("Failed to create geometry for scene mesh: " + PathToUtf8String(MeshPath));
+            continue;
+        }
+
+        FFloat3 MeshCenter;
+        float MeshRadius;
+        ComputeMeshBounds(LoadedMesh, MeshCenter, MeshRadius);
+
+        const std::array<float, 3> ScaleComponents = { Model.Scale.x, Model.Scale.y, Model.Scale.z };
+        float MaxScale = 1.0f;
+        for (float ScaleValue : ScaleComponents)
+        {
+            MaxScale = (std::max)(MaxScale, std::fabs(ScaleValue));
+        }
+
+        MeshRadius *= MaxScale;
+
+        using namespace DirectX;
+
+        const XMMATRIX Offset = XMMatrixTranslation(-MeshCenter.x, -MeshCenter.y, -MeshCenter.z);
+        const XMMATRIX Scale = XMMatrixScaling(Model.Scale.x, Model.Scale.y, Model.Scale.z);
+        const XMMATRIX Rotation = XMMatrixRotationRollPitchYaw(
+            XMConvertToRadians(Model.RotationEuler.x),
+            XMConvertToRadians(Model.RotationEuler.y),
+            XMConvertToRadians(Model.RotationEuler.z));
+        const XMMATRIX Translation = XMMatrixTranslation(Model.Position.x, Model.Position.y, Model.Position.z);
+
+        const XMMATRIX World = Offset * Scale * Rotation * Translation;
+        XMStoreFloat4x4(&ModelResource.WorldMatrix, World);
+
+        const XMVECTOR CenterVec = XMVector3TransformCoord(XMVectorSet(MeshCenter.x, MeshCenter.y, MeshCenter.z, 1.0f), World);
+        XMStoreFloat3(&ModelResource.Center, CenterVec);
+        ModelResource.Radius = MeshRadius;
+        ModelResource.BaseColorTexturePath = Model.BaseColorTexturePath.empty() ? TexturePath : Model.BaseColorTexturePath;
+
+        UpdateSceneBounds(ModelResource.Center, ModelResource.Radius, SceneMin, SceneMax);
+
+        OutModels.push_back(std::move(ModelResource));
+    }
+
+    if (OutModels.empty())
+    {
+        LogError("No renderable models could be created from scene JSON: " + ScenePathUtf8);
+        return false;
+    }
+
+    OutSceneCenter = DirectX::XMFLOAT3(
+        0.5f * (SceneMin.x + SceneMax.x),
+        0.5f * (SceneMin.y + SceneMax.y),
+        0.5f * (SceneMin.z + SceneMax.z));
+
+    const DirectX::XMVECTOR Extents = DirectX::XMVectorSet(SceneMax.x - SceneMin.x, SceneMax.y - SceneMin.y, SceneMax.z - SceneMin.z, 0.0f);
+    OutSceneRadius = DirectX::XMVectorGetX(DirectX::XMVector3Length(Extents)) * 0.5f;
+    OutSceneRadius = std::max(OutSceneRadius, 1.0f);
+
+    return true;
+}
+
 bool RendererUtils::CreateDepthResources(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT Format, FDepthResources& OutDepthResources)
 {
     if (Device == nullptr)
@@ -234,7 +358,7 @@ bool RendererUtils::CreateMappedConstantBuffer(FDX12Device* Device, uint64_t Buf
     return true;
 }
 
-void RendererUtils::UpdateSceneConstants(const FCamera& Camera, const DirectX::XMFLOAT3& BaseColor, const DirectX::XMVECTOR& LightDirection, const DirectX::XMFLOAT3& SceneCenter, uint8_t* ConstantBufferMapped)
+void RendererUtils::UpdateSceneConstants(const FCamera& Camera, const DirectX::XMFLOAT3& BaseColor, const DirectX::XMVECTOR& LightDirection, const DirectX::XMMATRIX& WorldMatrix, uint8_t* ConstantBufferMapped)
 {
     if (ConstantBufferMapped == nullptr)
     {
@@ -243,12 +367,11 @@ void RendererUtils::UpdateSceneConstants(const FCamera& Camera, const DirectX::X
 
     using namespace DirectX;
 
-    const XMMATRIX World = XMMatrixTranslation(-SceneCenter.x, -SceneCenter.y, -SceneCenter.z);
     const XMMATRIX View = Camera.GetViewMatrix();
     const XMMATRIX Projection = Camera.GetProjectionMatrix();
 
     FSceneConstants Constants = {};
-    XMStoreFloat4x4(&Constants.World, World);
+    XMStoreFloat4x4(&Constants.World, WorldMatrix);
     XMStoreFloat4x4(&Constants.View, View);
     XMStoreFloat4x4(&Constants.Projection, Projection);
     Constants.BaseColor = BaseColor;

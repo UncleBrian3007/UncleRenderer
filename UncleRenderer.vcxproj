@@ -94,6 +94,7 @@
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="Source\Scene\SceneJsonLoader.cpp" />
     <ClCompile Include="Source\Scene\GltfLoader.cpp" />
     <ClCompile Include="Source\Core\EngineTime.cpp" />
     <ClCompile Include="Source\Main.cpp" />
@@ -153,6 +154,7 @@
     <ClInclude Include="Source\Scene\GltfLoader.h" />
     <ClInclude Include="Source\Scene\Material.h" />
     <ClInclude Include="Source\Scene\Mesh.h" />
+    <ClInclude Include="Source\Scene\SceneJsonLoader.h" />
     <ClInclude Include="Source\Scene\Transform.h" />
     <ClInclude Include="Source\Math\MathTypes.h" />
     <ClInclude Include="ThirdParty\imgui\backends\imgui_impl_dx12.h" Condition="Exists('$(ProjectDir)ThirdParty\imgui\backends\imgui_impl_dx12.h')" />
@@ -171,7 +173,7 @@
     <None Include="Shaders\ForwardPS.hlsl" />
     <None Include="Shaders\ForwardVS.hlsl" />
     <None Include="Shaders\FullscreenTriangle.hlsl" />
-    <None Include="Assets\Triangle.gltf" />
+    <None Include="Assets\Scenes\Scene.json" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

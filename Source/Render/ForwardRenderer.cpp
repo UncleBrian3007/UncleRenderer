@@ -75,11 +75,24 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
     DepthStencilHandle = DepthResources.DepthStencilHandle;
     DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
 
-    std::wstring BaseColorTexturePath;
-    if (!RendererUtils::CreateDefaultSceneGeometry(Device, MeshBuffers, SceneCenter, SceneRadius, &BaseColorTexturePath))
+    const std::wstring SceneFilePath = L"Assets/Scenes/Scene.json";
+    if (!RendererUtils::CreateSceneModelsFromJson(Device, SceneFilePath, SceneModels, SceneCenter, SceneRadius))
     {
-        LogError("Forward renderer initialization failed: default scene geometry creation failed");
-        return false;
+        LogWarning("Falling back to default geometry; scene JSON could not be loaded.");
+
+        FSceneModelResource DefaultModel;
+        std::wstring BaseColorTexturePath;
+        if (!RendererUtils::CreateDefaultSceneGeometry(Device, DefaultModel.Geometry, SceneCenter, SceneRadius, &BaseColorTexturePath))
+        {
+            LogError("Forward renderer initialization failed: default scene geometry creation failed");
+            return false;
+        }
+
+        const DirectX::XMMATRIX DefaultWorld = DirectX::XMMatrixTranslation(-SceneCenter.x, -SceneCenter.y, -SceneCenter.z);
+        DirectX::XMStoreFloat4x4(&DefaultModel.WorldMatrix, DefaultWorld);
+        DefaultModel.Center = SceneCenter;
+        DefaultModel.BaseColorTexturePath = BaseColorTexturePath;
+        SceneModels.push_back(std::move(DefaultModel));
     }
 
     FMappedConstantBuffer ConstantBufferResource = {};
@@ -91,7 +104,7 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
     ConstantBuffer = ConstantBufferResource.Resource;
     ConstantBufferMapped = ConstantBufferResource.MappedData;
 
-    if (!CreateSceneTexture(Device, BaseColorTexturePath))
+    if (!CreateSceneTextures(Device, SceneModels))
     {
         LogError("Forward renderer initialization failed: scene texture creation failed");
         return false;
@@ -104,8 +117,6 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
 void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle, const FCamera& Camera, float DeltaTime)
 {
     FScopedPixEvent RenderEvent(CmdContext.GetCommandList(), L"ForwardRenderer");
-
-    UpdateSceneConstants(Camera);
 
     CmdContext.TransitionResource(DepthBuffer.Get(), DepthBufferState, D3D12_RESOURCE_STATE_DEPTH_WRITE);
     DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
@@ -126,15 +137,20 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
     CommandList->RSSetViewports(1, &Viewport);
     CommandList->RSSetScissorRects(1, &ScissorRect);
 
-    PixSetMarker(CommandList, L"DrawMesh");
-    CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    CommandList->IASetVertexBuffers(0, 1, &MeshBuffers.VertexBufferView);
-    CommandList->IASetIndexBuffer(&MeshBuffers.IndexBufferView);
+    for (const FSceneModelResource& Model : SceneModels)
+    {
+        UpdateSceneConstants(Camera, Model.WorldMatrix);
 
-    CommandList->SetGraphicsRootConstantBufferView(0, ConstantBuffer->GetGPUVirtualAddress());
-    CommandList->SetGraphicsRootDescriptorTable(1, SceneTextureGpuHandle);
+        PixSetMarker(CommandList, L"DrawMesh");
+        CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        CommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
+        CommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
 
-    CommandList->DrawIndexedInstanced(MeshBuffers.IndexCount, 1, 0, 0, 0);
+        CommandList->SetGraphicsRootConstantBufferView(0, ConstantBuffer->GetGPUVirtualAddress());
+        CommandList->SetGraphicsRootDescriptorTable(1, Model.TextureHandle);
+
+        CommandList->DrawIndexedInstanced(Model.Geometry.IndexCount, 1, 0, 0, 0);
+    }
 }
 
 bool FForwardRenderer::CreateRootSignature(FDX12Device* Device)
@@ -281,21 +297,25 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
     return true;
 }
 
-bool FForwardRenderer::CreateSceneTexture(FDX12Device* Device, const std::wstring& TexturePath)
+bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vector<FSceneModelResource>& Models)
 {
-    ComPtr<ID3D12Resource> TextureResource;
-    if (!TextureLoader || !TextureLoader->LoadOrDefault(TexturePath, TextureResource))
+    if (!TextureLoader)
     {
         return false;
     }
 
-    SceneTexture = TextureResource;
+    SceneTextures.clear();
+    SceneTextures.reserve(Models.size());
 
     D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
     HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    HeapDesc.NumDescriptors = 1;
+    HeapDesc.NumDescriptors = static_cast<UINT>(Models.size());
     HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(TextureDescriptorHeap.GetAddressOf())));
+
+    const UINT DescriptorSize = Device->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle = TextureDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
+    D3D12_GPU_DESCRIPTOR_HANDLE GpuHandle = TextureDescriptorHeap->GetGPUDescriptorHandleForHeapStart();
 
     D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc = {};
     SrvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -305,16 +325,31 @@ bool FForwardRenderer::CreateSceneTexture(FDX12Device* Device, const std::wstrin
     SrvDesc.Texture2D.MostDetailedMip = 0;
     SrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
 
-    Device->GetDevice()->CreateShaderResourceView(SceneTexture.Get(), &SrvDesc, TextureDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
-    SceneTextureGpuHandle = TextureDescriptorHeap->GetGPUDescriptorHandleForHeapStart();
+    for (size_t Index = 0; Index < Models.size(); ++Index)
+    {
+        ComPtr<ID3D12Resource> TextureResource;
+        if (!TextureLoader->LoadOrDefault(Models[Index].BaseColorTexturePath, TextureResource))
+        {
+            return false;
+        }
 
+        SceneTextures.push_back(TextureResource);
+        Device->GetDevice()->CreateShaderResourceView(TextureResource.Get(), &SrvDesc, CpuHandle);
+        SceneModels[Index].TextureHandle = GpuHandle;
+
+        CpuHandle.ptr += DescriptorSize;
+        GpuHandle.ptr += DescriptorSize;
+    }
+
+    SceneTextureGpuHandle = TextureDescriptorHeap->GetGPUDescriptorHandleForHeapStart();
     return true;
 }
 
-void FForwardRenderer::UpdateSceneConstants(const FCamera& Camera)
+void FForwardRenderer::UpdateSceneConstants(const FCamera& Camera, const DirectX::XMFLOAT4X4& WorldMatrix)
 {
     const DirectX::XMFLOAT3 BaseColor = { 1.0f, 1.0f, 1.0f };
     const DirectX::XMVECTOR LightDir = DirectX::XMVectorSet(-0.3f, -1.0f, -0.2f, 0.0f);
 
-    RendererUtils::UpdateSceneConstants(Camera, BaseColor, LightDir, SceneCenter, ConstantBufferMapped);
+    const DirectX::XMMATRIX World = DirectX::XMLoadFloat4x4(&WorldMatrix);
+    RendererUtils::UpdateSceneConstants(Camera, BaseColor, LightDir, World, ConstantBufferMapped);
 }
