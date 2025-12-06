@@ -155,13 +155,43 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 {
     ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
 
-    PixSetMarker(CommandList, L"GBuffer BasePass");
+    const bool bUseDepthPrepass = bDepthPrepassEnabled && DepthPrepassPipeline && BasePassReadPipeline;
 
     CmdContext.TransitionResource(DepthBuffer.Get(), DepthBufferState, D3D12_RESOURCE_STATE_DEPTH_WRITE);
     DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
 
+    CommandList->RSSetViewports(1, &Viewport);
+    CommandList->RSSetScissorRects(1, &ScissorRect);
+
+    if (bUseDepthPrepass)
+    {
+        PixSetMarker(CommandList, L"DepthPrepass");
+        CommandList->SetPipelineState(DepthPrepassPipeline.Get());
+        CommandList->SetGraphicsRootSignature(BasePassRootSignature.Get());
+        CommandList->OMSetRenderTargets(0, nullptr, FALSE, &DepthStencilHandle);
+        CmdContext.ClearDepth(DepthStencilHandle);
+
+        for (const FSceneModelResource& Model : SceneModels)
+        {
+            UpdateSceneConstants(Camera, Model.WorldMatrix);
+
+            CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            CommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
+            CommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
+
+            CommandList->SetGraphicsRootConstantBufferView(0, ConstantBuffer->GetGPUVirtualAddress());
+
+            CommandList->DrawIndexedInstanced(Model.Geometry.IndexCount, 1, 0, 0, 0);
+        }
+    }
+    else
+    {
+        CmdContext.ClearDepth(DepthStencilHandle);
+    }
+
+    PixSetMarker(CommandList, L"GBuffer BasePass");
+
     CmdContext.SetRenderTarget(GBufferRTVHandles[0], &DepthStencilHandle);
-    CmdContext.ClearDepth(DepthStencilHandle);
 
     for (const D3D12_CPU_DESCRIPTOR_HANDLE& Handle : GBufferRTVHandles)
     {
@@ -169,14 +199,11 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         CmdContext.ClearRenderTarget(Handle, ClearValue);
     }
 
-    CommandList->SetPipelineState(BasePassPipeline.Get());
+    CommandList->SetPipelineState(bUseDepthPrepass ? BasePassReadPipeline.Get() : BasePassPipeline.Get());
     CommandList->SetGraphicsRootSignature(BasePassRootSignature.Get());
 
     ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
     CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
-
-    CommandList->RSSetViewports(1, &Viewport);
-    CommandList->RSSetScissorRects(1, &ScissorRect);
 
     CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     CommandList->OMSetRenderTargets(3, GBufferRTVHandles, FALSE, &DepthStencilHandle);
@@ -422,6 +449,20 @@ bool FDeferredRenderer::CreateBasePassPipeline(FDX12Device* Device)
     PsoDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
 
     HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipeline.GetAddressOf())));
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC ReadOnlyDesc = PsoDesc;
+    ReadOnlyDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+    ReadOnlyDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_EQUAL;
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&ReadOnlyDesc, IID_PPV_ARGS(BasePassReadPipeline.GetAddressOf())));
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC DepthOnlyDesc = PsoDesc;
+    DepthOnlyDesc.PS = {};
+    DepthOnlyDesc.NumRenderTargets = 0;
+    for (UINT FormatIndex = 0; FormatIndex < _countof(DepthOnlyDesc.RTVFormats); ++FormatIndex)
+    {
+        DepthOnlyDesc.RTVFormats[FormatIndex] = DXGI_FORMAT_UNKNOWN;
+    }
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&DepthOnlyDesc, IID_PPV_ARGS(DepthPrepassPipeline.GetAddressOf())));
     return true;
 }
 

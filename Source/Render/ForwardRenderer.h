@@ -33,6 +33,8 @@ private:
 private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineState;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthReadPipeline;
 
     std::vector<FSceneModelResource> SceneModels;
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SceneTextures;

@@ -58,9 +58,10 @@ private:
 #endif
 
     bool bIsRunning;
+    bool bDepthPrepassEnabled = false;
     float CameraYaw = 0.0f;
     float CameraPitch = 0.0f;
     bool bIsRotatingWithMouse = false;
     POINT LastMousePosition = {};
-}; 
+};
 

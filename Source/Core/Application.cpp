@@ -109,6 +109,12 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t H
         }
     }
 
+    ForwardRenderer->SetDepthPrepassEnabled(bDepthPrepassEnabled);
+    if (bDeferredInitialized)
+    {
+        DeferredRenderer->SetDepthPrepassEnabled(bDepthPrepassEnabled);
+    }
+
     PositionCameraForScene();
 
     if (!InitializeImGui(Width, Height))
@@ -498,6 +504,21 @@ void FApplication::RenderUI()
 
     ImGui::Begin("Performance", nullptr, Flags);
     ImGui::Text("FPS: %.1f", Time->GetFPS());
+    bool bDepthPrepass = bDepthPrepassEnabled;
+    if (ImGui::Checkbox("Depth Prepass", &bDepthPrepass))
+    {
+        bDepthPrepassEnabled = bDepthPrepass;
+
+        if (ForwardRenderer)
+        {
+            ForwardRenderer->SetDepthPrepassEnabled(bDepthPrepassEnabled);
+        }
+
+        if (DeferredRenderer)
+        {
+            DeferredRenderer->SetDepthPrepassEnabled(bDepthPrepassEnabled);
+        }
+    }
     ImGui::End();
 
     ImGui::Render();

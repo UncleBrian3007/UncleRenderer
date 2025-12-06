@@ -37,6 +37,8 @@ private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> BasePassRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> LightingRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> BasePassPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> BasePassReadPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> LightingPipeline;
 
     std::vector<FSceneModelResource> SceneModels;
