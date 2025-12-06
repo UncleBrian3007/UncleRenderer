@@ -33,5 +33,15 @@ FMatrix FCamera::GetViewMatrix() const
 FMatrix FCamera::GetProjectionMatrix() const
 {
     using namespace DirectX;
-    return XMMatrixPerspectiveFovLH(FovY, AspectRatio, NearClip, FarClip);
+
+    const float YScale = 1.0f / tanf(FovY * 0.5f);
+    const float XScale = YScale / AspectRatio;
+
+    // Reverse-Z infinite perspective projection (DirectX style, mul(vector, matrix))
+    return XMMatrixSet(
+        XScale, 0.0f, 0.0f, 0.0f,
+        0.0f, YScale, 0.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f,
+        0.0f, 0.0f, NearClip, 0.0f
+    );
 }

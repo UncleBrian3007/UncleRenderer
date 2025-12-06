@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <DirectXMath.h>
+#include <limits>
 #include <string>
 
 FApplication::FApplication()
@@ -323,14 +324,7 @@ void FApplication::PositionCameraForScene()
 
     const float MinNearClip = 0.1f;
     float NearClip = (std::max)(MinNearClip, Distance - SceneRadius * 1.5f);
-    float FarClip = Distance + SceneRadius * 2.0f;
-
-    if (NearClip >= FarClip)
-    {
-        FarClip = NearClip + SceneRadius * 2.0f;
-    }
-
-    Camera->SetPerspective(Camera->GetFovY(), Camera->GetAspectRatio(), NearClip, FarClip);
+    Camera->SetPerspective(Camera->GetFovY(), Camera->GetAspectRatio(), NearClip, std::numeric_limits<float>::infinity());
 
     FFloat3 Position =
     {
