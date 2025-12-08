@@ -288,7 +288,7 @@ bool RendererUtils::CreateDepthResources(FDX12Device* Device, uint32_t Width, ui
 
     D3D12_CLEAR_VALUE ClearValue = {};
     ClearValue.Format = Desc.Format;
-    ClearValue.DepthStencil.Depth = 1.0f;
+    ClearValue.DepthStencil.Depth = 0.0f;
     ClearValue.DepthStencil.Stencil = 0;
 
     D3D12_HEAP_PROPERTIES HeapProps = {};

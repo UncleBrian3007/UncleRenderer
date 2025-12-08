@@ -6,25 +6,33 @@
     {
       "id": "duck",
       "path": "Duck/Duck.gltf",
-      "translate": [0.0, 0.0, 0.0],
-      "rotate_euler": [0.0, 0.0, 0.0],
-      "scale": [1.0, 1.0, 1.0],
+      "translate": [ 0.0, 0.0, 0.0 ],
+      "rotate_euler": [ 0.0, 0.0, 0.0 ],
+      "scale": [ 1.0, 1.0, 1.0 ],
+      "visible": false
+    },
+    {
+      "id": "SciFiHelmet",
+      "path": "SciFiHelmet/SciFiHelmet.gltf",
+      "translate": [ 0.0, 0.0, 0.0 ],
+      "rotate_euler": [ 0.0, 0.0, 0.0 ],
+      "scale": [ 100.0, 100.0, 100.0 ],
       "visible": true
     },
     {
       "id": "metal_spheres",
       "path": "metal_rough_ball/MetalRoughSpheres.gltf",
-      "translate": [0.0, 0.0, 0.0],
-      "rotate_euler": [0.0, 0.0, 0.0],
-      "scale": [1.0, 1.0, 1.0],
+      "translate": [ 0.0, 0.0, 0.0 ],
+      "rotate_euler": [ 0.0, 0.0, 0.0 ],
+      "scale": [ 1.0, 1.0, 1.0 ],
       "visible": false
     },
     {
       "id": "sponza",
       "path": "sponza/untitled.gltf",
-      "translate": [0.0, 0.0, 0.0],
-      "rotate_euler": [0.0, 0.0, 0.0],
-      "scale": [1.0, 1.0, 1.0],
+      "translate": [ 0.0, 0.0, 0.0 ],
+      "rotate_euler": [ 0.0, 0.0, 0.0 ],
+      "scale": [ 1.0, 1.0, 1.0 ],
       "visible": false
     }
   ],

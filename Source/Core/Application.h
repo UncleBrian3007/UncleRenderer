@@ -4,6 +4,7 @@
 #include <memory>
 #include <cstdint>
 #include "../RHI/DX12Commons.h"
+#include "RendererConfig.h"
 
 // ImGui availability is determined in ImGuiSupport.h to avoid build failures
 // when the library is not present locally.
@@ -51,6 +52,7 @@ private:
     std::unique_ptr<FDeferredRenderer> DeferredRenderer;
     FRenderer*                         ActiveRenderer = nullptr;
     std::unique_ptr<FCamera>           Camera;
+    FRendererConfig                    RendererConfig;
 
     ComPtr<ID3D12DescriptorHeap>       ImGuiDescriptorHeap;
 #if WITH_IMGUI

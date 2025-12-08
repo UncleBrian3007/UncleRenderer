@@ -12,6 +12,7 @@
 #include "../Render/DeferredRenderer.h"
 #include "../Render/ForwardRenderer.h"
 #include "../Scene/Camera.h"
+#include "RendererConfig.h"
 #include <dxgi1_6.h>
 #include <cstdint>
 #include <algorithm>
@@ -19,6 +20,7 @@
 #include <DirectXMath.h>
 #include <limits>
 #include <string>
+#include <filesystem>
 
 FApplication::FApplication()
     : bIsRunning(false)
@@ -55,6 +57,13 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t H
     DeferredRenderer = std::make_unique<FDeferredRenderer>();
     Camera = std::make_unique<FCamera>();
 
+    const std::filesystem::path ConfigPath = std::filesystem::current_path() / "bin/RendererConfig.ini";
+    RendererConfig = FRendererConfigLoader::LoadOrDefault(ConfigPath);
+
+    FRendererOptions RendererOptions{};
+    RendererOptions.SceneFilePath = RendererConfig.SceneFile;
+    RendererOptions.bUseDepthPrepass = RendererConfig.bUseDepthPrepass;
+
     LogInfo("Creating window...");
     if (!MainWindow->Create(InstanceHandle, Width, Height, L"UncleRenderer"))
     {
@@ -85,34 +94,43 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t H
 
     Camera->SetPerspective(DirectX::XM_PIDIV4, static_cast<float>(Width) / static_cast<float>(Height), 0.1f, 1000.0f);
 
-    LogInfo("Attempting to initialize deferred renderer...");
-    const bool bDeferredInitialized = DeferredRenderer->Initialize(Device.get(), Width, Height, SwapChain->GetFormat());
-    if (bDeferredInitialized)
+    auto TryInitializeRenderer = [&](ERendererType Type) -> bool
     {
-        LogInfo("Deferred renderer activated");
-        ActiveRenderer = DeferredRenderer.get();
-    }
-    else
-    {
-        LogWarning("Deferred renderer initialization failed; attempting forward renderer");
+        if (Type == ERendererType::Deferred)
+        {
+            LogInfo("Attempting to initialize deferred renderer...");
+            if (DeferredRenderer->Initialize(Device.get(), Width, Height, SwapChain->GetFormat(), RendererOptions))
+            {
+                LogInfo("Deferred renderer activated");
+                ActiveRenderer = DeferredRenderer.get();
+                return true;
+            }
+
+            LogWarning("Deferred renderer initialization failed");
+            return false;
+        }
 
         LogInfo("Attempting to initialize forward renderer...");
-        if (ForwardRenderer->Initialize(Device.get(), Width, Height, SwapChain->GetFormat()))
+        if (ForwardRenderer->Initialize(Device.get(), Width, Height, SwapChain->GetFormat(), RendererOptions))
         {
             LogInfo("Forward renderer activated");
             ActiveRenderer = ForwardRenderer.get();
+            return true;
         }
-        else
-        {
-            LogError("Failed to initialize renderer: both deferred and forward renderers failed to initialize");
-            return false;
-        }
-    }
 
-    ForwardRenderer->SetDepthPrepassEnabled(bDepthPrepassEnabled);
-    if (bDeferredInitialized)
+        LogWarning("Forward renderer initialization failed");
+        return false;
+    };
+
+    const bool bPreferDeferred = RendererConfig.RendererType == ERendererType::Deferred;
+    const bool bRendererReady = bPreferDeferred ?
+        (TryInitializeRenderer(ERendererType::Deferred) || TryInitializeRenderer(ERendererType::Forward)) :
+        (TryInitializeRenderer(ERendererType::Forward) || TryInitializeRenderer(ERendererType::Deferred));
+
+    if (!bRendererReady)
     {
-        DeferredRenderer->SetDepthPrepassEnabled(bDepthPrepassEnabled);
+        LogError("Failed to initialize renderer: both deferred and forward renderers failed to initialize");
+        return false;
     }
 
     PositionCameraForScene();
@@ -328,8 +346,7 @@ void FApplication::PositionCameraForScene()
     const float AngularHalfHeight = Camera->GetFovY() * 0.5f;
     const float Distance = SceneRadius / std::tan(AngularHalfHeight);
 
-    const float MinNearClip = 0.1f;
-    float NearClip = (std::max)(MinNearClip, Distance - SceneRadius * 1.5f);
+    const float NearClip = 0.1f;
     Camera->SetPerspective(Camera->GetFovY(), Camera->GetAspectRatio(), NearClip, std::numeric_limits<float>::infinity());
 
     FFloat3 Position =

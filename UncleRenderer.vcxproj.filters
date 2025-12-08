@@ -62,6 +62,9 @@
     <ClCompile Include="Source\Core\Window.cpp">
       <Filter>Source Files\Core</Filter>
     </ClCompile>
+    <ClCompile Include="Source\Core\RendererConfig.cpp">
+      <Filter>Source Files\Core</Filter>
+    </ClCompile>
     <ClCompile Include="Source\RHI\DX12CommandContext.cpp">
       <Filter>Source Files\RHI</Filter>
     </ClCompile>
@@ -158,6 +161,9 @@
       <Filter>Header Files\Core</Filter>
     </ClInclude>
     <ClInclude Include="Source\Core\Logger.h">
+      <Filter>Header Files\Core</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Core\RendererConfig.h">
       <Filter>Header Files\Core</Filter>
     </ClInclude>
     <ClInclude Include="Source\Core\Window.h">

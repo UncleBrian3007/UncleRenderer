@@ -2,6 +2,13 @@
 
 #include <d3d12.h>
 #include <DirectXMath.h>
+#include <string>
+
+struct FRendererOptions
+{
+    std::wstring SceneFilePath = L"Assets/Scenes/Scene.json";
+    bool bUseDepthPrepass = true;
+};
 
 class FDX12Device;
 class FDX12CommandContext;
@@ -12,7 +19,7 @@ class FRenderer
 public:
     virtual ~FRenderer() = default;
 
-    virtual bool Initialize(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT BackBufferFormat) = 0;
+    virtual bool Initialize(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT BackBufferFormat, const FRendererOptions& Options) = 0;
     virtual void RenderFrame(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle, const FCamera& Camera, float DeltaTime) = 0;
 
     virtual void SetDepthPrepassEnabled(bool bEnabled) { bDepthPrepassEnabled = bEnabled; }

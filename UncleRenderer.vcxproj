@@ -108,6 +108,7 @@
     <ClCompile Include="Source\RHI\DX12Fence.cpp" />
     <ClCompile Include="Source\RHI\DX12Resource.cpp" />
     <ClCompile Include="Source\RHI\DX12SwapChain.cpp" />
+    <ClCompile Include="Source\Core\RendererConfig.cpp" />
     <ClCompile Include="Source\Render\DeferredRenderer.cpp" />
     <ClCompile Include="Source\Render\RendererUtils.cpp" />
     <ClCompile Include="Source\Render\TextureLoader.cpp" />
@@ -130,6 +131,7 @@
   <ItemGroup>
     <ClInclude Include="Source\Core\Application.h" />
     <ClInclude Include="Source\Core\GpuDebugMarkers.h" />
+    <ClInclude Include="Source\Core\RendererConfig.h" />
     <ClInclude Include="Source\Core\ImGuiSupport.h" />
     <ClInclude Include="Source\Core\EngineTime.h" />
     <ClInclude Include="Source\Core\Logger.h" />

@@ -20,13 +20,14 @@ class FDeferredRenderer : public FRenderer
 public:
     FDeferredRenderer();
 
-    bool Initialize(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT BackBufferFormat) override;
+    bool Initialize(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT BackBufferFormat, const FRendererOptions& Options) override;
     void RenderFrame(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle, const FCamera& Camera, float DeltaTime) override;
 
 private:
     bool CreateBasePassRootSignature(FDX12Device* Device);
     bool CreateLightingRootSignature(FDX12Device* Device);
     bool CreateBasePassPipeline(FDX12Device* Device);
+    bool CreateDepthPrepassPipeline(FDX12Device* Device);
     bool CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateGBufferResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateDescriptorHeap(FDX12Device* Device);
@@ -37,7 +38,6 @@ private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> BasePassRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> LightingRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> BasePassPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> BasePassReadPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> LightingPipeline;
 
@@ -53,6 +53,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> GBufferB;
     Microsoft::WRL::ComPtr<ID3D12Resource> GBufferC;
     std::unique_ptr<FTextureLoader> TextureLoader;
+    bool bUseDepthPrepass = true;
 
     D3D12_CPU_DESCRIPTOR_HANDLE GBufferRTVHandles[3]{};
     D3D12_GPU_DESCRIPTOR_HANDLE GBufferGpuHandles[3]{};

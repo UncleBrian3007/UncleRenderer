@@ -21,7 +21,7 @@ class FForwardRenderer : public FRenderer
 public:
     FForwardRenderer();
 
-    bool Initialize(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT BackBufferFormat) override;
+    bool Initialize(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT BackBufferFormat, const FRendererOptions& Options) override;
     void RenderFrame(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle, const FCamera& Camera, float DeltaTime) override;
 
 private:
@@ -34,7 +34,6 @@ private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineState;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthReadPipeline;
 
     std::vector<FSceneModelResource> SceneModels;
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SceneTextures;
@@ -44,6 +43,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> SceneTexture;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> TextureDescriptorHeap;
     std::unique_ptr<FTextureLoader> TextureLoader;
+    bool bUseDepthPrepass = true;
 
     D3D12_GPU_DESCRIPTOR_HANDLE SceneTextureGpuHandle{};
     D3D12_VIEWPORT Viewport{};

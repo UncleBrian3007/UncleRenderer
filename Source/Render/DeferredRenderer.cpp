@@ -35,7 +35,7 @@ namespace
     };
 }
 
-bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT BackBufferFormat)
+bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT BackBufferFormat, const FRendererOptions& Options)
 {
     if (Device == nullptr)
     {
@@ -44,6 +44,8 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     }
 
     LogInfo("Deferred renderer initialization started");
+
+    bUseDepthPrepass = Options.bUseDepthPrepass;
 
     Viewport.TopLeftX = 0.0f;
     Viewport.TopLeftY = 0.0f;
@@ -78,6 +80,16 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
         return false;
     }
 
+    if (bUseDepthPrepass)
+    {
+        LogInfo("Creating deferred renderer depth prepass pipeline...");
+        if (!CreateDepthPrepassPipeline(Device))
+        {
+            LogError("Deferred renderer initialization failed: depth prepass pipeline creation failed");
+            return false;
+        }
+    }
+
     LogInfo("Creating deferred renderer lighting pipeline...");
     if (!CreateLightingPipeline(Device, BackBufferFormat))
     {
@@ -104,7 +116,7 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
         return false;
     }
 
-    const std::wstring SceneFilePath = L"Assets/Scenes/Scene.json";
+    const std::wstring SceneFilePath = Options.SceneFilePath.empty() ? L"Assets/Scenes/Scene.json" : Options.SceneFilePath;
     if (!RendererUtils::CreateSceneModelsFromJson(Device, SceneFilePath, SceneModels, SceneCenter, SceneRadius))
     {
         LogWarning("Falling back to default geometry; scene JSON could not be loaded.");
@@ -155,43 +167,51 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 {
     ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
 
-    const bool bUseDepthPrepass = bDepthPrepassEnabled && DepthPrepassPipeline && BasePassReadPipeline;
+    const bool bDoDepthPrepass = bUseDepthPrepass && DepthPrepassPipeline;
 
-    CmdContext.TransitionResource(DepthBuffer.Get(), DepthBufferState, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-    DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
-
-    CommandList->RSSetViewports(1, &Viewport);
-    CommandList->RSSetScissorRects(1, &ScissorRect);
-
-    if (bUseDepthPrepass)
+    if (bDoDepthPrepass)
     {
         PixSetMarker(CommandList, L"DepthPrepass");
+
+        CmdContext.TransitionResource(DepthBuffer.Get(), DepthBufferState, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+        CmdContext.ClearDepth(DepthStencilHandle);
+
+        ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
         CommandList->SetPipelineState(DepthPrepassPipeline.Get());
         CommandList->SetGraphicsRootSignature(BasePassRootSignature.Get());
+        CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+
+        CommandList->RSSetViewports(1, &Viewport);
+        CommandList->RSSetScissorRects(1, &ScissorRect);
+
+        CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         CommandList->OMSetRenderTargets(0, nullptr, FALSE, &DepthStencilHandle);
-        CmdContext.ClearDepth(DepthStencilHandle);
 
         for (const FSceneModelResource& Model : SceneModels)
         {
             UpdateSceneConstants(Camera, Model.WorldMatrix);
 
-            CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             CommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
             CommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
 
             CommandList->SetGraphicsRootConstantBufferView(0, ConstantBuffer->GetGPUVirtualAddress());
+            CommandList->SetGraphicsRootDescriptorTable(1, Model.TextureHandle);
 
             CommandList->DrawIndexedInstanced(Model.Geometry.IndexCount, 1, 0, 0, 0);
         }
     }
-    else
-    {
-        CmdContext.ClearDepth(DepthStencilHandle);
-    }
 
     PixSetMarker(CommandList, L"GBuffer BasePass");
 
+    CmdContext.TransitionResource(DepthBuffer.Get(), DepthBufferState, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+
     CmdContext.SetRenderTarget(GBufferRTVHandles[0], &DepthStencilHandle);
+    if (!bDoDepthPrepass)
+    {
+        CmdContext.ClearDepth(DepthStencilHandle);
+    }
 
     for (const D3D12_CPU_DESCRIPTOR_HANDLE& Handle : GBufferRTVHandles)
     {
@@ -199,11 +219,14 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         CmdContext.ClearRenderTarget(Handle, ClearValue);
     }
 
-    CommandList->SetPipelineState(bUseDepthPrepass ? BasePassReadPipeline.Get() : BasePassPipeline.Get());
+    CommandList->SetPipelineState(BasePassPipeline.Get());
     CommandList->SetGraphicsRootSignature(BasePassRootSignature.Get());
 
     ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
     CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+
+    CommandList->RSSetViewports(1, &Viewport);
+    CommandList->RSSetScissorRects(1, &ScissorRect);
 
     CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     CommandList->OMSetRenderTargets(3, GBufferRTVHandles, FALSE, &DepthStencilHandle);
@@ -328,7 +351,7 @@ bool FDeferredRenderer::CreateLightingRootSignature(FDX12Device* Device)
     RootParams[1].DescriptorTable.pDescriptorRanges = DescriptorRanges;
 
     D3D12_STATIC_SAMPLER_DESC SamplerDesc = {};
-    SamplerDesc.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    SamplerDesc.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
     SamplerDesc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
     SamplerDesc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
     SamplerDesc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
@@ -449,20 +472,72 @@ bool FDeferredRenderer::CreateBasePassPipeline(FDX12Device* Device)
     PsoDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
 
     HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipeline.GetAddressOf())));
+    return true;
+}
 
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC ReadOnlyDesc = PsoDesc;
-    ReadOnlyDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
-    ReadOnlyDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_EQUAL;
-    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&ReadOnlyDesc, IID_PPV_ARGS(BasePassReadPipeline.GetAddressOf())));
+bool FDeferredRenderer::CreateDepthPrepassPipeline(FDX12Device* Device)
+{
+    FShaderCompiler Compiler;
+    std::vector<uint8_t> VSByteCode;
 
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC DepthOnlyDesc = PsoDesc;
-    DepthOnlyDesc.PS = {};
-    DepthOnlyDesc.NumRenderTargets = 0;
-    for (UINT FormatIndex = 0; FormatIndex < _countof(DepthOnlyDesc.RTVFormats); ++FormatIndex)
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring VSTarget = BuildShaderTarget(L"vs", ShaderModel);
+
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"VSMain", VSTarget, VSByteCode))
     {
-        DepthOnlyDesc.RTVFormats[FormatIndex] = DXGI_FORMAT_UNKNOWN;
+        return false;
     }
-    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&DepthOnlyDesc, IID_PPV_ARGS(DepthPrepassPipeline.GetAddressOf())));
+
+    D3D12_INPUT_ELEMENT_DESC InputLayout[] =
+    {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,   D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
+    PsoDesc.pRootSignature = BasePassRootSignature.Get();
+    PsoDesc.InputLayout = { InputLayout, _countof(InputLayout) };
+    PsoDesc.VS = { VSByteCode.data(), VSByteCode.size() };
+    PsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    PsoDesc.SampleDesc.Count = 1;
+    PsoDesc.SampleMask = UINT_MAX;
+
+    PsoDesc.RasterizerState = {};
+    PsoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    PsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+    PsoDesc.RasterizerState.FrontCounterClockwise = TRUE;
+    PsoDesc.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
+    PsoDesc.RasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
+    PsoDesc.RasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
+    PsoDesc.RasterizerState.DepthClipEnable = TRUE;
+    PsoDesc.RasterizerState.MultisampleEnable = FALSE;
+    PsoDesc.RasterizerState.AntialiasedLineEnable = FALSE;
+    PsoDesc.RasterizerState.ForcedSampleCount = 0;
+    PsoDesc.RasterizerState.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+
+    PsoDesc.BlendState = {};
+    PsoDesc.BlendState.AlphaToCoverageEnable = FALSE;
+    PsoDesc.BlendState.IndependentBlendEnable = FALSE;
+    PsoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;
+
+    PsoDesc.DepthStencilState = {};
+    PsoDesc.DepthStencilState.DepthEnable = TRUE;
+    PsoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    PsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+    PsoDesc.DepthStencilState.StencilEnable = FALSE;
+    PsoDesc.DepthStencilState.StencilReadMask = D3D12_DEFAULT_STENCIL_READ_MASK;
+    PsoDesc.DepthStencilState.StencilWriteMask = D3D12_DEFAULT_STENCIL_WRITE_MASK;
+    PsoDesc.DepthStencilState.FrontFace.StencilFailOp = D3D12_STENCIL_OP_KEEP;
+    PsoDesc.DepthStencilState.FrontFace.StencilDepthFailOp = D3D12_STENCIL_OP_KEEP;
+    PsoDesc.DepthStencilState.FrontFace.StencilPassOp = D3D12_STENCIL_OP_KEEP;
+    PsoDesc.DepthStencilState.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    PsoDesc.DepthStencilState.BackFace = PsoDesc.DepthStencilState.FrontFace;
+    PsoDesc.NumRenderTargets = 0;
+    PsoDesc.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
+    PsoDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
+
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(DepthPrepassPipeline.GetAddressOf())));
     return true;
 }
 
