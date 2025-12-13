@@ -60,6 +60,8 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t H
 
     const std::filesystem::path ConfigPath = std::filesystem::current_path() / "bin/RendererConfig.ini";
     RendererConfig = FRendererConfigLoader::LoadOrDefault(ConfigPath);
+    bFrameOverlapEnabled = RendererConfig.bEnableFrameOverlap;
+    bDepthPrepassEnabled = RendererConfig.bUseDepthPrepass;
 
     FRendererOptions RendererOptions{};
     RendererOptions.SceneFilePath = RendererConfig.SceneFile;
@@ -106,7 +108,7 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t H
     }
 
     LogInfo("Initializing command context...");
-    if (!CommandContext->Initialize(Device.get(), Device->GetGraphicsQueue()))
+    if (!CommandContext->Initialize(Device.get(), Device->GetGraphicsQueue(), SwapChain->GetBackBufferCount()))
     {
         LogError("Failed to initialize command context");
         return false;
@@ -204,7 +206,7 @@ bool FApplication::RenderFrame()
 
     const D3D12_RESOURCE_STATES PreviousState = SwapChain->GetBackBufferState(BackBufferIndex);
 
-    CommandContext->BeginFrame();
+    CommandContext->BeginFrame(BackBufferIndex);
 
     {
         FScopedPixEvent FrameEvent(CommandContext->GetCommandList(), L"Frame");
@@ -246,7 +248,11 @@ bool FApplication::RenderFrame()
     HR_CHECK(SwapChain->GetSwapChain()->Present(0, PresentFlags));
 
     const uint64 FenceValue = Device->GetGraphicsQueue()->Signal();
-    Device->GetGraphicsQueue()->Wait(FenceValue);
+    if (!bFrameOverlapEnabled)
+    {
+        Device->GetGraphicsQueue()->Wait(FenceValue);
+    }
+    CommandContext->SetFrameFenceValue(BackBufferIndex, FenceValue);
 
     LogVerbose("Frame completed: " + std::to_string(FrameIndex));
 
@@ -469,18 +475,24 @@ bool FApplication::EnsureImGuiFontAtlas()
     }
 
 	// Ensure there is at least one font in the atlas; otherwise, building will fail.
-        if (Atlas->Fonts.empty())
-        {
-                Atlas->AddFontDefault();
-        }
+    if (Atlas->Fonts.empty())
+    {
+        Atlas->AddFontDefault();
+    }
 
-        if (!Atlas->Build())
-        {
-                LogError("Failed to build ImGui font atlas");
-                return false;
-        }
+    if (!Atlas->Build())
+    {
+        LogError("Failed to build ImGui font atlas");
+        return false;
+    }
 
-    // Recreate device objects to rebuild the font atlas texture.
+    // Ensure the GPU is idle before invalidating ImGui resources because the DX12 backend releases its pipeline state object during invalidation.
+    if (Device && Device->GetGraphicsQueue())
+    {
+        Device->GetGraphicsQueue()->Flush();
+    }
+
+	// Recreate device objects to rebuild the font atlas texture.
     ImGui_ImplDX12_InvalidateDeviceObjects();
     if (!ImGui_ImplDX12_CreateDeviceObjects())
     {
@@ -606,6 +618,22 @@ void FApplication::RenderUI()
         ImGui::Text("Budget: %.1f MB", BudgetMB);
         ImGui::Text("Available: %.1f MB", AvailableMB);
 		ImGui::Text("Reserved: %.1f MB", ReservedMB);
+    }
+
+    bool bFrameOverlap = bFrameOverlapEnabled;
+    if (ImGui::Checkbox("Frame Overlap", &bFrameOverlap))
+    {
+        bFrameOverlapEnabled = bFrameOverlap;
+    }
+
+    if (Device && Device->GetGraphicsQueue())
+    {
+        const uint64 CompletedFence = Device->GetGraphicsQueue()->GetCompletedFenceValue();
+        const uint64 LastSignaledFence = Device->GetGraphicsQueue()->GetLastSignaledFenceValue();
+        const uint64 InFlightFrames = (LastSignaledFence > CompletedFence) ? (LastSignaledFence - CompletedFence) : 0;
+
+        ImGui::Text("In-flight frames: %llu", static_cast<unsigned long long>(InFlightFrames));
+//        ImGui::Text("GPU fences: completed %llu / last signaled %llu", static_cast<unsigned long long>(CompletedFence), static_cast<unsigned long long>(LastSignaledFence));
     }
 
     bool bDepthPrepass = bDepthPrepassEnabled;

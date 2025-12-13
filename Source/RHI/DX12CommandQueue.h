@@ -17,6 +17,8 @@ public:
     bool Initialize(ID3D12Device* InDevice, EDX12QueueType Type);
 
     ID3D12CommandQueue* GetD3DQueue() const { return D3DCommandQueue.Get(); }
+    uint64 GetCompletedFenceValue() const { return Fence ? Fence->GetCompletedValue() : 0; }
+    uint64 GetLastSignaledFenceValue() const { return CurrentFenceValue > 0 ? CurrentFenceValue - 1 : 0; }
 
     uint64 Signal();
     void Wait(uint64 FenceValue);

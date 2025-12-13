@@ -98,6 +98,11 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     {
         OutConfig.bUseDepthPrepass = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
+
+    if (LowerKey == "frameoverlap" || LowerKey == "useframeoverlap")
+    {
+        OutConfig.bEnableFrameOverlap = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
 }
 
 std::string FRendererConfigLoader::TrimCopy(const std::string& Input)

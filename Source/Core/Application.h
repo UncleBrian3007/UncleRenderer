@@ -64,6 +64,7 @@ private:
 
     bool bIsRunning;
     bool bDepthPrepassEnabled = false;
+    bool bFrameOverlapEnabled = true;
     float CameraYaw = 0.0f;
     float CameraPitch = 0.0f;
     bool bIsRotatingWithMouse = false;

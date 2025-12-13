@@ -6,6 +6,8 @@
 FDX12CommandContext::FDX12CommandContext()
     : Device(nullptr)
     , Queue(nullptr)
+    , FrameCount(0)
+    , CurrentAllocatorIndex(0)
 {
 }
 
@@ -13,21 +15,34 @@ FDX12CommandContext::~FDX12CommandContext()
 {
 }
 
-bool FDX12CommandContext::Initialize(FDX12Device* InDevice, FDX12CommandQueue* InQueue)
+bool FDX12CommandContext::Initialize(FDX12Device* InDevice, FDX12CommandQueue* InQueue, uint32 InFrameCount)
 {
     Device = InDevice;
     Queue = InQueue;
+    FrameCount = InFrameCount;
+
+    if (FrameCount == 0)
+    {
+        LogError("Frame count must be greater than zero");
+        return false;
+    }
 
     LogInfo("Command context initialization started");
 
-    HR_CHECK(Device->GetDevice()->CreateCommandAllocator(
-        D3D12_COMMAND_LIST_TYPE_DIRECT,
-        IID_PPV_ARGS(CommandAllocator.GetAddressOf())));
+    CommandAllocators.resize(FrameCount);
+    FrameFenceValues.assign(FrameCount, 0);
+
+    for (uint32 Index = 0; Index < FrameCount; ++Index)
+    {
+        HR_CHECK(Device->GetDevice()->CreateCommandAllocator(
+            D3D12_COMMAND_LIST_TYPE_DIRECT,
+            IID_PPV_ARGS(CommandAllocators[Index].GetAddressOf())));
+    }
 
     HR_CHECK(Device->GetDevice()->CreateCommandList(
         0,
         D3D12_COMMAND_LIST_TYPE_DIRECT,
-        CommandAllocator.Get(),
+        CommandAllocators[0].Get(),
         nullptr,
         IID_PPV_ARGS(CommandList.GetAddressOf())));
 
@@ -37,10 +52,24 @@ bool FDX12CommandContext::Initialize(FDX12Device* InDevice, FDX12CommandQueue* I
     return true;
 }
 
-void FDX12CommandContext::BeginFrame()
+void FDX12CommandContext::BeginFrame(uint32 FrameIndex)
 {
-    HR_CHECK(CommandAllocator->Reset());
-    HR_CHECK(CommandList->Reset(CommandAllocator.Get(), nullptr));
+    if (FrameCount == 0)
+    {
+        LogError("BeginFrame called before initialization");
+        return;
+    }
+
+    CurrentAllocatorIndex = FrameIndex % FrameCount;
+
+    const uint64 FenceValue = FrameFenceValues[CurrentAllocatorIndex];
+    if (FenceValue > 0 && Queue->GetCompletedFenceValue() < FenceValue)
+    {
+        Queue->Wait(FenceValue);
+    }
+
+    HR_CHECK(CommandAllocators[CurrentAllocatorIndex]->Reset());
+    HR_CHECK(CommandList->Reset(CommandAllocators[CurrentAllocatorIndex].Get(), nullptr));
 }
 
 void FDX12CommandContext::TransitionResource(ID3D12Resource* Resource, D3D12_RESOURCE_STATES Before, D3D12_RESOURCE_STATES After)
@@ -82,5 +111,13 @@ void FDX12CommandContext::CloseAndExecute()
 
     ID3D12CommandList* Lists[] = { CommandList.Get() };
     Queue->GetD3DQueue()->ExecuteCommandLists(1, Lists);
+}
+
+void FDX12CommandContext::SetFrameFenceValue(uint32 FrameIndex, uint64 FenceValue)
+{
+    if (FrameIndex < FrameFenceValues.size())
+    {
+        FrameFenceValues[FrameIndex] = FenceValue;
+    }
 }
 

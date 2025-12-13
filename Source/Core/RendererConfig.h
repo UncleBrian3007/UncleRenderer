@@ -14,6 +14,7 @@ struct FRendererConfig
     ERendererType RendererType = ERendererType::Deferred;
     std::wstring SceneFile = L"Assets/Scenes/Scene.json";
     bool bUseDepthPrepass = true;
+    bool bEnableFrameOverlap = true;
 };
 
 class FRendererConfigLoader
