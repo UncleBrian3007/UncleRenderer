@@ -12,6 +12,7 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <algorithm>
 
 using Microsoft::WRL::ComPtr;
 
@@ -162,6 +163,25 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
         return false;
     }
 
+    SkySphereRadius = (std::max)(SceneRadius * 5.0f, 100.0f);
+    if (!RendererUtils::CreateSkyAtmosphereResources(Device, SkySphereRadius, SkyGeometry, SkyConstantBuffer, SkyConstantBufferMapped))
+    {
+        LogError("Deferred renderer initialization failed: sky resource creation failed");
+        return false;
+    }
+
+    FSkyPipelineConfig SkyPipelineConfig = {};
+    SkyPipelineConfig.DepthEnable = true;
+    SkyPipelineConfig.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+    SkyPipelineConfig.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+    SkyPipelineConfig.DsvFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
+
+    if (!RendererUtils::CreateSkyAtmospherePipeline(Device, BackBufferFormat, SkyPipelineConfig, SkyRootSignature, SkyPipelineState))
+    {
+        LogError("Deferred renderer initialization failed: sky pipeline state creation failed");
+        return false;
+    }
+
     LogInfo("Deferred renderer initialization completed");
     return true;
 }
@@ -266,6 +286,26 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
     CommandList->SetGraphicsRootDescriptorTable(1, GBufferGpuHandles[0]);
 
     CommandList->DrawInstanced(3, 1, 0, 0);
+
+    if (SkyPipelineState && SkyRootSignature && SkyGeometry.IndexCount > 0)
+    {
+        CmdContext.TransitionResource(DepthBuffer.Get(), DepthBufferState, D3D12_RESOURCE_STATE_DEPTH_READ);
+        DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_READ;
+
+        PixSetMarker(CommandList, L"SkyAtmosphere");
+        CommandList->SetPipelineState(SkyPipelineState.Get());
+        CommandList->SetGraphicsRootSignature(SkyRootSignature.Get());
+        CommandList->RSSetViewports(1, &Viewport);
+        CommandList->RSSetScissorRects(1, &ScissorRect);
+        CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        CommandList->IASetVertexBuffers(0, 1, &SkyGeometry.VertexBufferView);
+        CommandList->IASetIndexBuffer(&SkyGeometry.IndexBufferView);
+        CommandList->OMSetRenderTargets(1, &RtvHandle, FALSE, &DepthStencilHandle);
+
+        UpdateSkyConstants(Camera);
+        CommandList->SetGraphicsRootConstantBufferView(0, SkyConstantBuffer->GetGPUVirtualAddress());
+        CommandList->DrawIndexedInstanced(SkyGeometry.IndexCount, 1, 0, 0, 0);
+    }
 
     CmdContext.TransitionResource(GBufferA.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
     CmdContext.TransitionResource(GBufferB.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
@@ -753,5 +793,18 @@ void FDeferredRenderer::UpdateSceneConstants(const FCamera& Camera, const Direct
 
     const DirectX::XMMATRIX World = DirectX::XMLoadFloat4x4(&WorldMatrix);
     RendererUtils::UpdateSceneConstants(Camera, BaseColor, LightIntensity, LightDir, LightColor, World, ConstantBufferMapped);
+}
+
+void FDeferredRenderer::UpdateSkyConstants(const FCamera& Camera)
+{
+    using namespace DirectX;
+
+    const FFloat3 CameraPosition = Camera.GetPosition();
+    const XMMATRIX Scale = XMMatrixScaling(SkySphereRadius, SkySphereRadius, SkySphereRadius);
+    const XMMATRIX Translation = XMMatrixTranslation(CameraPosition.x, CameraPosition.y, CameraPosition.z);
+    const XMMATRIX World = Scale * Translation;
+
+    const XMVECTOR LightDir = XMLoadFloat3(&LightDirection);
+    RendererUtils::UpdateSkyConstants(Camera, World, LightDir, LightColor, SkyConstantBufferMapped);
 }
 

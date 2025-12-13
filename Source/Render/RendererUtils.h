@@ -52,6 +52,27 @@ struct FSceneConstants
     float Padding3 = 0.0f;
 };
 
+struct FSkyAtmosphereConstants
+{
+    DirectX::XMFLOAT4X4 World;
+    DirectX::XMFLOAT4X4 View;
+    DirectX::XMFLOAT4X4 Projection;
+    DirectX::XMFLOAT3 CameraPosition;
+    float Padding0 = 0.0f;
+    DirectX::XMFLOAT3 LightDirection{ 0.0f, -1.0f, 0.0f };
+    float Padding1 = 0.0f;
+    DirectX::XMFLOAT3 LightColor{ 1.0f, 1.0f, 1.0f };
+    float Padding2 = 0.0f;
+};
+
+struct FSkyPipelineConfig
+{
+    bool DepthEnable = false;
+    D3D12_COMPARISON_FUNC DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    D3D12_DEPTH_WRITE_MASK DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+    DXGI_FORMAT DsvFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
+};
+
 struct FSceneModelResource
 {
     FMeshGeometryBuffers Geometry;
@@ -68,6 +89,12 @@ namespace RendererUtils
 {
     bool CreateMeshGeometry(FDX12Device* Device, const FMesh& Mesh, FMeshGeometryBuffers& OutGeometry);
     bool CreateCubeGeometry(FDX12Device* Device, FCubeGeometryBuffers& OutGeometry, float Size = 1.0f);
+    bool CreateSphereGeometry(
+        FDX12Device* Device,
+        FMeshGeometryBuffers& OutGeometry,
+        float Radius = 1.0f,
+        uint32_t SliceCount = 32,
+        uint32_t StackCount = 16);
     bool CreateDefaultSceneGeometry(FDX12Device* Device, FMeshGeometryBuffers& OutGeometry, FFloat3& OutCenter, float& OutRadius, FGltfMaterialTextures* OutTexturePaths = nullptr);
     bool CreateSceneModelsFromJson(
         FDX12Device* Device,
@@ -77,6 +104,24 @@ namespace RendererUtils
         float& OutSceneRadius);
     bool CreateDepthResources(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT Format, FDepthResources& OutDepthResources);
     bool CreateMappedConstantBuffer(FDX12Device* Device, uint64_t BufferSize, FMappedConstantBuffer& OutConstantBuffer);
+    bool CreateSkyAtmosphereResources(
+        FDX12Device* Device,
+        float SkySphereRadius,
+        FMeshGeometryBuffers& OutGeometry,
+        Microsoft::WRL::ComPtr<ID3D12Resource>& OutConstantBuffer,
+        uint8_t*& OutConstantBufferMapped);
+    bool CreateSkyAtmospherePipeline(
+        FDX12Device* Device,
+        DXGI_FORMAT BackBufferFormat,
+        const FSkyPipelineConfig& Config,
+        Microsoft::WRL::ComPtr<ID3D12RootSignature>& OutRootSignature,
+        Microsoft::WRL::ComPtr<ID3D12PipelineState>& OutPipelineState);
     void UpdateSceneConstants(const FCamera& Camera, const DirectX::XMFLOAT3& BaseColor, float LightIntensity, const DirectX::XMVECTOR& LightDirection, const DirectX::XMFLOAT3& LightColor, const DirectX::XMMATRIX& WorldMatrix, uint8_t* ConstantBufferMapped);
+    void UpdateSkyConstants(
+        const FCamera& Camera,
+        const DirectX::XMMATRIX& WorldMatrix,
+        const DirectX::XMVECTOR& LightDirection,
+        const DirectX::XMFLOAT3& LightColor,
+        uint8_t* ConstantBufferMapped);
 }
 

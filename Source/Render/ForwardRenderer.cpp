@@ -12,6 +12,7 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <algorithm>
 
 FForwardRenderer::FForwardRenderer() = default;
 
@@ -109,6 +110,25 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
     ConstantBuffer = ConstantBufferResource.Resource;
     ConstantBufferMapped = ConstantBufferResource.MappedData;
 
+    SkySphereRadius = (std::max)(SceneRadius * 5.0f, 100.0f);
+    if (!RendererUtils::CreateSkyAtmosphereResources(Device, SkySphereRadius, SkyGeometry, SkyConstantBuffer, SkyConstantBufferMapped))
+    {
+        LogError("Forward renderer initialization failed: sky resource creation failed");
+        return false;
+    }
+
+    FSkyPipelineConfig SkyPipelineConfig = {};
+    SkyPipelineConfig.DepthEnable = false;
+    SkyPipelineConfig.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    SkyPipelineConfig.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+    SkyPipelineConfig.DsvFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
+
+    if (!RendererUtils::CreateSkyAtmospherePipeline(Device, BackBufferFormat, SkyPipelineConfig, SkyRootSignature, SkyPipelineState))
+    {
+        LogError("Forward renderer initialization failed: sky pipeline state creation failed");
+        return false;
+    }
+
     if (!CreateSceneTextures(Device, SceneModels))
     {
         LogError("Forward renderer initialization failed: scene texture creation failed");
@@ -165,6 +185,21 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
     if (!bDoDepthPrepass)
     {
         CmdContext.ClearDepth(DepthStencilHandle);
+    }
+
+    if (SkyPipelineState && SkyRootSignature && SkyGeometry.IndexCount > 0)
+    {
+        PixSetMarker(CommandList, L"SkyAtmosphere");
+        CommandList->SetPipelineState(SkyPipelineState.Get());
+        CommandList->SetGraphicsRootSignature(SkyRootSignature.Get());
+        CommandList->RSSetViewports(1, &Viewport);
+        CommandList->RSSetScissorRects(1, &ScissorRect);
+        CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        CommandList->IASetVertexBuffers(0, 1, &SkyGeometry.VertexBufferView);
+        CommandList->IASetIndexBuffer(&SkyGeometry.IndexBufferView);
+        UpdateSkyConstants(Camera);
+        CommandList->SetGraphicsRootConstantBufferView(0, SkyConstantBuffer->GetGPUVirtualAddress());
+        CommandList->DrawIndexedInstanced(SkyGeometry.IndexCount, 1, 0, 0, 0);
     }
 
     PixSetMarker(CommandList, L"BindPipeline");
@@ -380,7 +415,7 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
 
     for (size_t Index = 0; Index < Models.size(); ++Index)
     {
-        ComPtr<ID3D12Resource> TextureResource;
+        Microsoft::WRL::ComPtr<ID3D12Resource> TextureResource;
         if (!TextureLoader->LoadOrDefault(Models[Index].BaseColorTexturePath, TextureResource))
         {
             return false;
@@ -405,4 +440,17 @@ void FForwardRenderer::UpdateSceneConstants(const FCamera& Camera, const DirectX
 
     const DirectX::XMMATRIX World = DirectX::XMLoadFloat4x4(&WorldMatrix);
     RendererUtils::UpdateSceneConstants(Camera, BaseColor, LightIntensity, LightDir, LightColor, World, ConstantBufferMapped);
+}
+
+void FForwardRenderer::UpdateSkyConstants(const FCamera& Camera)
+{
+    using namespace DirectX;
+
+    const FFloat3 CameraPosition = Camera.GetPosition();
+    const XMMATRIX Scale = XMMatrixScaling(SkySphereRadius, SkySphereRadius, SkySphereRadius);
+    const XMMATRIX Translation = XMMatrixTranslation(CameraPosition.x, CameraPosition.y, CameraPosition.z);
+    const XMMATRIX World = Scale * Translation;
+
+    const XMVECTOR LightDir = XMLoadFloat3(&LightDirection);
+    RendererUtils::UpdateSkyConstants(Camera, World, LightDir, LightColor, SkyConstantBufferMapped);
 }

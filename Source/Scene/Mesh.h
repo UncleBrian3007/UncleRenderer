@@ -21,6 +21,7 @@ public:
     const std::vector<uint32_t>& GetIndices() const { return Indices; }
 
     static FMesh CreateCube(float Size = 1.0f);
+    static FMesh CreateSphere(float Radius = 1.0f, uint32_t SliceCount = 32, uint32_t StackCount = 16);
 
     // Generate per-vertex tangents if missing or invalid.
     void GenerateTangentsIfMissing();

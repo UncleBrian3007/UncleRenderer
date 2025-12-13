@@ -95,6 +95,90 @@ FMesh FMesh::CreateCube(float Size)
     return Mesh;
 }
 
+FMesh FMesh::CreateSphere(float Radius, uint32_t SliceCount, uint32_t StackCount)
+{
+    FMesh Mesh;
+
+    SliceCount = std::max(3u, SliceCount);
+    StackCount = std::max(2u, StackCount);
+
+    std::vector<FVertex> Vertices;
+    Vertices.reserve((SliceCount + 1) * (StackCount + 1));
+
+    const float TwoPi = DirectX::XM_2PI;
+    const float Pi = DirectX::XM_PI;
+
+    for (uint32_t Stack = 0; Stack <= StackCount; ++Stack)
+    {
+        const float V = static_cast<float>(Stack) / static_cast<float>(StackCount);
+        const float Phi = V * Pi;
+        const float SinPhi = std::sin(Phi);
+        const float CosPhi = std::cos(Phi);
+
+        for (uint32_t Slice = 0; Slice <= SliceCount; ++Slice)
+        {
+            const float U = static_cast<float>(Slice) / static_cast<float>(SliceCount);
+            const float Theta = U * TwoPi;
+            const float SinTheta = std::sin(Theta);
+            const float CosTheta = std::cos(Theta);
+
+            const float X = Radius * SinPhi * CosTheta;
+            const float Y = Radius * CosPhi;
+            const float Z = Radius * SinPhi * SinTheta;
+
+            FVertex Vertex = {};
+            Vertex.Position = { X, Y, Z };
+
+            const FFloat3 Normal = { SinPhi * CosTheta, CosPhi, SinPhi * SinTheta };
+            const DirectX::XMVECTOR NormalVec = DirectX::XMLoadFloat3(&Normal);
+            DirectX::XMStoreFloat3(&Vertex.Normal, DirectX::XMVector3Normalize(NormalVec));
+
+            Vertex.UV = { U, V };
+
+            FFloat3 Tangent = { -SinTheta, 0.0f, CosTheta };
+            if (std::abs(SinPhi) > 1e-4f)
+            {
+                Tangent.x *= SinPhi;
+                Tangent.z *= SinPhi;
+            }
+            else
+            {
+                Tangent = { 1.0f, 0.0f, 0.0f };
+            }
+
+            const DirectX::XMVECTOR TangentVec = DirectX::XMVector3Normalize(DirectX::XMLoadFloat3(&Tangent));
+            DirectX::XMStoreFloat4(&Vertex.Tangent, DirectX::XMVectorSetW(TangentVec, 1.0f));
+
+            Vertices.push_back(Vertex);
+        }
+    }
+
+    std::vector<uint32_t> Indices;
+    Indices.reserve(SliceCount * StackCount * 6);
+
+    for (uint32_t Stack = 0; Stack < StackCount; ++Stack)
+    {
+        for (uint32_t Slice = 0; Slice < SliceCount; ++Slice)
+        {
+            const uint32_t A = Stack * (SliceCount + 1) + Slice;
+            const uint32_t B = A + SliceCount + 1;
+
+            Indices.push_back(A);
+            Indices.push_back(B);
+            Indices.push_back(A + 1);
+
+            Indices.push_back(A + 1);
+            Indices.push_back(B);
+            Indices.push_back(B + 1);
+        }
+    }
+
+    Mesh.SetVertices(Vertices);
+    Mesh.SetIndices(Indices);
+
+    return Mesh;
+}
+
 void FMesh::GenerateTangentsIfMissing()
 {
     using namespace DirectX;

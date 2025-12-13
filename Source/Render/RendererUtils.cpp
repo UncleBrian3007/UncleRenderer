@@ -9,6 +9,7 @@
 #include "../Scene/SceneJsonLoader.h"
 #include "../Scene/Camera.h"
 #include "../Core/Logger.h"
+#include "ShaderCompiler.h"
 #include "../RHI/DX12Device.h"
 #include "../RHI/DX12Commons.h"
 #include <vector>
@@ -60,6 +61,15 @@ namespace
         const DirectX::XMVECTOR Extents = DirectX::XMVectorSet(Max.x - Min.x, Max.y - Min.y, Max.z - Min.z, 0.0f);
         OutRadius = DirectX::XMVectorGetX(DirectX::XMVector3Length(Extents)) * 0.5f;
         OutRadius = std::max(OutRadius, 1.0f);
+    }
+
+    std::wstring BuildShaderTarget(const wchar_t* StagePrefix, D3D_SHADER_MODEL ShaderModel)
+    {
+        uint32_t ShaderModelValue = static_cast<uint32_t>(ShaderModel);
+        uint32_t Major = (ShaderModelValue >> 4) & 0xF;
+        uint32_t Minor = ShaderModelValue & 0xF;
+
+        return std::wstring(StagePrefix) + L"_" + std::to_wstring(Major) + L"_" + std::to_wstring(Minor);
     }
 }
 
@@ -133,6 +143,12 @@ bool RendererUtils::CreateCubeGeometry(FDX12Device* Device, FCubeGeometryBuffers
 {
     const FMesh Cube = FMesh::CreateCube(Size);
     return CreateMeshGeometry(Device, Cube, OutGeometry);
+}
+
+bool RendererUtils::CreateSphereGeometry(FDX12Device* Device, FMeshGeometryBuffers& OutGeometry, float Radius, uint32_t SliceCount, uint32_t StackCount)
+{
+    const FMesh Sphere = FMesh::CreateSphere(Radius, SliceCount, StackCount);
+    return CreateMeshGeometry(Device, Sphere, OutGeometry);
 }
 
 bool RendererUtils::CreateDefaultSceneGeometry(FDX12Device* Device, FMeshGeometryBuffers& OutGeometry, FFloat3& OutCenter, float& OutRadius, FGltfMaterialTextures* OutTexturePaths)
@@ -362,6 +378,142 @@ bool RendererUtils::CreateMappedConstantBuffer(FDX12Device* Device, uint64_t Buf
     return true;
 }
 
+bool RendererUtils::CreateSkyAtmosphereResources(
+    FDX12Device* Device,
+    float SkySphereRadius,
+    FMeshGeometryBuffers& OutGeometry,
+    Microsoft::WRL::ComPtr<ID3D12Resource>& OutConstantBuffer,
+    uint8_t*& OutConstantBufferMapped)
+{
+    FMappedConstantBuffer SkyConstantBuffer = {};
+    if (!CreateMappedConstantBuffer(Device, sizeof(FSkyAtmosphereConstants), SkyConstantBuffer))
+    {
+        return false;
+    }
+
+    OutConstantBuffer = SkyConstantBuffer.Resource;
+    OutConstantBufferMapped = SkyConstantBuffer.MappedData;
+
+    return CreateSphereGeometry(Device, OutGeometry, SkySphereRadius, 64, 32);
+}
+
+bool RendererUtils::CreateSkyAtmospherePipeline(
+    FDX12Device* Device,
+    DXGI_FORMAT BackBufferFormat,
+    const FSkyPipelineConfig& Config,
+    Microsoft::WRL::ComPtr<ID3D12RootSignature>& OutRootSignature,
+    Microsoft::WRL::ComPtr<ID3D12PipelineState>& OutPipelineState)
+{
+    if (Device == nullptr)
+    {
+        return false;
+    }
+
+    FShaderCompiler Compiler;
+    std::vector<uint8_t> VSByteCode;
+    std::vector<uint8_t> PSByteCode;
+
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring VSTarget = BuildShaderTarget(L"vs", ShaderModel);
+    const std::wstring PSTarget = BuildShaderTarget(L"ps", ShaderModel);
+
+    if (!Compiler.CompileFromFile(L"Shaders/SkyAtmosphere.hlsl", L"VSMain", VSTarget, VSByteCode))
+    {
+        return false;
+    }
+
+    if (!Compiler.CompileFromFile(L"Shaders/SkyAtmosphere.hlsl", L"PSMain", PSTarget, PSByteCode))
+    {
+        return false;
+    }
+
+    D3D12_ROOT_PARAMETER1 RootParam = {};
+    RootParam.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    RootParam.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParam.Descriptor.ShaderRegister = 0;
+    RootParam.Descriptor.RegisterSpace = 0;
+    RootParam.Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootDesc = {};
+    RootDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    RootDesc.Desc_1_1.NumParameters = 1;
+    RootDesc.Desc_1_1.pParameters = &RootParam;
+    RootDesc.Desc_1_1.NumStaticSamplers = 0;
+    RootDesc.Desc_1_1.pStaticSamplers = nullptr;
+    RootDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    Microsoft::WRL::ComPtr<ID3DBlob> SerializedSig;
+    Microsoft::WRL::ComPtr<ID3DBlob> ErrorBlob;
+    HR_CHECK(D3D12SerializeVersionedRootSignature(&RootDesc, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
+
+    if (ErrorBlob && ErrorBlob->GetBufferSize() > 0)
+    {
+        OutputDebugStringA(static_cast<const char*>(ErrorBlob->GetBufferPointer()));
+    }
+
+    HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(OutRootSignature.GetAddressOf())));
+
+    D3D12_INPUT_ELEMENT_DESC InputLayout[] =
+    {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,   D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TANGENT",  0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
+    PsoDesc.pRootSignature = OutRootSignature.Get();
+    PsoDesc.InputLayout = { InputLayout, _countof(InputLayout) };
+    PsoDesc.VS = { VSByteCode.data(), VSByteCode.size() };
+    PsoDesc.PS = { PSByteCode.data(), PSByteCode.size() };
+    PsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    PsoDesc.SampleDesc.Count = 1;
+    PsoDesc.SampleMask = UINT_MAX;
+
+    PsoDesc.RasterizerState = {};
+    PsoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    PsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_FRONT;
+    PsoDesc.RasterizerState.FrontCounterClockwise = TRUE;
+    PsoDesc.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
+    PsoDesc.RasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
+    PsoDesc.RasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
+    PsoDesc.RasterizerState.DepthClipEnable = TRUE;
+    PsoDesc.RasterizerState.MultisampleEnable = FALSE;
+    PsoDesc.RasterizerState.AntialiasedLineEnable = FALSE;
+    PsoDesc.RasterizerState.ForcedSampleCount = 0;
+    PsoDesc.RasterizerState.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+
+    PsoDesc.BlendState = {};
+    PsoDesc.BlendState.AlphaToCoverageEnable = FALSE;
+    PsoDesc.BlendState.IndependentBlendEnable = FALSE;
+    D3D12_RENDER_TARGET_BLEND_DESC RtBlend = {};
+    RtBlend.BlendEnable = FALSE;
+    RtBlend.LogicOpEnable = FALSE;
+    RtBlend.SrcBlend = D3D12_BLEND_ONE;
+    RtBlend.DestBlend = D3D12_BLEND_ZERO;
+    RtBlend.BlendOp = D3D12_BLEND_OP_ADD;
+    RtBlend.SrcBlendAlpha = D3D12_BLEND_ONE;
+    RtBlend.DestBlendAlpha = D3D12_BLEND_ZERO;
+    RtBlend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    RtBlend.LogicOp = D3D12_LOGIC_OP_NOOP;
+    RtBlend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    PsoDesc.BlendState.RenderTarget[0] = RtBlend;
+
+    PsoDesc.DepthStencilState = {};
+    PsoDesc.DepthStencilState.DepthEnable = Config.DepthEnable;
+    PsoDesc.DepthStencilState.DepthWriteMask = Config.DepthWriteMask;
+    PsoDesc.DepthStencilState.DepthFunc = Config.DepthFunc;
+    PsoDesc.DepthStencilState.StencilEnable = FALSE;
+    PsoDesc.NumRenderTargets = 1;
+    PsoDesc.RTVFormats[0] = BackBufferFormat;
+    PsoDesc.DSVFormat = Config.DsvFormat;
+    PsoDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
+
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(OutPipelineState.GetAddressOf())));
+
+    return true;
+}
+
 void RendererUtils::UpdateSceneConstants(const FCamera& Camera, const DirectX::XMFLOAT3& BaseColor, float LightIntensity, const DirectX::XMVECTOR& LightDirection, const DirectX::XMFLOAT3& LightColor, const DirectX::XMMATRIX& WorldMatrix, uint8_t* ConstantBufferMapped)
 {
     if (ConstantBufferMapped == nullptr)
@@ -382,6 +534,34 @@ void RendererUtils::UpdateSceneConstants(const FCamera& Camera, const DirectX::X
     Constants.LightIntensity = LightIntensity;
     XMStoreFloat3(&Constants.LightDirection, XMVector3Normalize(LightDirection));
     Constants.CameraPosition = Camera.GetPosition();
+    Constants.LightColor = LightColor;
+
+    memcpy(ConstantBufferMapped, &Constants, sizeof(Constants));
+}
+
+void RendererUtils::UpdateSkyConstants(
+    const FCamera& Camera,
+    const DirectX::XMMATRIX& WorldMatrix,
+    const DirectX::XMVECTOR& LightDirection,
+    const DirectX::XMFLOAT3& LightColor,
+    uint8_t* ConstantBufferMapped)
+{
+    if (ConstantBufferMapped == nullptr)
+    {
+        return;
+    }
+
+    using namespace DirectX;
+
+    const XMMATRIX View = Camera.GetViewMatrix();
+    const XMMATRIX Projection = Camera.GetProjectionMatrix();
+
+    FSkyAtmosphereConstants Constants = {};
+    XMStoreFloat4x4(&Constants.World, WorldMatrix);
+    XMStoreFloat4x4(&Constants.View, View);
+    XMStoreFloat4x4(&Constants.Projection, Projection);
+    Constants.CameraPosition = Camera.GetPosition();
+    XMStoreFloat3(&Constants.LightDirection, XMVector3Normalize(LightDirection));
     Constants.LightColor = LightColor;
 
     memcpy(ConstantBufferMapped, &Constants, sizeof(Constants));

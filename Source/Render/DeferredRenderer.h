@@ -40,6 +40,7 @@ private:
     bool CreateDescriptorHeap(FDX12Device* Device);
     bool CreateSceneTextures(FDX12Device* Device, const std::vector<FSceneModelResource>& Models);
     void UpdateSceneConstants(const FCamera& Camera, const DirectX::XMFLOAT4X4& WorldMatrix);
+    void UpdateSkyConstants(const FCamera& Camera);
 
 private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> BasePassRootSignature;
@@ -47,10 +48,13 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> BasePassPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> LightingPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> SkyPipelineState;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> SkyRootSignature;
 
     std::vector<FSceneModelResource> SceneModels;
     std::vector<FModelTextureSet> SceneTextures;
     Microsoft::WRL::ComPtr<ID3D12Resource> ConstantBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> SkyConstantBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> DepthBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> SceneTexture;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> DescriptorHeap;
@@ -61,6 +65,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> GBufferC;
     std::unique_ptr<FTextureLoader> TextureLoader;
     bool bUseDepthPrepass = true;
+    float SkySphereRadius = 100.0f;
 
     D3D12_CPU_DESCRIPTOR_HANDLE GBufferRTVHandles[3]{};
     D3D12_GPU_DESCRIPTOR_HANDLE GBufferGpuHandles[3]{};
@@ -68,8 +73,10 @@ private:
     D3D12_RECT ScissorRect{};
 
     D3D12_RESOURCE_STATES DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    FMeshGeometryBuffers SkyGeometry;
 
     DirectX::XMFLOAT4X4 SceneWorldMatrix{};
     uint8_t* ConstantBufferMapped = nullptr;
+    uint8_t* SkyConstantBufferMapped = nullptr;
 };
 
