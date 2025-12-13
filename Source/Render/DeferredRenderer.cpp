@@ -752,6 +752,6 @@ void FDeferredRenderer::UpdateSceneConstants(const FCamera& Camera, const Direct
     const DirectX::XMVECTOR LightDir = DirectX::XMLoadFloat3(&LightDirection);
 
     const DirectX::XMMATRIX World = DirectX::XMLoadFloat4x4(&WorldMatrix);
-    RendererUtils::UpdateSceneConstants(Camera, BaseColor, LightIntensity, LightDir, World, ConstantBufferMapped);
+    RendererUtils::UpdateSceneConstants(Camera, BaseColor, LightIntensity, LightDir, LightColor, World, ConstantBufferMapped);
 }
 

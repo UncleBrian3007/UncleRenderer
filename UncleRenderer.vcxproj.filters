@@ -286,10 +286,8 @@
       <Filter>Assets</Filter>
     </None>
     <None Include="packages.config" />
-  </ItemGroup>
-  <ItemGroup>
-    <FxCompile Include="Shaders\PBRCommon.hlsl">
+    <None Include="Shaders\PBRCommon.hlsl">
       <Filter>Shaders</Filter>
-    </FxCompile>
+    </None>
   </ItemGroup>
 </Project>

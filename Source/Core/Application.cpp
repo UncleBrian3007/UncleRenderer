@@ -12,6 +12,7 @@
 #include "../Render/DeferredRenderer.h"
 #include "../Render/ForwardRenderer.h"
 #include "../Scene/Camera.h"
+#include "../Scene/SceneJsonLoader.h"
 #include "RendererConfig.h"
 #include <dxgi1_6.h>
 #include <cstdint>
@@ -63,6 +64,25 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t H
     FRendererOptions RendererOptions{};
     RendererOptions.SceneFilePath = RendererConfig.SceneFile;
     RendererOptions.bUseDepthPrepass = RendererConfig.bUseDepthPrepass;
+
+    const std::wstring SceneFilePath = RendererOptions.SceneFilePath.empty() ? L"Assets/Scenes/Scene.json" : RendererOptions.SceneFilePath;
+    RendererOptions.SceneFilePath = SceneFilePath;
+
+    FSceneLightDesc SceneLight;
+    if (FSceneJsonLoader::LoadSceneLighting(SceneFilePath, SceneLight))
+    {
+        LightIntensity = SceneLight.Intensity;
+        LightColor = DirectX::XMFLOAT3(SceneLight.Color.x, SceneLight.Color.y, SceneLight.Color.z);
+
+        DirectX::XMFLOAT3 Direction(SceneLight.Direction.x, SceneLight.Direction.y, SceneLight.Direction.z);
+        const DirectX::XMVECTOR DirectionVec = DirectX::XMVector3Normalize(DirectX::XMLoadFloat3(&Direction));
+        const float LengthSq = DirectX::XMVectorGetX(DirectX::XMVector3LengthSq(DirectionVec));
+        if (LengthSq > 0.0f)
+        {
+            LightPitch = asinf(DirectX::XMVectorGetY(DirectionVec));
+            LightYaw = atan2f(DirectX::XMVectorGetX(DirectionVec), DirectX::XMVectorGetZ(DirectionVec));
+        }
+    }
 
     LogInfo("Creating window...");
     if (!MainWindow->Create(InstanceHandle, Width, Height, L"UncleRenderer"))
@@ -412,12 +432,14 @@ void FApplication::UpdateRendererLighting() const
     {
         ForwardRenderer->SetLightDirection(Direction);
         ForwardRenderer->SetLightIntensity(LightIntensity);
+        ForwardRenderer->SetLightColor(LightColor);
     }
 
     if (DeferredRenderer)
     {
         DeferredRenderer->SetLightDirection(Direction);
         DeferredRenderer->SetLightIntensity(LightIntensity);
+        DeferredRenderer->SetLightColor(LightColor);
     }
 }
 

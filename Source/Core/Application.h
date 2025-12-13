@@ -71,5 +71,6 @@ private:
     float LightYaw = -1.19028997f;
     float LightPitch = -1.07681236f;
     float LightIntensity = 1.0f;
+    DirectX::XMFLOAT3 LightColor{ 1.0f, 1.0f, 1.0f };
 };
 

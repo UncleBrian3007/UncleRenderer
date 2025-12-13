@@ -17,6 +17,8 @@ cbuffer SceneConstants : register(b0)
     float Padding1;
     float3 CameraPosition;
     float Padding2;
+    float3 LightColor;
+    float Padding3;
 };
 
 Texture2D GBufferA : register(t0);
@@ -57,9 +59,9 @@ float4 PSMain(VSOutput Input) : SV_Target
     float3 viewPos = float3(viewX, viewY, viewZ);
 
     float3 V = normalize(-viewPos);
-    float3 L = normalize(mul(float4(-LightDirection, 0.0f), View).xyz);
+    float3 L = normalize(mul(float4(LightDirection, 0.0f), View).xyz);
 
-    float3 lighting = EvaluatePBR(albedo, metallic, roughness, F0, normal, V, L) * LightIntensity;
+    float3 lighting = EvaluatePBR(albedo, metallic, roughness, F0, normal, V, L) * LightIntensity * LightColor;
 
     float3 ambient = albedo * 0.03f;
     float3 color = lighting + ambient + 0.1;

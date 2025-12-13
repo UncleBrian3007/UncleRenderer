@@ -26,6 +26,8 @@ cbuffer SceneConstants : register(b0)
     float Padding1;
     float3 CameraPosition;
     float Padding2;
+    float3 LightColor;
+    float Padding3;
 };
 
 Texture2D AlbedoTexture : register(t0);
@@ -59,38 +61,16 @@ PSOutput PSMain(VSOutput Input)
 
     float3 vertexNormal = normalize(Input.Normal);
 
-    float3 tangent = Input.Tangent.xyz;
-    const float tangentEpsilon = 1e-5f;
-    bool bHasValidTangent = length(tangent) > tangentEpsilon;
-
-    float3 bitangent = float3(0.0f, 0.0f, 0.0f);
-    if (!bHasValidTangent)
-    {
-        float3 ddxPos = ddx(Input.WorldPos);
-        float3 ddyPos = ddy(Input.WorldPos);
-        float2 ddxUV = ddx(Input.UV);
-        float2 ddyUV = ddy(Input.UV);
-
-        tangent = ddxPos * ddyUV.y - ddyPos * ddxUV.y;
-        float3 rawBitangent = ddyPos * ddxUV.x - ddxPos * ddyUV.x;
-        bHasValidTangent = length(tangent) > tangentEpsilon && length(rawBitangent) > tangentEpsilon;
-
-        tangent = bHasValidTangent ? normalize(tangent - vertexNormal * dot(vertexNormal, tangent)) : float3(0.0f, 0.0f, 0.0f);
-        float handedness = dot(cross(vertexNormal, tangent), rawBitangent) < 0.0f ? -1.0f : 1.0f;
-        bitangent = bHasValidTangent ? normalize(cross(vertexNormal, tangent)) * handedness : float3(0.0f, 0.0f, 0.0f);
-    }
-    else
-    {
-        tangent = normalize(tangent - vertexNormal * dot(vertexNormal, tangent));
-        bitangent = normalize(cross(vertexNormal, tangent)) * Input.Tangent.w;
-    }
+    float3 tangent = normalize(Input.Tangent.xyz - vertexNormal * dot(vertexNormal, Input.Tangent.xyz));
+    float3 bitangent = normalize(cross(vertexNormal, tangent)) * Input.Tangent.w;
 
     float3 tangentNormal = NormalTexture.Sample(AlbedoSampler, Input.UV).rgb * 2.0f - 1.0f;
+    const float tangentEpsilon = 1e-5f;
     float tangentNormalLength = length(tangentNormal);
     tangentNormal = tangentNormalLength < tangentEpsilon ? float3(0.0f, 0.0f, 1.0f) : tangentNormal;
 
     float3x3 TBN = float3x3(tangent, bitangent, vertexNormal);
-    float3 worldNormal = bHasValidTangent ? mul(tangentNormal, TBN) : vertexNormal;
+    float3 worldNormal = mul(tangentNormal, TBN);
 
     float3 viewNormal = normalize(mul(normalize(worldNormal), (float3x3)View));
     float3 albedo = AlbedoTexture.Sample(AlbedoSampler, Input.UV).rgb * BaseColor;

@@ -22,6 +22,9 @@ public:
 
     static FMesh CreateCube(float Size = 1.0f);
 
+    // Generate per-vertex tangents if missing or invalid.
+    void GenerateTangentsIfMissing();
+
 private:
     std::vector<FVertex> Vertices;
     std::vector<uint32_t> Indices;

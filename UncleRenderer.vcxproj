@@ -178,7 +178,9 @@
     <None Include="Assets\Scenes\Scene.json" />
   </ItemGroup>
   <ItemGroup>
-    <FxCompile Include="Shaders\PBRCommon.hlsl" />
+    <None Include="Shaders\PBRCommon.hlsl">
+      <FileType>Document</FileType>
+    </None>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

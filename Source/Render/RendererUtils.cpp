@@ -362,7 +362,7 @@ bool RendererUtils::CreateMappedConstantBuffer(FDX12Device* Device, uint64_t Buf
     return true;
 }
 
-void RendererUtils::UpdateSceneConstants(const FCamera& Camera, const DirectX::XMFLOAT3& BaseColor, float LightIntensity, const DirectX::XMVECTOR& LightDirection, const DirectX::XMMATRIX& WorldMatrix, uint8_t* ConstantBufferMapped)
+void RendererUtils::UpdateSceneConstants(const FCamera& Camera, const DirectX::XMFLOAT3& BaseColor, float LightIntensity, const DirectX::XMVECTOR& LightDirection, const DirectX::XMFLOAT3& LightColor, const DirectX::XMMATRIX& WorldMatrix, uint8_t* ConstantBufferMapped)
 {
     if (ConstantBufferMapped == nullptr)
     {
@@ -382,6 +382,7 @@ void RendererUtils::UpdateSceneConstants(const FCamera& Camera, const DirectX::X
     Constants.LightIntensity = LightIntensity;
     XMStoreFloat3(&Constants.LightDirection, XMVector3Normalize(LightDirection));
     Constants.CameraPosition = Camera.GetPosition();
+    Constants.LightColor = LightColor;
 
     memcpy(ConstantBufferMapped, &Constants, sizeof(Constants));
 }

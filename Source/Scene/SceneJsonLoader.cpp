@@ -11,6 +11,7 @@
 #include <sstream>
 #include <string>
 #include <limits>
+#include <exception>
 
 namespace
 {
@@ -41,6 +42,25 @@ namespace
             return Match[1].str();
         }
         return {};
+    }
+
+    float ExtractFloat(const std::string& Text, const std::string& Key, float DefaultValue)
+    {
+        const std::regex Pattern("\"" + Key + "\"\\s*:\\s*([-+]?[0-9]*\\.?[0-9]+(?:[eE][-+]?[0-9]+)?)");
+        std::smatch Match;
+        if (std::regex_search(Text, Match, Pattern) && Match.size() > 1)
+        {
+            try
+            {
+                return std::stof(Match[1].str());
+            }
+            catch (const std::exception&)
+            {
+                return DefaultValue;
+            }
+        }
+
+        return DefaultValue;
     }
 
     bool ExtractBool(const std::string& Text, const std::string& Key, bool DefaultValue)
@@ -122,6 +142,60 @@ namespace
         }
         return std::string::npos;
     }
+
+    bool ExtractLights(const std::string& Contents, FSceneLightDesc& OutLight)
+    {
+        const size_t LightsKey = Contents.find("\"lights\"");
+        if (LightsKey == std::string::npos)
+        {
+            return false;
+        }
+
+        const size_t ArrayStart = Contents.find('[', LightsKey);
+        if (ArrayStart == std::string::npos)
+        {
+            return false;
+        }
+
+        const size_t ArrayEnd = FindMatchingBracket(Contents, ArrayStart);
+        if (ArrayEnd == std::string::npos || ArrayEnd <= ArrayStart)
+        {
+            return false;
+        }
+
+        const std::string LightsBlock = Contents.substr(ArrayStart + 1, ArrayEnd - ArrayStart - 1);
+        const std::regex LightRegex(R"(\{[^\{\}]*\})");
+        auto Begin = std::sregex_iterator(LightsBlock.begin(), LightsBlock.end(), LightRegex);
+        auto End = std::sregex_iterator();
+
+        for (auto It = Begin; It != End; ++It)
+        {
+            const std::smatch& Match = *It;
+            if (Match.size() < 1)
+            {
+                continue;
+            }
+
+            const std::string LightText = Match[0].str();
+            std::string Type = ExtractString(LightText, "type");
+            std::transform(Type.begin(), Type.end(), Type.begin(), [](unsigned char Char)
+            {
+                return static_cast<char>(std::tolower(Char));
+            });
+
+            if (Type != "directional")
+            {
+                continue;
+            }
+
+            OutLight.Direction = ParseVectorAttribute(LightText, "direction", OutLight.Direction);
+            OutLight.Intensity = ExtractFloat(LightText, "intensity", OutLight.Intensity);
+            OutLight.Color = ParseVectorAttribute(LightText, "color", OutLight.Color);
+            return true;
+        }
+
+        return false;
+    }
 }
 
 bool FSceneJsonLoader::LoadScene(const std::wstring& FilePath, std::vector<FSceneModelDesc>& OutModels)
@@ -197,6 +271,26 @@ bool FSceneJsonLoader::LoadScene(const std::wstring& FilePath, std::vector<FScen
     if (OutModels.empty())
     {
         LogError("No valid model entries found in scene: " + std::string(FilePath.begin(), FilePath.end()));
+        return false;
+    }
+
+    return true;
+}
+
+bool FSceneJsonLoader::LoadSceneLighting(const std::wstring& FilePath, FSceneLightDesc& OutLight)
+{
+    OutLight = FSceneLightDesc{};
+
+    const std::string Contents = ReadFileToString(FilePath);
+    if (Contents.empty())
+    {
+        LogError("Failed to read scene JSON file for lighting: " + std::string(FilePath.begin(), FilePath.end()));
+        return false;
+    }
+
+    if (!ExtractLights(Contents, OutLight))
+    {
+        LogWarning("Scene JSON does not contain a directional light; using defaults: " + std::string(FilePath.begin(), FilePath.end()));
         return false;
     }
 

@@ -36,6 +36,9 @@ public:
     void SetLightIntensity(float Intensity) { LightIntensity = Intensity; }
     float GetLightIntensity() const { return LightIntensity; }
 
+    void SetLightColor(const DirectX::XMFLOAT3& Color) { LightColor = Color; }
+    DirectX::XMFLOAT3 GetLightColor() const { return LightColor; }
+
 protected:
     D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilHandle{};
     DirectX::XMFLOAT3 SceneCenter{ 0.0f, 0.0f, 0.0f };
@@ -43,6 +46,7 @@ protected:
 
     DirectX::XMFLOAT3 LightDirection{ -0.5f, -1.0f, 0.2f };
     float LightIntensity = 1.0f;
+    DirectX::XMFLOAT3 LightColor{ 1.0f, 1.0f, 1.0f };
 
     bool bDepthPrepassEnabled = false;
 };

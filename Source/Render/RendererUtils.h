@@ -48,6 +48,8 @@ struct FSceneConstants
     float Padding1 = 0.0f;
     DirectX::XMFLOAT3 CameraPosition;
     float Padding2 = 0.0f;
+    DirectX::XMFLOAT3 LightColor{ 1.0f, 1.0f, 1.0f };
+    float Padding3 = 0.0f;
 };
 
 struct FSceneModelResource
@@ -75,6 +77,6 @@ namespace RendererUtils
         float& OutSceneRadius);
     bool CreateDepthResources(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT Format, FDepthResources& OutDepthResources);
     bool CreateMappedConstantBuffer(FDX12Device* Device, uint64_t BufferSize, FMappedConstantBuffer& OutConstantBuffer);
-    void UpdateSceneConstants(const FCamera& Camera, const DirectX::XMFLOAT3& BaseColor, float LightIntensity, const DirectX::XMVECTOR& LightDirection, const DirectX::XMMATRIX& WorldMatrix, uint8_t* ConstantBufferMapped);
+    void UpdateSceneConstants(const FCamera& Camera, const DirectX::XMFLOAT3& BaseColor, float LightIntensity, const DirectX::XMVECTOR& LightDirection, const DirectX::XMFLOAT3& LightColor, const DirectX::XMMATRIX& WorldMatrix, uint8_t* ConstantBufferMapped);
 }
 
