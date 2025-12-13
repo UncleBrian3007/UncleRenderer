@@ -249,3 +249,19 @@ bool FDX12Device::CheckTearingSupport()
     LogInfo(std::string("DXGI_PRESENT_ALLOW_TEARING : ") + (bAllowTearing ? "Enabled" : "Disabled"));
     return true;
 }
+
+bool FDX12Device::QueryLocalVideoMemory(DXGI_QUERY_VIDEO_MEMORY_INFO& OutInfo) const
+{
+    ComPtr<IDXGIAdapter3> Adapter3;
+    if (FAILED(Adapter.As(&Adapter3)))
+    {
+        return false;
+    }
+
+    if (FAILED(Adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &OutInfo)))
+    {
+        return false;
+    }
+
+    return true;
+}

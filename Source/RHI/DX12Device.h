@@ -19,6 +19,7 @@ public:
     IDXGIFactory6*       GetFactory() const { return Factory.Get(); }
     IDXGIAdapter4*       GetAdapter() const { return Adapter.Get(); }
     bool                 IsTearingSupported() const { return bAllowTearing; }
+    bool                 QueryLocalVideoMemory(DXGI_QUERY_VIDEO_MEMORY_INFO& OutInfo) const;
 
 private:
     bool LoadAgilitySDK();

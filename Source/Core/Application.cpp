@@ -591,6 +591,23 @@ void FApplication::RenderUI()
 
     ImGui::Begin("Performance", nullptr, Flags);
     ImGui::Text("FPS: %.1f", Time->GetFPS());
+
+    DXGI_QUERY_VIDEO_MEMORY_INFO LocalMemoryInfo = {};
+    if (Device && Device->QueryLocalVideoMemory(LocalMemoryInfo))
+    {
+        const double UsageMB = static_cast<double>(LocalMemoryInfo.CurrentUsage) / (1024.0 * 1024.0);
+        const double BudgetMB = static_cast<double>(LocalMemoryInfo.Budget) / (1024.0 * 1024.0);
+        const double AvailableMB = static_cast<double>(LocalMemoryInfo.AvailableForReservation) / (1024.0 * 1024.0);
+		const double ReservedMB = static_cast<double>(LocalMemoryInfo.CurrentReservation) / (1024.0 * 1024.0);
+
+        ImGui::Separator();
+        ImGui::Text("GPU Memory (Local)");
+        ImGui::Text("Usage: %.1f MB", UsageMB);
+        ImGui::Text("Budget: %.1f MB", BudgetMB);
+        ImGui::Text("Available: %.1f MB", AvailableMB);
+		ImGui::Text("Reserved: %.1f MB", ReservedMB);
+    }
+
     bool bDepthPrepass = bDepthPrepassEnabled;
     if (ImGui::Checkbox("Depth Prepass", &bDepthPrepass))
     {
