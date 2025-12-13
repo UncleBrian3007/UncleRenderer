@@ -3,6 +3,7 @@ struct VSInput
     float3 Position : POSITION;
     float3 Normal   : NORMAL;
     float2 UV       : TEXCOORD0;
+    float4 Tangent  : TANGENT;
 };
 
 struct VSOutput
@@ -11,6 +12,7 @@ struct VSOutput
     float3 Normal   : NORMAL;
     float2 UV       : TEXCOORD0;
     float3 WorldPos : TEXCOORD1;
+    float4 Tangent  : TEXCOORD2;
 };
 
 cbuffer SceneConstants : register(b0)
@@ -19,7 +21,7 @@ cbuffer SceneConstants : register(b0)
     row_major float4x4 View;
     row_major float4x4 Projection;
     float3 BaseColor;
-    float Padding0;
+    float LightIntensity;
     float3 LightDirection;
     float Padding1;
     float3 CameraPosition;
@@ -35,5 +37,6 @@ VSOutput VSMain(VSInput Input)
     Output.Normal = mul(Input.Normal, (float3x3)World);
     Output.UV = Input.UV;
     Output.WorldPos = WorldPos.xyz;
+    Output.Tangent = float4(normalize(mul(Input.Tangent.xyz, (float3x3)World)), Input.Tangent.w);
     return Output;
 }

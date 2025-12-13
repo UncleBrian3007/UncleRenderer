@@ -2,6 +2,7 @@
 
 #include "ShaderCompiler.h"
 #include "RendererUtils.h"
+#include "../Scene/GltfLoader.h"
 #include "../Scene/Camera.h"
 #include "../Scene/Mesh.h"
 #include "../RHI/DX12Device.h"
@@ -122,8 +123,8 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
         LogWarning("Falling back to default geometry; scene JSON could not be loaded.");
 
         FSceneModelResource DefaultModel;
-        std::wstring BaseColorTexturePath;
-        if (!RendererUtils::CreateDefaultSceneGeometry(Device, DefaultModel.Geometry, SceneCenter, SceneRadius, &BaseColorTexturePath))
+        FGltfMaterialTextures DefaultTextures;
+        if (!RendererUtils::CreateDefaultSceneGeometry(Device, DefaultModel.Geometry, SceneCenter, SceneRadius, &DefaultTextures))
         {
             LogError("Deferred renderer initialization failed: default scene geometry creation failed");
             return false;
@@ -132,7 +133,9 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
         const DirectX::XMMATRIX DefaultWorld = DirectX::XMMatrixTranslation(-SceneCenter.x, -SceneCenter.y, -SceneCenter.z);
         DirectX::XMStoreFloat4x4(&DefaultModel.WorldMatrix, DefaultWorld);
         DefaultModel.Center = SceneCenter;
-        DefaultModel.BaseColorTexturePath = BaseColorTexturePath;
+        DefaultModel.BaseColorTexturePath = DefaultTextures.BaseColor;
+        DefaultModel.MetallicRoughnessTexturePath = DefaultTextures.MetallicRoughness;
+        DefaultModel.NormalTexturePath = DefaultTextures.Normal;
         SceneModels.push_back(std::move(DefaultModel));
     }
 
@@ -273,7 +276,7 @@ bool FDeferredRenderer::CreateBasePassRootSignature(FDX12Device* Device)
 {
     D3D12_DESCRIPTOR_RANGE1 DescriptorRange = {};
     DescriptorRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    DescriptorRange.NumDescriptors = 1;
+    DescriptorRange.NumDescriptors = 3;
     DescriptorRange.BaseShaderRegister = 0;
     DescriptorRange.RegisterSpace = 0;
     DescriptorRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
@@ -409,6 +412,7 @@ bool FDeferredRenderer::CreateBasePassPipeline(FDX12Device* Device)
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,   D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TANGENT",  0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
     };
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
@@ -493,6 +497,7 @@ bool FDeferredRenderer::CreateDepthPrepassPipeline(FDX12Device* Device)
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,   D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TANGENT",  0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
     };
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
@@ -656,7 +661,7 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
     const UINT TextureCount = static_cast<UINT>(SceneTextures.size());
 
     D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
-    HeapDesc.NumDescriptors = TextureCount + 3;
+    HeapDesc.NumDescriptors = TextureCount * 3 + 3;
     HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(DescriptorHeap.GetAddressOf())));
@@ -673,8 +678,18 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
 
     for (size_t Index = 0; Index < SceneTextures.size(); ++Index)
     {
-        Device->GetDevice()->CreateShaderResourceView(SceneTextures[Index].Get(), &SceneSrvDesc, CpuHandle);
+        Device->GetDevice()->CreateShaderResourceView(SceneTextures[Index].BaseColor.Get(), &SceneSrvDesc, CpuHandle);
         SceneModels[Index].TextureHandle = GpuHandle;
+
+        CpuHandle.ptr += DescriptorSize;
+        GpuHandle.ptr += DescriptorSize;
+
+        Device->GetDevice()->CreateShaderResourceView(SceneTextures[Index].MetallicRoughness.Get(), &SceneSrvDesc, CpuHandle);
+
+        CpuHandle.ptr += DescriptorSize;
+        GpuHandle.ptr += DescriptorSize;
+
+        Device->GetDevice()->CreateShaderResourceView(SceneTextures[Index].Normal.Get(), &SceneSrvDesc, CpuHandle);
 
         CpuHandle.ptr += DescriptorSize;
         GpuHandle.ptr += DescriptorSize;
@@ -709,13 +724,23 @@ bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, const std::vect
 
     for (const FSceneModelResource& Model : Models)
     {
-        ComPtr<ID3D12Resource> TextureResource;
-        if (!TextureLoader->LoadOrDefault(Model.BaseColorTexturePath, TextureResource))
+        FModelTextureSet TextureSet;
+        if (!TextureLoader->LoadOrDefault(Model.BaseColorTexturePath, TextureSet.BaseColor))
         {
             return false;
         }
 
-        SceneTextures.push_back(TextureResource);
+        if (!TextureLoader->LoadOrSolidColor(Model.MetallicRoughnessTexturePath, 0xff00ff00, TextureSet.MetallicRoughness))
+        {
+            return false;
+        }
+
+        if (!TextureLoader->LoadOrSolidColor(Model.NormalTexturePath, 0xff8080ff, TextureSet.Normal))
+        {
+            return false;
+        }
+
+        SceneTextures.push_back(TextureSet);
     }
 
     return true;
@@ -724,9 +749,9 @@ bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, const std::vect
 void FDeferredRenderer::UpdateSceneConstants(const FCamera& Camera, const DirectX::XMFLOAT4X4& WorldMatrix)
 {
     const DirectX::XMFLOAT3 BaseColor = { 1.0f, 1.0f, 1.0f };
-    const DirectX::XMVECTOR LightDir = DirectX::XMVectorSet(-0.5f, -1.0f, 0.2f, 0.0f);
+    const DirectX::XMVECTOR LightDir = DirectX::XMLoadFloat3(&LightDirection);
 
     const DirectX::XMMATRIX World = DirectX::XMLoadFloat4x4(&WorldMatrix);
-    RendererUtils::UpdateSceneConstants(Camera, BaseColor, LightDir, World, ConstantBufferMapped);
+    RendererUtils::UpdateSceneConstants(Camera, BaseColor, LightIntensity, LightDir, World, ConstantBufferMapped);
 }
 

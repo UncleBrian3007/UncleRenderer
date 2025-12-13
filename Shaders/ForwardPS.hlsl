@@ -6,6 +6,7 @@ struct VSOutput
     float3 Normal   : NORMAL;
     float2 UV       : TEXCOORD0;
     float3 WorldPos : TEXCOORD1;
+    float4 Tangent  : TEXCOORD2;
 };
 
 cbuffer SceneConstants : register(b0)
@@ -14,7 +15,7 @@ cbuffer SceneConstants : register(b0)
     row_major float4x4 View;
     row_major float4x4 Projection;
     float3 BaseColor;
-    float Padding0;
+    float LightIntensity;
     float3 LightDirection;
     float Padding1;
     float3 CameraPosition;
@@ -35,7 +36,7 @@ float4 PSMain(VSOutput Input) : SV_Target
     float roughness = 0.5f;
     float3 F0 = lerp(0.04.xxx, albedo, metallic);
 
-    float3 lighting = EvaluatePBR(albedo, metallic, roughness, F0, n, v, l);
+    float3 lighting = EvaluatePBR(albedo, metallic, roughness, F0, n, v, l) * LightIntensity;
 
     float3 ambient = albedo * 0.03f;
     float3 color = lighting + ambient;

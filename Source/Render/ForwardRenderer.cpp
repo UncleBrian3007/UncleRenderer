@@ -2,6 +2,7 @@
 
 #include "ShaderCompiler.h"
 #include "RendererUtils.h"
+#include "../Scene/GltfLoader.h"
 #include "../Scene/Camera.h"
 #include "../Scene/Mesh.h"
 #include "../RHI/DX12Device.h"
@@ -83,8 +84,8 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
         LogWarning("Falling back to default geometry; scene JSON could not be loaded.");
 
         FSceneModelResource DefaultModel;
-        std::wstring BaseColorTexturePath;
-        if (!RendererUtils::CreateDefaultSceneGeometry(Device, DefaultModel.Geometry, SceneCenter, SceneRadius, &BaseColorTexturePath))
+        FGltfMaterialTextures DefaultTextures;
+        if (!RendererUtils::CreateDefaultSceneGeometry(Device, DefaultModel.Geometry, SceneCenter, SceneRadius, &DefaultTextures))
         {
             LogError("Forward renderer initialization failed: default scene geometry creation failed");
             return false;
@@ -93,7 +94,9 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
         const DirectX::XMMATRIX DefaultWorld = DirectX::XMMatrixTranslation(-SceneCenter.x, -SceneCenter.y, -SceneCenter.z);
         DirectX::XMStoreFloat4x4(&DefaultModel.WorldMatrix, DefaultWorld);
         DefaultModel.Center = SceneCenter;
-        DefaultModel.BaseColorTexturePath = BaseColorTexturePath;
+        DefaultModel.BaseColorTexturePath = DefaultTextures.BaseColor;
+        DefaultModel.MetallicRoughnessTexturePath = DefaultTextures.MetallicRoughness;
+        DefaultModel.NormalTexturePath = DefaultTextures.Normal;
         SceneModels.push_back(std::move(DefaultModel));
     }
 
@@ -273,6 +276,7 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,   D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TANGENT",  0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
     };
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
@@ -397,8 +401,8 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
 void FForwardRenderer::UpdateSceneConstants(const FCamera& Camera, const DirectX::XMFLOAT4X4& WorldMatrix)
 {
     const DirectX::XMFLOAT3 BaseColor = { 1.0f, 1.0f, 1.0f };
-    const DirectX::XMVECTOR LightDir = DirectX::XMVectorSet(-0.3f, -1.0f, -0.2f, 0.0f);
+    const DirectX::XMVECTOR LightDir = DirectX::XMLoadFloat3(&LightDirection);
 
     const DirectX::XMMATRIX World = DirectX::XMLoadFloat4x4(&WorldMatrix);
-    RendererUtils::UpdateSceneConstants(Camera, BaseColor, LightDir, World, ConstantBufferMapped);
+    RendererUtils::UpdateSceneConstants(Camera, BaseColor, LightIntensity, LightDir, World, ConstantBufferMapped);
 }

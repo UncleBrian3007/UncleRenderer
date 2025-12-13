@@ -70,6 +70,13 @@ bool FShaderCompiler::CompileFromFile(const std::wstring& FilePath, const std::w
     Arguments.push_back(DXC_ARG_WARNINGS_ARE_ERRORS);
     Arguments.push_back(L"-IShaders");
 
+#if defined(_DEBUG)
+	// Enable rich shader debugging information for PIX captures.
+	Arguments.push_back(L"-Zi");
+	Arguments.push_back(L"-Qembed_debug");
+	Arguments.push_back(L"-Od");
+#endif
+
     Microsoft::WRL::ComPtr<IDxcResult> CompileResult;
     const std::string NarrowPath = WStringToUtf8(FilePath);
     const std::string EntryPointUtf8 = WStringToUtf8(EntryPoint);

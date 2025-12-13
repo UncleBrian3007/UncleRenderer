@@ -11,6 +11,7 @@
 class FDX12Device;
 class FCamera;
 class FMesh;
+struct FGltfMaterialTextures;
 
 struct FMeshGeometryBuffers
 {
@@ -42,7 +43,7 @@ struct FSceneConstants
     DirectX::XMFLOAT4X4 View;
     DirectX::XMFLOAT4X4 Projection;
     DirectX::XMFLOAT3 BaseColor;
-    float Padding0 = 0.0f;
+    float LightIntensity = 1.0f;
     DirectX::XMFLOAT3 LightDirection;
     float Padding1 = 0.0f;
     DirectX::XMFLOAT3 CameraPosition;
@@ -56,6 +57,8 @@ struct FSceneModelResource
     DirectX::XMFLOAT3 Center{ 0.0f, 0.0f, 0.0f };
     float Radius = 1.0f;
     std::wstring BaseColorTexturePath;
+    std::wstring MetallicRoughnessTexturePath;
+    std::wstring NormalTexturePath;
     D3D12_GPU_DESCRIPTOR_HANDLE TextureHandle{};
 };
 
@@ -63,7 +66,7 @@ namespace RendererUtils
 {
     bool CreateMeshGeometry(FDX12Device* Device, const FMesh& Mesh, FMeshGeometryBuffers& OutGeometry);
     bool CreateCubeGeometry(FDX12Device* Device, FCubeGeometryBuffers& OutGeometry, float Size = 1.0f);
-    bool CreateDefaultSceneGeometry(FDX12Device* Device, FMeshGeometryBuffers& OutGeometry, FFloat3& OutCenter, float& OutRadius, std::wstring* OutTexturePath = nullptr);
+    bool CreateDefaultSceneGeometry(FDX12Device* Device, FMeshGeometryBuffers& OutGeometry, FFloat3& OutCenter, float& OutRadius, FGltfMaterialTextures* OutTexturePaths = nullptr);
     bool CreateSceneModelsFromJson(
         FDX12Device* Device,
         const std::wstring& SceneFilePath,
@@ -72,6 +75,6 @@ namespace RendererUtils
         float& OutSceneRadius);
     bool CreateDepthResources(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT Format, FDepthResources& OutDepthResources);
     bool CreateMappedConstantBuffer(FDX12Device* Device, uint64_t BufferSize, FMappedConstantBuffer& OutConstantBuffer);
-    void UpdateSceneConstants(const FCamera& Camera, const DirectX::XMFLOAT3& BaseColor, const DirectX::XMVECTOR& LightDirection, const DirectX::XMMATRIX& WorldMatrix, uint8_t* ConstantBufferMapped);
+    void UpdateSceneConstants(const FCamera& Camera, const DirectX::XMFLOAT3& BaseColor, float LightIntensity, const DirectX::XMVECTOR& LightDirection, const DirectX::XMMATRIX& WorldMatrix, uint8_t* ConstantBufferMapped);
 }
 

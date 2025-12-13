@@ -13,12 +13,14 @@ public:
     explicit FTextureLoader(FDX12Device* InDevice);
 
     bool LoadOrDefault(const std::wstring& TexturePath, Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture);
+    bool LoadOrSolidColor(const std::wstring& TexturePath, uint32_t Color, Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture);
     void ClearCache();
 
 private:
     bool TryGetCachedTexture(const std::wstring& TexturePath, Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture) const;
     bool LoadTextureInternal(const std::wstring& TexturePath, Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture);
     bool CreateDefaultGridTexture(Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture);
+    bool CreateSolidColorTexture(uint32_t Color, Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture);
 
 private:
     FDX12Device* Device = nullptr;

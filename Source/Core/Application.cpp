@@ -133,6 +133,7 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t H
         return false;
     }
 
+    UpdateRendererLighting();
     PositionCameraForScene();
 
     if (!InitializeImGui(Width, Height))
@@ -239,10 +240,32 @@ void FApplication::HandleCameraInput(float DeltaSeconds)
         return;
     }
 
+#if WITH_IMGUI
+    if (ImGuiCtx)
+    {
+        ImGui::SetCurrentContext(ImGuiCtx);
+        const ImGuiIO& Io = ImGui::GetIO();
+
+        if (Io.WantCaptureMouse || Io.WantCaptureKeyboard)
+        {
+            bIsRotatingWithMouse = false;
+            return;
+        }
+    }
+#endif
+
     auto IsKeyDown = [](int32 VirtualKey) -> bool
     {
         return (GetAsyncKeyState(VirtualKey) & 0x8000) != 0;
     };
+
+	const HWND WindowHandle = MainWindow ? MainWindow->GetHWND() : nullptr;
+	const bool bWindowInForeground = WindowHandle && GetForegroundWindow() == WindowHandle;
+	if (!bWindowInForeground)
+	{
+		bIsRotatingWithMouse = false;
+		return;
+	}
 
     using namespace DirectX;
 
@@ -371,6 +394,31 @@ void FApplication::PositionCameraForScene()
 
     CameraPitch = asinf(DirectX::XMVectorGetY(ForwardVec));
     CameraYaw = atan2f(DirectX::XMVectorGetX(ForwardVec), DirectX::XMVectorGetZ(ForwardVec));
+}
+
+DirectX::XMVECTOR FApplication::GetLightDirectionVector() const
+{
+    const DirectX::XMVECTOR Forward = DirectX::XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
+    const DirectX::XMMATRIX Rotation = DirectX::XMMatrixRotationRollPitchYaw(LightPitch, LightYaw, 0.0f);
+    return DirectX::XMVector3Normalize(DirectX::XMVector3TransformNormal(Forward, Rotation));
+}
+
+void FApplication::UpdateRendererLighting() const
+{
+    DirectX::XMFLOAT3 Direction{};
+    DirectX::XMStoreFloat3(&Direction, GetLightDirectionVector());
+
+    if (ForwardRenderer)
+    {
+        ForwardRenderer->SetLightDirection(Direction);
+        ForwardRenderer->SetLightIntensity(LightIntensity);
+    }
+
+    if (DeferredRenderer)
+    {
+        DeferredRenderer->SetLightDirection(Direction);
+        DeferredRenderer->SetLightIntensity(LightIntensity);
+    }
 }
 
 bool FApplication::EnsureImGuiFontAtlas()
@@ -535,6 +583,33 @@ void FApplication::RenderUI()
         {
             DeferredRenderer->SetDepthPrepassEnabled(bDepthPrepassEnabled);
         }
+    }
+
+    ImGui::Separator();
+    bool bLightingChanged = false;
+
+    float YawDegrees = DirectX::XMConvertToDegrees(LightYaw);
+    if (ImGui::SliderFloat("Light Yaw", &YawDegrees, -180.0f, 180.0f, "%.1f deg"))
+    {
+        LightYaw = DirectX::XMConvertToRadians(YawDegrees);
+        bLightingChanged = true;
+    }
+
+    float PitchDegrees = DirectX::XMConvertToDegrees(LightPitch);
+    if (ImGui::SliderFloat("Light Pitch", &PitchDegrees, -89.0f, 89.0f, "%.1f deg"))
+    {
+        LightPitch = DirectX::XMConvertToRadians(PitchDegrees);
+        bLightingChanged = true;
+    }
+
+    if (ImGui::SliderFloat("Light Intensity", &LightIntensity, 0.0f, 5.0f, "%.2f"))
+    {
+        bLightingChanged = true;
+    }
+
+    if (bLightingChanged)
+    {
+        UpdateRendererLighting();
     }
     ImGui::End();
 

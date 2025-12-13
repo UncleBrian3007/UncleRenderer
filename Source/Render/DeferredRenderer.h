@@ -15,6 +15,13 @@ class FDX12Device;
 class FDX12CommandContext;
 class FCamera;
 
+struct FModelTextureSet
+{
+    Microsoft::WRL::ComPtr<ID3D12Resource> BaseColor;
+    Microsoft::WRL::ComPtr<ID3D12Resource> MetallicRoughness;
+    Microsoft::WRL::ComPtr<ID3D12Resource> Normal;
+};
+
 class FDeferredRenderer : public FRenderer
 {
 public:
@@ -42,7 +49,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> LightingPipeline;
 
     std::vector<FSceneModelResource> SceneModels;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SceneTextures;
+    std::vector<FModelTextureSet> SceneTextures;
     Microsoft::WRL::ComPtr<ID3D12Resource> ConstantBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> DepthBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> SceneTexture;

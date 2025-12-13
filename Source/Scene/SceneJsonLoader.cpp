@@ -174,6 +174,8 @@ bool FSceneJsonLoader::LoadScene(const std::wstring& FilePath, std::vector<FScen
         FSceneModelDesc ModelDesc;
         ModelDesc.MeshPath = Utf8ToWide(ExtractString(ModelText, "path"));
         ModelDesc.BaseColorTexturePath = Utf8ToWide(ExtractString(ModelText, "baseColor"));
+        ModelDesc.MetallicRoughnessTexturePath = Utf8ToWide(ExtractString(ModelText, "metallicRoughness"));
+        ModelDesc.NormalTexturePath = Utf8ToWide(ExtractString(ModelText, "normal"));
         ModelDesc.bVisible = ExtractBool(ModelText, "visible", true);
 
         ModelDesc.Position = ParseVectorAttribute(ModelText, "translate", ModelDesc.Position);

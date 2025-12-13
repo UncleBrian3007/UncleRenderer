@@ -334,7 +334,35 @@ namespace
 
 }
 
-bool FGltfLoader::LoadMeshFromFile(const std::wstring& FilePath, FMesh& OutMesh, std::wstring* OutBaseColorTexturePath)
+namespace
+{
+    std::wstring ResolveTexturePath(const FJsonValue* Textures, const FJsonValue* Images, const std::filesystem::path& BasePath, int64_t TextureIndex)
+    {
+        if (TextureIndex < 0)
+        {
+            return L"";
+        }
+
+        const FJsonValue* Texture = GetArrayElem(Textures, static_cast<size_t>(TextureIndex));
+        const int64_t ImageIndex = GetIntField(Texture, "source", -1);
+        if (ImageIndex < 0)
+        {
+            return L"";
+        }
+
+        const FJsonValue* Image = GetArrayElem(Images, static_cast<size_t>(ImageIndex));
+        const std::string ImageUri = GetStringField(Image, "uri");
+        if (ImageUri.empty())
+        {
+            return L"";
+        }
+
+        const std::filesystem::path FullPath = BasePath / std::filesystem::path(ImageUri);
+        return FullPath.wstring();
+    }
+}
+
+bool FGltfLoader::LoadMeshFromFile(const std::wstring& FilePath, FMesh& OutMesh, FGltfMaterialTextures* OutMaterialTextures)
 {
     std::ifstream File(std::filesystem::path(FilePath), std::ios::binary);
     if (!File.is_open())
@@ -410,6 +438,7 @@ bool FGltfLoader::LoadMeshFromFile(const std::wstring& FilePath, FMesh& OutMesh,
     const int64_t PositionAccessorIndex = GetIntField(Attributes, "POSITION", -1);
     const int64_t NormalAccessorIndex = GetIntField(Attributes, "NORMAL", -1);
     const int64_t TexcoordAccessorIndex = GetIntField(Attributes, "TEXCOORD_0", -1);
+    const int64_t TangentAccessorIndex = GetIntField(Attributes, "TANGENT", -1);
     const int64_t PrimitiveMode = GetIntField(Primitive, "mode", 4);
     const int64_t IndicesAccessorIndex = GetIntField(Primitive, "indices", -1);
 
@@ -421,6 +450,7 @@ bool FGltfLoader::LoadMeshFromFile(const std::wstring& FilePath, FMesh& OutMesh,
     const FJsonValue* PositionAccessor = GetArrayElem(Accessors, static_cast<size_t>(PositionAccessorIndex));
     const FJsonValue* NormalAccessor = NormalAccessorIndex >= 0 ? GetArrayElem(Accessors, static_cast<size_t>(NormalAccessorIndex)) : nullptr;
     const FJsonValue* TexcoordAccessor = TexcoordAccessorIndex >= 0 ? GetArrayElem(Accessors, static_cast<size_t>(TexcoordAccessorIndex)) : nullptr;
+    const FJsonValue* TangentAccessor = TangentAccessorIndex >= 0 ? GetArrayElem(Accessors, static_cast<size_t>(TangentAccessorIndex)) : nullptr;
     const FJsonValue* IndexAccessor = GetArrayElem(Accessors, static_cast<size_t>(IndicesAccessorIndex));
 
     if (!PositionAccessor || !IndexAccessor)
@@ -431,11 +461,13 @@ bool FGltfLoader::LoadMeshFromFile(const std::wstring& FilePath, FMesh& OutMesh,
     const int64_t PositionBufferViewIndex = GetIntField(PositionAccessor, "bufferView", -1);
     const int64_t NormalBufferViewIndex = NormalAccessor ? GetIntField(NormalAccessor, "bufferView", -1) : -1;
     const int64_t TexcoordBufferViewIndex = TexcoordAccessor ? GetIntField(TexcoordAccessor, "bufferView", -1) : -1;
+    const int64_t TangentBufferViewIndex = TangentAccessor ? GetIntField(TangentAccessor, "bufferView", -1) : -1;
     const int64_t IndexBufferViewIndex = GetIntField(IndexAccessor, "bufferView", -1);
 
     const FJsonValue* PositionBufferView = GetArrayElem(BufferViews, static_cast<size_t>(PositionBufferViewIndex));
     const FJsonValue* NormalBufferView = NormalBufferViewIndex >= 0 ? GetArrayElem(BufferViews, static_cast<size_t>(NormalBufferViewIndex)) : nullptr;
     const FJsonValue* TexcoordBufferView = TexcoordBufferViewIndex >= 0 ? GetArrayElem(BufferViews, static_cast<size_t>(TexcoordBufferViewIndex)) : nullptr;
+    const FJsonValue* TangentBufferView = TangentBufferViewIndex >= 0 ? GetArrayElem(BufferViews, static_cast<size_t>(TangentBufferViewIndex)) : nullptr;
     const FJsonValue* IndexBufferView = GetArrayElem(BufferViews, static_cast<size_t>(IndexBufferViewIndex));
 
     if (!PositionBufferView || !IndexBufferView)
@@ -458,13 +490,15 @@ bool FGltfLoader::LoadMeshFromFile(const std::wstring& FilePath, FMesh& OutMesh,
     const int64_t PositionByteOffset = GetIntField(PositionAccessor, "byteOffset", 0) + GetIntField(PositionBufferView, "byteOffset", 0);
     const int64_t NormalByteOffset = (NormalAccessor ? GetIntField(NormalAccessor, "byteOffset", 0) + GetIntField(NormalBufferView, "byteOffset", 0) : 0);
     const int64_t TexcoordByteOffset = (TexcoordAccessor ? GetIntField(TexcoordAccessor, "byteOffset", 0) + GetIntField(TexcoordBufferView, "byteOffset", 0) : 0);
+    const int64_t TangentByteOffset = (TangentAccessor ? GetIntField(TangentAccessor, "byteOffset", 0) + GetIntField(TangentBufferView, "byteOffset", 0) : 0);
     const int64_t IndexByteOffset = GetIntField(IndexAccessor, "byteOffset", 0) + GetIntField(IndexBufferView, "byteOffset", 0);
 
     const int64_t PositionStride = GetIntField(PositionBufferView, "byteStride", static_cast<int64_t>(sizeof(float) * 3));
     const int64_t NormalStride = NormalBufferView ? GetIntField(NormalBufferView, "byteStride", static_cast<int64_t>(sizeof(float) * 3)) : static_cast<int64_t>(sizeof(float) * 3);
     const int64_t TexcoordStride = TexcoordBufferView ? GetIntField(TexcoordBufferView, "byteStride", static_cast<int64_t>(sizeof(float) * 2)) : static_cast<int64_t>(sizeof(float) * 2);
+    const int64_t TangentStride = TangentBufferView ? GetIntField(TangentBufferView, "byteStride", static_cast<int64_t>(sizeof(float) * 4)) : static_cast<int64_t>(sizeof(float) * 4);
 
-    if (PositionStride <= 0 || NormalStride <= 0 || TexcoordStride <= 0)
+    if (PositionStride <= 0 || NormalStride <= 0 || TexcoordStride <= 0 || TangentStride <= 0)
     {
         return false;
     }
@@ -499,6 +533,22 @@ bool FGltfLoader::LoadMeshFromFile(const std::wstring& FilePath, FMesh& OutMesh,
         else
         {
             Vertex.Normal = { 0.0f, 0.0f, 1.0f };
+        }
+
+        if (TangentAccessor && TangentBufferView)
+        {
+            const size_t Offset = static_cast<size_t>(TangentByteOffset + i * TangentStride);
+            if (Offset + sizeof(float) * 4 > BufferData.size())
+            {
+                return false;
+            }
+            float Tangent[4] = {};
+            std::memcpy(Tangent, &BufferData[Offset], sizeof(Tangent));
+            Vertex.Tangent = { Tangent[0], Tangent[1], Tangent[2], Tangent[3] };
+        }
+        else
+        {
+            Vertex.Tangent = { 0.0f, 0.0f, 0.0f, 1.0f };
         }
 
         if (TexcoordAccessor && TexcoordBufferView)
@@ -624,9 +674,11 @@ bool FGltfLoader::LoadMeshFromFile(const std::wstring& FilePath, FMesh& OutMesh,
     OutMesh.SetVertices(Vertices);
     OutMesh.SetIndices(Indices);
 
-    if (OutBaseColorTexturePath)
+    if (OutMaterialTextures)
     {
-        *OutBaseColorTexturePath = L"";
+        OutMaterialTextures->BaseColor.clear();
+        OutMaterialTextures->MetallicRoughness.clear();
+        OutMaterialTextures->Normal.clear();
 
         const FJsonValue* Materials = GetObjectField(&Root, "materials");
         const FJsonValue* Textures = GetObjectField(&Root, "textures");
@@ -639,24 +691,13 @@ bool FGltfLoader::LoadMeshFromFile(const std::wstring& FilePath, FMesh& OutMesh,
             const FJsonValue* Material = &Materials->ArrayValue[0];
             const FJsonValue* Pbr = GetObjectField(Material, "pbrMetallicRoughness");
             const FJsonValue* BaseColorTexture = GetObjectField(Pbr, "baseColorTexture");
-            const int64_t TextureIndex = GetIntField(BaseColorTexture, "index", -1);
+            const FJsonValue* MetallicRoughnessTexture = GetObjectField(Pbr, "metallicRoughnessTexture");
+            const FJsonValue* NormalTexture = GetObjectField(Material, "normalTexture");
 
-            if (TextureIndex >= 0)
-            {
-                const FJsonValue* Texture = GetArrayElem(Textures, static_cast<size_t>(TextureIndex));
-                const int64_t ImageIndex = GetIntField(Texture, "source", -1);
-                if (ImageIndex >= 0)
-                {
-                    const FJsonValue* Image = GetArrayElem(Images, static_cast<size_t>(ImageIndex));
-                    const std::string ImageUri = GetStringField(Image, "uri");
-                    if (!ImageUri.empty())
-                    {
-                        const std::filesystem::path BasePath = std::filesystem::path(FilePath).parent_path();
-                        const std::filesystem::path FullPath = BasePath / std::filesystem::path(ImageUri);
-                        *OutBaseColorTexturePath = FullPath.wstring();
-                    }
-                }
-            }
+            const std::filesystem::path BasePath = std::filesystem::path(FilePath).parent_path();
+            OutMaterialTextures->BaseColor = ResolveTexturePath(Textures, Images, BasePath, GetIntField(BaseColorTexture, "index", -1));
+            OutMaterialTextures->MetallicRoughness = ResolveTexturePath(Textures, Images, BasePath, GetIntField(MetallicRoughnessTexture, "index", -1));
+            OutMaterialTextures->Normal = ResolveTexturePath(Textures, Images, BasePath, GetIntField(NormalTexture, "index", -1));
         }
     }
 

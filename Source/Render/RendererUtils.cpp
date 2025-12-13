@@ -135,18 +135,20 @@ bool RendererUtils::CreateCubeGeometry(FDX12Device* Device, FCubeGeometryBuffers
     return CreateMeshGeometry(Device, Cube, OutGeometry);
 }
 
-bool RendererUtils::CreateDefaultSceneGeometry(FDX12Device* Device, FMeshGeometryBuffers& OutGeometry, FFloat3& OutCenter, float& OutRadius, std::wstring* OutTexturePath)
+bool RendererUtils::CreateDefaultSceneGeometry(FDX12Device* Device, FMeshGeometryBuffers& OutGeometry, FFloat3& OutCenter, float& OutRadius, FGltfMaterialTextures* OutTexturePaths)
 {
     FMesh LoadedMesh;
-    if (FGltfLoader::LoadMeshFromFile(L"Assets/Duck/Duck.gltf", LoadedMesh, OutTexturePath))
+    if (FGltfLoader::LoadMeshFromFile(L"Assets/Duck/Duck.gltf", LoadedMesh, OutTexturePaths))
     {
         ComputeMeshBounds(LoadedMesh, OutCenter, OutRadius);
         return CreateMeshGeometry(Device, LoadedMesh, OutGeometry);
     }
 
-    if (OutTexturePath)
+    if (OutTexturePaths)
     {
-        OutTexturePath->clear();
+        OutTexturePaths->BaseColor.clear();
+        OutTexturePaths->MetallicRoughness.clear();
+        OutTexturePaths->Normal.clear();
     }
 
     const FMesh Cube = FMesh::CreateCube();
@@ -200,8 +202,8 @@ bool RendererUtils::CreateSceneModelsFromJson(
         }
 
         FMesh LoadedMesh;
-        std::wstring TexturePath;
-        if (!FGltfLoader::LoadMeshFromFile(MeshPath, LoadedMesh, &TexturePath))
+        FGltfMaterialTextures TexturePaths;
+        if (!FGltfLoader::LoadMeshFromFile(MeshPath, LoadedMesh, &TexturePaths))
         {
             LogError("Failed to load mesh from scene: " + PathToUtf8String(MeshPath));
             continue;
@@ -243,7 +245,9 @@ bool RendererUtils::CreateSceneModelsFromJson(
         const XMVECTOR CenterVec = XMVector3TransformCoord(XMVectorSet(MeshCenter.x, MeshCenter.y, MeshCenter.z, 1.0f), World);
         XMStoreFloat3(&ModelResource.Center, CenterVec);
         ModelResource.Radius = MeshRadius;
-        ModelResource.BaseColorTexturePath = Model.BaseColorTexturePath.empty() ? TexturePath : Model.BaseColorTexturePath;
+        ModelResource.BaseColorTexturePath = Model.BaseColorTexturePath.empty() ? TexturePaths.BaseColor : Model.BaseColorTexturePath;
+        ModelResource.MetallicRoughnessTexturePath = Model.MetallicRoughnessTexturePath.empty() ? TexturePaths.MetallicRoughness : Model.MetallicRoughnessTexturePath;
+        ModelResource.NormalTexturePath = Model.NormalTexturePath.empty() ? TexturePaths.Normal : Model.NormalTexturePath;
 
         UpdateSceneBounds(ModelResource.Center, ModelResource.Radius, SceneMin, SceneMax);
 
@@ -358,7 +362,7 @@ bool RendererUtils::CreateMappedConstantBuffer(FDX12Device* Device, uint64_t Buf
     return true;
 }
 
-void RendererUtils::UpdateSceneConstants(const FCamera& Camera, const DirectX::XMFLOAT3& BaseColor, const DirectX::XMVECTOR& LightDirection, const DirectX::XMMATRIX& WorldMatrix, uint8_t* ConstantBufferMapped)
+void RendererUtils::UpdateSceneConstants(const FCamera& Camera, const DirectX::XMFLOAT3& BaseColor, float LightIntensity, const DirectX::XMVECTOR& LightDirection, const DirectX::XMMATRIX& WorldMatrix, uint8_t* ConstantBufferMapped)
 {
     if (ConstantBufferMapped == nullptr)
     {
@@ -375,6 +379,7 @@ void RendererUtils::UpdateSceneConstants(const FCamera& Camera, const DirectX::X
     XMStoreFloat4x4(&Constants.View, View);
     XMStoreFloat4x4(&Constants.Projection, Projection);
     Constants.BaseColor = BaseColor;
+    Constants.LightIntensity = LightIntensity;
     XMStoreFloat3(&Constants.LightDirection, XMVector3Normalize(LightDirection));
     Constants.CameraPosition = Camera.GetPosition();
 

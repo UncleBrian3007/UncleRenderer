@@ -12,7 +12,7 @@ cbuffer SceneConstants : register(b0)
     row_major float4x4 View;
     row_major float4x4 Projection;
     float3 BaseColor;
-    float Padding0;
+    float LightIntensity;
     float3 LightDirection;
     float Padding1;
     float3 CameraPosition;
@@ -59,7 +59,7 @@ float4 PSMain(VSOutput Input) : SV_Target
     float3 V = normalize(-viewPos);
     float3 L = normalize(mul(float4(-LightDirection, 0.0f), View).xyz);
 
-    float3 lighting = EvaluatePBR(albedo, metallic, roughness, F0, normal, V, L);
+    float3 lighting = EvaluatePBR(albedo, metallic, roughness, F0, normal, V, L) * LightIntensity;
 
     float3 ambient = albedo * 0.03f;
     float3 color = lighting + ambient + 0.1;

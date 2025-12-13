@@ -3,6 +3,7 @@
 #include <Windows.h>
 #include <memory>
 #include <cstdint>
+#include <DirectXMath.h>
 #include "../RHI/DX12Commons.h"
 #include "RendererConfig.h"
 
@@ -41,6 +42,8 @@ private:
     void ShutdownImGui();
     void RenderUI();
     bool EnsureImGuiFontAtlas();
+    void UpdateRendererLighting() const;
+    DirectX::XMVECTOR GetLightDirectionVector() const;
 
 private:
     std::unique_ptr<FWindow>           MainWindow;
@@ -65,5 +68,8 @@ private:
     float CameraPitch = 0.0f;
     bool bIsRotatingWithMouse = false;
     POINT LastMousePosition = {};
+    float LightYaw = -1.19028997f;
+    float LightPitch = -1.07681236f;
+    float LightIntensity = 1.0f;
 };
 

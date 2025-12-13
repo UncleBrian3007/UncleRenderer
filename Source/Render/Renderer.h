@@ -30,10 +30,19 @@ public:
     DirectX::XMFLOAT3 GetSceneCenter() const { return SceneCenter; }
     float GetSceneRadius() const { return SceneRadius; }
 
+    void SetLightDirection(const DirectX::XMFLOAT3& Direction) { LightDirection = Direction; }
+    DirectX::XMFLOAT3 GetLightDirection() const { return LightDirection; }
+
+    void SetLightIntensity(float Intensity) { LightIntensity = Intensity; }
+    float GetLightIntensity() const { return LightIntensity; }
+
 protected:
     D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilHandle{};
     DirectX::XMFLOAT3 SceneCenter{ 0.0f, 0.0f, 0.0f };
     float SceneRadius = 1.0f;
+
+    DirectX::XMFLOAT3 LightDirection{ -0.5f, -1.0f, 0.2f };
+    float LightIntensity = 1.0f;
 
     bool bDepthPrepassEnabled = false;
 };
