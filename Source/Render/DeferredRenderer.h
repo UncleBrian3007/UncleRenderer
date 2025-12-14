@@ -45,7 +45,8 @@ private:
 private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> BasePassRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> LightingRootSignature;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> BasePassPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> BasePassPipelineWithNormalMap;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> BasePassPipelineWithoutNormalMap;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> LightingPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> SkyPipelineState;

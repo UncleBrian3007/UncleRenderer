@@ -261,9 +261,12 @@ bool RendererUtils::CreateSceneModelsFromJson(
         const XMVECTOR CenterVec = XMVector3TransformCoord(XMVectorSet(MeshCenter.x, MeshCenter.y, MeshCenter.z, 1.0f), World);
         XMStoreFloat3(&ModelResource.Center, CenterVec);
         ModelResource.Radius = MeshRadius;
+        const bool bHasNormalMap = !Model.NormalTexturePath.empty() || !TexturePaths.Normal.empty();
+
         ModelResource.BaseColorTexturePath = Model.BaseColorTexturePath.empty() ? TexturePaths.BaseColor : Model.BaseColorTexturePath;
         ModelResource.MetallicRoughnessTexturePath = Model.MetallicRoughnessTexturePath.empty() ? TexturePaths.MetallicRoughness : Model.MetallicRoughnessTexturePath;
         ModelResource.NormalTexturePath = Model.NormalTexturePath.empty() ? TexturePaths.Normal : Model.NormalTexturePath;
+        ModelResource.bHasNormalMap = bHasNormalMap;
 
         UpdateSceneBounds(ModelResource.Center, ModelResource.Radius, SceneMin, SceneMax);
 
@@ -514,7 +517,14 @@ bool RendererUtils::CreateSkyAtmospherePipeline(
     return true;
 }
 
-void RendererUtils::UpdateSceneConstants(const FCamera& Camera, const DirectX::XMFLOAT3& BaseColor, float LightIntensity, const DirectX::XMVECTOR& LightDirection, const DirectX::XMFLOAT3& LightColor, const DirectX::XMMATRIX& WorldMatrix, uint8_t* ConstantBufferMapped)
+void RendererUtils::UpdateSceneConstants(
+    const FCamera& Camera,
+    const DirectX::XMFLOAT3& BaseColor,
+    float LightIntensity,
+    const DirectX::XMVECTOR& LightDirection,
+    const DirectX::XMFLOAT3& LightColor,
+    const DirectX::XMMATRIX& WorldMatrix,
+    uint8_t* ConstantBufferMapped)
 {
     if (ConstantBufferMapped == nullptr)
     {

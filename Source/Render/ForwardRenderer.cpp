@@ -98,6 +98,7 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
         DefaultModel.BaseColorTexturePath = DefaultTextures.BaseColor;
         DefaultModel.MetallicRoughnessTexturePath = DefaultTextures.MetallicRoughness;
         DefaultModel.NormalTexturePath = DefaultTextures.Normal;
+        DefaultModel.bHasNormalMap = !DefaultTextures.Normal.empty();
         SceneModels.push_back(std::move(DefaultModel));
     }
 

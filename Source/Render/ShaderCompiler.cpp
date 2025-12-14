@@ -39,7 +39,12 @@ FShaderCompiler::FShaderCompiler()
     }
 }
 
-bool FShaderCompiler::CompileFromFile(const std::wstring& FilePath, const std::wstring& EntryPoint, const std::wstring& Target, std::vector<uint8_t>& OutByteCode)
+bool FShaderCompiler::CompileFromFile(
+    const std::wstring& FilePath,
+    const std::wstring& EntryPoint,
+    const std::wstring& Target,
+    std::vector<uint8_t>& OutByteCode,
+    const std::vector<std::wstring>& Defines)
 {
     if (!Utils || !Compiler)
     {
@@ -69,12 +74,17 @@ bool FShaderCompiler::CompileFromFile(const std::wstring& FilePath, const std::w
     Arguments.push_back(TargetArg.c_str());
     Arguments.push_back(DXC_ARG_WARNINGS_ARE_ERRORS);
     Arguments.push_back(L"-IShaders");
+    for (const std::wstring& Define : Defines)
+    {
+        Arguments.push_back(L"-D");
+        Arguments.push_back(Define.c_str());
+    }
 
 #if defined(_DEBUG)
-	// Enable rich shader debugging information for PIX captures.
-	Arguments.push_back(L"-Zi");
-	Arguments.push_back(L"-Qembed_debug");
-	Arguments.push_back(L"-Od");
+        // Enable rich shader debugging information for PIX captures.
+        Arguments.push_back(L"-Zi");
+        Arguments.push_back(L"-Qembed_debug");
+        Arguments.push_back(L"-Od");
 #endif
 
     Microsoft::WRL::ComPtr<IDxcResult> CompileResult;
@@ -118,3 +128,4 @@ bool FShaderCompiler::CompileFromFile(const std::wstring& FilePath, const std::w
     memcpy(OutByteCode.data(), ShaderBlob->GetBufferPointer(), ShaderBlob->GetBufferSize());
     return true;
 }
+

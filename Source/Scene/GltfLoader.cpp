@@ -968,6 +968,7 @@ bool FGltfLoader::LoadMeshFromFile(const std::wstring& FilePath, FMesh& OutMesh,
 
     OutMesh.SetVertices(Vertices);
     OutMesh.SetIndices(Indices);
+    OutMesh.GenerateNormalsIfMissing();
     OutMesh.GenerateTangentsIfMissing();
 
     if (OutMaterialTextures)

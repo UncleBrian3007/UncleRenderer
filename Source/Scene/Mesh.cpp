@@ -7,6 +7,14 @@
 
 namespace
 {
+    bool IsNormalValid(const FFloat3& Normal)
+    {
+        using namespace DirectX;
+        const XMVECTOR NormalVec = XMLoadFloat3(&Normal);
+        const float LengthSq = XMVectorGetX(XMVector3LengthSq(NormalVec));
+        return LengthSq > 1e-6f;
+    }
+
     bool IsTangentValid(const FFloat4& Tangent)
     {
         using namespace DirectX;
@@ -177,6 +185,58 @@ FMesh FMesh::CreateSphere(float Radius, uint32_t SliceCount, uint32_t StackCount
     Mesh.SetIndices(Indices);
 
     return Mesh;
+}
+
+void FMesh::GenerateNormalsIfMissing()
+{
+    using namespace DirectX;
+
+    if (Vertices.empty() || Indices.size() < 3)
+    {
+        return;
+    }
+
+    const bool bAllNormalsValid = std::all_of(Vertices.begin(), Vertices.end(), [](const FVertex& Vertex)
+    {
+        return IsNormalValid(Vertex.Normal);
+    });
+
+    if (bAllNormalsValid)
+    {
+        return;
+    }
+
+    std::vector<XMVECTOR> NormalAccum(Vertices.size(), XMVectorZero());
+
+    for (size_t i = 0; i + 2 < Indices.size(); i += 3)
+    {
+        const uint32_t Index0 = Indices[i];
+        const uint32_t Index1 = Indices[i + 1];
+        const uint32_t Index2 = Indices[i + 2];
+
+        const XMVECTOR P0 = XMLoadFloat3(&Vertices[Index0].Position);
+        const XMVECTOR P1 = XMLoadFloat3(&Vertices[Index1].Position);
+        const XMVECTOR P2 = XMLoadFloat3(&Vertices[Index2].Position);
+
+        const XMVECTOR Edge1 = XMVectorSubtract(P1, P0);
+        const XMVECTOR Edge2 = XMVectorSubtract(P2, P0);
+        const XMVECTOR FaceNormal = XMVector3Cross(Edge1, Edge2);
+
+        NormalAccum[Index0] = XMVectorAdd(NormalAccum[Index0], FaceNormal);
+        NormalAccum[Index1] = XMVectorAdd(NormalAccum[Index1], FaceNormal);
+        NormalAccum[Index2] = XMVectorAdd(NormalAccum[Index2], FaceNormal);
+    }
+
+    for (size_t i = 0; i < Vertices.size(); ++i)
+    {
+        XMVECTOR Normal = NormalAccum[i];
+        if (XMVector3LessOrEqual(XMVector3LengthSq(Normal), XMVectorReplicate(1e-8f)))
+        {
+            Normal = XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
+        }
+        Normal = XMVector3Normalize(Normal);
+        XMStoreFloat3(&Vertices[i].Normal, Normal);
+    }
 }
 
 void FMesh::GenerateTangentsIfMissing()

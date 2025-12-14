@@ -15,6 +15,10 @@ struct VSOutput
     float4 Tangent  : TEXCOORD2;
 };
 
+#ifndef USE_NORMAL_MAP
+#define USE_NORMAL_MAP 1
+#endif
+
 cbuffer SceneConstants : register(b0)
 {
     row_major float4x4 World;
@@ -55,12 +59,11 @@ struct PSOutput
     float4 GBufferC : SV_Target2; // BaseColor
 };
 
-PSOutput PSMain(VSOutput Input)
+float3 ComputeViewNormal(VSOutput Input)
 {
-    PSOutput Output;
-
     float3 vertexNormal = normalize(Input.Normal);
 
+#if USE_NORMAL_MAP
     float3 tangent = normalize(Input.Tangent.xyz - vertexNormal * dot(vertexNormal, Input.Tangent.xyz));
     float3 bitangent = normalize(cross(vertexNormal, tangent)) * Input.Tangent.w;
 
@@ -72,7 +75,17 @@ PSOutput PSMain(VSOutput Input)
     float3x3 TBN = float3x3(tangent, bitangent, vertexNormal);
     float3 worldNormal = mul(tangentNormal, TBN);
 
-    float3 viewNormal = normalize(mul(normalize(worldNormal), (float3x3)View));
+    return normalize(mul(normalize(worldNormal), (float3x3)View));
+#else
+    return normalize(mul(vertexNormal, (float3x3)View));
+#endif
+}
+
+PSOutput PSMain(VSOutput Input)
+{
+    PSOutput Output;
+
+    float3 viewNormal = ComputeViewNormal(Input);
     float3 albedo = AlbedoTexture.Sample(AlbedoSampler, Input.UV).rgb * BaseColor;
 
     float viewDepth = -mul(float4(Input.WorldPos, 1.0), View).z;

@@ -82,6 +82,7 @@ struct FSceneModelResource
     std::wstring BaseColorTexturePath;
     std::wstring MetallicRoughnessTexturePath;
     std::wstring NormalTexturePath;
+    bool bHasNormalMap = true;
     D3D12_GPU_DESCRIPTOR_HANDLE TextureHandle{};
 };
 
@@ -116,7 +117,14 @@ namespace RendererUtils
         const FSkyPipelineConfig& Config,
         Microsoft::WRL::ComPtr<ID3D12RootSignature>& OutRootSignature,
         Microsoft::WRL::ComPtr<ID3D12PipelineState>& OutPipelineState);
-    void UpdateSceneConstants(const FCamera& Camera, const DirectX::XMFLOAT3& BaseColor, float LightIntensity, const DirectX::XMVECTOR& LightDirection, const DirectX::XMFLOAT3& LightColor, const DirectX::XMMATRIX& WorldMatrix, uint8_t* ConstantBufferMapped);
+    void UpdateSceneConstants(
+        const FCamera& Camera,
+        const DirectX::XMFLOAT3& BaseColor,
+        float LightIntensity,
+        const DirectX::XMVECTOR& LightDirection,
+        const DirectX::XMFLOAT3& LightColor,
+        const DirectX::XMMATRIX& WorldMatrix,
+        uint8_t* ConstantBufferMapped);
     void UpdateSkyConstants(
         const FCamera& Camera,
         const DirectX::XMMATRIX& WorldMatrix,

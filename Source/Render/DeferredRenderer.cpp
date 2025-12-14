@@ -137,6 +137,7 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
         DefaultModel.BaseColorTexturePath = DefaultTextures.BaseColor;
         DefaultModel.MetallicRoughnessTexturePath = DefaultTextures.MetallicRoughness;
         DefaultModel.NormalTexturePath = DefaultTextures.Normal;
+        DefaultModel.bHasNormalMap = !DefaultTextures.Normal.empty();
         SceneModels.push_back(std::move(DefaultModel));
     }
 
@@ -242,7 +243,6 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         CmdContext.ClearRenderTarget(Handle, ClearValue);
     }
 
-    CommandList->SetPipelineState(BasePassPipeline.Get());
     CommandList->SetGraphicsRootSignature(BasePassRootSignature.Get());
 
     ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
@@ -254,9 +254,17 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
     CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     CommandList->OMSetRenderTargets(3, GBufferRTVHandles, FALSE, &DepthStencilHandle);
 
+    ID3D12PipelineState* CurrentPipeline = nullptr;
     for (const FSceneModelResource& Model : SceneModels)
     {
         UpdateSceneConstants(Camera, Model.WorldMatrix);
+
+        ID3D12PipelineState* DesiredPipeline = Model.bHasNormalMap ? BasePassPipelineWithNormalMap.Get() : BasePassPipelineWithoutNormalMap.Get();
+        if (DesiredPipeline != CurrentPipeline)
+        {
+            CommandList->SetPipelineState(DesiredPipeline);
+            CurrentPipeline = DesiredPipeline;
+        }
 
         CommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
         CommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
@@ -431,7 +439,8 @@ bool FDeferredRenderer::CreateBasePassPipeline(FDX12Device* Device)
 {
     FShaderCompiler Compiler;
     std::vector<uint8_t> VSByteCode;
-    std::vector<uint8_t> PSByteCode;
+    std::vector<uint8_t> PSByteCodeWithNormalMap;
+    std::vector<uint8_t> PSByteCodeWithoutNormalMap;
 
     const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
     const std::wstring VSTarget = BuildShaderTarget(L"vs", ShaderModel);
@@ -442,7 +451,15 @@ bool FDeferredRenderer::CreateBasePassPipeline(FDX12Device* Device)
         return false;
     }
 
-    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"PSMain", PSTarget, PSByteCode))
+    const std::vector<std::wstring> WithNormalDefines = { L"USE_NORMAL_MAP=1" };
+    const std::vector<std::wstring> WithoutNormalDefines = { L"USE_NORMAL_MAP=0" };
+
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"PSMain", PSTarget, PSByteCodeWithNormalMap, WithNormalDefines))
+    {
+        return false;
+    }
+
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"PSMain", PSTarget, PSByteCodeWithoutNormalMap, WithoutNormalDefines))
     {
         return false;
     }
@@ -455,67 +472,76 @@ bool FDeferredRenderer::CreateBasePassPipeline(FDX12Device* Device)
         { "TANGENT",  0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
     };
 
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
-    PsoDesc.pRootSignature = BasePassRootSignature.Get();
-    PsoDesc.InputLayout = { InputLayout, _countof(InputLayout) };
-    PsoDesc.VS = { VSByteCode.data(), VSByteCode.size() };
-    PsoDesc.PS = { PSByteCode.data(), PSByteCode.size() };
-    PsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    PsoDesc.SampleDesc.Count = 1;
-    PsoDesc.SampleMask = UINT_MAX;
-
-    PsoDesc.RasterizerState = {};
-    PsoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    PsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
-    PsoDesc.RasterizerState.FrontCounterClockwise = TRUE;
-    PsoDesc.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
-    PsoDesc.RasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
-    PsoDesc.RasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
-    PsoDesc.RasterizerState.DepthClipEnable = TRUE;
-    PsoDesc.RasterizerState.MultisampleEnable = FALSE;
-    PsoDesc.RasterizerState.AntialiasedLineEnable = FALSE;
-    PsoDesc.RasterizerState.ForcedSampleCount = 0;
-    PsoDesc.RasterizerState.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
-
-    PsoDesc.BlendState = {};
-    PsoDesc.BlendState.AlphaToCoverageEnable = FALSE;
-    PsoDesc.BlendState.IndependentBlendEnable = TRUE;
-    for (int i = 0; i < 3; ++i)
+    auto InitializeBasePassDesc = [&](D3D12_GRAPHICS_PIPELINE_STATE_DESC& Desc)
     {
-        D3D12_RENDER_TARGET_BLEND_DESC RtBlend = {};
-        RtBlend.BlendEnable = FALSE;
-        RtBlend.LogicOpEnable = FALSE;
-        RtBlend.SrcBlend = D3D12_BLEND_ONE;
-        RtBlend.DestBlend = D3D12_BLEND_ZERO;
-        RtBlend.BlendOp = D3D12_BLEND_OP_ADD;
-        RtBlend.SrcBlendAlpha = D3D12_BLEND_ONE;
-        RtBlend.DestBlendAlpha = D3D12_BLEND_ZERO;
-        RtBlend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
-        RtBlend.LogicOp = D3D12_LOGIC_OP_NOOP;
-        RtBlend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-        PsoDesc.BlendState.RenderTarget[i] = RtBlend;
-    }
+        Desc = {};
+        Desc.pRootSignature = BasePassRootSignature.Get();
+        Desc.InputLayout = { InputLayout, _countof(InputLayout) };
+        Desc.VS = { VSByteCode.data(), VSByteCode.size() };
+        Desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        Desc.SampleDesc.Count = 1;
+        Desc.SampleMask = UINT_MAX;
 
-    PsoDesc.DepthStencilState = {};
-    PsoDesc.DepthStencilState.DepthEnable = TRUE;
-    PsoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-    PsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
-    PsoDesc.DepthStencilState.StencilEnable = FALSE;
-    PsoDesc.DepthStencilState.StencilReadMask = D3D12_DEFAULT_STENCIL_READ_MASK;
-    PsoDesc.DepthStencilState.StencilWriteMask = D3D12_DEFAULT_STENCIL_WRITE_MASK;
-    PsoDesc.DepthStencilState.FrontFace.StencilFailOp = D3D12_STENCIL_OP_KEEP;
-    PsoDesc.DepthStencilState.FrontFace.StencilDepthFailOp = D3D12_STENCIL_OP_KEEP;
-    PsoDesc.DepthStencilState.FrontFace.StencilPassOp = D3D12_STENCIL_OP_KEEP;
-    PsoDesc.DepthStencilState.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS;
-    PsoDesc.DepthStencilState.BackFace = PsoDesc.DepthStencilState.FrontFace;
-    PsoDesc.NumRenderTargets = 3;
-    PsoDesc.RTVFormats[0] = GBufferFormats[0];
-    PsoDesc.RTVFormats[1] = GBufferFormats[1];
-    PsoDesc.RTVFormats[2] = GBufferFormats[2];
-    PsoDesc.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
-    PsoDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
+        Desc.RasterizerState = {};
+        Desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+        Desc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+        Desc.RasterizerState.FrontCounterClockwise = TRUE;
+        Desc.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
+        Desc.RasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
+        Desc.RasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
+        Desc.RasterizerState.DepthClipEnable = TRUE;
+        Desc.RasterizerState.MultisampleEnable = FALSE;
+        Desc.RasterizerState.AntialiasedLineEnable = FALSE;
+        Desc.RasterizerState.ForcedSampleCount = 0;
+        Desc.RasterizerState.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
 
-    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipeline.GetAddressOf())));
+        Desc.BlendState = {};
+        Desc.BlendState.AlphaToCoverageEnable = FALSE;
+        Desc.BlendState.IndependentBlendEnable = TRUE;
+        for (int i = 0; i < 3; ++i)
+        {
+            D3D12_RENDER_TARGET_BLEND_DESC RtBlend = {};
+            RtBlend.BlendEnable = FALSE;
+            RtBlend.LogicOpEnable = FALSE;
+            RtBlend.SrcBlend = D3D12_BLEND_ONE;
+            RtBlend.DestBlend = D3D12_BLEND_ZERO;
+            RtBlend.BlendOp = D3D12_BLEND_OP_ADD;
+            RtBlend.SrcBlendAlpha = D3D12_BLEND_ONE;
+            RtBlend.DestBlendAlpha = D3D12_BLEND_ZERO;
+            RtBlend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+            RtBlend.LogicOp = D3D12_LOGIC_OP_NOOP;
+            RtBlend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+            Desc.BlendState.RenderTarget[i] = RtBlend;
+        }
+
+        Desc.DepthStencilState = {};
+        Desc.DepthStencilState.DepthEnable = TRUE;
+        Desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+        Desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+        Desc.DepthStencilState.StencilEnable = FALSE;
+        Desc.DepthStencilState.StencilReadMask = D3D12_DEFAULT_STENCIL_READ_MASK;
+        Desc.DepthStencilState.StencilWriteMask = D3D12_DEFAULT_STENCIL_WRITE_MASK;
+        Desc.DepthStencilState.FrontFace.StencilFailOp = D3D12_STENCIL_OP_KEEP;
+        Desc.DepthStencilState.FrontFace.StencilDepthFailOp = D3D12_STENCIL_OP_KEEP;
+        Desc.DepthStencilState.FrontFace.StencilPassOp = D3D12_STENCIL_OP_KEEP;
+        Desc.DepthStencilState.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+        Desc.DepthStencilState.BackFace = Desc.DepthStencilState.FrontFace;
+        Desc.NumRenderTargets = 3;
+        Desc.RTVFormats[0] = GBufferFormats[0];
+        Desc.RTVFormats[1] = GBufferFormats[1];
+        Desc.RTVFormats[2] = GBufferFormats[2];
+        Desc.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
+        Desc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
+    InitializeBasePassDesc(PsoDesc);
+    PsoDesc.PS = { PSByteCodeWithNormalMap.data(), PSByteCodeWithNormalMap.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipelineWithNormalMap.GetAddressOf())));
+
+    InitializeBasePassDesc(PsoDesc);
+    PsoDesc.PS = { PSByteCodeWithoutNormalMap.data(), PSByteCodeWithoutNormalMap.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipelineWithoutNormalMap.GetAddressOf())));
     return true;
 }
 
