@@ -2,8 +2,10 @@
 #include "Mesh.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdint>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -332,6 +334,220 @@ namespace
         return &Array->ArrayValue[Index];
     }
 
+    using FMatrix4 = std::array<float, 16>;
+
+    FMatrix4 MakeIdentityMatrix()
+    {
+        return { 1.0f, 0.0f, 0.0f, 0.0f,
+                 0.0f, 1.0f, 0.0f, 0.0f,
+                 0.0f, 0.0f, 1.0f, 0.0f,
+                 0.0f, 0.0f, 0.0f, 1.0f };
+    }
+
+    FMatrix4 MultiplyMatrix(const FMatrix4& A, const FMatrix4& B)
+    {
+        // Column-major multiplication (A * B)
+        FMatrix4 Result{};
+        for (int Col = 0; Col < 4; ++Col)
+        {
+            for (int Row = 0; Row < 4; ++Row)
+            {
+                float Sum = 0.0f;
+                for (int k = 0; k < 4; ++k)
+                {
+                    Sum += A[k * 4 + Row] * B[Col * 4 + k];
+                }
+                Result[Col * 4 + Row] = Sum;
+            }
+        }
+        return Result;
+    }
+
+    FMatrix4 MatrixFromQuaternion(float x, float y, float z, float w)
+    {
+        const float xx = x * x;
+        const float yy = y * y;
+        const float zz = z * z;
+        const float xy = x * y;
+        const float xz = x * z;
+        const float yz = y * z;
+        const float wx = w * x;
+        const float wy = w * y;
+        const float wz = w * z;
+
+        return {
+            1.0f - 2.0f * (yy + zz), 2.0f * (xy + wz),       2.0f * (xz - wy),       0.0f,
+            2.0f * (xy - wz),       1.0f - 2.0f * (xx + zz), 2.0f * (yz + wx),       0.0f,
+            2.0f * (xz + wy),       2.0f * (yz - wx),       1.0f - 2.0f * (xx + yy), 0.0f,
+            0.0f,                   0.0f,                   0.0f,                   1.0f
+        };
+    }
+
+    FMatrix4 MatrixFromTRS(const FJsonValue* Node)
+    {
+        if (!Node || !Node->IsObject())
+        {
+            return MakeIdentityMatrix();
+        }
+
+        const FJsonValue* MatrixValue = Node->Find("matrix");
+        if (MatrixValue && MatrixValue->IsArray() && MatrixValue->ArrayValue.size() == 16)
+        {
+            FMatrix4 M{};
+            for (size_t i = 0; i < 16; ++i)
+            {
+                M[i] = static_cast<float>(MatrixValue->ArrayValue[i].NumberValue);
+            }
+            return M;
+        }
+
+        const FJsonValue* Translation = Node->Find("translation");
+        const FJsonValue* Rotation = Node->Find("rotation");
+        const FJsonValue* Scale = Node->Find("scale");
+
+        const float tx = (Translation && Translation->IsArray() && Translation->ArrayValue.size() == 3)
+            ? static_cast<float>(Translation->ArrayValue[0].NumberValue)
+            : 0.0f;
+        const float ty = (Translation && Translation->IsArray() && Translation->ArrayValue.size() == 3)
+            ? static_cast<float>(Translation->ArrayValue[1].NumberValue)
+            : 0.0f;
+        const float tz = (Translation && Translation->IsArray() && Translation->ArrayValue.size() == 3)
+            ? static_cast<float>(Translation->ArrayValue[2].NumberValue)
+            : 0.0f;
+
+        const float sx = (Scale && Scale->IsArray() && Scale->ArrayValue.size() == 3)
+            ? static_cast<float>(Scale->ArrayValue[0].NumberValue)
+            : 1.0f;
+        const float sy = (Scale && Scale->IsArray() && Scale->ArrayValue.size() == 3)
+            ? static_cast<float>(Scale->ArrayValue[1].NumberValue)
+            : 1.0f;
+        const float sz = (Scale && Scale->IsArray() && Scale->ArrayValue.size() == 3)
+            ? static_cast<float>(Scale->ArrayValue[2].NumberValue)
+            : 1.0f;
+
+        const float rx = (Rotation && Rotation->IsArray() && Rotation->ArrayValue.size() == 4)
+            ? static_cast<float>(Rotation->ArrayValue[0].NumberValue)
+            : 0.0f;
+        const float ry = (Rotation && Rotation->IsArray() && Rotation->ArrayValue.size() == 4)
+            ? static_cast<float>(Rotation->ArrayValue[1].NumberValue)
+            : 0.0f;
+        const float rz = (Rotation && Rotation->IsArray() && Rotation->ArrayValue.size() == 4)
+            ? static_cast<float>(Rotation->ArrayValue[2].NumberValue)
+            : 0.0f;
+        const float rw = (Rotation && Rotation->IsArray() && Rotation->ArrayValue.size() == 4)
+            ? static_cast<float>(Rotation->ArrayValue[3].NumberValue)
+            : 1.0f;
+
+        const FMatrix4 T = { 1.0f, 0.0f, 0.0f, 0.0f,
+                             0.0f, 1.0f, 0.0f, 0.0f,
+                             0.0f, 0.0f, 1.0f, 0.0f,
+                             tx,   ty,   tz,   1.0f };
+
+        const FMatrix4 S = { sx,   0.0f, 0.0f, 0.0f,
+                             0.0f, sy,   0.0f, 0.0f,
+                             0.0f, 0.0f, sz,   0.0f,
+                             0.0f, 0.0f, 0.0f, 1.0f };
+
+        const FMatrix4 R = MatrixFromQuaternion(rx, ry, rz, rw);
+
+        // glTF uses column-major matrices with column vectors; compose as T * R * S
+        return MultiplyMatrix(MultiplyMatrix(T, R), S);
+    }
+
+    FFloat3 TransformPosition(const FMatrix4& M, const FFloat3& P)
+    {
+        FFloat3 Out;
+        Out.x = M[0] * P.x + M[4] * P.y + M[8]  * P.z + M[12];
+        Out.y = M[1] * P.x + M[5] * P.y + M[9]  * P.z + M[13];
+        Out.z = M[2] * P.x + M[6] * P.y + M[10] * P.z + M[14];
+        return Out;
+    }
+
+    FFloat3 TransformDirection(const FMatrix4& M, const FFloat3& D)
+    {
+        FFloat3 Out;
+        Out.x = M[0] * D.x + M[4] * D.y + M[8]  * D.z;
+        Out.y = M[1] * D.x + M[5] * D.y + M[9]  * D.z;
+        Out.z = M[2] * D.x + M[6] * D.y + M[10] * D.z;
+
+        const float Length = std::sqrt(Out.x * Out.x + Out.y * Out.y + Out.z * Out.z);
+        if (Length > 0.0f)
+        {
+            Out.x /= Length;
+            Out.y /= Length;
+            Out.z /= Length;
+        }
+        return Out;
+    }
+
+    struct FMeshData
+    {
+        std::vector<FMesh::FVertex> Vertices;
+        std::vector<uint32_t> Indices;
+    };
+
+    void AppendMeshWithTransform(
+        const std::vector<FMesh::FVertex>& BaseVertices,
+        const std::vector<uint32_t>& BaseIndices,
+        const FMatrix4& Transform,
+        std::vector<FMesh::FVertex>& OutVertices,
+        std::vector<uint32_t>& OutIndices)
+    {
+        const uint32_t IndexOffset = static_cast<uint32_t>(OutVertices.size());
+
+        for (const FMesh::FVertex& Vertex : BaseVertices)
+        {
+            FMesh::FVertex Transformed = Vertex;
+            Transformed.Position = TransformPosition(Transform, Vertex.Position);
+            Transformed.Normal = TransformDirection(Transform, Vertex.Normal);
+            const FFloat3 TransformedTangent = TransformDirection(Transform, FFloat3(Vertex.Tangent.x, Vertex.Tangent.y, Vertex.Tangent.z));
+            Transformed.Tangent = FFloat4(TransformedTangent.x, TransformedTangent.y, TransformedTangent.z, Vertex.Tangent.w);
+            OutVertices.push_back(Transformed);
+        }
+
+        for (uint32_t Index : BaseIndices)
+        {
+            OutIndices.push_back(Index + IndexOffset);
+        }
+    }
+
+    void ProcessNodeRecursive(
+        const FJsonValue* Nodes,
+        int64_t NodeIndex,
+        const FMatrix4& ParentTransform,
+        const std::vector<FMeshData>& MeshDatas,
+        std::vector<FMesh::FVertex>& OutVertices,
+        std::vector<uint32_t>& OutIndices)
+    {
+        const FJsonValue* Node = GetArrayElem(Nodes, static_cast<size_t>(NodeIndex));
+        if (!Node || !Node->IsObject())
+        {
+            return;
+        }
+
+        const FMatrix4 Local = MatrixFromTRS(Node);
+        const FMatrix4 World = MultiplyMatrix(ParentTransform, Local);
+
+        const int64_t MeshIndex = GetIntField(Node, "mesh", -1);
+        if (MeshIndex >= 0 && MeshIndex < static_cast<int64_t>(MeshDatas.size()))
+        {
+            const FMeshData& MeshData = MeshDatas[static_cast<size_t>(MeshIndex)];
+            if (!MeshData.Vertices.empty() && !MeshData.Indices.empty())
+            {
+                AppendMeshWithTransform(MeshData.Vertices, MeshData.Indices, World, OutVertices, OutIndices);
+            }
+        }
+
+        const FJsonValue* Children = GetObjectField(Node, "children");
+        if (Children && Children->IsArray())
+        {
+            for (size_t i = 0; i < Children->ArrayValue.size(); ++i)
+            {
+                const int64_t ChildIndex = static_cast<int64_t>(Children->ArrayValue[i].NumberValue);
+                ProcessNodeRecursive(Nodes, ChildIndex, World, MeshDatas, OutVertices, OutIndices);
+            }
+        }
+    }
 }
 
 namespace
@@ -425,250 +641,316 @@ bool FGltfLoader::LoadMeshFromFile(const std::wstring& FilePath, FMesh& OutMesh,
         return false;
     }
 
-    const FJsonValue* Mesh = GetArrayElem(Meshes, 0);
-    const FJsonValue* Primitives = GetObjectField(Mesh, "primitives");
-    const FJsonValue* Primitive = GetArrayElem(Primitives, 0);
-    const FJsonValue* Attributes = GetObjectField(Primitive, "attributes");
-
-    if (!Primitive || !Attributes || !Primitive->IsObject())
+    const auto AppendPrimitiveToMesh = [&](const FJsonValue* Primitive, FMeshData& MeshData) -> bool
     {
-        return false;
-    }
-
-    const int64_t PositionAccessorIndex = GetIntField(Attributes, "POSITION", -1);
-    const int64_t NormalAccessorIndex = GetIntField(Attributes, "NORMAL", -1);
-    const int64_t TexcoordAccessorIndex = GetIntField(Attributes, "TEXCOORD_0", -1);
-    const int64_t TangentAccessorIndex = GetIntField(Attributes, "TANGENT", -1);
-    const int64_t PrimitiveMode = GetIntField(Primitive, "mode", 4);
-    const int64_t IndicesAccessorIndex = GetIntField(Primitive, "indices", -1);
-
-    if (PositionAccessorIndex < 0 || IndicesAccessorIndex < 0)
-    {
-        return false;
-    }
-
-    const FJsonValue* PositionAccessor = GetArrayElem(Accessors, static_cast<size_t>(PositionAccessorIndex));
-    const FJsonValue* NormalAccessor = NormalAccessorIndex >= 0 ? GetArrayElem(Accessors, static_cast<size_t>(NormalAccessorIndex)) : nullptr;
-    const FJsonValue* TexcoordAccessor = TexcoordAccessorIndex >= 0 ? GetArrayElem(Accessors, static_cast<size_t>(TexcoordAccessorIndex)) : nullptr;
-    const FJsonValue* TangentAccessor = TangentAccessorIndex >= 0 ? GetArrayElem(Accessors, static_cast<size_t>(TangentAccessorIndex)) : nullptr;
-    const FJsonValue* IndexAccessor = GetArrayElem(Accessors, static_cast<size_t>(IndicesAccessorIndex));
-
-    if (!PositionAccessor || !IndexAccessor)
-    {
-        return false;
-    }
-
-    const int64_t PositionBufferViewIndex = GetIntField(PositionAccessor, "bufferView", -1);
-    const int64_t NormalBufferViewIndex = NormalAccessor ? GetIntField(NormalAccessor, "bufferView", -1) : -1;
-    const int64_t TexcoordBufferViewIndex = TexcoordAccessor ? GetIntField(TexcoordAccessor, "bufferView", -1) : -1;
-    const int64_t TangentBufferViewIndex = TangentAccessor ? GetIntField(TangentAccessor, "bufferView", -1) : -1;
-    const int64_t IndexBufferViewIndex = GetIntField(IndexAccessor, "bufferView", -1);
-
-    const FJsonValue* PositionBufferView = GetArrayElem(BufferViews, static_cast<size_t>(PositionBufferViewIndex));
-    const FJsonValue* NormalBufferView = NormalBufferViewIndex >= 0 ? GetArrayElem(BufferViews, static_cast<size_t>(NormalBufferViewIndex)) : nullptr;
-    const FJsonValue* TexcoordBufferView = TexcoordBufferViewIndex >= 0 ? GetArrayElem(BufferViews, static_cast<size_t>(TexcoordBufferViewIndex)) : nullptr;
-    const FJsonValue* TangentBufferView = TangentBufferViewIndex >= 0 ? GetArrayElem(BufferViews, static_cast<size_t>(TangentBufferViewIndex)) : nullptr;
-    const FJsonValue* IndexBufferView = GetArrayElem(BufferViews, static_cast<size_t>(IndexBufferViewIndex));
-
-    if (!PositionBufferView || !IndexBufferView)
-    {
-        return false;
-    }
-
-    const int64_t PositionCount = GetIntField(PositionAccessor, "count", 0);
-    if (PositionCount <= 0)
-    {
-        return false;
-    }
-
-    const int64_t IndexCount = GetIntField(IndexAccessor, "count", 0);
-    if (IndexCount <= 0)
-    {
-        return false;
-    }
-
-    const int64_t PositionByteOffset = GetIntField(PositionAccessor, "byteOffset", 0) + GetIntField(PositionBufferView, "byteOffset", 0);
-    const int64_t NormalByteOffset = (NormalAccessor ? GetIntField(NormalAccessor, "byteOffset", 0) + GetIntField(NormalBufferView, "byteOffset", 0) : 0);
-    const int64_t TexcoordByteOffset = (TexcoordAccessor ? GetIntField(TexcoordAccessor, "byteOffset", 0) + GetIntField(TexcoordBufferView, "byteOffset", 0) : 0);
-    const int64_t TangentByteOffset = (TangentAccessor ? GetIntField(TangentAccessor, "byteOffset", 0) + GetIntField(TangentBufferView, "byteOffset", 0) : 0);
-    const int64_t IndexByteOffset = GetIntField(IndexAccessor, "byteOffset", 0) + GetIntField(IndexBufferView, "byteOffset", 0);
-
-    const int64_t PositionStride = GetIntField(PositionBufferView, "byteStride", static_cast<int64_t>(sizeof(float) * 3));
-    const int64_t NormalStride = NormalBufferView ? GetIntField(NormalBufferView, "byteStride", static_cast<int64_t>(sizeof(float) * 3)) : static_cast<int64_t>(sizeof(float) * 3);
-    const int64_t TexcoordStride = TexcoordBufferView ? GetIntField(TexcoordBufferView, "byteStride", static_cast<int64_t>(sizeof(float) * 2)) : static_cast<int64_t>(sizeof(float) * 2);
-    const int64_t TangentStride = TangentBufferView ? GetIntField(TangentBufferView, "byteStride", static_cast<int64_t>(sizeof(float) * 4)) : static_cast<int64_t>(sizeof(float) * 4);
-
-    if (PositionStride <= 0 || NormalStride <= 0 || TexcoordStride <= 0 || TangentStride <= 0)
-    {
-        return false;
-    }
-
-    std::vector<FMesh::FVertex> Vertices;
-    Vertices.reserve(static_cast<size_t>(PositionCount));
-
-    for (int64_t i = 0; i < PositionCount; ++i)
-    {
-        const size_t PositionOffset = static_cast<size_t>(PositionByteOffset + i * PositionStride);
-        if (PositionOffset + sizeof(float) * 3 > BufferData.size())
+        if (!Primitive || !Primitive->IsObject())
         {
             return false;
         }
 
-        FMesh::FVertex Vertex{};
-        float Position[3] = {};
-        std::memcpy(Position, &BufferData[PositionOffset], sizeof(Position));
-        Vertex.Position = { Position[0], Position[1], Position[2] };
-
-        if (NormalAccessor && NormalBufferView)
+        const FJsonValue* Attributes = GetObjectField(Primitive, "attributes");
+        if (!Attributes || !Attributes->IsObject())
         {
-            const size_t Offset = static_cast<size_t>(NormalByteOffset + i * NormalStride);
-            if (Offset + sizeof(float) * 3 > BufferData.size())
+            return false;
+        }
+
+        const int64_t PositionAccessorIndex = GetIntField(Attributes, "POSITION", -1);
+        const int64_t NormalAccessorIndex = GetIntField(Attributes, "NORMAL", -1);
+        const int64_t TexcoordAccessorIndex = GetIntField(Attributes, "TEXCOORD_0", -1);
+        const int64_t TangentAccessorIndex = GetIntField(Attributes, "TANGENT", -1);
+        const int64_t PrimitiveMode = GetIntField(Primitive, "mode", 4);
+        const int64_t IndicesAccessorIndex = GetIntField(Primitive, "indices", -1);
+
+        if (PositionAccessorIndex < 0 || IndicesAccessorIndex < 0)
+        {
+            return false;
+        }
+
+        const FJsonValue* PositionAccessor = GetArrayElem(Accessors, static_cast<size_t>(PositionAccessorIndex));
+        const FJsonValue* NormalAccessor = NormalAccessorIndex >= 0 ? GetArrayElem(Accessors, static_cast<size_t>(NormalAccessorIndex)) : nullptr;
+        const FJsonValue* TexcoordAccessor = TexcoordAccessorIndex >= 0 ? GetArrayElem(Accessors, static_cast<size_t>(TexcoordAccessorIndex)) : nullptr;
+        const FJsonValue* TangentAccessor = TangentAccessorIndex >= 0 ? GetArrayElem(Accessors, static_cast<size_t>(TangentAccessorIndex)) : nullptr;
+        const FJsonValue* IndexAccessor = GetArrayElem(Accessors, static_cast<size_t>(IndicesAccessorIndex));
+
+        if (!PositionAccessor || !IndexAccessor)
+        {
+            return false;
+        }
+
+        const int64_t PositionBufferViewIndex = GetIntField(PositionAccessor, "bufferView", -1);
+        const int64_t NormalBufferViewIndex = NormalAccessor ? GetIntField(NormalAccessor, "bufferView", -1) : -1;
+        const int64_t TexcoordBufferViewIndex = TexcoordAccessor ? GetIntField(TexcoordAccessor, "bufferView", -1) : -1;
+        const int64_t TangentBufferViewIndex = TangentAccessor ? GetIntField(TangentAccessor, "bufferView", -1) : -1;
+        const int64_t IndexBufferViewIndex = GetIntField(IndexAccessor, "bufferView", -1);
+
+        const FJsonValue* PositionBufferView = GetArrayElem(BufferViews, static_cast<size_t>(PositionBufferViewIndex));
+        const FJsonValue* NormalBufferView = NormalBufferViewIndex >= 0 ? GetArrayElem(BufferViews, static_cast<size_t>(NormalBufferViewIndex)) : nullptr;
+        const FJsonValue* TexcoordBufferView = TexcoordBufferViewIndex >= 0 ? GetArrayElem(BufferViews, static_cast<size_t>(TexcoordBufferViewIndex)) : nullptr;
+        const FJsonValue* TangentBufferView = TangentBufferViewIndex >= 0 ? GetArrayElem(BufferViews, static_cast<size_t>(TangentBufferViewIndex)) : nullptr;
+        const FJsonValue* IndexBufferView = GetArrayElem(BufferViews, static_cast<size_t>(IndexBufferViewIndex));
+
+        if (!PositionBufferView || !IndexBufferView)
+        {
+            return false;
+        }
+
+        const int64_t PositionCount = GetIntField(PositionAccessor, "count", 0);
+        if (PositionCount <= 0)
+        {
+            return false;
+        }
+
+        const int64_t IndexCount = GetIntField(IndexAccessor, "count", 0);
+        if (IndexCount <= 0)
+        {
+            return false;
+        }
+
+        const int64_t PositionByteOffset = GetIntField(PositionAccessor, "byteOffset", 0) + GetIntField(PositionBufferView, "byteOffset", 0);
+        const int64_t NormalByteOffset = (NormalAccessor ? GetIntField(NormalAccessor, "byteOffset", 0) + GetIntField(NormalBufferView, "byteOffset", 0) : 0);
+        const int64_t TexcoordByteOffset = (TexcoordAccessor ? GetIntField(TexcoordAccessor, "byteOffset", 0) + GetIntField(TexcoordBufferView, "byteOffset", 0) : 0);
+        const int64_t TangentByteOffset = (TangentAccessor ? GetIntField(TangentAccessor, "byteOffset", 0) + GetIntField(TangentBufferView, "byteOffset", 0) : 0);
+        const int64_t IndexByteOffset = GetIntField(IndexAccessor, "byteOffset", 0) + GetIntField(IndexBufferView, "byteOffset", 0);
+
+        const int64_t PositionStride = GetIntField(PositionBufferView, "byteStride", static_cast<int64_t>(sizeof(float) * 3));
+        const int64_t NormalStride = NormalBufferView ? GetIntField(NormalBufferView, "byteStride", static_cast<int64_t>(sizeof(float) * 3)) : static_cast<int64_t>(sizeof(float) * 3);
+        const int64_t TexcoordStride = TexcoordBufferView ? GetIntField(TexcoordBufferView, "byteStride", static_cast<int64_t>(sizeof(float) * 2)) : static_cast<int64_t>(sizeof(float) * 2);
+        const int64_t TangentStride = TangentBufferView ? GetIntField(TangentBufferView, "byteStride", static_cast<int64_t>(sizeof(float) * 4)) : static_cast<int64_t>(sizeof(float) * 4);
+
+        if (PositionStride <= 0 || NormalStride <= 0 || TexcoordStride <= 0 || TangentStride <= 0)
+        {
+            return false;
+        }
+
+        const uint32_t VertexOffset = static_cast<uint32_t>(MeshData.Vertices.size());
+        MeshData.Vertices.reserve(MeshData.Vertices.size() + static_cast<size_t>(PositionCount));
+
+        for (int64_t i = 0; i < PositionCount; ++i)
+        {
+            const size_t PositionOffset = static_cast<size_t>(PositionByteOffset + i * PositionStride);
+            if (PositionOffset + sizeof(float) * 3 > BufferData.size())
             {
                 return false;
             }
-            float Normal[3] = {};
-            std::memcpy(Normal, &BufferData[Offset], sizeof(Normal));
-            Vertex.Normal = { Normal[0], Normal[1], Normal[2] };
-        }
-        else
-        {
-            Vertex.Normal = { 0.0f, 0.0f, 1.0f };
-        }
 
-        if (TangentAccessor && TangentBufferView)
-        {
-            const size_t Offset = static_cast<size_t>(TangentByteOffset + i * TangentStride);
-            if (Offset + sizeof(float) * 4 > BufferData.size())
+            FMesh::FVertex Vertex{};
+            float Position[3] = {};
+            std::memcpy(Position, &BufferData[PositionOffset], sizeof(Position));
+            Vertex.Position = { Position[0], Position[1], Position[2] };
+
+            if (NormalAccessor && NormalBufferView)
             {
-                return false;
-            }
-            float Tangent[4] = {};
-            std::memcpy(Tangent, &BufferData[Offset], sizeof(Tangent));
-            Vertex.Tangent = { Tangent[0], Tangent[1], Tangent[2], Tangent[3] };
-        }
-        else
-        {
-            Vertex.Tangent = { 0.0f, 0.0f, 0.0f, 1.0f };
-        }
-
-        if (TexcoordAccessor && TexcoordBufferView)
-        {
-            const size_t Offset = static_cast<size_t>(TexcoordByteOffset + i * TexcoordStride);
-            if (Offset + sizeof(float) * 2 > BufferData.size())
-            {
-                return false;
-            }
-            float UV[2] = {};
-            std::memcpy(UV, &BufferData[Offset], sizeof(UV));
-            Vertex.UV = { UV[0], UV[1] };
-        }
-        else
-        {
-            Vertex.UV = { 0.0f, 0.0f };
-        }
-
-        Vertices.push_back(Vertex);
-    }
-
-    std::vector<uint32_t> RawIndices;
-    RawIndices.reserve(static_cast<size_t>(IndexCount));
-
-    const int64_t ComponentType = GetIntField(IndexAccessor, "componentType", 5125);
-    const size_t ComponentSize = (ComponentType == 5121) ? 1 : (ComponentType == 5123 ? 2 : 4);
-
-    for (int64_t i = 0; i < IndexCount; ++i)
-    {
-        const size_t Offset = static_cast<size_t>(IndexByteOffset + i * ComponentSize);
-        if (Offset + ComponentSize > BufferData.size())
-        {
-            return false;
-        }
-
-        uint32_t Index = 0;
-        switch (ComponentType)
-        {
-        case 5121: // UNSIGNED_BYTE
-            Index = BufferData[Offset];
-            break;
-        case 5123: // UNSIGNED_SHORT
-        {
-            uint16_t Value = 0;
-            std::memcpy(&Value, &BufferData[Offset], sizeof(uint16_t));
-            Index = Value;
-            break;
-        }
-        default: // 5125 UNSIGNED_INT
-        {
-            uint32_t Value = 0;
-            std::memcpy(&Value, &BufferData[Offset], sizeof(uint32_t));
-            Index = Value;
-            break;
-        }
-        }
-
-        RawIndices.push_back(Index);
-    }
-
-    std::vector<uint32_t> Indices;
-    switch (PrimitiveMode)
-    {
-    case 4: // TRIANGLES
-    {
-        if (RawIndices.size() % 3 != 0)
-        {
-            return false;
-        }
-        Indices = RawIndices;
-        break;
-    }
-    case 5: // TRIANGLE_STRIP
-    {
-        if (RawIndices.size() < 3)
-        {
-            return false;
-        }
-        for (size_t i = 2; i < RawIndices.size(); ++i)
-        {
-            const bool bEven = (i % 2) == 0;
-            const uint32_t i0 = RawIndices[i - 2];
-            const uint32_t i1 = RawIndices[i - 1];
-            const uint32_t i2 = RawIndices[i];
-            if (bEven)
-            {
-                Indices.push_back(i0);
-                Indices.push_back(i1);
-                Indices.push_back(i2);
+                const size_t Offset = static_cast<size_t>(NormalByteOffset + i * NormalStride);
+                if (Offset + sizeof(float) * 3 > BufferData.size())
+                {
+                    return false;
+                }
+                float Normal[3] = {};
+                std::memcpy(Normal, &BufferData[Offset], sizeof(Normal));
+                Vertex.Normal = { Normal[0], Normal[1], Normal[2] };
             }
             else
             {
-                Indices.push_back(i1);
-                Indices.push_back(i0);
-                Indices.push_back(i2);
+                Vertex.Normal = { 0.0f, 0.0f, 1.0f };
             }
+
+            if (TangentAccessor && TangentBufferView)
+            {
+                const size_t Offset = static_cast<size_t>(TangentByteOffset + i * TangentStride);
+                if (Offset + sizeof(float) * 4 > BufferData.size())
+                {
+                    return false;
+                }
+                float Tangent[4] = {};
+                std::memcpy(Tangent, &BufferData[Offset], sizeof(Tangent));
+                Vertex.Tangent = { Tangent[0], Tangent[1], Tangent[2], Tangent[3] };
+            }
+            else
+            {
+                Vertex.Tangent = { 0.0f, 0.0f, 0.0f, 1.0f };
+            }
+
+            if (TexcoordAccessor && TexcoordBufferView)
+            {
+                const size_t Offset = static_cast<size_t>(TexcoordByteOffset + i * TexcoordStride);
+                if (Offset + sizeof(float) * 2 > BufferData.size())
+                {
+                    return false;
+                }
+                float UV[2] = {};
+                std::memcpy(UV, &BufferData[Offset], sizeof(UV));
+                Vertex.UV = { UV[0], UV[1] };
+            }
+            else
+            {
+                Vertex.UV = { 0.0f, 0.0f };
+            }
+
+            MeshData.Vertices.push_back(Vertex);
         }
-        break;
-    }
-    case 6: // TRIANGLE_FAN
+
+        std::vector<uint32_t> RawIndices;
+        RawIndices.reserve(static_cast<size_t>(IndexCount));
+
+        const int64_t ComponentType = GetIntField(IndexAccessor, "componentType", 5125);
+        const size_t ComponentSize = (ComponentType == 5121) ? 1 : (ComponentType == 5123 ? 2 : 4);
+
+        for (int64_t i = 0; i < IndexCount; ++i)
+        {
+            const size_t Offset = static_cast<size_t>(IndexByteOffset + i * ComponentSize);
+            if (Offset + ComponentSize > BufferData.size())
+            {
+                return false;
+            }
+
+            uint32_t Index = 0;
+            switch (ComponentType)
+            {
+            case 5121: // UNSIGNED_BYTE
+                Index = BufferData[Offset];
+                break;
+            case 5123: // UNSIGNED_SHORT
+            {
+                uint16_t Value = 0;
+                std::memcpy(&Value, &BufferData[Offset], sizeof(uint16_t));
+                Index = Value;
+                break;
+            }
+            default: // 5125 UNSIGNED_INT
+            {
+                uint32_t Value = 0;
+                std::memcpy(&Value, &BufferData[Offset], sizeof(uint32_t));
+                Index = Value;
+                break;
+            }
+            }
+
+            RawIndices.push_back(Index + VertexOffset);
+        }
+
+        const size_t IndexStart = MeshData.Indices.size();
+
+        switch (PrimitiveMode)
+        {
+        case 4: // TRIANGLES
+        {
+            if (RawIndices.size() % 3 != 0)
+            {
+                return false;
+            }
+            MeshData.Indices.insert(MeshData.Indices.end(), RawIndices.begin(), RawIndices.end());
+            break;
+        }
+        case 5: // TRIANGLE_STRIP
+        {
+            if (RawIndices.size() < 3)
+            {
+                return false;
+            }
+            for (size_t i = 2; i < RawIndices.size(); ++i)
+            {
+                const bool bEven = (i % 2) == 0;
+                const uint32_t i0 = RawIndices[i - 2];
+                const uint32_t i1 = RawIndices[i - 1];
+                const uint32_t i2 = RawIndices[i];
+                if (bEven)
+                {
+                    MeshData.Indices.push_back(i0);
+                    MeshData.Indices.push_back(i1);
+                    MeshData.Indices.push_back(i2);
+                }
+                else
+                {
+                    MeshData.Indices.push_back(i1);
+                    MeshData.Indices.push_back(i0);
+                    MeshData.Indices.push_back(i2);
+                }
+            }
+            break;
+        }
+        case 6: // TRIANGLE_FAN
+        {
+            if (RawIndices.size() < 3)
+            {
+                return false;
+            }
+            for (size_t i = 2; i < RawIndices.size(); ++i)
+            {
+                MeshData.Indices.push_back(RawIndices[0]);
+                MeshData.Indices.push_back(RawIndices[i - 1]);
+                MeshData.Indices.push_back(RawIndices[i]);
+            }
+            break;
+        }
+        default:
+            return false;
+        }
+
+        for (size_t i = IndexStart; i + 2 < MeshData.Indices.size(); i += 3)
+        {
+            std::swap(MeshData.Indices[i + 1], MeshData.Indices[i + 2]);
+        }
+
+        return true;
+    };
+
+    std::vector<FMeshData> MeshDatas;
+    MeshDatas.resize(Meshes->ArrayValue.size());
+
+    for (size_t MeshIndex = 0; MeshIndex < Meshes->ArrayValue.size(); ++MeshIndex)
     {
-        if (RawIndices.size() < 3)
+        const FJsonValue* Mesh = GetArrayElem(Meshes, MeshIndex);
+        const FJsonValue* Primitives = GetObjectField(Mesh, "primitives");
+        if (!Primitives || !Primitives->IsArray())
         {
             return false;
         }
-        for (size_t i = 2; i < RawIndices.size(); ++i)
+
+        for (const FJsonValue& PrimitiveValue : Primitives->ArrayValue)
         {
-            Indices.push_back(RawIndices[0]);
-            Indices.push_back(RawIndices[i - 1]);
-            Indices.push_back(RawIndices[i]);
+            if (!AppendPrimitiveToMesh(&PrimitiveValue, MeshDatas[MeshIndex]))
+            {
+                return false;
+            }
         }
-        break;
-    }
-    default:
-        return false;
     }
 
-    for (size_t i = 0; i + 2 < Indices.size(); i += 3)
+    std::vector<FMesh::FVertex> Vertices;
+    std::vector<uint32_t> Indices;
+
+    if (!MeshDatas.empty())
     {
-        std::swap(Indices[i + 1], Indices[i + 2]);
+        Vertices = MeshDatas.front().Vertices;
+        Indices = MeshDatas.front().Indices;
+    }
+
+    std::vector<FMesh::FVertex> FinalVertices;
+    std::vector<uint32_t> FinalIndices;
+
+    const FJsonValue* Nodes = GetObjectField(&Root, "nodes");
+    const FJsonValue* Scenes = GetObjectField(&Root, "scenes");
+    const int64_t SceneIndex = GetIntField(&Root, "scene", 0);
+
+    bool bUsedNodes = false;
+    if (Nodes && Nodes->IsArray() && Scenes && Scenes->IsArray())
+    {
+        const FJsonValue* Scene = GetArrayElem(Scenes, static_cast<size_t>(SceneIndex));
+        const FJsonValue* SceneNodes = GetObjectField(Scene, "nodes");
+        if (SceneNodes && SceneNodes->IsArray())
+        {
+            for (const FJsonValue& NodeValue : SceneNodes->ArrayValue)
+            {
+                const int64_t NodeIndex = static_cast<int64_t>(NodeValue.NumberValue);
+                ProcessNodeRecursive(Nodes, NodeIndex, MakeIdentityMatrix(), MeshDatas, FinalVertices, FinalIndices);
+            }
+            bUsedNodes = !FinalVertices.empty() && !FinalIndices.empty();
+        }
+    }
+
+    if (bUsedNodes)
+    {
+        Vertices = std::move(FinalVertices);
+        Indices = std::move(FinalIndices);
     }
 
     OutMesh.SetVertices(Vertices);
