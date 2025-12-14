@@ -28,7 +28,7 @@ private:
     bool CreateRootSignature(FDX12Device* Device);
     bool CreatePipelineState(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateSceneTextures(FDX12Device* Device, const std::vector<FSceneModelResource>& Models);
-    void UpdateSceneConstants(const FCamera& Camera, const DirectX::XMFLOAT4X4& WorldMatrix);
+    void UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model);
     void UpdateSkyConstants(const FCamera& Camera);
 
 private:

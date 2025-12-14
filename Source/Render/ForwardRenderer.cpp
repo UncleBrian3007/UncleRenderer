@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <cmath>
 
 FForwardRenderer::FForwardRenderer() = default;
 
@@ -95,10 +96,14 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
         const DirectX::XMMATRIX DefaultWorld = DirectX::XMMatrixTranslation(-SceneCenter.x, -SceneCenter.y, -SceneCenter.z);
         DirectX::XMStoreFloat4x4(&DefaultModel.WorldMatrix, DefaultWorld);
         DefaultModel.Center = SceneCenter;
-        DefaultModel.BaseColorTexturePath = DefaultTextures.BaseColor;
-        DefaultModel.MetallicRoughnessTexturePath = DefaultTextures.MetallicRoughness;
-        DefaultModel.NormalTexturePath = DefaultTextures.Normal;
-        DefaultModel.bHasNormalMap = !DefaultTextures.Normal.empty();
+        const FGltfMaterialTextureSet DefaultTextureSet = DefaultTextures.PerMesh.empty() ? FGltfMaterialTextureSet{} : DefaultTextures.PerMesh.front();
+        DefaultModel.BaseColorTexturePath = DefaultTextureSet.BaseColor;
+        DefaultModel.MetallicRoughnessTexturePath = DefaultTextureSet.MetallicRoughness;
+        DefaultModel.NormalTexturePath = DefaultTextureSet.Normal;
+        DefaultModel.BaseColorFactor = { 1.0f, 1.0f, 1.0f };
+        DefaultModel.MetallicFactor = 0.0f;
+        DefaultModel.RoughnessFactor = 1.0f;
+        DefaultModel.bHasNormalMap = !DefaultTextureSet.Normal.empty();
         SceneModels.push_back(std::move(DefaultModel));
     }
 
@@ -166,7 +171,7 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
 
         for (const FSceneModelResource& Model : SceneModels)
         {
-            UpdateSceneConstants(Camera, Model.WorldMatrix);
+            UpdateSceneConstants(Camera, Model);
 
             CommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
             CommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
@@ -215,7 +220,7 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
 
     for (const FSceneModelResource& Model : SceneModels)
     {
-        UpdateSceneConstants(Camera, Model.WorldMatrix);
+        UpdateSceneConstants(Camera, Model);
 
         PixSetMarker(CommandList, L"DrawMesh");
         CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -416,8 +421,30 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
 
     for (size_t Index = 0; Index < Models.size(); ++Index)
     {
+        const auto ClampToByte = [](float Value)
+        {
+            const float Clamped = (std::max)(0.0f, (std::min)(1.0f, Value));
+            return static_cast<uint32_t>(std::round(Clamped * 255.0f));
+        };
+
+        const auto PackColor = [&ClampToByte](const DirectX::XMFLOAT3& Color)
+        {
+            const uint32_t R = ClampToByte(Color.x);
+            const uint32_t G = ClampToByte(Color.y);
+            const uint32_t B = ClampToByte(Color.z);
+            return 0xff000000 | (R << 16) | (G << 8) | B;
+        };
+
         Microsoft::WRL::ComPtr<ID3D12Resource> TextureResource;
-        if (!TextureLoader->LoadOrDefault(Models[Index].BaseColorTexturePath, TextureResource))
+        if (Models[Index].BaseColorTexturePath.empty())
+        {
+            const uint32_t BaseColorValue = PackColor(Models[Index].BaseColorFactor);
+            if (!TextureLoader->LoadOrSolidColor(Models[Index].BaseColorTexturePath, BaseColorValue, TextureResource))
+            {
+                return false;
+            }
+        }
+        else if (!TextureLoader->LoadOrDefault(Models[Index].BaseColorTexturePath, TextureResource))
         {
             return false;
         }
@@ -434,12 +461,12 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
     return true;
 }
 
-void FForwardRenderer::UpdateSceneConstants(const FCamera& Camera, const DirectX::XMFLOAT4X4& WorldMatrix)
+void FForwardRenderer::UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model)
 {
-    const DirectX::XMFLOAT3 BaseColor = { 1.0f, 1.0f, 1.0f };
+    const DirectX::XMFLOAT3 BaseColor = Model.BaseColorFactor;
     const DirectX::XMVECTOR LightDir = DirectX::XMLoadFloat3(&LightDirection);
 
-    const DirectX::XMMATRIX World = DirectX::XMLoadFloat4x4(&WorldMatrix);
+    const DirectX::XMMATRIX World = DirectX::XMLoadFloat4x4(&Model.WorldMatrix);
     RendererUtils::UpdateSceneConstants(Camera, BaseColor, LightIntensity, LightDir, LightColor, World, ConstantBufferMapped);
 }
 

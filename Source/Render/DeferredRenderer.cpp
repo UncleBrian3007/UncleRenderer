@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <cmath>
 
 using Microsoft::WRL::ComPtr;
 
@@ -134,10 +135,14 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
         const DirectX::XMMATRIX DefaultWorld = DirectX::XMMatrixTranslation(-SceneCenter.x, -SceneCenter.y, -SceneCenter.z);
         DirectX::XMStoreFloat4x4(&DefaultModel.WorldMatrix, DefaultWorld);
         DefaultModel.Center = SceneCenter;
-        DefaultModel.BaseColorTexturePath = DefaultTextures.BaseColor;
-        DefaultModel.MetallicRoughnessTexturePath = DefaultTextures.MetallicRoughness;
-        DefaultModel.NormalTexturePath = DefaultTextures.Normal;
-        DefaultModel.bHasNormalMap = !DefaultTextures.Normal.empty();
+        const FGltfMaterialTextureSet DefaultTextureSet = DefaultTextures.PerMesh.empty() ? FGltfMaterialTextureSet{} : DefaultTextures.PerMesh.front();
+        DefaultModel.BaseColorTexturePath = DefaultTextureSet.BaseColor;
+        DefaultModel.MetallicRoughnessTexturePath = DefaultTextureSet.MetallicRoughness;
+        DefaultModel.NormalTexturePath = DefaultTextureSet.Normal;
+        DefaultModel.BaseColorFactor = { 1.0f, 1.0f, 1.0f };
+        DefaultModel.MetallicFactor = 0.0f;
+        DefaultModel.RoughnessFactor = 1.0f;
+        DefaultModel.bHasNormalMap = !DefaultTextureSet.Normal.empty();
         SceneModels.push_back(std::move(DefaultModel));
     }
 
@@ -214,7 +219,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
         for (const FSceneModelResource& Model : SceneModels)
         {
-            UpdateSceneConstants(Camera, Model.WorldMatrix);
+            UpdateSceneConstants(Camera, Model);
 
             CommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
             CommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
@@ -257,7 +262,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
     ID3D12PipelineState* CurrentPipeline = nullptr;
     for (const FSceneModelResource& Model : SceneModels)
     {
-        UpdateSceneConstants(Camera, Model.WorldMatrix);
+        UpdateSceneConstants(Camera, Model);
 
         ID3D12PipelineState* DesiredPipeline = Model.bHasNormalMap ? BasePassPipelineWithNormalMap.Get() : BasePassPipelineWithoutNormalMap.Get();
         if (DesiredPipeline != CurrentPipeline)
@@ -778,6 +783,30 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
     return true;
 }
 
+namespace
+{
+    uint32_t ClampToByte(float Value)
+    {
+        const float Clamped = (std::max)(0.0f, (std::min)(1.0f, Value));
+        return static_cast<uint32_t>(std::round(Clamped * 255.0f));
+    }
+
+    uint32_t PackColor(const DirectX::XMFLOAT3& Color)
+    {
+        const uint32_t R = ClampToByte(Color.x);
+        const uint32_t G = ClampToByte(Color.y);
+        const uint32_t B = ClampToByte(Color.z);
+        return 0xff000000 | (R << 16) | (G << 8) | B;
+    }
+
+    uint32_t PackMetallicRoughness(float Metallic, float Roughness)
+    {
+        const uint32_t M = ClampToByte(Metallic);
+        const uint32_t R = ClampToByte(Roughness);
+        return 0xff000000 | (R << 8) | M;
+    }
+}
+
 bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, const std::vector<FSceneModelResource>& Models)
 {
     if (!TextureLoader)
@@ -791,12 +820,21 @@ bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, const std::vect
     for (const FSceneModelResource& Model : Models)
     {
         FModelTextureSet TextureSet;
-        if (!TextureLoader->LoadOrDefault(Model.BaseColorTexturePath, TextureSet.BaseColor))
+        const uint32_t BaseColorValue = PackColor(Model.BaseColorFactor);
+        if (Model.BaseColorTexturePath.empty())
+        {
+            if (!TextureLoader->LoadOrSolidColor(Model.BaseColorTexturePath, BaseColorValue, TextureSet.BaseColor))
+            {
+                return false;
+            }
+        }
+        else if (!TextureLoader->LoadOrDefault(Model.BaseColorTexturePath, TextureSet.BaseColor))
         {
             return false;
         }
 
-        if (!TextureLoader->LoadOrSolidColor(Model.MetallicRoughnessTexturePath, 0xff00ff00, TextureSet.MetallicRoughness))
+        const uint32_t MetallicRoughnessValue = PackMetallicRoughness(Model.MetallicFactor, Model.RoughnessFactor);
+        if (!TextureLoader->LoadOrSolidColor(Model.MetallicRoughnessTexturePath, MetallicRoughnessValue, TextureSet.MetallicRoughness))
         {
             return false;
         }
@@ -812,12 +850,12 @@ bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, const std::vect
     return true;
 }
 
-void FDeferredRenderer::UpdateSceneConstants(const FCamera& Camera, const DirectX::XMFLOAT4X4& WorldMatrix)
+void FDeferredRenderer::UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model)
 {
-    const DirectX::XMFLOAT3 BaseColor = { 1.0f, 1.0f, 1.0f };
+    const DirectX::XMFLOAT3 BaseColor = Model.BaseColorFactor;
     const DirectX::XMVECTOR LightDir = DirectX::XMLoadFloat3(&LightDirection);
 
-    const DirectX::XMMATRIX World = DirectX::XMLoadFloat4x4(&WorldMatrix);
+    const DirectX::XMMATRIX World = DirectX::XMLoadFloat4x4(&Model.WorldMatrix);
     RendererUtils::UpdateSceneConstants(Camera, BaseColor, LightIntensity, LightDir, LightColor, World, ConstantBufferMapped);
 }
 

@@ -39,7 +39,7 @@ private:
     bool CreateGBufferResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateDescriptorHeap(FDX12Device* Device);
     bool CreateSceneTextures(FDX12Device* Device, const std::vector<FSceneModelResource>& Models);
-    void UpdateSceneConstants(const FCamera& Camera, const DirectX::XMFLOAT4X4& WorldMatrix);
+    void UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model);
     void UpdateSkyConstants(const FCamera& Camera);
 
 private:

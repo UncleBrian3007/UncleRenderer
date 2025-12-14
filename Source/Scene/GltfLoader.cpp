@@ -328,6 +328,35 @@ namespace
         return Default;
     }
 
+    double GetNumberField(const FJsonValue* Object, const std::string& Key, double Default = 0.0)
+    {
+        const FJsonValue* Field = GetObjectField(Object, Key);
+        if (Field && Field->IsNumber())
+        {
+            return Field->NumberValue;
+        }
+        return Default;
+    }
+
+	const FJsonValue* GetArrayElem(const FJsonValue* Array, size_t Index)
+	{
+		if (!Array || !Array->IsArray() || Index >= Array->ArrayValue.size())
+		{
+			return nullptr;
+		}
+		return &Array->ArrayValue[Index];
+	}
+
+    double GetNumberField(const FJsonValue* Array, size_t Index, double Default = 0.0)
+    {
+        const FJsonValue* Field = GetArrayElem(Array, Index);
+        if (Field && Field->IsNumber())
+        {
+            return Field->NumberValue;
+        }
+        return Default;
+    }
+
     std::string GetStringField(const FJsonValue* Object, const std::string& Key)
     {
         const FJsonValue* Field = GetObjectField(Object, Key);
@@ -336,15 +365,6 @@ namespace
             return Field->StringValue;
         }
         return {};
-    }
-
-    const FJsonValue* GetArrayElem(const FJsonValue* Array, size_t Index)
-    {
-        if (!Array || !Array->IsArray() || Index >= Array->ArrayValue.size())
-        {
-            return nullptr;
-        }
-        return &Array->ArrayValue[Index];
     }
 
     using FMatrix4 = std::array<float, 16>;
@@ -529,8 +549,10 @@ namespace
         int64_t NodeIndex,
         const FMatrix4& ParentTransform,
         const std::vector<FMeshData>& MeshDatas,
+        const std::vector<FGltfMaterialTextureSet>* MeshTextureSets,
         std::vector<FMesh::FVertex>& OutVertices,
-        std::vector<uint32_t>& OutIndices)
+        std::vector<uint32_t>& OutIndices,
+        std::vector<FGltfLoadedMesh>* OutMeshes)
     {
         const FJsonValue* Node = GetArrayElem(Nodes, static_cast<size_t>(NodeIndex));
         if (!Node || !Node->IsObject())
@@ -547,7 +569,28 @@ namespace
             const FMeshData& MeshData = MeshDatas[static_cast<size_t>(MeshIndex)];
             if (!MeshData.Vertices.empty() && !MeshData.Indices.empty())
             {
-                AppendMeshWithTransform(MeshData.Vertices, MeshData.Indices, World, OutVertices, OutIndices);
+                std::vector<FMesh::FVertex> TransformedVertices;
+                std::vector<uint32_t> TransformedIndices;
+                AppendMeshWithTransform(MeshData.Vertices, MeshData.Indices, World, TransformedVertices, TransformedIndices);
+
+                const uint32_t IndexOffset = static_cast<uint32_t>(OutVertices.size());
+                OutVertices.insert(OutVertices.end(), TransformedVertices.begin(), TransformedVertices.end());
+                for (uint32_t Index : TransformedIndices)
+                {
+                    OutIndices.push_back(Index + IndexOffset);
+                }
+
+                if (OutMeshes && MeshTextureSets && MeshIndex < static_cast<int64_t>(MeshTextureSets->size()))
+                {
+                    FMesh Mesh;
+                    Mesh.SetVertices(TransformedVertices);
+                    Mesh.SetIndices(TransformedIndices);
+
+                    FGltfLoadedMesh LoadedMesh;
+                    LoadedMesh.Mesh = std::move(Mesh);
+                    LoadedMesh.Material = (*MeshTextureSets)[static_cast<size_t>(MeshIndex)];
+                    OutMeshes->push_back(std::move(LoadedMesh));
+                }
             }
         }
 
@@ -557,7 +600,7 @@ namespace
             for (size_t i = 0; i < Children->ArrayValue.size(); ++i)
             {
                 const int64_t ChildIndex = static_cast<int64_t>(Children->ArrayValue[i].NumberValue);
-                ProcessNodeRecursive(Nodes, ChildIndex, World, MeshDatas, OutVertices, OutIndices);
+                ProcessNodeRecursive(Nodes, ChildIndex, World, MeshDatas, MeshTextureSets, OutVertices, OutIndices, OutMeshes);
             }
         }
     }
@@ -591,7 +634,11 @@ namespace
     }
 }
 
-bool FGltfLoader::LoadMeshFromFile(const std::wstring& FilePath, FMesh& OutMesh, FGltfMaterialTextures* OutMaterialTextures)
+bool FGltfLoader::LoadMeshFromFile(
+    const std::wstring& FilePath,
+    FMesh& OutMesh,
+    FGltfMaterialTextures* OutMaterialTextures,
+    std::vector<FGltfLoadedMesh>* OutMeshes)
 {
     std::ifstream File(std::filesystem::path(FilePath), std::ios::binary);
     if (!File.is_open())
@@ -910,6 +957,8 @@ bool FGltfLoader::LoadMeshFromFile(const std::wstring& FilePath, FMesh& OutMesh,
     std::vector<FMeshData> MeshDatas;
     MeshDatas.resize(Meshes->ArrayValue.size());
 
+    std::vector<int64_t> MeshMaterialIndices(Meshes->ArrayValue.size(), -1);
+
     for (size_t MeshIndex = 0; MeshIndex < Meshes->ArrayValue.size(); ++MeshIndex)
     {
         const FJsonValue* Mesh = GetArrayElem(Meshes, MeshIndex);
@@ -921,9 +970,76 @@ bool FGltfLoader::LoadMeshFromFile(const std::wstring& FilePath, FMesh& OutMesh,
 
         for (const FJsonValue& PrimitiveValue : Primitives->ArrayValue)
         {
+            const int64_t MaterialIndex = GetIntField(&PrimitiveValue, "material", -1);
+            if (MeshMaterialIndices[MeshIndex] < 0 && MaterialIndex >= 0)
+            {
+                MeshMaterialIndices[MeshIndex] = MaterialIndex;
+            }
+
             if (!AppendPrimitiveToMesh(&PrimitiveValue, MeshDatas[MeshIndex]))
             {
                 return false;
+            }
+        }
+    }
+
+    const FJsonValue* Materials = GetObjectField(&Root, "materials");
+    const FJsonValue* Textures = GetObjectField(&Root, "textures");
+    const FJsonValue* Images = GetObjectField(&Root, "images");
+
+    const bool bHasMaterialData = Materials && Materials->IsArray() && !Materials->ArrayValue.empty()
+        && Textures && Textures->IsArray() && !Textures->ArrayValue.empty()
+        && Images && Images->IsArray() && !Images->ArrayValue.empty();
+
+    std::vector<FGltfMaterialTextureSet> MeshTextureSets(MeshMaterialIndices.size());
+
+    if (bHasMaterialData)
+    {
+        const std::filesystem::path BasePath = std::filesystem::path(FilePath).parent_path();
+
+        const auto ResolveMaterialTextures = [&](const FJsonValue* Material) -> FGltfMaterialTextureSet
+        {
+            FGltfMaterialTextureSet TextureSet;
+
+            const FJsonValue* Pbr = GetObjectField(Material, "pbrMetallicRoughness");
+            if (Pbr)
+            {
+                const FJsonValue* BaseColorTexture = GetObjectField(Pbr, "baseColorTexture");
+                TextureSet.BaseColor = ResolveTexturePath(Textures, Images, BasePath, GetIntField(BaseColorTexture, "index", -1));
+
+                const FJsonValue* BaseColorFactor = GetObjectField(Pbr, "baseColorFactor");
+                if (BaseColorFactor && BaseColorFactor->IsArray())
+                {
+                    TextureSet.BaseColorFactor.x = static_cast<float>(GetNumberField(BaseColorFactor, 0, TextureSet.BaseColorFactor.x));
+                    TextureSet.BaseColorFactor.y = static_cast<float>(GetNumberField(BaseColorFactor, 1, TextureSet.BaseColorFactor.y));
+                    TextureSet.BaseColorFactor.z = static_cast<float>(GetNumberField(BaseColorFactor, 2, TextureSet.BaseColorFactor.z));
+                }
+
+                TextureSet.MetallicFactor = static_cast<float>(GetNumberField(Pbr, "metallicFactor", 1.0));
+                TextureSet.RoughnessFactor = static_cast<float>(GetNumberField(Pbr, "roughnessFactor", 1.0));
+
+                const FJsonValue* MetallicRoughnessTexture = GetObjectField(Pbr, "metallicRoughnessTexture");
+                TextureSet.MetallicRoughness = ResolveTexturePath(Textures, Images, BasePath, GetIntField(MetallicRoughnessTexture, "index", -1));
+            }
+
+            const FJsonValue* NormalTexture = GetObjectField(Material, "normalTexture");
+            TextureSet.Normal = ResolveTexturePath(Textures, Images, BasePath, GetIntField(NormalTexture, "index", -1));
+
+            return TextureSet;
+        };
+
+        std::vector<FGltfMaterialTextureSet> MaterialTextureSets(Materials->ArrayValue.size());
+        for (size_t MaterialIndex = 0; MaterialIndex < Materials->ArrayValue.size(); ++MaterialIndex)
+        {
+            MaterialTextureSets[MaterialIndex] = ResolveMaterialTextures(GetArrayElem(Materials, MaterialIndex));
+        }
+
+        for (size_t MeshIndex = 0; MeshIndex < MeshMaterialIndices.size(); ++MeshIndex)
+        {
+            const int64_t MaterialIndex = MeshMaterialIndices[MeshIndex];
+            if (MaterialIndex >= 0 && MaterialIndex < static_cast<int64_t>(MaterialTextureSets.size()))
+            {
+                MeshTextureSets[MeshIndex] = MaterialTextureSets[static_cast<size_t>(MaterialIndex)];
             }
         }
     }
@@ -940,6 +1056,11 @@ bool FGltfLoader::LoadMeshFromFile(const std::wstring& FilePath, FMesh& OutMesh,
     std::vector<FMesh::FVertex> FinalVertices;
     std::vector<uint32_t> FinalIndices;
 
+    if (OutMeshes)
+    {
+        OutMeshes->clear();
+    }
+
     const FJsonValue* Nodes = GetObjectField(&Root, "nodes");
     const FJsonValue* Scenes = GetObjectField(&Root, "scenes");
     const int64_t SceneIndex = GetIntField(&Root, "scene", 0);
@@ -954,7 +1075,7 @@ bool FGltfLoader::LoadMeshFromFile(const std::wstring& FilePath, FMesh& OutMesh,
             for (const FJsonValue& NodeValue : SceneNodes->ArrayValue)
             {
                 const int64_t NodeIndex = static_cast<int64_t>(NodeValue.NumberValue);
-                ProcessNodeRecursive(Nodes, NodeIndex, MakeIdentityMatrix(), MeshDatas, FinalVertices, FinalIndices);
+                ProcessNodeRecursive(Nodes, NodeIndex, MakeIdentityMatrix(), MeshDatas, &MeshTextureSets, FinalVertices, FinalIndices, OutMeshes);
             }
             bUsedNodes = !FinalVertices.empty() && !FinalIndices.empty();
         }
@@ -966,6 +1087,37 @@ bool FGltfLoader::LoadMeshFromFile(const std::wstring& FilePath, FMesh& OutMesh,
         Indices = std::move(FinalIndices);
     }
 
+    if (OutMeshes)
+    {
+        if (bUsedNodes)
+        {
+            // Populated during node traversal.
+        }
+        else
+        {
+            for (size_t MeshIndex = 0; MeshIndex < MeshDatas.size(); ++MeshIndex)
+            {
+                const FMeshData& MeshData = MeshDatas[MeshIndex];
+                if (MeshData.Vertices.empty() || MeshData.Indices.empty())
+                {
+                    continue;
+                }
+
+                FMesh Mesh;
+                Mesh.SetVertices(MeshData.Vertices);
+                Mesh.SetIndices(MeshData.Indices);
+
+                FGltfLoadedMesh LoadedMesh;
+                LoadedMesh.Mesh = std::move(Mesh);
+                if (MeshIndex < MeshTextureSets.size())
+                {
+                    LoadedMesh.Material = MeshTextureSets[MeshIndex];
+                }
+                OutMeshes->push_back(std::move(LoadedMesh));
+            }
+        }
+    }
+
     OutMesh.SetVertices(Vertices);
     OutMesh.SetIndices(Indices);
     OutMesh.GenerateNormalsIfMissing();
@@ -973,29 +1125,7 @@ bool FGltfLoader::LoadMeshFromFile(const std::wstring& FilePath, FMesh& OutMesh,
 
     if (OutMaterialTextures)
     {
-        OutMaterialTextures->BaseColor.clear();
-        OutMaterialTextures->MetallicRoughness.clear();
-        OutMaterialTextures->Normal.clear();
-
-        const FJsonValue* Materials = GetObjectField(&Root, "materials");
-        const FJsonValue* Textures = GetObjectField(&Root, "textures");
-        const FJsonValue* Images = GetObjectField(&Root, "images");
-
-        if (Materials && Materials->IsArray() && !Materials->ArrayValue.empty()
-            && Textures && Textures->IsArray() && !Textures->ArrayValue.empty()
-            && Images && Images->IsArray() && !Images->ArrayValue.empty())
-        {
-            const FJsonValue* Material = &Materials->ArrayValue[0];
-            const FJsonValue* Pbr = GetObjectField(Material, "pbrMetallicRoughness");
-            const FJsonValue* BaseColorTexture = GetObjectField(Pbr, "baseColorTexture");
-            const FJsonValue* MetallicRoughnessTexture = GetObjectField(Pbr, "metallicRoughnessTexture");
-            const FJsonValue* NormalTexture = GetObjectField(Material, "normalTexture");
-
-            const std::filesystem::path BasePath = std::filesystem::path(FilePath).parent_path();
-            OutMaterialTextures->BaseColor = ResolveTexturePath(Textures, Images, BasePath, GetIntField(BaseColorTexture, "index", -1));
-            OutMaterialTextures->MetallicRoughness = ResolveTexturePath(Textures, Images, BasePath, GetIntField(MetallicRoughnessTexture, "index", -1));
-            OutMaterialTextures->Normal = ResolveTexturePath(Textures, Images, BasePath, GetIntField(NormalTexture, "index", -1));
-        }
+        OutMaterialTextures->PerMesh = MeshTextureSets;
     }
 
     return true;

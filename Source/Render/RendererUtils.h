@@ -79,6 +79,9 @@ struct FSceneModelResource
     DirectX::XMFLOAT4X4 WorldMatrix{};
     DirectX::XMFLOAT3 Center{ 0.0f, 0.0f, 0.0f };
     float Radius = 1.0f;
+    DirectX::XMFLOAT3 BaseColorFactor{ 1.0f, 1.0f, 1.0f };
+    float MetallicFactor = 1.0f;
+    float RoughnessFactor = 1.0f;
     std::wstring BaseColorTexturePath;
     std::wstring MetallicRoughnessTexturePath;
     std::wstring NormalTexturePath;

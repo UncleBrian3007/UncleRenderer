@@ -162,9 +162,7 @@ bool RendererUtils::CreateDefaultSceneGeometry(FDX12Device* Device, FMeshGeometr
 
     if (OutTexturePaths)
     {
-        OutTexturePaths->BaseColor.clear();
-        OutTexturePaths->MetallicRoughness.clear();
-        OutTexturePaths->Normal.clear();
+        OutTexturePaths->PerMesh.clear();
     }
 
     const FMesh Cube = FMesh::CreateCube();
@@ -219,58 +217,82 @@ bool RendererUtils::CreateSceneModelsFromJson(
 
         FMesh LoadedMesh;
         FGltfMaterialTextures TexturePaths;
-        if (!FGltfLoader::LoadMeshFromFile(MeshPath, LoadedMesh, &TexturePaths))
+        std::vector<FGltfLoadedMesh> LoadedMeshes;
+        if (!FGltfLoader::LoadMeshFromFile(MeshPath, LoadedMesh, &TexturePaths, &LoadedMeshes))
         {
             LogError("Failed to load mesh from scene: " + PathToUtf8String(MeshPath));
             continue;
         }
 
-        FSceneModelResource ModelResource = {};
-        if (!CreateMeshGeometry(Device, LoadedMesh, ModelResource.Geometry))
+        if (LoadedMeshes.empty())
         {
-            LogError("Failed to create geometry for scene mesh: " + PathToUtf8String(MeshPath));
-            continue;
+            FGltfLoadedMesh SingleMesh;
+            SingleMesh.Mesh = LoadedMesh;
+            if (!TexturePaths.PerMesh.empty())
+            {
+                SingleMesh.Material = TexturePaths.PerMesh.front();
+            }
+            LoadedMeshes.push_back(std::move(SingleMesh));
         }
 
-        FFloat3 MeshCenter;
-        float MeshRadius;
-        ComputeMeshBounds(LoadedMesh, MeshCenter, MeshRadius);
-
-        const std::array<float, 3> ScaleComponents = { Model.Scale.x, Model.Scale.y, Model.Scale.z };
-        float MaxScale = 1.0f;
-        for (float ScaleValue : ScaleComponents)
+        for (const FGltfLoadedMesh& LoadedMeshInstance : LoadedMeshes)
         {
-            MaxScale = (std::max)(MaxScale, std::fabs(ScaleValue));
+            FSceneModelResource ModelResource = {};
+            if (!CreateMeshGeometry(Device, LoadedMeshInstance.Mesh, ModelResource.Geometry))
+            {
+                LogError("Failed to create geometry for scene mesh: " + PathToUtf8String(MeshPath));
+                continue;
+            }
+
+            FFloat3 MeshCenter;
+            float MeshRadius;
+            ComputeMeshBounds(LoadedMeshInstance.Mesh, MeshCenter, MeshRadius);
+
+            const std::array<float, 3> ScaleComponents = { Model.Scale.x, Model.Scale.y, Model.Scale.z };
+            float MaxScale = 1.0f;
+            for (float ScaleValue : ScaleComponents)
+            {
+                MaxScale = (std::max)(MaxScale, std::fabs(ScaleValue));
+            }
+
+            MeshRadius *= MaxScale;
+
+            using namespace DirectX;
+
+            const XMMATRIX Offset = XMMatrixTranslation(-MeshCenter.x, -MeshCenter.y, -MeshCenter.z);
+            const XMMATRIX Scale = XMMatrixScaling(Model.Scale.x, Model.Scale.y, Model.Scale.z);
+            const XMMATRIX Rotation = XMMatrixRotationRollPitchYaw(
+                XMConvertToRadians(Model.RotationEuler.x),
+                XMConvertToRadians(Model.RotationEuler.y),
+                XMConvertToRadians(Model.RotationEuler.z));
+            const XMMATRIX Translation = XMMatrixTranslation(Model.Position.x, Model.Position.y, Model.Position.z);
+
+            const XMMATRIX World = Offset * Scale * Rotation * Translation;
+            XMStoreFloat4x4(&ModelResource.WorldMatrix, World);
+
+            const XMVECTOR CenterVec = XMVector3TransformCoord(XMVectorSet(MeshCenter.x, MeshCenter.y, MeshCenter.z, 1.0f), World);
+            XMStoreFloat3(&ModelResource.Center, CenterVec);
+            ModelResource.Radius = MeshRadius;
+
+            const bool bHasNormalMap = !Model.NormalTexturePath.empty() || !LoadedMeshInstance.Material.Normal.empty();
+
+            const std::wstring EmptyTexture;
+            const std::wstring& BaseColorPath = LoadedMeshInstance.Material.BaseColor.empty() ? EmptyTexture : LoadedMeshInstance.Material.BaseColor;
+            const std::wstring& MetallicRoughnessPath = LoadedMeshInstance.Material.MetallicRoughness.empty() ? EmptyTexture : LoadedMeshInstance.Material.MetallicRoughness;
+            const std::wstring& NormalPath = LoadedMeshInstance.Material.Normal.empty() ? EmptyTexture : LoadedMeshInstance.Material.Normal;
+
+            ModelResource.BaseColorTexturePath = Model.BaseColorTexturePath.empty() ? BaseColorPath : Model.BaseColorTexturePath;
+            ModelResource.MetallicRoughnessTexturePath = Model.MetallicRoughnessTexturePath.empty() ? MetallicRoughnessPath : Model.MetallicRoughnessTexturePath;
+            ModelResource.NormalTexturePath = Model.NormalTexturePath.empty() ? NormalPath : Model.NormalTexturePath;
+            ModelResource.BaseColorFactor = LoadedMeshInstance.Material.BaseColorFactor;
+            ModelResource.MetallicFactor = LoadedMeshInstance.Material.MetallicFactor;
+            ModelResource.RoughnessFactor = LoadedMeshInstance.Material.RoughnessFactor;
+            ModelResource.bHasNormalMap = bHasNormalMap;
+
+            UpdateSceneBounds(ModelResource.Center, ModelResource.Radius, SceneMin, SceneMax);
+
+            OutModels.push_back(std::move(ModelResource));
         }
-
-        MeshRadius *= MaxScale;
-
-        using namespace DirectX;
-
-        const XMMATRIX Offset = XMMatrixTranslation(-MeshCenter.x, -MeshCenter.y, -MeshCenter.z);
-        const XMMATRIX Scale = XMMatrixScaling(Model.Scale.x, Model.Scale.y, Model.Scale.z);
-        const XMMATRIX Rotation = XMMatrixRotationRollPitchYaw(
-            XMConvertToRadians(Model.RotationEuler.x),
-            XMConvertToRadians(Model.RotationEuler.y),
-            XMConvertToRadians(Model.RotationEuler.z));
-        const XMMATRIX Translation = XMMatrixTranslation(Model.Position.x, Model.Position.y, Model.Position.z);
-
-        const XMMATRIX World = Offset * Scale * Rotation * Translation;
-        XMStoreFloat4x4(&ModelResource.WorldMatrix, World);
-
-        const XMVECTOR CenterVec = XMVector3TransformCoord(XMVectorSet(MeshCenter.x, MeshCenter.y, MeshCenter.z, 1.0f), World);
-        XMStoreFloat3(&ModelResource.Center, CenterVec);
-        ModelResource.Radius = MeshRadius;
-        const bool bHasNormalMap = !Model.NormalTexturePath.empty() || !TexturePaths.Normal.empty();
-
-        ModelResource.BaseColorTexturePath = Model.BaseColorTexturePath.empty() ? TexturePaths.BaseColor : Model.BaseColorTexturePath;
-        ModelResource.MetallicRoughnessTexturePath = Model.MetallicRoughnessTexturePath.empty() ? TexturePaths.MetallicRoughness : Model.MetallicRoughnessTexturePath;
-        ModelResource.NormalTexturePath = Model.NormalTexturePath.empty() ? TexturePaths.Normal : Model.NormalTexturePath;
-        ModelResource.bHasNormalMap = bHasNormalMap;
-
-        UpdateSceneBounds(ModelResource.Center, ModelResource.Radius, SceneMin, SceneMax);
-
-        OutModels.push_back(std::move(ModelResource));
     }
 
     if (OutModels.empty())
