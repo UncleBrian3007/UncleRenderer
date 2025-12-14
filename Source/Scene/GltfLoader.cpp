@@ -171,6 +171,19 @@ namespace
                 }
             }
 
+            if (Position < Text.size() && (Text[Position] == 'e' || Text[Position] == 'E'))
+            {
+                ++Position;
+                if (Position < Text.size() && (Text[Position] == '+' || Text[Position] == '-'))
+                {
+                    ++Position;
+                }
+                while (Position < Text.size() && std::isdigit(static_cast<unsigned char>(Text[Position])))
+                {
+                    ++Position;
+                }
+            }
+
             const std::string NumberText = Text.substr(Start, Position - Start);
             FJsonValue V;
             V.Type = EJsonType::Number;
