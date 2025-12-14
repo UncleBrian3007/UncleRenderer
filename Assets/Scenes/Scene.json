@@ -9,7 +9,7 @@
       "translate": [ 0.0, 0.0, 0.0 ],
       "rotate_euler": [ 0.0, 0.0, 0.0 ],
       "scale": [ 1.0, 1.0, 1.0 ],
-      "visible": false
+      "visible": true
     },
     {
       "id": "SciFiHelmet",
@@ -17,7 +17,7 @@
       "translate": [ 0.0, 0.0, 0.0 ],
       "rotate_euler": [ 0.0, 0.0, 0.0 ],
       "scale": [ 100.0, 100.0, 100.0 ],
-      "visible": true
+      "visible": false
     },
     {
       "id": "metal_spheres",
