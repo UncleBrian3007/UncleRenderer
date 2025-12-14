@@ -38,6 +38,8 @@ private:
     bool RenderFrame();
     void HandleCameraInput(float DeltaSeconds);
     void PositionCameraForScene();
+    bool ReloadScene(const std::wstring& ScenePath);
+    std::wstring OpenSceneFileDialog(const std::wstring& InitialDirectory) const;
     bool InitializeImGui(int32_t Width, int32_t Height);
     void ShutdownImGui();
     void RenderUI();
@@ -69,6 +71,8 @@ private:
     float CameraPitch = 0.0f;
     bool bIsRotatingWithMouse = false;
     POINT LastMousePosition = {};
+    std::wstring CurrentScenePath = L"Assets/Scenes/Scene.json";
+    std::wstring PendingScenePath;
     float LightYaw = -1.19028997f;
     float LightPitch = -1.07681236f;
     float LightIntensity = 1.0f;

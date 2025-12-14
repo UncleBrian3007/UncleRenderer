@@ -15,6 +15,7 @@
 #include "../Scene/SceneJsonLoader.h"
 #include "RendererConfig.h"
 #include <dxgi1_6.h>
+#include <commdlg.h>
 #include <cstdint>
 #include <algorithm>
 #include <cmath>
@@ -22,6 +23,16 @@
 #include <limits>
 #include <string>
 #include <filesystem>
+#include <iterator>
+
+namespace
+{
+    std::string PathToUtf8String(const std::wstring& Path)
+    {
+        const auto Utf8 = std::filesystem::path(Path).u8string();
+        return std::string(Utf8.begin(), Utf8.end());
+    }
+}
 
 FApplication::FApplication()
     : bIsRunning(false)
@@ -69,6 +80,7 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t H
 
     const std::wstring SceneFilePath = RendererOptions.SceneFilePath.empty() ? L"Assets/Scenes/Scene.json" : RendererOptions.SceneFilePath;
     RendererOptions.SceneFilePath = SceneFilePath;
+    CurrentScenePath = SceneFilePath;
 
     FSceneLightDesc SceneLight;
     if (FSceneJsonLoader::LoadSceneLighting(SceneFilePath, SceneLight))
@@ -194,6 +206,22 @@ bool FApplication::RenderFrame()
     static uint64 FrameIndex = 0;
     ++FrameIndex;
     LogVerbose("Frame start: " + std::to_string(FrameIndex));
+
+    if (!PendingScenePath.empty())
+    {
+        if (Device && Device->GetGraphicsQueue())
+        {
+            Device->GetGraphicsQueue()->Flush();
+        }
+
+        const std::wstring SceneToLoad = std::move(PendingScenePath);
+        PendingScenePath.clear();
+
+        if (!ReloadScene(SceneToLoad))
+        {
+            LogError("Failed to reload scene: " + PathToUtf8String(SceneToLoad));
+        }
+    }
 
     Time->Tick();
     const float DeltaSeconds = static_cast<float>(Time->GetDeltaTimeSeconds());
@@ -422,6 +450,133 @@ void FApplication::PositionCameraForScene()
     CameraYaw = atan2f(DirectX::XMVectorGetX(ForwardVec), DirectX::XMVectorGetZ(ForwardVec));
 }
 
+bool FApplication::ReloadScene(const std::wstring& ScenePath)
+{
+    if (ScenePath.empty())
+    {
+        LogWarning("Cannot reload scene: path is empty");
+        return false;
+    }
+
+    if (!Device || !SwapChain || !MainWindow)
+    {
+        LogError("Cannot reload scene: renderer prerequisites are missing");
+        return false;
+    }
+
+    if (Device->GetGraphicsQueue())
+    {
+        Device->GetGraphicsQueue()->Flush();
+    }
+
+    FRendererOptions RendererOptions{};
+    RendererOptions.SceneFilePath = ScenePath;
+    RendererOptions.bUseDepthPrepass = bDepthPrepassEnabled;
+
+    const uint32_t Width = static_cast<uint32_t>(MainWindow->GetWidth());
+    const uint32_t Height = static_cast<uint32_t>(MainWindow->GetHeight());
+    const DXGI_FORMAT BackBufferFormat = SwapChain->GetFormat();
+
+    auto NewForwardRenderer = std::make_unique<FForwardRenderer>();
+    auto NewDeferredRenderer = std::make_unique<FDeferredRenderer>();
+
+    FRenderer* NewActiveRenderer = nullptr;
+
+    auto TryInitializeRenderer = [&](ERendererType Type) -> bool
+    {
+        if (Type == ERendererType::Deferred)
+        {
+            if (NewDeferredRenderer->Initialize(Device.get(), Width, Height, BackBufferFormat, RendererOptions))
+            {
+                NewActiveRenderer = NewDeferredRenderer.get();
+                return true;
+            }
+            return false;
+        }
+
+        if (NewForwardRenderer->Initialize(Device.get(), Width, Height, BackBufferFormat, RendererOptions))
+        {
+            NewActiveRenderer = NewForwardRenderer.get();
+            return true;
+        }
+        return false;
+    };
+
+    const bool bPreferDeferred = ActiveRenderer == DeferredRenderer.get() || RendererConfig.RendererType == ERendererType::Deferred;
+    const bool bInitialized = bPreferDeferred ?
+        (TryInitializeRenderer(ERendererType::Deferred) || TryInitializeRenderer(ERendererType::Forward)) :
+        (TryInitializeRenderer(ERendererType::Forward) || TryInitializeRenderer(ERendererType::Deferred));
+
+    if (!bInitialized || NewActiveRenderer == nullptr)
+    {
+        LogError("Failed to reload scene: renderer initialization failed for new scene");
+        return false;
+    }
+
+    ForwardRenderer = std::move(NewForwardRenderer);
+    DeferredRenderer = std::move(NewDeferredRenderer);
+    ActiveRenderer = NewActiveRenderer;
+
+    CurrentScenePath = ScenePath;
+    RendererConfig.SceneFile = ScenePath;
+
+    UpdateRendererLighting();
+    PositionCameraForScene();
+
+    LogInfo("Scene reloaded from: " + PathToUtf8String(ScenePath));
+    return true;
+}
+
+std::wstring FApplication::OpenSceneFileDialog(const std::wstring& InitialDirectory) const
+{
+    OPENFILENAMEW OpenFileName{};
+    wchar_t FilePath[MAX_PATH] = {};
+
+    OpenFileName.lStructSize = sizeof(OpenFileName);
+    OpenFileName.hwndOwner = MainWindow ? MainWindow->GetHWND() : nullptr;
+    OpenFileName.lpstrFilter = L"Scene JSON (*.json)\0*.json\0All Files (*.*)\0*.*\0";
+    OpenFileName.lpstrFile = FilePath;
+    OpenFileName.nMaxFile = static_cast<DWORD>(std::size(FilePath));
+    OpenFileName.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY | OFN_NOCHANGEDIR;
+
+    const std::filesystem::path OriginalWorkingDir = std::filesystem::current_path();
+
+    std::filesystem::path InitialPath = InitialDirectory;
+    if (InitialPath.empty())
+    {
+        InitialPath = std::filesystem::current_path() / L"Assets/Scenes";
+    }
+
+    std::error_code ErrorCode;
+    InitialPath = std::filesystem::absolute(InitialPath, ErrorCode);
+    if (ErrorCode)
+    {
+        LogWarning("Failed to resolve absolute scene directory: " + PathToUtf8String(InitialPath));
+    }
+
+    std::wstring InitialPathWStr = InitialPath.wstring();
+    if (!InitialPathWStr.empty())
+    {
+        OpenFileName.lpstrInitialDir = InitialPathWStr.c_str();
+    }
+
+    const BOOL bDialogAccepted = GetOpenFileNameW(&OpenFileName);
+
+    std::error_code RestoreError;
+    std::filesystem::current_path(OriginalWorkingDir, RestoreError);
+    if (RestoreError)
+    {
+        LogWarning("Failed to restore working directory after file dialog: " + PathToUtf8String(OriginalWorkingDir));
+    }
+
+    if (bDialogAccepted == TRUE)
+    {
+        return std::wstring(FilePath);
+    }
+
+    return std::wstring();
+}
+
 DirectX::XMVECTOR FApplication::GetLightDirectionVector() const
 {
     const DirectX::XMVECTOR Forward = DirectX::XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
@@ -603,6 +758,21 @@ void FApplication::RenderUI()
 
     ImGui::Begin("Performance", nullptr, Flags);
     ImGui::Text("FPS: %.1f", Time->GetFPS());
+
+    ImGui::Separator();
+    ImGui::Text("Scene");
+    const std::string ScenePathUtf8 = PathToUtf8String(CurrentScenePath);
+    ImGui::TextWrapped("File: %s", ScenePathUtf8.c_str());
+    if (ImGui::Button("Load Scene"))
+    {
+        const std::filesystem::path ScenePath(CurrentScenePath);
+        const std::filesystem::path InitialDir = ScenePath.has_parent_path() ? ScenePath.parent_path() : std::filesystem::path();
+        const std::wstring SelectedScene = OpenSceneFileDialog(InitialDir.wstring());
+        if (!SelectedScene.empty())
+        {
+            PendingScenePath = SelectedScene;
+        }
+    }
 
     DXGI_QUERY_VIDEO_MEMORY_INFO LocalMemoryInfo = {};
     if (Device && Device->QueryLocalVideoMemory(LocalMemoryInfo))
