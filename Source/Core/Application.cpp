@@ -32,6 +32,55 @@ namespace
         const auto Utf8 = std::filesystem::path(Path).u8string();
         return std::string(Utf8.begin(), Utf8.end());
     }
+
+    ImVec2 ProjectAxisToScreen(const DirectX::XMVECTOR& ViewSpaceDir, float Scale)
+    {
+        const float X = DirectX::XMVectorGetX(ViewSpaceDir);
+        const float Y = DirectX::XMVectorGetY(ViewSpaceDir);
+        const float Z = DirectX::XMVectorGetZ(ViewSpaceDir);
+
+        const float Perspective = 1.0f / (std::max)(0.1f, Z + 1.2f);
+        return ImVec2(X * Perspective * Scale, -Y * Perspective * Scale);
+    }
+
+    void DrawAxisGizmo(const FMatrix& ViewMatrix, const ImVec2& DisplaySize)
+    {
+        ImDrawList* DrawList = ImGui::GetForegroundDrawList();
+
+        const float GizmoRadius = 14.0f;
+        const float GizmoScale = 52.0f;
+        const ImVec2 Margin(16.0f, 16.0f);
+        const ImVec2 Center(Margin.x + GizmoRadius, DisplaySize.y - Margin.y - GizmoRadius);
+
+        DrawList->AddCircleFilled(Center, GizmoRadius + 6.0f, IM_COL32(18, 22, 33, 220));
+        DrawList->AddCircle(Center, GizmoRadius + 6.0f, IM_COL32(80, 90, 110, 230), 32, 2.0f);
+
+        const DirectX::XMMATRIX RotationOnly = ViewMatrix;
+
+        struct AxisInfo
+        {
+            DirectX::XMVECTOR Direction;
+            ImU32 Color;
+            const char* Label;
+        };
+
+        const AxisInfo Axes[] = {
+            { DirectX::XMVectorSet(1.0f, 0.0f, 0.0f, 0.0f), IM_COL32(230, 70, 70, 255), "X" },
+            { DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f), IM_COL32(70, 200, 120, 255), "Y" },
+            { DirectX::XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f), IM_COL32(80, 160, 230, 255), "Z" }
+        };
+
+        for (const AxisInfo& Axis : Axes)
+        {
+            const DirectX::XMVECTOR ViewDir = DirectX::XMVector3Normalize(DirectX::XMVector3TransformNormal(Axis.Direction, RotationOnly));
+            const ImVec2 Offset = ProjectAxisToScreen(ViewDir, GizmoScale);
+            const ImVec2 End = ImVec2(Center.x + Offset.x, Center.y + Offset.y);
+
+            DrawList->AddLine(Center, End, Axis.Color, 3.0f);
+            DrawList->AddCircleFilled(End, 3.5f, Axis.Color);
+            DrawList->AddText(ImVec2(End.x + 6.0f, End.y - 10.0f), IM_COL32(240, 240, 240, 255), Axis.Label);
+        }
+    }
 }
 
 FApplication::FApplication()
@@ -849,6 +898,11 @@ void FApplication::RenderUI()
         UpdateRendererLighting();
     }
     ImGui::End();
+
+    if (Camera)
+    {
+        DrawAxisGizmo(Camera->GetViewMatrix(), Io.DisplaySize);
+    }
 
     ImGui::Render();
 
