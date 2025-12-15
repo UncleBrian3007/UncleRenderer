@@ -519,29 +519,18 @@ namespace
         std::vector<uint32_t> Indices;
     };
 
-    void AppendMeshWithTransform(
-        const std::vector<FMesh::FVertex>& BaseVertices,
-        const std::vector<uint32_t>& BaseIndices,
-        const FMatrix4& Transform,
-        std::vector<FMesh::FVertex>& OutVertices,
-        std::vector<uint32_t>& OutIndices)
+    DirectX::XMFLOAT4X4 ToFloat4x4(const FMatrix4& M)
     {
-        const uint32_t IndexOffset = static_cast<uint32_t>(OutVertices.size());
-
-        for (const FMesh::FVertex& Vertex : BaseVertices)
+        DirectX::XMFLOAT4X4 Result{};
+        for (int Row = 0; Row < 4; ++Row)
         {
-            FMesh::FVertex Transformed = Vertex;
-            Transformed.Position = TransformPosition(Transform, Vertex.Position);
-            Transformed.Normal = TransformDirection(Transform, Vertex.Normal);
-            const FFloat3 TransformedTangent = TransformDirection(Transform, FFloat3(Vertex.Tangent.x, Vertex.Tangent.y, Vertex.Tangent.z));
-            Transformed.Tangent = FFloat4(TransformedTangent.x, TransformedTangent.y, TransformedTangent.z, Vertex.Tangent.w);
-            OutVertices.push_back(Transformed);
+            for (int Col = 0; Col < 4; ++Col)
+            {
+                Result.m[Row][Col] = M[Row * 4 + Col];
+            }
         }
 
-        for (uint32_t Index : BaseIndices)
-        {
-            OutIndices.push_back(Index + IndexOffset);
-        }
+        return Result;
     }
 
     void ProcessNodeRecursive(
@@ -549,10 +538,7 @@ namespace
         int64_t NodeIndex,
         const FMatrix4& ParentTransform,
         const std::vector<FMeshData>& MeshDatas,
-        const std::vector<FGltfMaterialTextureSet>* MeshTextureSets,
-        std::vector<FMesh::FVertex>& OutVertices,
-        std::vector<uint32_t>& OutIndices,
-        std::vector<FGltfLoadedMesh>* OutMeshes)
+        std::vector<FGltfNode>& OutNodes)
     {
         const FJsonValue* Node = GetArrayElem(Nodes, static_cast<size_t>(NodeIndex));
         if (!Node || !Node->IsObject())
@@ -566,32 +552,10 @@ namespace
         const int64_t MeshIndex = GetIntField(Node, "mesh", -1);
         if (MeshIndex >= 0 && MeshIndex < static_cast<int64_t>(MeshDatas.size()))
         {
-            const FMeshData& MeshData = MeshDatas[static_cast<size_t>(MeshIndex)];
-            if (!MeshData.Vertices.empty() && !MeshData.Indices.empty())
-            {
-                std::vector<FMesh::FVertex> TransformedVertices;
-                std::vector<uint32_t> TransformedIndices;
-                AppendMeshWithTransform(MeshData.Vertices, MeshData.Indices, World, TransformedVertices, TransformedIndices);
-
-                const uint32_t IndexOffset = static_cast<uint32_t>(OutVertices.size());
-                OutVertices.insert(OutVertices.end(), TransformedVertices.begin(), TransformedVertices.end());
-                for (uint32_t Index : TransformedIndices)
-                {
-                    OutIndices.push_back(Index + IndexOffset);
-                }
-
-                if (OutMeshes && MeshTextureSets && MeshIndex < static_cast<int64_t>(MeshTextureSets->size()))
-                {
-                    FMesh Mesh;
-                    Mesh.SetVertices(TransformedVertices);
-                    Mesh.SetIndices(TransformedIndices);
-
-                    FGltfLoadedMesh LoadedMesh;
-                    LoadedMesh.Mesh = std::move(Mesh);
-                    LoadedMesh.Material = (*MeshTextureSets)[static_cast<size_t>(MeshIndex)];
-                    OutMeshes->push_back(std::move(LoadedMesh));
-                }
-            }
+            FGltfNode LoadedNode;
+            LoadedNode.MeshIndex = static_cast<int>(MeshIndex);
+            LoadedNode.WorldMatrix = ToFloat4x4(World);
+            OutNodes.push_back(LoadedNode);
         }
 
         const FJsonValue* Children = GetObjectField(Node, "children");
@@ -600,7 +564,7 @@ namespace
             for (size_t i = 0; i < Children->ArrayValue.size(); ++i)
             {
                 const int64_t ChildIndex = static_cast<int64_t>(Children->ArrayValue[i].NumberValue);
-                ProcessNodeRecursive(Nodes, ChildIndex, World, MeshDatas, MeshTextureSets, OutVertices, OutIndices, OutMeshes);
+                ProcessNodeRecursive(Nodes, ChildIndex, World, MeshDatas, OutNodes);
             }
         }
     }
@@ -634,11 +598,7 @@ namespace
     }
 }
 
-bool FGltfLoader::LoadMeshFromFile(
-    const std::wstring& FilePath,
-    FMesh& OutMesh,
-    FGltfMaterialTextures* OutMaterialTextures,
-    std::vector<FGltfLoadedMesh>* OutMeshes)
+bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& OutScene)
 {
     std::ifstream File(std::filesystem::path(FilePath), std::ios::binary);
     if (!File.is_open())
@@ -1044,28 +1004,13 @@ bool FGltfLoader::LoadMeshFromFile(
         }
     }
 
-    std::vector<FMesh::FVertex> Vertices;
-    std::vector<uint32_t> Indices;
-
-    if (!MeshDatas.empty())
-    {
-        Vertices = MeshDatas.front().Vertices;
-        Indices = MeshDatas.front().Indices;
-    }
-
-    std::vector<FMesh::FVertex> FinalVertices;
-    std::vector<uint32_t> FinalIndices;
-
-    if (OutMeshes)
-    {
-        OutMeshes->clear();
-    }
+    OutScene = {};
+    OutScene.MeshMaterials = MeshTextureSets;
 
     const FJsonValue* Nodes = GetObjectField(&Root, "nodes");
     const FJsonValue* Scenes = GetObjectField(&Root, "scenes");
     const int64_t SceneIndex = GetIntField(&Root, "scene", 0);
 
-    bool bUsedNodes = false;
     if (Nodes && Nodes->IsArray() && Scenes && Scenes->IsArray())
     {
         const FJsonValue* Scene = GetArrayElem(Scenes, static_cast<size_t>(SceneIndex));
@@ -1075,57 +1020,30 @@ bool FGltfLoader::LoadMeshFromFile(
             for (const FJsonValue& NodeValue : SceneNodes->ArrayValue)
             {
                 const int64_t NodeIndex = static_cast<int64_t>(NodeValue.NumberValue);
-                ProcessNodeRecursive(Nodes, NodeIndex, MakeIdentityMatrix(), MeshDatas, &MeshTextureSets, FinalVertices, FinalIndices, OutMeshes);
-            }
-            bUsedNodes = !FinalVertices.empty() && !FinalIndices.empty();
-        }
-    }
-
-    if (bUsedNodes)
-    {
-        Vertices = std::move(FinalVertices);
-        Indices = std::move(FinalIndices);
-    }
-
-    if (OutMeshes)
-    {
-        if (bUsedNodes)
-        {
-            // Populated during node traversal.
-        }
-        else
-        {
-            for (size_t MeshIndex = 0; MeshIndex < MeshDatas.size(); ++MeshIndex)
-            {
-                const FMeshData& MeshData = MeshDatas[MeshIndex];
-                if (MeshData.Vertices.empty() || MeshData.Indices.empty())
-                {
-                    continue;
-                }
-
-                FMesh Mesh;
-                Mesh.SetVertices(MeshData.Vertices);
-                Mesh.SetIndices(MeshData.Indices);
-
-                FGltfLoadedMesh LoadedMesh;
-                LoadedMesh.Mesh = std::move(Mesh);
-                if (MeshIndex < MeshTextureSets.size())
-                {
-                    LoadedMesh.Material = MeshTextureSets[MeshIndex];
-                }
-                OutMeshes->push_back(std::move(LoadedMesh));
+                ProcessNodeRecursive(Nodes, NodeIndex, MakeIdentityMatrix(), MeshDatas, OutScene.Nodes);
             }
         }
     }
 
-    OutMesh.SetVertices(Vertices);
-    OutMesh.SetIndices(Indices);
-    OutMesh.GenerateNormalsIfMissing();
-    OutMesh.GenerateTangentsIfMissing();
-
-    if (OutMaterialTextures)
+    if (OutScene.Nodes.empty())
     {
-        OutMaterialTextures->PerMesh = MeshTextureSets;
+        for (size_t MeshIndex = 0; MeshIndex < MeshDatas.size(); ++MeshIndex)
+        {
+            FGltfNode Node;
+            Node.MeshIndex = static_cast<int>(MeshIndex);
+            Node.WorldMatrix = ToFloat4x4(MakeIdentityMatrix());
+            OutScene.Nodes.push_back(Node);
+        }
+    }
+
+    for (const FMeshData& MeshData : MeshDatas)
+    {
+        FMesh Mesh;
+        Mesh.SetVertices(MeshData.Vertices);
+        Mesh.SetIndices(MeshData.Indices);
+        Mesh.GenerateNormalsIfMissing();
+        Mesh.GenerateTangentsIfMissing();
+        OutScene.Meshes.push_back(std::move(Mesh));
     }
 
     return true;

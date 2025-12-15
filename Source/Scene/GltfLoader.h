@@ -3,6 +3,8 @@
 #include <string>
 #include <vector>
 
+#include <DirectXMath.h>
+
 #include "Mesh.h"
 #include "../Math/MathTypes.h"
 
@@ -21,18 +23,21 @@ struct FGltfMaterialTextures
     std::vector<FGltfMaterialTextureSet> PerMesh;
 };
 
-struct FGltfLoadedMesh
+struct FGltfNode
 {
-    FMesh Mesh;
-    FGltfMaterialTextureSet Material;
+    int MeshIndex = -1;
+    DirectX::XMFLOAT4X4 WorldMatrix{};
+};
+
+struct FGltfScene
+{
+    std::vector<FMesh> Meshes;
+    std::vector<FGltfMaterialTextureSet> MeshMaterials;
+    std::vector<FGltfNode> Nodes;
 };
 
 class FGltfLoader
 {
 public:
-    static bool LoadMeshFromFile(
-        const std::wstring& FilePath,
-        FMesh& OutMesh,
-        FGltfMaterialTextures* OutMaterialTextures = nullptr,
-        std::vector<FGltfLoadedMesh>* OutMeshes = nullptr);
+    static bool LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& OutScene);
 };
