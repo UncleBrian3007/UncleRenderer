@@ -29,6 +29,18 @@ namespace
         return std::string(Utf8.begin(), Utf8.end());
     }
 
+    DirectX::XMFLOAT4 BuildOffsetScale(const FGltfTextureTransform& Transform)
+    {
+        return DirectX::XMFLOAT4(Transform.Offset.x, Transform.Offset.y, Transform.Scale.x, Transform.Scale.y);
+    }
+
+    DirectX::XMFLOAT4 BuildRotationConstants(const FGltfTextureTransform& Transform)
+    {
+        const float CosR = std::cos(Transform.Rotation);
+        const float SinR = std::sin(Transform.Rotation);
+        return DirectX::XMFLOAT4(CosR, SinR, 0.0f, 0.0f);
+    }
+
     void ComputeMeshBounds(const FMesh& Mesh, FFloat3& OutCenter, float& OutRadius)
     {
         const auto& Vertices = Mesh.GetVertices();
@@ -333,14 +345,28 @@ bool RendererUtils::CreateSceneModelsFromJson(
             const std::wstring& BaseColorPath = (Material && !Material->BaseColor.empty()) ? Material->BaseColor : EmptyTexture;
             const std::wstring& MetallicRoughnessPath = (Material && !Material->MetallicRoughness.empty()) ? Material->MetallicRoughness : EmptyTexture;
             const std::wstring& NormalPath = (Material && !Material->Normal.empty()) ? Material->Normal : EmptyTexture;
+            const std::wstring& EmissivePath = (Material && !Material->Emissive.empty()) ? Material->Emissive : EmptyTexture;
 
             ModelResource.BaseColorTexturePath = Model.BaseColorTexturePath.empty() ? BaseColorPath : Model.BaseColorTexturePath;
             ModelResource.MetallicRoughnessTexturePath = Model.MetallicRoughnessTexturePath.empty() ? MetallicRoughnessPath : Model.MetallicRoughnessTexturePath;
             ModelResource.NormalTexturePath = Model.NormalTexturePath.empty() ? NormalPath : Model.NormalTexturePath;
+            ModelResource.EmissiveTexturePath = Model.EmissiveTexturePath.empty() ? EmissivePath : Model.EmissiveTexturePath;
             ModelResource.BaseColorFactor = Material ? Material->BaseColorFactor : FFloat3(1.0f, 1.0f, 1.0f);
             ModelResource.MetallicFactor = Material ? Material->MetallicFactor : 1.0f;
             ModelResource.RoughnessFactor = Material ? Material->RoughnessFactor : 1.0f;
+            ModelResource.EmissiveFactor = Material ? Material->EmissiveFactor : FFloat3(0.0f, 0.0f, 0.0f);
             ModelResource.bHasNormalMap = !ModelResource.NormalTexturePath.empty();
+            if (Material)
+            {
+                ModelResource.BaseColorTransformOffsetScale = BuildOffsetScale(Material->BaseColorTransform);
+                ModelResource.BaseColorTransformRotation = BuildRotationConstants(Material->BaseColorTransform);
+                ModelResource.MetallicRoughnessTransformOffsetScale = BuildOffsetScale(Material->MetallicRoughnessTransform);
+                ModelResource.MetallicRoughnessTransformRotation = BuildRotationConstants(Material->MetallicRoughnessTransform);
+                ModelResource.NormalTransformOffsetScale = BuildOffsetScale(Material->NormalTransform);
+                ModelResource.NormalTransformRotation = BuildRotationConstants(Material->NormalTransform);
+                ModelResource.EmissiveTransformOffsetScale = BuildOffsetScale(Material->EmissiveTransform);
+                ModelResource.EmissiveTransformRotation = BuildRotationConstants(Material->EmissiveTransform);
+            }
 
             UpdateSceneBounds(ModelResource.Center, ModelResource.Radius, SceneMin, SceneMax);
 
@@ -592,13 +618,21 @@ bool RendererUtils::CreateSkyAtmospherePipeline(
     return true;
 }
 
+namespace
+{
+    void FillTransformConstants(const DirectX::XMFLOAT4& OffsetScale, const DirectX::XMFLOAT4& RotationTexCoord, DirectX::XMFLOAT4& OutOffsetScale, DirectX::XMFLOAT4& OutRotation)
+    {
+        OutOffsetScale = OffsetScale;
+        OutRotation = RotationTexCoord;
+    }
+}
+
 void RendererUtils::UpdateSceneConstants(
     const FCamera& Camera,
-    const DirectX::XMFLOAT3& BaseColor,
+    const FSceneModelResource& Model,
     float LightIntensity,
     const DirectX::XMVECTOR& LightDirection,
     const DirectX::XMFLOAT3& LightColor,
-    const DirectX::XMMATRIX& WorldMatrix,
     uint8_t* ConstantBufferMapped,
     uint64_t ConstantBufferOffset)
 {
@@ -611,16 +645,22 @@ void RendererUtils::UpdateSceneConstants(
 
     const XMMATRIX View = Camera.GetViewMatrix();
     const XMMATRIX Projection = Camera.GetProjectionMatrix();
+    const XMMATRIX WorldMatrix = XMLoadFloat4x4(&Model.WorldMatrix);
 
     FSceneConstants Constants = {};
     XMStoreFloat4x4(&Constants.World, WorldMatrix);
     XMStoreFloat4x4(&Constants.View, View);
     XMStoreFloat4x4(&Constants.Projection, Projection);
-    Constants.BaseColor = BaseColor;
+    Constants.BaseColor = Model.BaseColorFactor;
     Constants.LightIntensity = LightIntensity;
     XMStoreFloat3(&Constants.LightDirection, XMVector3Normalize(LightDirection));
     Constants.CameraPosition = Camera.GetPosition();
     Constants.LightColor = LightColor;
+    Constants.EmissiveFactor = Model.EmissiveFactor;
+    FillTransformConstants(Model.BaseColorTransformOffsetScale, Model.BaseColorTransformRotation, Constants.BaseColorTransformOffsetScale, Constants.BaseColorTransformRotation);
+    FillTransformConstants(Model.MetallicRoughnessTransformOffsetScale, Model.MetallicRoughnessTransformRotation, Constants.MetallicRoughnessTransformOffsetScale, Constants.MetallicRoughnessTransformRotation);
+    FillTransformConstants(Model.NormalTransformOffsetScale, Model.NormalTransformRotation, Constants.NormalTransformOffsetScale, Constants.NormalTransformRotation);
+    FillTransformConstants(Model.EmissiveTransformOffsetScale, Model.EmissiveTransformRotation, Constants.EmissiveTransformOffsetScale, Constants.EmissiveTransformRotation);
 
     memcpy(ConstantBufferMapped + ConstantBufferOffset, &Constants, sizeof(Constants));
 }

@@ -20,6 +20,7 @@ struct FModelTextureSet
     Microsoft::WRL::ComPtr<ID3D12Resource> BaseColor;
     Microsoft::WRL::ComPtr<ID3D12Resource> MetallicRoughness;
     Microsoft::WRL::ComPtr<ID3D12Resource> Normal;
+    Microsoft::WRL::ComPtr<ID3D12Resource> Emissive;
 };
 
 class FDeferredRenderer : public FRenderer
@@ -33,7 +34,7 @@ public:
 private:
     bool CreateBasePassRootSignature(FDX12Device* Device);
     bool CreateLightingRootSignature(FDX12Device* Device);
-    bool CreateBasePassPipeline(FDX12Device* Device);
+    bool CreateBasePassPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateDepthPrepassPipeline(FDX12Device* Device);
     bool CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateGBufferResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
@@ -66,6 +67,8 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> GBufferC;
     std::unique_ptr<FTextureLoader> TextureLoader;
     float SkySphereRadius = 100.0f;
+
+    DXGI_FORMAT BackBufferFormat = DXGI_FORMAT_UNKNOWN;
 
     D3D12_CPU_DESCRIPTOR_HANDLE GBufferRTVHandles[3]{};
     D3D12_GPU_DESCRIPTOR_HANDLE GBufferGpuHandles[3]{};

@@ -19,6 +19,16 @@ cbuffer SceneConstants : register(b0)
     float Padding2;
     float3 LightColor;
     float Padding3;
+    float3 EmissiveFactor;
+    float Padding4;
+    float4 BaseColorTransformOffsetScale;
+    float4 BaseColorTransformRotation;
+    float4 MetallicRoughnessTransformOffsetScale;
+    float4 MetallicRoughnessTransformRotation;
+    float4 NormalTransformOffsetScale;
+    float4 NormalTransformRotation;
+    float4 EmissiveTransformOffsetScale;
+    float4 EmissiveTransformRotation;
 };
 
 Texture2D GBufferA : register(t0);

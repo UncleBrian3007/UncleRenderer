@@ -7,7 +7,7 @@
 struct FRendererOptions
 {
     std::wstring SceneFilePath = L"Assets/Scenes/Scene.json";
-    bool bUseDepthPrepass = true;
+    bool bUseDepthPrepass = false;
 };
 
 class FDX12Device;

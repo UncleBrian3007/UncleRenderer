@@ -32,12 +32,32 @@ cbuffer SceneConstants : register(b0)
     float Padding2;
     float3 LightColor;
     float Padding3;
+    float3 EmissiveFactor;
+    float Padding4;
+    float4 BaseColorTransformOffsetScale;
+    float4 BaseColorTransformRotation;
+    float4 MetallicRoughnessTransformOffsetScale;
+    float4 MetallicRoughnessTransformRotation;
+    float4 NormalTransformOffsetScale;
+    float4 NormalTransformRotation;
+    float4 EmissiveTransformOffsetScale;
+    float4 EmissiveTransformRotation;
 };
 
 Texture2D AlbedoTexture : register(t0);
 Texture2D MetallicRoughnessTexture : register(t1);
 Texture2D NormalTexture : register(t2);
+Texture2D EmissiveTexture : register(t3);
 SamplerState AlbedoSampler : register(s0);
+
+float2 ApplyTextureTransform(float2 uv, float4 offsetScale, float4 rotation)
+{
+    float2 scaled = uv * offsetScale.zw;
+    float2 rotated = float2(
+        scaled.x * rotation.x - scaled.y * rotation.y,
+        scaled.x * rotation.y + scaled.y * rotation.x);
+    return rotated + offsetScale.xy;
+}
 
 VSOutput VSMain(VSInput Input)
 {
@@ -57,9 +77,10 @@ struct PSOutput
     float4 GBufferA : SV_Target0; // Normal
     float4 GBufferB : SV_Target1; // Specular/Metallic/Roughness
     float4 GBufferC : SV_Target2; // BaseColor
+    float4 SceneColor : SV_Target3; // Emissive
 };
 
-float3 ComputeViewNormal(VSOutput Input)
+float3 ComputeViewNormal(VSOutput Input, float2 normalUV)
 {
     float3 vertexNormal = normalize(Input.Normal);
 
@@ -67,7 +88,7 @@ float3 ComputeViewNormal(VSOutput Input)
     float3 tangent = normalize(Input.Tangent.xyz - vertexNormal * dot(vertexNormal, Input.Tangent.xyz));
     float3 bitangent = normalize(cross(vertexNormal, tangent)) * Input.Tangent.w;
 
-    float3 tangentNormal = NormalTexture.Sample(AlbedoSampler, Input.UV).rgb * 2.0f - 1.0f;
+    float3 tangentNormal = NormalTexture.Sample(AlbedoSampler, normalUV).rgb * 2.0f - 1.0f;
     const float tangentEpsilon = 1e-5f;
     float tangentNormalLength = length(tangentNormal);
     tangentNormal = tangentNormalLength < tangentEpsilon ? float3(0.0f, 0.0f, 1.0f) : tangentNormal;
@@ -85,16 +106,25 @@ PSOutput PSMain(VSOutput Input)
 {
     PSOutput Output;
 
-    float3 viewNormal = ComputeViewNormal(Input);
-    float3 albedo = AlbedoTexture.Sample(AlbedoSampler, Input.UV).rgb * BaseColor;
+    float2 baseUV = ApplyTextureTransform(Input.UV, BaseColorTransformOffsetScale, BaseColorTransformRotation);
+    float2 mrUV = ApplyTextureTransform(Input.UV, MetallicRoughnessTransformOffsetScale, MetallicRoughnessTransformRotation);
+    float2 normalUV = ApplyTextureTransform(Input.UV, NormalTransformOffsetScale, NormalTransformRotation);
+    float2 emissiveUV = ApplyTextureTransform(Input.UV, EmissiveTransformOffsetScale, EmissiveTransformRotation);
+
+    float3 viewNormal = ComputeViewNormal(Input, normalUV);
+
+    float3 albedo = AlbedoTexture.Sample(AlbedoSampler, baseUV).rgb * BaseColor;
 
     float viewDepth = -mul(float4(Input.WorldPos, 1.0), View).z;
     Output.GBufferA = float4(viewNormal, viewDepth);
 
     const float specular = 0.04f;
-    float2 metallicRoughness = MetallicRoughnessTexture.Sample(AlbedoSampler, Input.UV).bg;
+    float2 metallicRoughness = MetallicRoughnessTexture.Sample(AlbedoSampler, mrUV).bg;
     Output.GBufferB = float4(specular, metallicRoughness.x, metallicRoughness.y, 1.0);
 
     Output.GBufferC = float4(albedo, 1.0);
+
+    float3 emissive = EmissiveTexture.Sample(AlbedoSampler, emissiveUV).rgb * EmissiveFactor;
+    Output.SceneColor = float4(emissive, 1.0);
     return Output;
 }

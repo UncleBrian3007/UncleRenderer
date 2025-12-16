@@ -11,6 +11,7 @@ struct FSceneModelDesc
     std::wstring BaseColorTexturePath;
     std::wstring MetallicRoughnessTexturePath;
     std::wstring NormalTexturePath;
+    std::wstring EmissiveTexturePath;
     bool bVisible{true};
     FFloat3 Position{0.0f, 0.0f, 0.0f};
     FFloat3 RotationEuler{0.0f, 0.0f, 0.0f};

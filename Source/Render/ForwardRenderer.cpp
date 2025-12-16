@@ -103,6 +103,7 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
         DefaultModel.BaseColorFactor = { 1.0f, 1.0f, 1.0f };
         DefaultModel.MetallicFactor = 0.0f;
         DefaultModel.RoughnessFactor = 1.0f;
+        DefaultModel.EmissiveFactor = { 0.0f, 0.0f, 0.0f };
         DefaultModel.bHasNormalMap = !DefaultTextureSet.Normal.empty();
         SceneModels.push_back(std::move(DefaultModel));
     }
@@ -252,7 +253,7 @@ bool FForwardRenderer::CreateRootSignature(FDX12Device* Device)
 {
     D3D12_DESCRIPTOR_RANGE1 DescriptorRange = {};
     DescriptorRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    DescriptorRange.NumDescriptors = 1;
+    DescriptorRange.NumDescriptors = 2;
     DescriptorRange.BaseShaderRegister = 0;
     DescriptorRange.RegisterSpace = 0;
     DescriptorRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
@@ -417,7 +418,7 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
 
     D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
     HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    HeapDesc.NumDescriptors = static_cast<UINT>(Models.size());
+    HeapDesc.NumDescriptors = static_cast<UINT>(Models.size() * 2);
     HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(TextureDescriptorHeap.GetAddressOf())));
 
@@ -450,9 +451,10 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
         };
 
         Microsoft::WRL::ComPtr<ID3D12Resource> TextureResource;
+        Microsoft::WRL::ComPtr<ID3D12Resource> EmissiveResource;
+        const uint32_t BaseColorValue = PackColor(Models[Index].BaseColorFactor);
         if (Models[Index].BaseColorTexturePath.empty())
         {
-            const uint32_t BaseColorValue = PackColor(Models[Index].BaseColorFactor);
             if (!TextureLoader->LoadOrSolidColor(Models[Index].BaseColorTexturePath, BaseColorValue, TextureResource))
             {
                 return false;
@@ -463,9 +465,28 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
             return false;
         }
 
+        const uint32_t EmissiveColorValue = PackColor(Models[Index].EmissiveFactor);
+        if (Models[Index].EmissiveTexturePath.empty())
+        {
+            if (!TextureLoader->LoadOrSolidColor(Models[Index].EmissiveTexturePath, EmissiveColorValue, EmissiveResource))
+            {
+                return false;
+            }
+        }
+        else if (!TextureLoader->LoadOrDefault(Models[Index].EmissiveTexturePath, EmissiveResource))
+        {
+            return false;
+        }
+
         SceneTextures.push_back(TextureResource);
         Device->GetDevice()->CreateShaderResourceView(TextureResource.Get(), &SrvDesc, CpuHandle);
         SceneModels[Index].TextureHandle = GpuHandle;
+
+        CpuHandle.ptr += DescriptorSize;
+        GpuHandle.ptr += DescriptorSize;
+
+        SceneTextures.push_back(EmissiveResource);
+        Device->GetDevice()->CreateShaderResourceView(EmissiveResource.Get(), &SrvDesc, CpuHandle);
 
         CpuHandle.ptr += DescriptorSize;
         GpuHandle.ptr += DescriptorSize;
@@ -477,17 +498,14 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
 
 void FForwardRenderer::UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, uint64_t ConstantBufferOffset)
 {
-    const DirectX::XMFLOAT3 BaseColor = Model.BaseColorFactor;
     const DirectX::XMVECTOR LightDir = DirectX::XMLoadFloat3(&LightDirection);
 
-    const DirectX::XMMATRIX World = DirectX::XMLoadFloat4x4(&Model.WorldMatrix);
     RendererUtils::UpdateSceneConstants(
         Camera,
-        BaseColor,
+        Model,
         LightIntensity,
         LightDir,
         LightColor,
-        World,
         ConstantBufferMapped,
         ConstantBufferOffset);
 }

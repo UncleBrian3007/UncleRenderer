@@ -48,6 +48,8 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
 
     LogInfo("Deferred renderer initialization started");
 
+    this->BackBufferFormat = BackBufferFormat;
+
     bDepthPrepassEnabled = Options.bUseDepthPrepass;
 
     Viewport.TopLeftX = 0.0f;
@@ -77,7 +79,7 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     }
 
     LogInfo("Creating deferred renderer base pass pipeline...");
-    if (!CreateBasePassPipeline(Device))
+    if (!CreateBasePassPipeline(Device, BackBufferFormat))
     {
         LogError("Deferred renderer initialization failed: base pass pipeline creation failed");
         return false;
@@ -142,6 +144,7 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
         DefaultModel.BaseColorFactor = { 1.0f, 1.0f, 1.0f };
         DefaultModel.MetallicFactor = 0.0f;
         DefaultModel.RoughnessFactor = 1.0f;
+        DefaultModel.EmissiveFactor = { 0.0f, 0.0f, 0.0f };
         DefaultModel.bHasNormalMap = !DefaultTextureSet.Normal.empty();
         SceneModels.push_back(std::move(DefaultModel));
     }
@@ -244,7 +247,15 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
     CmdContext.TransitionResource(DepthBuffer.Get(), DepthBufferState, D3D12_RESOURCE_STATE_DEPTH_WRITE);
     DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
 
-    CmdContext.SetRenderTarget(GBufferRTVHandles[0], &DepthStencilHandle);
+    D3D12_CPU_DESCRIPTOR_HANDLE BasePassRTVs[4] =
+    {
+        GBufferRTVHandles[0],
+        GBufferRTVHandles[1],
+        GBufferRTVHandles[2],
+        RtvHandle
+    };
+
+    CmdContext.SetRenderTarget(BasePassRTVs[0], &DepthStencilHandle);
     if (!bDoDepthPrepass)
     {
         CmdContext.ClearDepth(DepthStencilHandle);
@@ -256,6 +267,9 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         CmdContext.ClearRenderTarget(Handle, ClearValue);
     }
 
+    const float SceneClear[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+    CmdContext.ClearRenderTarget(RtvHandle, SceneClear);
+
     CommandList->SetGraphicsRootSignature(BasePassRootSignature.Get());
 
     ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
@@ -265,7 +279,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
     CommandList->RSSetScissorRects(1, &ScissorRect);
 
     CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    CommandList->OMSetRenderTargets(3, GBufferRTVHandles, FALSE, &DepthStencilHandle);
+    CommandList->OMSetRenderTargets(4, BasePassRTVs, FALSE, &DepthStencilHandle);
 
     ID3D12PipelineState* CurrentPipeline = nullptr;
     for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
@@ -342,7 +356,7 @@ bool FDeferredRenderer::CreateBasePassRootSignature(FDX12Device* Device)
 {
     D3D12_DESCRIPTOR_RANGE1 DescriptorRange = {};
     DescriptorRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    DescriptorRange.NumDescriptors = 3;
+    DescriptorRange.NumDescriptors = 4;
     DescriptorRange.BaseShaderRegister = 0;
     DescriptorRange.RegisterSpace = 0;
     DescriptorRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
@@ -453,7 +467,7 @@ bool FDeferredRenderer::CreateLightingRootSignature(FDX12Device* Device)
     return true;
 }
 
-bool FDeferredRenderer::CreateBasePassPipeline(FDX12Device* Device)
+bool FDeferredRenderer::CreateBasePassPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat)
 {
     FShaderCompiler Compiler;
     std::vector<uint8_t> VSByteCode;
@@ -516,7 +530,7 @@ bool FDeferredRenderer::CreateBasePassPipeline(FDX12Device* Device)
         Desc.BlendState = {};
         Desc.BlendState.AlphaToCoverageEnable = FALSE;
         Desc.BlendState.IndependentBlendEnable = TRUE;
-        for (int i = 0; i < 3; ++i)
+        for (int i = 0; i < 4; ++i)
         {
             D3D12_RENDER_TARGET_BLEND_DESC RtBlend = {};
             RtBlend.BlendEnable = FALSE;
@@ -544,10 +558,11 @@ bool FDeferredRenderer::CreateBasePassPipeline(FDX12Device* Device)
         Desc.DepthStencilState.FrontFace.StencilPassOp = D3D12_STENCIL_OP_KEEP;
         Desc.DepthStencilState.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS;
         Desc.DepthStencilState.BackFace = Desc.DepthStencilState.FrontFace;
-        Desc.NumRenderTargets = 3;
+        Desc.NumRenderTargets = 4;
         Desc.RTVFormats[0] = GBufferFormats[0];
         Desc.RTVFormats[1] = GBufferFormats[1];
         Desc.RTVFormats[2] = GBufferFormats[2];
+        Desc.RTVFormats[3] = BackBufferFormat;
         Desc.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
         Desc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
     };
@@ -665,7 +680,13 @@ bool FDeferredRenderer::CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT 
     PsoDesc.RasterizerState.DepthClipEnable = TRUE;
 
     PsoDesc.BlendState = {};
-    PsoDesc.BlendState.RenderTarget[0].BlendEnable = FALSE;
+    PsoDesc.BlendState.RenderTarget[0].BlendEnable = TRUE;
+    PsoDesc.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_ONE;
+    PsoDesc.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_ONE;
+    PsoDesc.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+    PsoDesc.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+    PsoDesc.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ONE;
+    PsoDesc.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
     PsoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 
     PsoDesc.DepthStencilState = {};
@@ -745,7 +766,7 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
     const UINT TextureCount = static_cast<UINT>(SceneTextures.size());
 
     D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
-    HeapDesc.NumDescriptors = TextureCount * 3 + 3;
+    HeapDesc.NumDescriptors = TextureCount * 4 + 3;
     HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(DescriptorHeap.GetAddressOf())));
@@ -774,6 +795,11 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         GpuHandle.ptr += DescriptorSize;
 
         Device->GetDevice()->CreateShaderResourceView(SceneTextures[Index].Normal.Get(), &SceneSrvDesc, CpuHandle);
+
+        CpuHandle.ptr += DescriptorSize;
+        GpuHandle.ptr += DescriptorSize;
+
+        Device->GetDevice()->CreateShaderResourceView(SceneTextures[Index].Emissive.Get(), &SceneSrvDesc, CpuHandle);
 
         CpuHandle.ptr += DescriptorSize;
         GpuHandle.ptr += DescriptorSize;
@@ -857,6 +883,19 @@ bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, const std::vect
             return false;
         }
 
+        const uint32_t EmissiveValue = PackColor(Model.EmissiveFactor);
+        if (Model.EmissiveTexturePath.empty())
+        {
+            if (!TextureLoader->LoadOrSolidColor(Model.EmissiveTexturePath, EmissiveValue, TextureSet.Emissive))
+            {
+                return false;
+            }
+        }
+        else if (!TextureLoader->LoadOrDefault(Model.EmissiveTexturePath, TextureSet.Emissive))
+        {
+            return false;
+        }
+
         SceneTextures.push_back(TextureSet);
     }
 
@@ -865,17 +904,14 @@ bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, const std::vect
 
 void FDeferredRenderer::UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, uint64_t ConstantBufferOffset)
 {
-    const DirectX::XMFLOAT3 BaseColor = Model.BaseColorFactor;
     const DirectX::XMVECTOR LightDir = DirectX::XMLoadFloat3(&LightDirection);
 
-    const DirectX::XMMATRIX World = DirectX::XMLoadFloat4x4(&Model.WorldMatrix);
     RendererUtils::UpdateSceneConstants(
         Camera,
-        BaseColor,
+        Model,
         LightIntensity,
         LightDir,
         LightColor,
-        World,
         ConstantBufferMapped,
         ConstantBufferOffset);
 }

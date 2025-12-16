@@ -50,6 +50,16 @@ struct FSceneConstants
     float Padding2 = 0.0f;
     DirectX::XMFLOAT3 LightColor{ 1.0f, 1.0f, 1.0f };
     float Padding3 = 0.0f;
+    DirectX::XMFLOAT3 EmissiveFactor{ 0.0f, 0.0f, 0.0f };
+    float Padding4 = 0.0f;
+    DirectX::XMFLOAT4 BaseColorTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
+    DirectX::XMFLOAT4 BaseColorTransformRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
+    DirectX::XMFLOAT4 MetallicRoughnessTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
+    DirectX::XMFLOAT4 MetallicRoughnessTransformRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
+    DirectX::XMFLOAT4 NormalTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
+    DirectX::XMFLOAT4 NormalTransformRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
+    DirectX::XMFLOAT4 EmissiveTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
+    DirectX::XMFLOAT4 EmissiveTransformRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
 };
 
 struct FSkyAtmosphereConstants
@@ -82,11 +92,21 @@ struct FSceneModelResource
     DirectX::XMFLOAT3 BaseColorFactor{ 1.0f, 1.0f, 1.0f };
     float MetallicFactor = 1.0f;
     float RoughnessFactor = 1.0f;
+    DirectX::XMFLOAT3 EmissiveFactor{ 0.0f, 0.0f, 0.0f };
     std::wstring BaseColorTexturePath;
     std::wstring MetallicRoughnessTexturePath;
     std::wstring NormalTexturePath;
+    std::wstring EmissiveTexturePath;
     bool bHasNormalMap = true;
     D3D12_GPU_DESCRIPTOR_HANDLE TextureHandle{};
+    DirectX::XMFLOAT4 BaseColorTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
+    DirectX::XMFLOAT4 BaseColorTransformRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
+    DirectX::XMFLOAT4 MetallicRoughnessTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
+    DirectX::XMFLOAT4 MetallicRoughnessTransformRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
+    DirectX::XMFLOAT4 NormalTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
+    DirectX::XMFLOAT4 NormalTransformRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
+    DirectX::XMFLOAT4 EmissiveTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
+    DirectX::XMFLOAT4 EmissiveTransformRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
 };
 
 namespace RendererUtils
@@ -122,11 +142,10 @@ namespace RendererUtils
         Microsoft::WRL::ComPtr<ID3D12PipelineState>& OutPipelineState);
     void UpdateSceneConstants(
         const FCamera& Camera,
-        const DirectX::XMFLOAT3& BaseColor,
+        const FSceneModelResource& Model,
         float LightIntensity,
         const DirectX::XMVECTOR& LightDirection,
         const DirectX::XMFLOAT3& LightColor,
-        const DirectX::XMMATRIX& WorldMatrix,
         uint8_t* ConstantBufferMapped,
         uint64_t ConstantBufferOffset = 0);
     void UpdateSkyConstants(

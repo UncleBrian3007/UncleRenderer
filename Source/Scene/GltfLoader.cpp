@@ -611,6 +611,38 @@ namespace
         const std::filesystem::path FullPath = BasePath / std::filesystem::path(ImageUri);
         return FullPath.wstring();
     }
+
+    FGltfTextureTransform ResolveTextureTransform(const FJsonValue* TextureInfo)
+    {
+        FGltfTextureTransform Transform;
+
+        if (!TextureInfo || !TextureInfo->IsObject())
+        {
+            return Transform;
+        }
+
+        const FJsonValue* Extensions = GetObjectField(TextureInfo, "extensions");
+        const FJsonValue* TransformExt = Extensions ? GetObjectField(Extensions, "KHR_texture_transform") : nullptr;
+        const FJsonValue* Source = TransformExt ? TransformExt : TextureInfo;
+
+        const FJsonValue* Offset = GetObjectField(Source, "offset");
+        if (Offset && Offset->IsArray())
+        {
+            Transform.Offset.x = static_cast<float>(GetNumberField(Offset, 0, Transform.Offset.x));
+            Transform.Offset.y = static_cast<float>(GetNumberField(Offset, 1, Transform.Offset.y));
+        }
+
+        const FJsonValue* Scale = GetObjectField(Source, "scale");
+        if (Scale && Scale->IsArray())
+        {
+            Transform.Scale.x = static_cast<float>(GetNumberField(Scale, 0, Transform.Scale.x));
+            Transform.Scale.y = static_cast<float>(GetNumberField(Scale, 1, Transform.Scale.y));
+        }
+
+        Transform.Rotation = static_cast<float>(GetNumberField(Source, "rotation", Transform.Rotation));
+
+        return Transform;
+    }
 }
 
 bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& OutScene)
@@ -980,6 +1012,7 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
             {
                 const FJsonValue* BaseColorTexture = GetObjectField(Pbr, "baseColorTexture");
                 TextureSet.BaseColor = ResolveTexturePath(Textures, Images, BasePath, GetIntField(BaseColorTexture, "index", -1));
+                TextureSet.BaseColorTransform = ResolveTextureTransform(BaseColorTexture);
 
                 const FJsonValue* BaseColorFactor = GetObjectField(Pbr, "baseColorFactor");
                 if (BaseColorFactor && BaseColorFactor->IsArray())
@@ -994,10 +1027,24 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
 
                 const FJsonValue* MetallicRoughnessTexture = GetObjectField(Pbr, "metallicRoughnessTexture");
                 TextureSet.MetallicRoughness = ResolveTexturePath(Textures, Images, BasePath, GetIntField(MetallicRoughnessTexture, "index", -1));
+                TextureSet.MetallicRoughnessTransform = ResolveTextureTransform(MetallicRoughnessTexture);
             }
 
             const FJsonValue* NormalTexture = GetObjectField(Material, "normalTexture");
             TextureSet.Normal = ResolveTexturePath(Textures, Images, BasePath, GetIntField(NormalTexture, "index", -1));
+            TextureSet.NormalTransform = ResolveTextureTransform(NormalTexture);
+
+            const FJsonValue* EmissiveTexture = GetObjectField(Material, "emissiveTexture");
+            TextureSet.Emissive = ResolveTexturePath(Textures, Images, BasePath, GetIntField(EmissiveTexture, "index", -1));
+            TextureSet.EmissiveTransform = ResolveTextureTransform(EmissiveTexture);
+
+            const FJsonValue* EmissiveFactor = GetObjectField(Material, "emissiveFactor");
+            if (EmissiveFactor && EmissiveFactor->IsArray())
+            {
+                TextureSet.EmissiveFactor.x = static_cast<float>(GetNumberField(EmissiveFactor, 0, TextureSet.EmissiveFactor.x));
+                TextureSet.EmissiveFactor.y = static_cast<float>(GetNumberField(EmissiveFactor, 1, TextureSet.EmissiveFactor.y));
+                TextureSet.EmissiveFactor.z = static_cast<float>(GetNumberField(EmissiveFactor, 2, TextureSet.EmissiveFactor.z));
+            }
 
             return TextureSet;
         };

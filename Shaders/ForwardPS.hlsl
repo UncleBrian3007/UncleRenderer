@@ -22,14 +22,38 @@ cbuffer SceneConstants : register(b0)
     float Padding2;
     float3 LightColor;
     float Padding3;
+    float3 EmissiveFactor;
+    float Padding4;
+    float4 BaseColorTransformOffsetScale;
+    float4 BaseColorTransformRotation;
+    float4 MetallicRoughnessTransformOffsetScale;
+    float4 MetallicRoughnessTransformRotation;
+    float4 NormalTransformOffsetScale;
+    float4 NormalTransformRotation;
+    float4 EmissiveTransformOffsetScale;
+    float4 EmissiveTransformRotation;
 };
 
 Texture2D AlbedoTexture : register(t0);
+Texture2D EmissiveTexture : register(t1);
 SamplerState AlbedoSampler : register(s0);
+
+float2 ApplyTextureTransform(float2 uv, float4 offsetScale, float4 rotation)
+{
+    float2 scaled = uv * offsetScale.zw;
+    float2 rotated = float2(
+        scaled.x * rotation.x - scaled.y * rotation.y,
+        scaled.x * rotation.y + scaled.y * rotation.x);
+    return rotated + offsetScale.xy;
+}
 
 float4 PSMain(VSOutput Input) : SV_Target
 {
-    float3 albedo = AlbedoTexture.Sample(AlbedoSampler, Input.UV).rgb * BaseColor;
+    float2 baseUV = ApplyTextureTransform(Input.UV, BaseColorTransformOffsetScale, BaseColorTransformRotation);
+    float2 emissiveUV = ApplyTextureTransform(Input.UV, EmissiveTransformOffsetScale, EmissiveTransformRotation);
+
+    float3 albedo = AlbedoTexture.Sample(AlbedoSampler, baseUV).rgb * BaseColor;
+    float3 emissive = EmissiveTexture.Sample(AlbedoSampler, emissiveUV).rgb * EmissiveFactor;
     float3 n = normalize(Input.Normal);
     float3 v = normalize(CameraPosition - Input.WorldPos);
     float3 l = normalize(LightDirection);
@@ -41,6 +65,6 @@ float4 PSMain(VSOutput Input) : SV_Target
     float3 lighting = EvaluatePBR(albedo, metallic, roughness, F0, n, v, l) * LightIntensity * LightColor;
 
     float3 ambient = albedo * 0.03f;
-    float3 color = lighting + ambient;
+    float3 color = lighting + ambient + emissive;
     return float4(color, 1.0);
 }
