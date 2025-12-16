@@ -835,7 +835,7 @@ namespace
         const uint32_t R = ClampToByte(Color.x);
         const uint32_t G = ClampToByte(Color.y);
         const uint32_t B = ClampToByte(Color.z);
-        return 0xff000000 | (R << 16) | (G << 8) | B;
+        return 0xff000000 | (B << 16) | (G << 8) | R;
     }
 
     uint32_t PackMetallicRoughness(float Metallic, float Roughness)

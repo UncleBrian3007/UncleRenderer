@@ -447,7 +447,7 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
             const uint32_t R = ClampToByte(Color.x);
             const uint32_t G = ClampToByte(Color.y);
             const uint32_t B = ClampToByte(Color.z);
-            return 0xff000000 | (R << 16) | (G << 8) | B;
+            return 0xff000000 | (B << 16) | (G << 8) | R;
         };
 
         Microsoft::WRL::ComPtr<ID3D12Resource> TextureResource;

@@ -647,16 +647,21 @@ void RendererUtils::UpdateSceneConstants(
     const XMMATRIX Projection = Camera.GetProjectionMatrix();
     const XMMATRIX WorldMatrix = XMLoadFloat4x4(&Model.WorldMatrix);
 
+    const bool bHasBaseColorTexture = !Model.BaseColorTexturePath.empty();
+    const bool bHasEmissiveTexture = !Model.EmissiveTexturePath.empty();
+    const XMFLOAT3 BaseColorFactor = bHasBaseColorTexture ? Model.BaseColorFactor : XMFLOAT3(1.0f, 1.0f, 1.0f);
+    const XMFLOAT3 EmissiveFactor = bHasEmissiveTexture ? Model.EmissiveFactor : XMFLOAT3(1.0f, 1.0f, 1.0f);
+
     FSceneConstants Constants = {};
     XMStoreFloat4x4(&Constants.World, WorldMatrix);
     XMStoreFloat4x4(&Constants.View, View);
     XMStoreFloat4x4(&Constants.Projection, Projection);
-    Constants.BaseColor = Model.BaseColorFactor;
+    Constants.BaseColor = BaseColorFactor;
     Constants.LightIntensity = LightIntensity;
     XMStoreFloat3(&Constants.LightDirection, XMVector3Normalize(LightDirection));
     Constants.CameraPosition = Camera.GetPosition();
     Constants.LightColor = LightColor;
-    Constants.EmissiveFactor = Model.EmissiveFactor;
+    Constants.EmissiveFactor = EmissiveFactor;
     FillTransformConstants(Model.BaseColorTransformOffsetScale, Model.BaseColorTransformRotation, Constants.BaseColorTransformOffsetScale, Constants.BaseColorTransformRotation);
     FillTransformConstants(Model.MetallicRoughnessTransformOffsetScale, Model.MetallicRoughnessTransformRotation, Constants.MetallicRoughnessTransformOffsetScale, Constants.MetallicRoughnessTransformRotation);
     FillTransformConstants(Model.NormalTransformOffsetScale, Model.NormalTransformRotation, Constants.NormalTransformOffsetScale, Constants.NormalTransformRotation);
