@@ -4,6 +4,7 @@ struct VSInput
     float3 Normal   : NORMAL;
     float2 UV       : TEXCOORD0;
     float4 Tangent  : TANGENT;
+    float4 Color    : COLOR0;
 };
 
 struct VSOutput
@@ -13,6 +14,7 @@ struct VSOutput
     float2 UV       : TEXCOORD0;
     float3 WorldPos : TEXCOORD1;
     float4 Tangent  : TEXCOORD2;
+    float4 Color    : COLOR0;
 };
 
 cbuffer SceneConstants : register(b0)
@@ -40,5 +42,6 @@ VSOutput VSMain(VSInput Input)
     Output.UV = Input.UV;
     Output.WorldPos = WorldPos.xyz;
     Output.Tangent = float4(normalize(mul(Input.Tangent.xyz, (float3x3)World)), Input.Tangent.w);
+    Output.Color = Input.Color;
     return Output;
 }

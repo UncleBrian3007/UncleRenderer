@@ -7,6 +7,7 @@ struct VSOutput
     float2 UV       : TEXCOORD0;
     float3 WorldPos : TEXCOORD1;
     float4 Tangent  : TEXCOORD2;
+    float4 Color    : COLOR0;
 };
 
 cbuffer SceneConstants : register(b0)
@@ -52,7 +53,7 @@ float4 PSMain(VSOutput Input) : SV_Target
     float2 baseUV = ApplyTextureTransform(Input.UV, BaseColorTransformOffsetScale, BaseColorTransformRotation);
     float2 emissiveUV = ApplyTextureTransform(Input.UV, EmissiveTransformOffsetScale, EmissiveTransformRotation);
 
-    float3 albedo = AlbedoTexture.Sample(AlbedoSampler, baseUV).rgb * BaseColor;
+    float3 albedo = AlbedoTexture.Sample(AlbedoSampler, baseUV).rgb * BaseColor * Input.Color.rgb;
     float3 emissive = EmissiveTexture.Sample(AlbedoSampler, emissiveUV).rgb * EmissiveFactor;
     float3 n = normalize(Input.Normal);
     float3 v = normalize(CameraPosition - Input.WorldPos);

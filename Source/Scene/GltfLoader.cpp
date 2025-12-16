@@ -725,6 +725,7 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
         const int64_t NormalAccessorIndex = GetIntField(Attributes, "NORMAL", -1);
         const int64_t TexcoordAccessorIndex = GetIntField(Attributes, "TEXCOORD_0", -1);
         const int64_t TangentAccessorIndex = GetIntField(Attributes, "TANGENT", -1);
+        const int64_t ColorAccessorIndex = GetIntField(Attributes, "COLOR_0", -1);
         const int64_t PrimitiveMode = GetIntField(Primitive, "mode", 4);
         const int64_t IndicesAccessorIndex = GetIntField(Primitive, "indices", -1);
 
@@ -737,6 +738,7 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
         const FJsonValue* NormalAccessor = NormalAccessorIndex >= 0 ? GetArrayElem(Accessors, static_cast<size_t>(NormalAccessorIndex)) : nullptr;
         const FJsonValue* TexcoordAccessor = TexcoordAccessorIndex >= 0 ? GetArrayElem(Accessors, static_cast<size_t>(TexcoordAccessorIndex)) : nullptr;
         const FJsonValue* TangentAccessor = TangentAccessorIndex >= 0 ? GetArrayElem(Accessors, static_cast<size_t>(TangentAccessorIndex)) : nullptr;
+        const FJsonValue* ColorAccessor = ColorAccessorIndex >= 0 ? GetArrayElem(Accessors, static_cast<size_t>(ColorAccessorIndex)) : nullptr;
         const FJsonValue* IndexAccessor = GetArrayElem(Accessors, static_cast<size_t>(IndicesAccessorIndex));
 
         if (!PositionAccessor || !IndexAccessor)
@@ -748,12 +750,14 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
         const int64_t NormalBufferViewIndex = NormalAccessor ? GetIntField(NormalAccessor, "bufferView", -1) : -1;
         const int64_t TexcoordBufferViewIndex = TexcoordAccessor ? GetIntField(TexcoordAccessor, "bufferView", -1) : -1;
         const int64_t TangentBufferViewIndex = TangentAccessor ? GetIntField(TangentAccessor, "bufferView", -1) : -1;
+        const int64_t ColorBufferViewIndex = ColorAccessor ? GetIntField(ColorAccessor, "bufferView", -1) : -1;
         const int64_t IndexBufferViewIndex = GetIntField(IndexAccessor, "bufferView", -1);
 
         const FJsonValue* PositionBufferView = GetArrayElem(BufferViews, static_cast<size_t>(PositionBufferViewIndex));
         const FJsonValue* NormalBufferView = NormalBufferViewIndex >= 0 ? GetArrayElem(BufferViews, static_cast<size_t>(NormalBufferViewIndex)) : nullptr;
         const FJsonValue* TexcoordBufferView = TexcoordBufferViewIndex >= 0 ? GetArrayElem(BufferViews, static_cast<size_t>(TexcoordBufferViewIndex)) : nullptr;
         const FJsonValue* TangentBufferView = TangentBufferViewIndex >= 0 ? GetArrayElem(BufferViews, static_cast<size_t>(TangentBufferViewIndex)) : nullptr;
+        const FJsonValue* ColorBufferView = ColorBufferViewIndex >= 0 ? GetArrayElem(BufferViews, static_cast<size_t>(ColorBufferViewIndex)) : nullptr;
         const FJsonValue* IndexBufferView = GetArrayElem(BufferViews, static_cast<size_t>(IndexBufferViewIndex));
 
         if (!PositionBufferView || !IndexBufferView)
@@ -777,14 +781,18 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
         const int64_t NormalByteOffset = (NormalAccessor ? GetIntField(NormalAccessor, "byteOffset", 0) + GetIntField(NormalBufferView, "byteOffset", 0) : 0);
         const int64_t TexcoordByteOffset = (TexcoordAccessor ? GetIntField(TexcoordAccessor, "byteOffset", 0) + GetIntField(TexcoordBufferView, "byteOffset", 0) : 0);
         const int64_t TangentByteOffset = (TangentAccessor ? GetIntField(TangentAccessor, "byteOffset", 0) + GetIntField(TangentBufferView, "byteOffset", 0) : 0);
+        const int64_t ColorByteOffset = (ColorAccessor ? GetIntField(ColorAccessor, "byteOffset", 0) + GetIntField(ColorBufferView, "byteOffset", 0) : 0);
         const int64_t IndexByteOffset = GetIntField(IndexAccessor, "byteOffset", 0) + GetIntField(IndexBufferView, "byteOffset", 0);
 
         const int64_t PositionStride = GetIntField(PositionBufferView, "byteStride", static_cast<int64_t>(sizeof(float) * 3));
         const int64_t NormalStride = NormalBufferView ? GetIntField(NormalBufferView, "byteStride", static_cast<int64_t>(sizeof(float) * 3)) : static_cast<int64_t>(sizeof(float) * 3);
         const int64_t TexcoordStride = TexcoordBufferView ? GetIntField(TexcoordBufferView, "byteStride", static_cast<int64_t>(sizeof(float) * 2)) : static_cast<int64_t>(sizeof(float) * 2);
         const int64_t TangentStride = TangentBufferView ? GetIntField(TangentBufferView, "byteStride", static_cast<int64_t>(sizeof(float) * 4)) : static_cast<int64_t>(sizeof(float) * 4);
+        const std::string ColorType = ColorAccessor ? GetStringField(ColorAccessor, "type") : std::string();
+        const int64_t DefaultColorStride = ColorType == "VEC4" ? static_cast<int64_t>(sizeof(float) * 4) : static_cast<int64_t>(sizeof(float) * 3);
+        const int64_t ColorStride = ColorBufferView ? GetIntField(ColorBufferView, "byteStride", DefaultColorStride) : DefaultColorStride;
 
-        if (PositionStride <= 0 || NormalStride <= 0 || TexcoordStride <= 0 || TangentStride <= 0)
+        if (PositionStride <= 0 || NormalStride <= 0 || TexcoordStride <= 0 || TangentStride <= 0 || ColorStride <= 0)
         {
             return false;
         }
@@ -855,6 +863,21 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
             else
             {
                 Vertex.UV = { 0.0f, 0.0f };
+            }
+
+            if (ColorAccessor && ColorBufferView)
+            {
+                const size_t Offset = static_cast<size_t>(ColorByteOffset + i * ColorStride);
+                const size_t ExpectedBytes = ColorType == "VEC4" ? sizeof(float) * 4 : sizeof(float) * 3;
+                if (Offset + ExpectedBytes > BufferData.size())
+                {
+                    return false;
+                }
+
+                float Color[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+                std::memcpy(Color, &BufferData[Offset], ExpectedBytes);
+                const float Alpha = ColorType == "VEC4" ? Color[3] : 1.0f;
+                Vertex.Color = { Color[0], Color[1], Color[2], Alpha };
             }
 
             MeshData.Vertices.push_back(Vertex);

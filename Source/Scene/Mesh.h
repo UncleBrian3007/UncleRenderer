@@ -12,6 +12,7 @@ public:
         FFloat3 Normal;
         FFloat2 UV;
         FFloat4 Tangent;
+        FFloat4 Color{ 1.0f, 1.0f, 1.0f, 1.0f };
     };
 
     void SetVertices(const std::vector<FVertex>& InVertices) { Vertices = InVertices; }

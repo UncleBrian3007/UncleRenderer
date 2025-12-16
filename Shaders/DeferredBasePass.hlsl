@@ -4,6 +4,7 @@ struct VSInput
     float3 Normal   : NORMAL;
     float2 UV       : TEXCOORD0;
     float4 Tangent  : TANGENT;
+    float4 Color    : COLOR0;
 };
 
 struct VSOutput
@@ -13,6 +14,7 @@ struct VSOutput
     float2 UV       : TEXCOORD0;
     float3 WorldPos : TEXCOORD1;
     float4 Tangent  : TEXCOORD2;
+    float4 Color    : COLOR0;
 };
 
 #ifndef USE_NORMAL_MAP
@@ -69,6 +71,7 @@ VSOutput VSMain(VSInput Input)
     Output.UV = Input.UV;
     Output.WorldPos = WorldPos.xyz;
     Output.Tangent = float4(normalize(mul(Input.Tangent.xyz, (float3x3)World)), Input.Tangent.w);
+    Output.Color = Input.Color;
     return Output;
 }
 
@@ -113,7 +116,7 @@ PSOutput PSMain(VSOutput Input)
 
     float3 viewNormal = ComputeViewNormal(Input, normalUV);
 
-    float3 albedo = AlbedoTexture.Sample(AlbedoSampler, baseUV).rgb * BaseColor;
+    float3 albedo = AlbedoTexture.Sample(AlbedoSampler, baseUV).rgb * BaseColor * Input.Color.rgb;
 
     float viewDepth = -mul(float4(Input.WorldPos, 1.0), View).z;
     Output.GBufferA = float4(viewNormal, viewDepth);
