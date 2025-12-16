@@ -28,7 +28,7 @@ private:
     bool CreateRootSignature(FDX12Device* Device);
     bool CreatePipelineState(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateSceneTextures(FDX12Device* Device, const std::vector<FSceneModelResource>& Models);
-    void UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model);
+    void UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, uint64_t ConstantBufferOffset);
     void UpdateSkyConstants(const FCamera& Camera);
 
 private:
@@ -49,7 +49,6 @@ private:
     std::unique_ptr<FTextureLoader> TextureLoader;
     FMeshGeometryBuffers SkyGeometry;
     float SkySphereRadius = 1000.0f;
-    bool bUseDepthPrepass = true;
 
     D3D12_GPU_DESCRIPTOR_HANDLE SceneTextureGpuHandle{};
     D3D12_VIEWPORT Viewport{};
@@ -59,4 +58,5 @@ private:
 
     uint8_t* ConstantBufferMapped = nullptr;
     uint8_t* SkyConstantBufferMapped = nullptr;
+    uint64_t SceneConstantBufferStride = 0;
 };

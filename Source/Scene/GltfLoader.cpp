@@ -369,6 +369,14 @@ namespace
 
     using FMatrix4 = std::array<float, 16>;
 
+    FMatrix4 MakeMirrorZMatrix()
+    {
+        return { 1.0f, 0.0f,  0.0f, 0.0f,
+                 0.0f, 1.0f,  0.0f, 0.0f,
+                 0.0f, 0.0f, -1.0f, 0.0f,
+                 0.0f, 0.0f,  0.0f, 1.0f };
+    }
+
     FMatrix4 MakeIdentityMatrix()
     {
         return { 1.0f, 0.0f, 0.0f, 0.0f,
@@ -487,6 +495,12 @@ namespace
         return MultiplyMatrix(MultiplyMatrix(T, R), S);
     }
 
+    FMatrix4 ToLeftHandedMatrix(const FMatrix4& M)
+    {
+        const FMatrix4 MirrorZ = MakeMirrorZMatrix();
+        return MultiplyMatrix(MirrorZ, MultiplyMatrix(M, MirrorZ));
+    }
+
     FFloat3 TransformPosition(const FMatrix4& M, const FFloat3& P)
     {
         FFloat3 Out;
@@ -547,7 +561,8 @@ namespace
         }
 
         const FMatrix4 Local = MatrixFromTRS(Node);
-        const FMatrix4 World = MultiplyMatrix(ParentTransform, Local);
+        const FMatrix4 LocalLH = ToLeftHandedMatrix(Local);
+        const FMatrix4 World = MultiplyMatrix(ParentTransform, LocalLH);
 
         const int64_t MeshIndex = GetIntField(Node, "mesh", -1);
         if (MeshIndex >= 0 && MeshIndex < static_cast<int64_t>(MeshDatas.size()))
@@ -757,6 +772,7 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
             float Position[3] = {};
             std::memcpy(Position, &BufferData[PositionOffset], sizeof(Position));
             Vertex.Position = { Position[0], Position[1], Position[2] };
+            Vertex.Position.z = -Vertex.Position.z;
 
             if (NormalAccessor && NormalBufferView)
             {
@@ -773,6 +789,7 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
             {
                 Vertex.Normal = { 0.0f, 0.0f, 1.0f };
             }
+            Vertex.Normal.z = -Vertex.Normal.z;
 
             if (TangentAccessor && TangentBufferView)
             {
@@ -789,6 +806,8 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
             {
                 Vertex.Tangent = { 0.0f, 0.0f, 0.0f, 1.0f };
             }
+            Vertex.Tangent.z = -Vertex.Tangent.z;
+            Vertex.Tangent.w = -Vertex.Tangent.w;
 
             if (TexcoordAccessor && TexcoordBufferView)
             {
@@ -904,11 +923,6 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
         }
         default:
             return false;
-        }
-
-        for (size_t i = IndexStart; i + 2 < MeshData.Indices.size(); i += 3)
-        {
-            std::swap(MeshData.Indices[i + 1], MeshData.Indices[i + 2]);
         }
 
         return true;

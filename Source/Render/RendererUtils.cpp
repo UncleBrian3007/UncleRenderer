@@ -303,14 +303,13 @@ bool RendererUtils::CreateSceneModelsFromJson(
                 MaxScale = (std::max)(MaxScale, std::fabs(ScaleValue));
             }
 
-            const float NodeScale = (std::max)(ComputeMaxScale(LoadedNode.WorldMatrix), 1.0f);
+            const float NodeScale = ComputeMaxScale(LoadedNode.WorldMatrix);
 
             MeshRadius *= MaxScale;
 
             using namespace DirectX;
 
             const XMMATRIX NodeWorld = XMLoadFloat4x4(&LoadedNode.WorldMatrix);
-            const XMMATRIX Offset = XMMatrixTranslation(-MeshCenter.x, -MeshCenter.y, -MeshCenter.z);
             const XMMATRIX Scale = XMMatrixScaling(Model.Scale.x, Model.Scale.y, Model.Scale.z);
             const XMMATRIX Rotation = XMMatrixRotationRollPitchYaw(
                 XMConvertToRadians(Model.RotationEuler.x),
@@ -318,7 +317,7 @@ bool RendererUtils::CreateSceneModelsFromJson(
                 XMConvertToRadians(Model.RotationEuler.z));
             const XMMATRIX Translation = XMMatrixTranslation(Model.Position.x, Model.Position.y, Model.Position.z);
 
-            const XMMATRIX World = Offset * NodeWorld * Scale * Rotation * Translation;
+            const XMMATRIX World = NodeWorld * Scale * Rotation * Translation;
             XMStoreFloat4x4(&ModelResource.WorldMatrix, World);
 
             const XMVECTOR CenterVec = XMVector3TransformCoord(XMVectorSet(MeshCenter.x, MeshCenter.y, MeshCenter.z, 1.0f), World);
@@ -600,7 +599,8 @@ void RendererUtils::UpdateSceneConstants(
     const DirectX::XMVECTOR& LightDirection,
     const DirectX::XMFLOAT3& LightColor,
     const DirectX::XMMATRIX& WorldMatrix,
-    uint8_t* ConstantBufferMapped)
+    uint8_t* ConstantBufferMapped,
+    uint64_t ConstantBufferOffset)
 {
     if (ConstantBufferMapped == nullptr)
     {
@@ -622,7 +622,7 @@ void RendererUtils::UpdateSceneConstants(
     Constants.CameraPosition = Camera.GetPosition();
     Constants.LightColor = LightColor;
 
-    memcpy(ConstantBufferMapped, &Constants, sizeof(Constants));
+    memcpy(ConstantBufferMapped + ConstantBufferOffset, &Constants, sizeof(Constants));
 }
 
 void RendererUtils::UpdateSkyConstants(

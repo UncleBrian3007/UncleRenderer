@@ -39,7 +39,7 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
 
     LogInfo("Forward renderer initialization started");
 
-    bUseDepthPrepass = Options.bUseDepthPrepass;
+    bDepthPrepassEnabled = Options.bUseDepthPrepass;
 
     Viewport.TopLeftX = 0.0f;
     Viewport.TopLeftY = 0.0f;
@@ -107,8 +107,12 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
         SceneModels.push_back(std::move(DefaultModel));
     }
 
+    SceneConstantBufferStride = (sizeof(FSceneConstants) + 255ULL) & ~255ULL;
+
+    const uint64_t ConstantBufferSize = SceneConstantBufferStride * (std::max<uint64_t>(1, SceneModels.size()));
+
     FMappedConstantBuffer ConstantBufferResource = {};
-    if (!RendererUtils::CreateMappedConstantBuffer(Device, sizeof(FSceneConstants), ConstantBufferResource))
+    if (!RendererUtils::CreateMappedConstantBuffer(Device, ConstantBufferSize, ConstantBufferResource))
     {
         LogError("Forward renderer initialization failed: constant buffer creation failed");
         return false;
@@ -151,7 +155,7 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
 
     ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
 
-    const bool bDoDepthPrepass = bUseDepthPrepass && DepthPrepassPipeline;
+    const bool bDoDepthPrepass = bDepthPrepassEnabled && DepthPrepassPipeline;
     if (bDoDepthPrepass)
     {
         PixSetMarker(CommandList, L"DepthPrepass");
@@ -169,14 +173,19 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
         CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         CommandList->OMSetRenderTargets(0, nullptr, FALSE, &DepthStencilHandle);
 
-        for (const FSceneModelResource& Model : SceneModels)
+        for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
         {
-            UpdateSceneConstants(Camera, Model);
+            const FSceneModelResource& Model = SceneModels[ModelIndex];
+            const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
+
+            UpdateSceneConstants(Camera, Model, ConstantBufferOffset);
 
             CommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
             CommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
 
-            CommandList->SetGraphicsRootConstantBufferView(0, ConstantBuffer->GetGPUVirtualAddress());
+            CommandList->SetGraphicsRootConstantBufferView(
+                0,
+                ConstantBuffer->GetGPUVirtualAddress() + ConstantBufferOffset);
             CommandList->SetGraphicsRootDescriptorTable(1, Model.TextureHandle);
 
             CommandList->DrawIndexedInstanced(Model.Geometry.IndexCount, 1, 0, 0, 0);
@@ -218,16 +227,21 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
     CommandList->RSSetViewports(1, &Viewport);
     CommandList->RSSetScissorRects(1, &ScissorRect);
 
-    for (const FSceneModelResource& Model : SceneModels)
+    for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
     {
-        UpdateSceneConstants(Camera, Model);
+        const FSceneModelResource& Model = SceneModels[ModelIndex];
+        const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
+
+        UpdateSceneConstants(Camera, Model, ConstantBufferOffset);
 
         PixSetMarker(CommandList, L"DrawMesh");
         CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         CommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
         CommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
 
-        CommandList->SetGraphicsRootConstantBufferView(0, ConstantBuffer->GetGPUVirtualAddress());
+        CommandList->SetGraphicsRootConstantBufferView(
+            0,
+            ConstantBuffer->GetGPUVirtualAddress() + ConstantBufferOffset);
         CommandList->SetGraphicsRootDescriptorTable(1, Model.TextureHandle);
 
         CommandList->DrawIndexedInstanced(Model.Geometry.IndexCount, 1, 0, 0, 0);
@@ -377,7 +391,7 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
 
     HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineState.GetAddressOf())));
 
-    if (bUseDepthPrepass)
+    if (bDepthPrepassEnabled)
     {
         D3D12_GRAPHICS_PIPELINE_STATE_DESC DepthPrepassDesc = PsoDesc;
         DepthPrepassDesc.PS = { nullptr, 0 };
@@ -461,13 +475,21 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
     return true;
 }
 
-void FForwardRenderer::UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model)
+void FForwardRenderer::UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, uint64_t ConstantBufferOffset)
 {
     const DirectX::XMFLOAT3 BaseColor = Model.BaseColorFactor;
     const DirectX::XMVECTOR LightDir = DirectX::XMLoadFloat3(&LightDirection);
 
     const DirectX::XMMATRIX World = DirectX::XMLoadFloat4x4(&Model.WorldMatrix);
-    RendererUtils::UpdateSceneConstants(Camera, BaseColor, LightIntensity, LightDir, LightColor, World, ConstantBufferMapped);
+    RendererUtils::UpdateSceneConstants(
+        Camera,
+        BaseColor,
+        LightIntensity,
+        LightDir,
+        LightColor,
+        World,
+        ConstantBufferMapped,
+        ConstantBufferOffset);
 }
 
 void FForwardRenderer::UpdateSkyConstants(const FCamera& Camera)

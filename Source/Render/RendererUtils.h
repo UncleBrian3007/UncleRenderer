@@ -127,7 +127,8 @@ namespace RendererUtils
         const DirectX::XMVECTOR& LightDirection,
         const DirectX::XMFLOAT3& LightColor,
         const DirectX::XMMATRIX& WorldMatrix,
-        uint8_t* ConstantBufferMapped);
+        uint8_t* ConstantBufferMapped,
+        uint64_t ConstantBufferOffset = 0);
     void UpdateSkyConstants(
         const FCamera& Camera,
         const DirectX::XMMATRIX& WorldMatrix,

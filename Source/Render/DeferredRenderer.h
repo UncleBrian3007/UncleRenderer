@@ -39,7 +39,7 @@ private:
     bool CreateGBufferResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateDescriptorHeap(FDX12Device* Device);
     bool CreateSceneTextures(FDX12Device* Device, const std::vector<FSceneModelResource>& Models);
-    void UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model);
+    void UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, uint64_t ConstantBufferOffset);
     void UpdateSkyConstants(const FCamera& Camera);
 
 private:
@@ -65,7 +65,6 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> GBufferB;
     Microsoft::WRL::ComPtr<ID3D12Resource> GBufferC;
     std::unique_ptr<FTextureLoader> TextureLoader;
-    bool bUseDepthPrepass = true;
     float SkySphereRadius = 100.0f;
 
     D3D12_CPU_DESCRIPTOR_HANDLE GBufferRTVHandles[3]{};
@@ -79,5 +78,6 @@ private:
     DirectX::XMFLOAT4X4 SceneWorldMatrix{};
     uint8_t* ConstantBufferMapped = nullptr;
     uint8_t* SkyConstantBufferMapped = nullptr;
+    uint64_t SceneConstantBufferStride = 0;
 };
 
