@@ -126,6 +126,8 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t H
     FRendererOptions RendererOptions{};
     RendererOptions.SceneFilePath = RendererConfig.SceneFile;
     RendererOptions.bUseDepthPrepass = RendererConfig.bUseDepthPrepass;
+    RendererOptions.bEnableShadows = bShadowsEnabled;
+    RendererOptions.ShadowBias = ShadowBias;
 
     const std::wstring SceneFilePath = RendererOptions.SceneFilePath.empty() ? L"Assets/Scenes/Scene.json" : RendererOptions.SceneFilePath;
     RendererOptions.SceneFilePath = SceneFilePath;
@@ -521,6 +523,8 @@ bool FApplication::ReloadScene(const std::wstring& ScenePath)
     FRendererOptions RendererOptions{};
     RendererOptions.SceneFilePath = ScenePath;
     RendererOptions.bUseDepthPrepass = bDepthPrepassEnabled;
+    RendererOptions.bEnableShadows = bShadowsEnabled;
+    RendererOptions.ShadowBias = ShadowBias;
 
     const uint32_t Width = static_cast<uint32_t>(MainWindow->GetWidth());
     const uint32_t Height = static_cast<uint32_t>(MainWindow->GetHeight());
@@ -868,6 +872,38 @@ void FApplication::RenderUI()
         if (DeferredRenderer)
         {
             DeferredRenderer->SetDepthPrepassEnabled(bDepthPrepassEnabled);
+        }
+    }
+
+    bool bShadows = bShadowsEnabled;
+    if (ImGui::Checkbox("Shadows", &bShadows))
+    {
+        bShadowsEnabled = bShadows;
+
+        if (DeferredRenderer)
+        {
+            DeferredRenderer->SetShadowsEnabled(bShadowsEnabled);
+        }
+
+        if (ForwardRenderer)
+        {
+            ForwardRenderer->SetShadowsEnabled(bShadowsEnabled);
+        }
+    }
+
+    float ShadowBiasValue = ShadowBias;
+    if (ImGui::SliderFloat("Shadow Bias", &ShadowBiasValue, 0.0f, 0.01f, "%.5f"))
+    {
+        ShadowBias = ShadowBiasValue;
+
+        if (DeferredRenderer)
+        {
+            DeferredRenderer->SetShadowBias(ShadowBias);
+        }
+
+        if (ForwardRenderer)
+        {
+            ForwardRenderer->SetShadowBias(ShadowBias);
         }
     }
 

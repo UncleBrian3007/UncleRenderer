@@ -169,6 +169,7 @@
     <ClInclude Include="ThirdParty\imgui\imstb_truetype.h" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imstb_truetype.h')" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="bin\RendererConfig.ini" />
     <None Include="packages.config" />
     <None Include="Shaders\DeferredBasePass.hlsl" />
     <None Include="Shaders\DeferredLighting.hlsl" />

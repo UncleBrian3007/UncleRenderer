@@ -40,6 +40,8 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
     LogInfo("Forward renderer initialization started");
 
     bDepthPrepassEnabled = Options.bUseDepthPrepass;
+    bShadowsEnabled = Options.bEnableShadows;
+    ShadowBias = Options.ShadowBias;
 
     Viewport.TopLeftX = 0.0f;
     Viewport.TopLeftY = 0.0f;
@@ -52,6 +54,18 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
     ScissorRect.top = 0;
     ScissorRect.right = static_cast<LONG>(Width);
     ScissorRect.bottom = static_cast<LONG>(Height);
+
+    ShadowViewport.TopLeftX = 0.0f;
+    ShadowViewport.TopLeftY = 0.0f;
+    ShadowViewport.Width = 2048.0f;
+    ShadowViewport.Height = 2048.0f;
+    ShadowViewport.MinDepth = 0.0f;
+    ShadowViewport.MaxDepth = 1.0f;
+
+    ShadowScissor.left = 0;
+    ShadowScissor.top = 0;
+    ShadowScissor.right = 2048;
+    ShadowScissor.bottom = 2048;
 
     LogInfo("Creating forward renderer root signature...");
     if (!CreateRootSignature(Device))
@@ -67,6 +81,13 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
         return false;
     }
 
+    LogInfo("Creating forward renderer shadow pipeline...");
+    if (!CreateShadowPipeline(Device))
+    {
+        LogError("Forward renderer initialization failed: shadow pipeline creation failed");
+        return false;
+    }
+
     TextureLoader = std::make_unique<FTextureLoader>(Device);
 
     FDepthResources DepthResources = {};
@@ -79,6 +100,12 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
     DSVHeap = DepthResources.DSVHeap;
     DepthStencilHandle = DepthResources.DepthStencilHandle;
     DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+
+    if (!CreateShadowResources(Device))
+    {
+        LogError("Forward renderer initialization failed: shadow resources creation failed");
+        return false;
+    }
 
     const std::wstring SceneFilePath = Options.SceneFilePath.empty() ? L"Assets/Scenes/Scene.json" : Options.SceneFilePath;
     if (!RendererUtils::CreateSceneModelsFromJson(Device, SceneFilePath, SceneModels, SceneCenter, SceneRadius))
@@ -156,6 +183,48 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
 
     ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
 
+    const DirectX::XMMATRIX LightViewProjection = RendererUtils::BuildDirectionalLightViewProjection(
+        SceneCenter,
+        SceneRadius,
+        LightDirection);
+
+    const bool bRenderShadows = bShadowsEnabled && ShadowPipeline && ShadowMap;
+    if (bRenderShadows)
+    {
+        PixSetMarker(CommandList, L"ShadowMap");
+
+        CmdContext.TransitionResource(ShadowMap.Get(), ShadowMapState, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        ShadowMapState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+        CmdContext.ClearDepth(ShadowDSVHandle, 1.0f);
+
+        CommandList->SetPipelineState(ShadowPipeline.Get());
+        CommandList->SetGraphicsRootSignature(RootSignature.Get());
+        CommandList->RSSetViewports(1, &ShadowViewport);
+        CommandList->RSSetScissorRects(1, &ShadowScissor);
+        CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        CommandList->OMSetRenderTargets(0, nullptr, FALSE, &ShadowDSVHandle);
+
+        for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+        {
+            const FSceneModelResource& Model = SceneModels[ModelIndex];
+            const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
+
+            UpdateSceneConstants(Camera, Model, ConstantBufferOffset, LightViewProjection);
+
+            CommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
+            CommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
+
+            CommandList->SetGraphicsRootConstantBufferView(
+                0,
+                ConstantBuffer->GetGPUVirtualAddress() + ConstantBufferOffset);
+
+            CommandList->DrawIndexedInstanced(Model.Geometry.IndexCount, 1, 0, 0, 0);
+        }
+
+        CmdContext.TransitionResource(ShadowMap.Get(), ShadowMapState, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        ShadowMapState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    }
+
     const bool bDoDepthPrepass = bDepthPrepassEnabled && DepthPrepassPipeline;
     if (bDoDepthPrepass)
     {
@@ -179,7 +248,7 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
             const FSceneModelResource& Model = SceneModels[ModelIndex];
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
 
-            UpdateSceneConstants(Camera, Model, ConstantBufferOffset);
+            UpdateSceneConstants(Camera, Model, ConstantBufferOffset, LightViewProjection);
 
             CommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
             CommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
@@ -233,7 +302,7 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
         const FSceneModelResource& Model = SceneModels[ModelIndex];
         const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
 
-        UpdateSceneConstants(Camera, Model, ConstantBufferOffset);
+        UpdateSceneConstants(Camera, Model, ConstantBufferOffset, LightViewProjection);
 
         PixSetMarker(CommandList, L"DrawMesh");
         CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -253,7 +322,7 @@ bool FForwardRenderer::CreateRootSignature(FDX12Device* Device)
 {
     D3D12_DESCRIPTOR_RANGE1 DescriptorRange = {};
     DescriptorRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    DescriptorRange.NumDescriptors = 2;
+    DescriptorRange.NumDescriptors = 3;
     DescriptorRange.BaseShaderRegister = 0;
     DescriptorRange.RegisterSpace = 0;
     DescriptorRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
@@ -271,27 +340,39 @@ bool FForwardRenderer::CreateRootSignature(FDX12Device* Device)
     RootParams[1].DescriptorTable.NumDescriptorRanges = 1;
     RootParams[1].DescriptorTable.pDescriptorRanges = &DescriptorRange;
 
-    D3D12_STATIC_SAMPLER_DESC SamplerDesc = {};
-    SamplerDesc.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    SamplerDesc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    SamplerDesc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    SamplerDesc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    SamplerDesc.MipLODBias = 0.0f;
-    SamplerDesc.MaxAnisotropy = 1;
-    SamplerDesc.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
-    SamplerDesc.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
-    SamplerDesc.MinLOD = 0.0f;
-    SamplerDesc.MaxLOD = D3D12_FLOAT32_MAX;
-    SamplerDesc.ShaderRegister = 0;
-    SamplerDesc.RegisterSpace = 0;
-    SamplerDesc.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    D3D12_STATIC_SAMPLER_DESC Samplers[2] = {};
+    Samplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    Samplers[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    Samplers[0].AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    Samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    Samplers[0].MipLODBias = 0.0f;
+    Samplers[0].MaxAnisotropy = 1;
+    Samplers[0].ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    Samplers[0].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+    Samplers[0].MinLOD = 0.0f;
+    Samplers[0].MaxLOD = D3D12_FLOAT32_MAX;
+    Samplers[0].ShaderRegister = 0;
+    Samplers[0].RegisterSpace = 0;
+    Samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    Samplers[1].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+    Samplers[1].AddressU = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    Samplers[1].AddressV = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    Samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    Samplers[1].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+    Samplers[1].ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    Samplers[1].MinLOD = 0.0f;
+    Samplers[1].MaxLOD = D3D12_FLOAT32_MAX;
+    Samplers[1].ShaderRegister = 1;
+    Samplers[1].RegisterSpace = 0;
+    Samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootDesc = {};
     RootDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
     RootDesc.Desc_1_1.NumParameters = _countof(RootParams);
     RootDesc.Desc_1_1.pParameters = RootParams;
-    RootDesc.Desc_1_1.NumStaticSamplers = 1;
-    RootDesc.Desc_1_1.pStaticSamplers = &SamplerDesc;
+    RootDesc.Desc_1_1.NumStaticSamplers = _countof(Samplers);
+    RootDesc.Desc_1_1.pStaticSamplers = Samplers;
     RootDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
     Microsoft::WRL::ComPtr<ID3DBlob> SerializedSig;
@@ -407,6 +488,119 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
     return true;
 }
 
+bool FForwardRenderer::CreateShadowPipeline(FDX12Device* Device)
+{
+    FShaderCompiler Compiler;
+    std::vector<uint8_t> VSByteCode;
+
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring VSTarget = BuildShaderTarget(L"vs", ShaderModel);
+
+    if (!Compiler.CompileFromFile(L"Shaders/ShadowMap.hlsl", L"VSMain", VSTarget, VSByteCode))
+    {
+        return false;
+    }
+
+    D3D12_INPUT_ELEMENT_DESC InputLayout[] =
+    {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,   D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
+    PsoDesc.pRootSignature = RootSignature.Get();
+    PsoDesc.InputLayout = { InputLayout, _countof(InputLayout) };
+    PsoDesc.VS = { VSByteCode.data(), VSByteCode.size() };
+    PsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    PsoDesc.SampleDesc.Count = 1;
+    PsoDesc.SampleMask = UINT_MAX;
+
+    PsoDesc.RasterizerState = {};
+    PsoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    PsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_FRONT;
+    PsoDesc.RasterizerState.FrontCounterClockwise = TRUE;
+    PsoDesc.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
+    PsoDesc.RasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
+    PsoDesc.RasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
+    PsoDesc.RasterizerState.DepthClipEnable = TRUE;
+    PsoDesc.RasterizerState.MultisampleEnable = FALSE;
+    PsoDesc.RasterizerState.AntialiasedLineEnable = FALSE;
+    PsoDesc.RasterizerState.ForcedSampleCount = 0;
+    PsoDesc.RasterizerState.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+
+    PsoDesc.BlendState = {};
+    PsoDesc.BlendState.AlphaToCoverageEnable = FALSE;
+    PsoDesc.BlendState.IndependentBlendEnable = FALSE;
+    PsoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;
+
+    PsoDesc.DepthStencilState = {};
+    PsoDesc.DepthStencilState.DepthEnable = TRUE;
+    PsoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    PsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    PsoDesc.DepthStencilState.StencilEnable = FALSE;
+    PsoDesc.NumRenderTargets = 0;
+    PsoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    PsoDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
+
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(ShadowPipeline.GetAddressOf())));
+    return true;
+}
+
+bool FForwardRenderer::CreateShadowResources(FDX12Device* Device)
+{
+    constexpr uint32_t ShadowSize = 2048;
+
+    D3D12_RESOURCE_DESC Desc = {};
+    Desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    Desc.Alignment = 0;
+    Desc.Width = ShadowSize;
+    Desc.Height = ShadowSize;
+    Desc.DepthOrArraySize = 1;
+    Desc.MipLevels = 1;
+    Desc.Format = DXGI_FORMAT_R32_TYPELESS;
+    Desc.SampleDesc.Count = 1;
+    Desc.SampleDesc.Quality = 0;
+    Desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    Desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+    D3D12_CLEAR_VALUE ClearValue = {};
+    ClearValue.Format = DXGI_FORMAT_D32_FLOAT;
+    ClearValue.DepthStencil.Depth = 1.0f;
+    ClearValue.DepthStencil.Stencil = 0;
+
+    D3D12_HEAP_PROPERTIES HeapProps = {};
+    HeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+    HeapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    HeapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    HeapProps.CreationNodeMask = 1;
+    HeapProps.VisibleNodeMask = 1;
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &HeapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &Desc,
+        D3D12_RESOURCE_STATE_DEPTH_WRITE,
+        &ClearValue,
+        IID_PPV_ARGS(ShadowMap.GetAddressOf())));
+
+    D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
+    HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+    HeapDesc.NumDescriptors = 1;
+    HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(ShadowDSVHeap.GetAddressOf())));
+
+    ShadowMapState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+
+    D3D12_CPU_DESCRIPTOR_HANDLE DsvHandle = ShadowDSVHeap->GetCPUDescriptorHandleForHeapStart();
+    D3D12_DEPTH_STENCIL_VIEW_DESC DsvDesc = {};
+    DsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
+    DsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+    DsvDesc.Flags = D3D12_DSV_FLAG_NONE;
+    Device->GetDevice()->CreateDepthStencilView(ShadowMap.Get(), &DsvDesc, DsvHandle);
+    ShadowDSVHandle = DsvHandle;
+
+    return true;
+}
+
 bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vector<FSceneModelResource>& Models)
 {
     if (!TextureLoader)
@@ -417,9 +611,14 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
     SceneTextures.clear();
     SceneTextures.reserve(Models.size());
 
+    if (!ShadowMap)
+    {
+        return false;
+    }
+
     D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
     HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    HeapDesc.NumDescriptors = static_cast<UINT>(Models.size() * 2);
+    HeapDesc.NumDescriptors = static_cast<UINT>(Models.size() * 3);
     HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(TextureDescriptorHeap.GetAddressOf())));
 
@@ -434,6 +633,14 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
     SrvDesc.Texture2D.MipLevels = 1;
     SrvDesc.Texture2D.MostDetailedMip = 0;
     SrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC ShadowSrvDesc = {};
+    ShadowSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+    ShadowSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    ShadowSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    ShadowSrvDesc.Texture2D.MipLevels = 1;
+    ShadowSrvDesc.Texture2D.MostDetailedMip = 0;
+    ShadowSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
 
     for (size_t Index = 0; Index < Models.size(); ++Index)
     {
@@ -491,13 +698,18 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
 
         CpuHandle.ptr += DescriptorSize;
         GpuHandle.ptr += DescriptorSize;
+
+        Device->GetDevice()->CreateShaderResourceView(ShadowMap.Get(), &ShadowSrvDesc, CpuHandle);
+
+        CpuHandle.ptr += DescriptorSize;
+        GpuHandle.ptr += DescriptorSize;
     }
 
     SceneTextureGpuHandle = TextureDescriptorHeap->GetGPUDescriptorHandleForHeapStart();
     return true;
 }
 
-void FForwardRenderer::UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, uint64_t ConstantBufferOffset)
+void FForwardRenderer::UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, uint64_t ConstantBufferOffset, const DirectX::XMMATRIX& LightViewProjection)
 {
     const DirectX::XMVECTOR LightDir = DirectX::XMLoadFloat3(&LightDirection);
 
@@ -507,6 +719,9 @@ void FForwardRenderer::UpdateSceneConstants(const FCamera& Camera, const FSceneM
         LightIntensity,
         LightDir,
         LightColor,
+        LightViewProjection,
+        bShadowsEnabled ? ShadowStrength : 0.0f,
+        ShadowBias,
         ConstantBufferMapped,
         ConstantBufferOffset);
 }

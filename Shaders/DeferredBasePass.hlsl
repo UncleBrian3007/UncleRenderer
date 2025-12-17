@@ -25,6 +25,7 @@ cbuffer SceneConstants : register(b0)
 {
     row_major float4x4 World;
     row_major float4x4 View;
+    row_major float4x4 ViewInverse;
     row_major float4x4 Projection;
     float3 BaseColor;
     float LightIntensity;
@@ -36,6 +37,10 @@ cbuffer SceneConstants : register(b0)
     float Padding3;
     float3 EmissiveFactor;
     float Padding4;
+    row_major float4x4 LightViewProjection;
+    float ShadowStrength;
+    float ShadowBias;
+    float2 PaddingShadow;
     float4 BaseColorTransformOffsetScale;
     float4 BaseColorTransformRotation;
     float4 MetallicRoughnessTransformOffsetScale;

@@ -31,13 +31,21 @@ public:
     bool Initialize(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT BackBufferFormat, const FRendererOptions& Options) override;
     void RenderFrame(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle, const FCamera& Camera, float DeltaTime) override;
 
+    void SetShadowsEnabled(bool bEnabled) { bShadowsEnabled = bEnabled; }
+    bool IsShadowsEnabled() const { return bShadowsEnabled; }
+
+    void SetShadowBias(float Bias) { ShadowBias = Bias; }
+    float GetShadowBias() const { return ShadowBias; }
+
 private:
     bool CreateBasePassRootSignature(FDX12Device* Device);
     bool CreateLightingRootSignature(FDX12Device* Device);
     bool CreateBasePassPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateDepthPrepassPipeline(FDX12Device* Device);
+    bool CreateShadowPipeline(FDX12Device* Device);
     bool CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateGBufferResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
+    bool CreateShadowResources(FDX12Device* Device);
     bool CreateDescriptorHeap(FDX12Device* Device);
     bool CreateSceneTextures(FDX12Device* Device, const std::vector<FSceneModelResource>& Models);
     void UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, uint64_t ConstantBufferOffset);
@@ -49,6 +57,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> BasePassPipelineWithNormalMap;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> BasePassPipelineWithoutNormalMap;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> ShadowPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> LightingPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> SkyPipelineState;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> SkyRootSignature;
@@ -59,8 +68,11 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> SkyConstantBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> DepthBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> SceneTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> ShadowMap;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> DescriptorHeap;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> DSVHeap;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> ShadowDSVHeap;
+    D3D12_CPU_DESCRIPTOR_HANDLE ShadowDSVHandle{};
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> GBufferRTVHeap;
     Microsoft::WRL::ComPtr<ID3D12Resource> GBufferA;
     Microsoft::WRL::ComPtr<ID3D12Resource> GBufferB;
@@ -72,15 +84,23 @@ private:
 
     D3D12_CPU_DESCRIPTOR_HANDLE GBufferRTVHandles[3]{};
     D3D12_GPU_DESCRIPTOR_HANDLE GBufferGpuHandles[3]{};
+    D3D12_GPU_DESCRIPTOR_HANDLE ShadowMapHandle{};
     D3D12_VIEWPORT Viewport{};
     D3D12_RECT ScissorRect{};
+    D3D12_VIEWPORT ShadowViewport{};
+    D3D12_RECT ShadowScissor{};
 
     D3D12_RESOURCE_STATES DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    D3D12_RESOURCE_STATES ShadowMapState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
     FMeshGeometryBuffers SkyGeometry;
 
     DirectX::XMFLOAT4X4 SceneWorldMatrix{};
+    DirectX::XMFLOAT4X4 LightViewProjection{};
     uint8_t* ConstantBufferMapped = nullptr;
     uint8_t* SkyConstantBufferMapped = nullptr;
     uint64_t SceneConstantBufferStride = 0;
+    float ShadowBias = 0.0005f;
+    float ShadowStrength = 1.0f;
+    bool bShadowsEnabled = true;
 };
 

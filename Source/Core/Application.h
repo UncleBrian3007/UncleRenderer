@@ -67,6 +67,7 @@ private:
     bool bIsRunning;
     bool bDepthPrepassEnabled = false;
     bool bFrameOverlapEnabled = false;
+    bool bShadowsEnabled = true;
     float CameraYaw = 0.0f;
     float CameraPitch = 0.0f;
     bool bIsRotatingWithMouse = false;
@@ -77,5 +78,6 @@ private:
     float LightPitch = -1.07681236f;
     float LightIntensity = 1.0f;
     DirectX::XMFLOAT3 LightColor{ 1.0f, 1.0f, 1.0f };
+    float ShadowBias = 0.0005f;
 };
 

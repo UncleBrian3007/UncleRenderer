@@ -289,5 +289,9 @@
     <None Include="Shaders\PBRCommon.hlsl">
       <Filter>Shaders</Filter>
     </None>
+    <None Include="Shaders\SkyAtmosphere.hlsl" />
+    <None Include="bin\RendererConfig.ini">
+      <Filter>Assets</Filter>
+    </None>
   </ItemGroup>
 </Project>

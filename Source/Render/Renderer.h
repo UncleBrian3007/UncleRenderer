@@ -8,6 +8,8 @@ struct FRendererOptions
 {
     std::wstring SceneFilePath = L"Assets/Scenes/Scene.json";
     bool bUseDepthPrepass = false;
+    bool bEnableShadows = true;
+    float ShadowBias = 0.0005f;
 };
 
 class FDX12Device;

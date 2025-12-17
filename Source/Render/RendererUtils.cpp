@@ -633,6 +633,9 @@ void RendererUtils::UpdateSceneConstants(
     float LightIntensity,
     const DirectX::XMVECTOR& LightDirection,
     const DirectX::XMFLOAT3& LightColor,
+    const DirectX::XMMATRIX& LightViewProjection,
+    float ShadowStrength,
+    float ShadowBias,
     uint8_t* ConstantBufferMapped,
     uint64_t ConstantBufferOffset)
 {
@@ -644,6 +647,7 @@ void RendererUtils::UpdateSceneConstants(
     using namespace DirectX;
 
     const XMMATRIX View = Camera.GetViewMatrix();
+    const XMMATRIX ViewInverse = XMMatrixInverse(nullptr, View);
     const XMMATRIX Projection = Camera.GetProjectionMatrix();
     const XMMATRIX WorldMatrix = XMLoadFloat4x4(&Model.WorldMatrix);
 
@@ -655,6 +659,7 @@ void RendererUtils::UpdateSceneConstants(
     FSceneConstants Constants = {};
     XMStoreFloat4x4(&Constants.World, WorldMatrix);
     XMStoreFloat4x4(&Constants.View, View);
+    XMStoreFloat4x4(&Constants.ViewInverse, ViewInverse);
     XMStoreFloat4x4(&Constants.Projection, Projection);
     Constants.BaseColor = BaseColorFactor;
     Constants.LightIntensity = LightIntensity;
@@ -662,6 +667,9 @@ void RendererUtils::UpdateSceneConstants(
     Constants.CameraPosition = Camera.GetPosition();
     Constants.LightColor = LightColor;
     Constants.EmissiveFactor = EmissiveFactor;
+    XMStoreFloat4x4(&Constants.LightViewProjection, LightViewProjection);
+    Constants.ShadowStrength = ShadowStrength;
+    Constants.ShadowBias = ShadowBias;
     FillTransformConstants(Model.BaseColorTransformOffsetScale, Model.BaseColorTransformRotation, Constants.BaseColorTransformOffsetScale, Constants.BaseColorTransformRotation);
     FillTransformConstants(Model.MetallicRoughnessTransformOffsetScale, Model.MetallicRoughnessTransformRotation, Constants.MetallicRoughnessTransformOffsetScale, Constants.MetallicRoughnessTransformRotation);
     FillTransformConstants(Model.NormalTransformOffsetScale, Model.NormalTransformRotation, Constants.NormalTransformOffsetScale, Constants.NormalTransformRotation);
@@ -696,5 +704,27 @@ void RendererUtils::UpdateSkyConstants(
     Constants.LightColor = LightColor;
 
     memcpy(ConstantBufferMapped, &Constants, sizeof(Constants));
+}
+
+DirectX::XMMATRIX RendererUtils::BuildDirectionalLightViewProjection(
+    const DirectX::XMFLOAT3& SceneCenter,
+    float SceneRadius,
+    const DirectX::XMFLOAT3& LightDirection)
+{
+    using namespace DirectX;
+
+    const XMVECTOR Direction = XMVector3Normalize(XMLoadFloat3(&LightDirection));
+    const XMVECTOR SceneCenterVec = XMLoadFloat3(&SceneCenter);
+    const float LightDistance = SceneRadius * 2.5f;
+    const XMVECTOR LightPosition = XMVectorAdd(SceneCenterVec, XMVectorScale(Direction, LightDistance));
+    const XMVECTOR Up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+
+    const XMMATRIX View = XMMatrixLookAtLH(LightPosition, SceneCenterVec, Up);
+    const float OrthoSize = SceneRadius * 2.0f;
+    const float NearZ = 0.1f;
+    const float FarZ = SceneRadius * 5.0f;
+    const XMMATRIX Projection = XMMatrixOrthographicLH(OrthoSize, OrthoSize, NearZ, FarZ);
+
+    return XMMatrixMultiply(View, Projection);
 }
 

@@ -41,6 +41,7 @@ struct FSceneConstants
 {
     DirectX::XMFLOAT4X4 World;
     DirectX::XMFLOAT4X4 View;
+    DirectX::XMFLOAT4X4 ViewInverse;
     DirectX::XMFLOAT4X4 Projection;
     DirectX::XMFLOAT3 BaseColor;
     float LightIntensity = 1.0f;
@@ -52,6 +53,10 @@ struct FSceneConstants
     float Padding3 = 0.0f;
     DirectX::XMFLOAT3 EmissiveFactor{ 0.0f, 0.0f, 0.0f };
     float Padding4 = 0.0f;
+    DirectX::XMFLOAT4X4 LightViewProjection;
+    float ShadowStrength = 1.0f;
+    float ShadowBias = 0.005f;
+    DirectX::XMFLOAT2 PaddingShadow{ 0.0f, 0.0f };
     DirectX::XMFLOAT4 BaseColorTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
     DirectX::XMFLOAT4 BaseColorTransformRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT4 MetallicRoughnessTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
@@ -146,6 +151,9 @@ namespace RendererUtils
         float LightIntensity,
         const DirectX::XMVECTOR& LightDirection,
         const DirectX::XMFLOAT3& LightColor,
+        const DirectX::XMMATRIX& LightViewProjection,
+        float ShadowStrength,
+        float ShadowBias,
         uint8_t* ConstantBufferMapped,
         uint64_t ConstantBufferOffset = 0);
     void UpdateSkyConstants(
@@ -154,5 +162,9 @@ namespace RendererUtils
         const DirectX::XMVECTOR& LightDirection,
         const DirectX::XMFLOAT3& LightColor,
         uint8_t* ConstantBufferMapped);
+    DirectX::XMMATRIX BuildDirectionalLightViewProjection(
+        const DirectX::XMFLOAT3& SceneCenter,
+        float SceneRadius,
+        const DirectX::XMFLOAT3& LightDirection);
 }
 
