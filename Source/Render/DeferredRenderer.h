@@ -34,16 +34,30 @@ public:
     void SetShadowsEnabled(bool bEnabled) { bShadowsEnabled = bEnabled; }
     bool IsShadowsEnabled() const { return bShadowsEnabled; }
 
+    void SetTonemapEnabled(bool bEnabled) { bTonemapEnabled = bEnabled; }
+    bool IsTonemapEnabled() const { return bTonemapEnabled; }
+
+    void SetTonemapExposure(float Exposure) { TonemapExposure = Exposure; }
+    float GetTonemapExposure() const { return TonemapExposure; }
+
+    void SetTonemapWhitePoint(float WhitePoint) { TonemapWhitePoint = WhitePoint; }
+    float GetTonemapWhitePoint() const { return TonemapWhitePoint; }
+
+    void SetTonemapGamma(float Gamma) { TonemapGamma = Gamma; }
+    float GetTonemapGamma() const { return TonemapGamma; }
+
     void SetShadowBias(float Bias) { ShadowBias = Bias; }
     float GetShadowBias() const { return ShadowBias; }
 
 private:
     bool CreateBasePassRootSignature(FDX12Device* Device);
     bool CreateLightingRootSignature(FDX12Device* Device);
-    bool CreateBasePassPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
+    bool CreateBasePassPipeline(FDX12Device* Device, DXGI_FORMAT LightingFormat);
     bool CreateDepthPrepassPipeline(FDX12Device* Device);
     bool CreateShadowPipeline(FDX12Device* Device);
     bool CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
+    bool CreateTonemapRootSignature(FDX12Device* Device);
+    bool CreateTonemapPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateGBufferResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateShadowResources(FDX12Device* Device);
     bool CreateDescriptorHeap(FDX12Device* Device);
@@ -59,8 +73,10 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ShadowPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> LightingPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> TonemapPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> SkyPipelineState;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> SkyRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> TonemapRootSignature;
 
     std::vector<FSceneModelResource> SceneModels;
     std::vector<FModelTextureSet> SceneTextures;
@@ -69,6 +85,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> DepthBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> SceneTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> ShadowMap;
+    Microsoft::WRL::ComPtr<ID3D12Resource> LightingBuffer;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> DescriptorHeap;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> DSVHeap;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> ShadowDSVHeap;
@@ -83,7 +100,9 @@ private:
     DXGI_FORMAT BackBufferFormat = DXGI_FORMAT_UNKNOWN;
 
     D3D12_CPU_DESCRIPTOR_HANDLE GBufferRTVHandles[3]{};
+    D3D12_CPU_DESCRIPTOR_HANDLE LightingRTVHandle{};
     D3D12_GPU_DESCRIPTOR_HANDLE GBufferGpuHandles[3]{};
+    D3D12_GPU_DESCRIPTOR_HANDLE LightingBufferHandle{};
     D3D12_GPU_DESCRIPTOR_HANDLE ShadowMapHandle{};
     D3D12_VIEWPORT Viewport{};
     D3D12_RECT ScissorRect{};
@@ -92,6 +111,7 @@ private:
 
     D3D12_RESOURCE_STATES DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
     D3D12_RESOURCE_STATES ShadowMapState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    D3D12_RESOURCE_STATES LightingBufferState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     FMeshGeometryBuffers SkyGeometry;
 
     DirectX::XMFLOAT4X4 SceneWorldMatrix{};
@@ -102,5 +122,9 @@ private:
     float ShadowBias = 0.0005f;
     float ShadowStrength = 1.0f;
     bool bShadowsEnabled = true;
+    bool bTonemapEnabled = true;
+    float TonemapExposure = 0.9f;
+    float TonemapWhitePoint = 6.0f;
+    float TonemapGamma = 2.2f;
 };
 

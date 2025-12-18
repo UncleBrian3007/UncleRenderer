@@ -15,6 +15,12 @@ struct FRendererConfig
     std::wstring SceneFile = L"Assets/Scenes/Scene.json";
     bool bUseDepthPrepass = true;
     bool bEnableFrameOverlap = true;
+    bool bEnableShadows = true;
+    float ShadowBias = 0.0005f;
+    bool bEnableTonemap = true;
+    float TonemapExposure = 0.5f;
+    float TonemapWhitePoint = 4.0f;
+    float TonemapGamma = 1.0f;
 };
 
 class FRendererConfigLoader

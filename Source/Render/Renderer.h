@@ -10,6 +10,10 @@ struct FRendererOptions
     bool bUseDepthPrepass = false;
     bool bEnableShadows = true;
     float ShadowBias = 0.0005f;
+    bool bEnableTonemap = true;
+    float TonemapExposure = 0.5f;
+    float TonemapWhitePoint = 4.0f;
+    float TonemapGamma = 1.0f;
 };
 
 class FDX12Device;

@@ -122,12 +122,22 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t H
     RendererConfig = FRendererConfigLoader::LoadOrDefault(ConfigPath);
     bFrameOverlapEnabled = RendererConfig.bEnableFrameOverlap;
     bDepthPrepassEnabled = RendererConfig.bUseDepthPrepass;
+    bShadowsEnabled = RendererConfig.bEnableShadows;
+    ShadowBias = RendererConfig.ShadowBias;
+    bTonemapEnabled = RendererConfig.bEnableTonemap;
+    TonemapExposure = RendererConfig.TonemapExposure;
+    TonemapWhitePoint = RendererConfig.TonemapWhitePoint;
+    TonemapGamma = RendererConfig.TonemapGamma;
 
     FRendererOptions RendererOptions{};
     RendererOptions.SceneFilePath = RendererConfig.SceneFile;
     RendererOptions.bUseDepthPrepass = RendererConfig.bUseDepthPrepass;
     RendererOptions.bEnableShadows = bShadowsEnabled;
     RendererOptions.ShadowBias = ShadowBias;
+    RendererOptions.bEnableTonemap = bTonemapEnabled;
+    RendererOptions.TonemapExposure = TonemapExposure;
+    RendererOptions.TonemapWhitePoint = TonemapWhitePoint;
+    RendererOptions.TonemapGamma = TonemapGamma;
 
     const std::wstring SceneFilePath = RendererOptions.SceneFilePath.empty() ? L"Assets/Scenes/Scene.json" : RendererOptions.SceneFilePath;
     RendererOptions.SceneFilePath = SceneFilePath;
@@ -813,9 +823,8 @@ void FApplication::RenderUI()
     ImGui::Text("FPS: %.1f", Time->GetFPS());
 
     ImGui::Separator();
-    ImGui::Text("Scene");
     const std::string ScenePathUtf8 = PathToUtf8String(CurrentScenePath);
-    ImGui::TextWrapped("File: %s", ScenePathUtf8.c_str());
+    ImGui::TextWrapped("Scene: %s", ScenePathUtf8.c_str());
     if (ImGui::Button("Load Scene"))
     {
         const std::filesystem::path ScenePath(CurrentScenePath);
@@ -842,6 +851,7 @@ void FApplication::RenderUI()
         ImGui::Text("Available: %.1f MB", AvailableMB);
 		ImGui::Text("Reserved: %.1f MB", ReservedMB);
     }
+	ImGui::Separator();
 
     bool bFrameOverlap = bFrameOverlapEnabled;
     if (ImGui::Checkbox("Frame Overlap", &bFrameOverlap))
@@ -875,6 +885,7 @@ void FApplication::RenderUI()
         }
     }
 
+	ImGui::Separator();
     bool bShadows = bShadowsEnabled;
     if (ImGui::Checkbox("Shadows", &bShadows))
     {
@@ -891,19 +902,64 @@ void FApplication::RenderUI()
         }
     }
 
-    float ShadowBiasValue = ShadowBias;
-    if (ImGui::SliderFloat("Shadow Bias", &ShadowBiasValue, 0.0f, 0.01f, "%.5f"))
+	float ShadowBiasValue = ShadowBias;
+	if (ImGui::SliderFloat("Shadow Bias", &ShadowBiasValue, 0.0f, 0.01f, "%.5f"))
+	{
+		ShadowBias = ShadowBiasValue;
+
+		if (DeferredRenderer)
+		{
+			DeferredRenderer->SetShadowBias(ShadowBias);
+		}
+
+		if (ForwardRenderer)
+		{
+			ForwardRenderer->SetShadowBias(ShadowBias);
+		}
+	}
+
+	ImGui::Separator();
+    bool bTonemap = bTonemapEnabled;
+    if (ImGui::Checkbox("Tonemap", &bTonemap))
     {
-        ShadowBias = ShadowBiasValue;
+        bTonemapEnabled = bTonemap;
 
         if (DeferredRenderer)
         {
-            DeferredRenderer->SetShadowBias(ShadowBias);
+            DeferredRenderer->SetTonemapEnabled(bTonemapEnabled);
         }
+    }
 
-        if (ForwardRenderer)
+    float TonemapExposureValue = TonemapExposure;
+    if (ImGui::SliderFloat("Tonemap Exposure", &TonemapExposureValue, 0.1f, 5.0f, "%.2f"))
+    {
+        TonemapExposure = TonemapExposureValue;
+
+        if (DeferredRenderer)
         {
-            ForwardRenderer->SetShadowBias(ShadowBias);
+            DeferredRenderer->SetTonemapExposure(TonemapExposure);
+        }
+    }
+
+    float TonemapWhitePointValue = TonemapWhitePoint;
+    if (ImGui::SliderFloat("Tonemap White Point", &TonemapWhitePointValue, 0.5f, 16.0f, "%.2f"))
+    {
+        TonemapWhitePoint = TonemapWhitePointValue;
+
+        if (DeferredRenderer)
+        {
+            DeferredRenderer->SetTonemapWhitePoint(TonemapWhitePoint);
+        }
+    }
+
+    float TonemapGammaValue = TonemapGamma;
+    if (ImGui::SliderFloat("Tonemap Gamma", &TonemapGammaValue, 1.0f, 3.0f, "%.2f"))
+    {
+        TonemapGamma = TonemapGammaValue;
+
+        if (DeferredRenderer)
+        {
+            DeferredRenderer->SetTonemapGamma(TonemapGamma);
         }
     }
 

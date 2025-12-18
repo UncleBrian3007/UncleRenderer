@@ -68,6 +68,10 @@ private:
     bool bDepthPrepassEnabled = false;
     bool bFrameOverlapEnabled = false;
     bool bShadowsEnabled = true;
+    bool bTonemapEnabled = true;
+    float TonemapExposure = 0.5f;
+    float TonemapWhitePoint = 4.0f;
+    float TonemapGamma = 1.0f;
     float CameraYaw = 0.0f;
     float CameraPitch = 0.0f;
     bool bIsRotatingWithMouse = false;

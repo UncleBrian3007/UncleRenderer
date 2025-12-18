@@ -293,5 +293,11 @@
     <None Include="bin\RendererConfig.ini">
       <Filter>Assets</Filter>
     </None>
+    <None Include="Shaders\ShadowMap.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\Tonemap.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
   </ItemGroup>
 </Project>

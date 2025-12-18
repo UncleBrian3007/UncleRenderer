@@ -103,6 +103,64 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     {
         OutConfig.bEnableFrameOverlap = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
+
+    if (LowerKey == "enableshadows" || LowerKey == "shadows")
+    {
+        OutConfig.bEnableShadows = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+
+    if (LowerKey == "shadowbias")
+    {
+        try
+        {
+            OutConfig.ShadowBias = std::stof(Value);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid shadow bias value in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "enabletonemap" || LowerKey == "tonemap")
+    {
+        OutConfig.bEnableTonemap = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+
+    if (LowerKey == "tonemapexposure")
+    {
+        try
+        {
+            OutConfig.TonemapExposure = std::stof(Value);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid tonemap exposure value in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "tonemapwhitepoint")
+    {
+        try
+        {
+            OutConfig.TonemapWhitePoint = std::stof(Value);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid tonemap white point value in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "tonemapgamma")
+    {
+        try
+        {
+            OutConfig.TonemapGamma = std::stof(Value);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid tonemap gamma value in renderer config: " + Value);
+        }
+    }
 }
 
 std::string FRendererConfigLoader::TrimCopy(const std::string& Input)
