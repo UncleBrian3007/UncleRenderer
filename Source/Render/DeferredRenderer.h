@@ -109,6 +109,12 @@ private:
     D3D12_VIEWPORT ShadowViewport{};
     D3D12_RECT ShadowScissor{};
 
+    D3D12_RESOURCE_STATES GBufferStates[3] =
+    {
+        D3D12_RESOURCE_STATE_RENDER_TARGET,
+        D3D12_RESOURCE_STATE_RENDER_TARGET,
+        D3D12_RESOURCE_STATE_RENDER_TARGET,
+    };
     D3D12_RESOURCE_STATES DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
     D3D12_RESOURCE_STATES ShadowMapState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
     D3D12_RESOURCE_STATES LightingBufferState = D3D12_RESOURCE_STATE_RENDER_TARGET;
@@ -126,5 +132,7 @@ private:
     float TonemapExposure = 0.9f;
     float TonemapWhitePoint = 6.0f;
     float TonemapGamma = 2.2f;
+
+    FDX12Device* Device = nullptr;
 };
 

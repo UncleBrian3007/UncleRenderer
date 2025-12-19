@@ -2,6 +2,7 @@
 
 #include "ShaderCompiler.h"
 #include "RendererUtils.h"
+#include "RenderGraph.h"
 #include "../Scene/GltfLoader.h"
 #include "../Scene/Camera.h"
 #include "../Scene/Mesh.h"
@@ -36,6 +37,8 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
         LogError("Forward renderer initialization failed: device is null");
         return false;
     }
+
+    this->Device = Device;
 
     LogInfo("Forward renderer initialization started");
 
@@ -189,133 +192,252 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
         LightDirection);
 
     const bool bRenderShadows = bShadowsEnabled && ShadowPipeline && ShadowMap;
-    if (bRenderShadows)
+    const bool bDoDepthPrepass = bDepthPrepassEnabled && DepthPrepassPipeline;
+
+    FRenderGraph Graph;
+    Graph.SetDevice(Device);
+
+    FRGResourceHandle ShadowHandle = Graph.ImportTexture(
+        "ShadowMap",
+        ShadowMap.Get(),
+        &ShadowMapState,
+        { 2048, 2048, DXGI_FORMAT_D32_FLOAT });
+
+    const FRGTextureDesc DepthDesc =
     {
-        PixSetMarker(CommandList, L"ShadowMap");
+        static_cast<uint32>(Viewport.Width),
+        static_cast<uint32>(Viewport.Height),
+        DXGI_FORMAT_D24_UNORM_S8_UINT
+    };
 
-        CmdContext.TransitionResource(ShadowMap.Get(), ShadowMapState, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-        ShadowMapState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
-        CmdContext.ClearDepth(ShadowDSVHandle, 1.0f);
+    FRGResourceHandle DepthHandle = Graph.ImportTexture("Depth", DepthBuffer.Get(), &DepthBufferState, DepthDesc);
 
-        CommandList->SetPipelineState(ShadowPipeline.Get());
-        CommandList->SetGraphicsRootSignature(RootSignature.Get());
-        CommandList->RSSetViewports(1, &ShadowViewport);
-        CommandList->RSSetScissorRects(1, &ShadowScissor);
-        CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        CommandList->OMSetRenderTargets(0, nullptr, FALSE, &ShadowDSVHandle);
+    struct FShadowPassData
+    {
+        bool bEnabled = false;
+        const FCamera* Camera = nullptr;
+        DirectX::XMMATRIX LightViewProjection = DirectX::XMMatrixIdentity();
+    };
+
+    Graph.AddPass<FShadowPassData>("ShadowMap", [&, bRenderShadows](FShadowPassData& Data, FRGPassBuilder& Builder)
+    {
+        Data.bEnabled = bRenderShadows;
+        Data.Camera = &Camera;
+        Data.LightViewProjection = LightViewProjection;
+
+        if (bRenderShadows)
+        {
+            Builder.WriteTexture(ShadowHandle, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        }
+    }, [this](const FShadowPassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
+
+        PixSetMarker(LocalCommandList, L"ShadowMap");
+        Cmd.ClearDepth(ShadowDSVHandle, 1.0f);
+
+        LocalCommandList->SetPipelineState(ShadowPipeline.Get());
+        LocalCommandList->SetGraphicsRootSignature(RootSignature.Get());
+        LocalCommandList->RSSetViewports(1, &ShadowViewport);
+        LocalCommandList->RSSetScissorRects(1, &ShadowScissor);
+        LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        LocalCommandList->OMSetRenderTargets(0, nullptr, FALSE, &ShadowDSVHandle);
 
         for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
         {
             const FSceneModelResource& Model = SceneModels[ModelIndex];
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
 
-            UpdateSceneConstants(Camera, Model, ConstantBufferOffset, LightViewProjection);
+            UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset, Data.LightViewProjection);
 
-            CommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
-            CommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
+            LocalCommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
+            LocalCommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
 
-            CommandList->SetGraphicsRootConstantBufferView(
+            LocalCommandList->SetGraphicsRootConstantBufferView(
                 0,
                 ConstantBuffer->GetGPUVirtualAddress() + ConstantBufferOffset);
 
-            CommandList->DrawIndexedInstanced(Model.Geometry.IndexCount, 1, 0, 0, 0);
+            LocalCommandList->DrawIndexedInstanced(Model.Geometry.IndexCount, 1, 0, 0, 0);
         }
 
-        CmdContext.TransitionResource(ShadowMap.Get(), ShadowMapState, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        ShadowMapState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    }
+    });
 
-    const bool bDoDepthPrepass = bDepthPrepassEnabled && DepthPrepassPipeline;
-    if (bDoDepthPrepass)
+    struct FDepthPrepassData
     {
-        PixSetMarker(CommandList, L"DepthPrepass");
+        bool bEnabled = false;
+        const FCamera* Camera = nullptr;
+        DirectX::XMMATRIX LightViewProjection = DirectX::XMMatrixIdentity();
+    };
 
-        CmdContext.TransitionResource(DepthBuffer.Get(), DepthBufferState, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-        DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
-        CmdContext.ClearDepth(DepthStencilHandle);
+    Graph.AddPass<FDepthPrepassData>("DepthPrepass", [&, bDoDepthPrepass](FDepthPrepassData& Data, FRGPassBuilder& Builder)
+    {
+        Data.bEnabled = bDoDepthPrepass;
+        Data.Camera = &Camera;
+        Data.LightViewProjection = LightViewProjection;
+
+        if (bDoDepthPrepass)
+        {
+            Builder.WriteTexture(DepthHandle, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        }
+    }, [this](const FDepthPrepassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
+
+        PixSetMarker(LocalCommandList, L"DepthPrepass");
+        Cmd.ClearDepth(DepthStencilHandle);
 
         ID3D12DescriptorHeap* Heaps[] = { TextureDescriptorHeap.Get() };
-        CommandList->SetPipelineState(DepthPrepassPipeline.Get());
-        CommandList->SetGraphicsRootSignature(RootSignature.Get());
-        CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
-        CommandList->RSSetViewports(1, &Viewport);
-        CommandList->RSSetScissorRects(1, &ScissorRect);
-        CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        CommandList->OMSetRenderTargets(0, nullptr, FALSE, &DepthStencilHandle);
+        LocalCommandList->SetPipelineState(DepthPrepassPipeline.Get());
+        LocalCommandList->SetGraphicsRootSignature(RootSignature.Get());
+        LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        LocalCommandList->RSSetViewports(1, &Viewport);
+        LocalCommandList->RSSetScissorRects(1, &ScissorRect);
+        LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        LocalCommandList->OMSetRenderTargets(0, nullptr, FALSE, &DepthStencilHandle);
 
         for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
         {
             const FSceneModelResource& Model = SceneModels[ModelIndex];
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
 
-            UpdateSceneConstants(Camera, Model, ConstantBufferOffset, LightViewProjection);
+            UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset, Data.LightViewProjection);
 
-            CommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
-            CommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
+            LocalCommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
+            LocalCommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
 
-            CommandList->SetGraphicsRootConstantBufferView(
+            LocalCommandList->SetGraphicsRootConstantBufferView(
                 0,
                 ConstantBuffer->GetGPUVirtualAddress() + ConstantBufferOffset);
-            CommandList->SetGraphicsRootDescriptorTable(1, Model.TextureHandle);
+            LocalCommandList->SetGraphicsRootDescriptorTable(1, Model.TextureHandle);
 
-            CommandList->DrawIndexedInstanced(Model.Geometry.IndexCount, 1, 0, 0, 0);
+            LocalCommandList->DrawIndexedInstanced(Model.Geometry.IndexCount, 1, 0, 0, 0);
         }
-    }
+    });
 
-    CmdContext.TransitionResource(DepthBuffer.Get(), DepthBufferState, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-    DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
-
-    PixSetMarker(CommandList, L"SetRenderTargets");
-    CmdContext.SetRenderTarget(RtvHandle, &DepthStencilHandle);
-    if (!bDoDepthPrepass)
+    struct FSkyPassData
     {
-        CmdContext.ClearDepth(DepthStencilHandle);
-    }
+        D3D12_CPU_DESCRIPTOR_HANDLE OutputHandle{};
+        const FCamera* Camera = nullptr;
+        bool bEnabled = false;
+        bool bClearDepth = false;
+    };
 
-    if (SkyPipelineState && SkyRootSignature && SkyGeometry.IndexCount > 0)
+    Graph.AddPass<FSkyPassData>("Sky", [&](FSkyPassData& Data, FRGPassBuilder& Builder)
     {
-        PixSetMarker(CommandList, L"SkyAtmosphere");
-        CommandList->SetPipelineState(SkyPipelineState.Get());
-        CommandList->SetGraphicsRootSignature(SkyRootSignature.Get());
-        CommandList->RSSetViewports(1, &Viewport);
-        CommandList->RSSetScissorRects(1, &ScissorRect);
-        CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        CommandList->IASetVertexBuffers(0, 1, &SkyGeometry.VertexBufferView);
-        CommandList->IASetIndexBuffer(&SkyGeometry.IndexBufferView);
-        UpdateSkyConstants(Camera);
-        CommandList->SetGraphicsRootConstantBufferView(0, SkyConstantBuffer->GetGPUVirtualAddress());
-        CommandList->DrawIndexedInstanced(SkyGeometry.IndexCount, 1, 0, 0, 0);
-    }
+        Data.OutputHandle = RtvHandle;
+        Data.Camera = &Camera;
+        Data.bEnabled = SkyPipelineState && SkyRootSignature && SkyGeometry.IndexCount > 0;
+        Data.bClearDepth = !bDoDepthPrepass;
 
-    PixSetMarker(CommandList, L"BindPipeline");
-    CommandList->SetPipelineState(PipelineState.Get());
-    CommandList->SetGraphicsRootSignature(RootSignature.Get());
-
-    ID3D12DescriptorHeap* Heaps[] = { TextureDescriptorHeap.Get() };
-    CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
-
-    CommandList->RSSetViewports(1, &Viewport);
-    CommandList->RSSetScissorRects(1, &ScissorRect);
-
-    for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+        if (Data.bEnabled)
+        {
+            Builder.WriteTexture(DepthHandle, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        }
+    }, [this](const FSkyPassData& Data, FDX12CommandContext& Cmd)
     {
-        const FSceneModelResource& Model = SceneModels[ModelIndex];
-        const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
+        if (!Data.bEnabled)
+        {
+            return;
+        }
 
-        UpdateSceneConstants(Camera, Model, ConstantBufferOffset, LightViewProjection);
+        ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
 
-        PixSetMarker(CommandList, L"DrawMesh");
-        CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        CommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
-        CommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
+        PixSetMarker(LocalCommandList, L"SkyAtmosphere");
+        Cmd.SetRenderTarget(Data.OutputHandle, &DepthStencilHandle);
 
-        CommandList->SetGraphicsRootConstantBufferView(
-            0,
-            ConstantBuffer->GetGPUVirtualAddress() + ConstantBufferOffset);
-        CommandList->SetGraphicsRootDescriptorTable(1, Model.TextureHandle);
+        if (Data.bClearDepth)
+        {
+            Cmd.ClearDepth(DepthStencilHandle);
+        }
 
-        CommandList->DrawIndexedInstanced(Model.Geometry.IndexCount, 1, 0, 0, 0);
-    }
+        LocalCommandList->SetPipelineState(SkyPipelineState.Get());
+        LocalCommandList->SetGraphicsRootSignature(SkyRootSignature.Get());
+        LocalCommandList->RSSetViewports(1, &Viewport);
+        LocalCommandList->RSSetScissorRects(1, &ScissorRect);
+        LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        LocalCommandList->IASetVertexBuffers(0, 1, &SkyGeometry.VertexBufferView);
+        LocalCommandList->IASetIndexBuffer(&SkyGeometry.IndexBufferView);
+
+        UpdateSkyConstants(*Data.Camera);
+        LocalCommandList->SetGraphicsRootConstantBufferView(0, SkyConstantBuffer->GetGPUVirtualAddress());
+        LocalCommandList->DrawIndexedInstanced(SkyGeometry.IndexCount, 1, 0, 0, 0);
+    });
+
+    struct FForwardPassData
+    {
+        D3D12_CPU_DESCRIPTOR_HANDLE OutputHandle{};
+        const FCamera* Camera = nullptr;
+        bool bRenderShadows = false;
+        DirectX::XMMATRIX LightViewProjection = DirectX::XMMatrixIdentity();
+        bool bClearDepth = false;
+    };
+
+    Graph.AddPass<FForwardPassData>("Forward", [&, bRenderShadows](FForwardPassData& Data, FRGPassBuilder& Builder)
+    {
+        Data.OutputHandle = RtvHandle;
+        Data.Camera = &Camera;
+        Data.bRenderShadows = bRenderShadows;
+        Data.LightViewProjection = LightViewProjection;
+        Data.bClearDepth = !bDoDepthPrepass && !(SkyPipelineState && SkyRootSignature && SkyGeometry.IndexCount > 0);
+
+        Builder.WriteTexture(DepthHandle, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        if (bRenderShadows)
+        {
+            Builder.ReadTexture(ShadowHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        }
+    }, [this](const FForwardPassData& Data, FDX12CommandContext& Cmd)
+    {
+        ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
+
+        PixSetMarker(LocalCommandList, L"ForwardPass");
+        Cmd.SetRenderTarget(Data.OutputHandle, &DepthStencilHandle);
+
+        if (Data.bClearDepth)
+        {
+            Cmd.ClearDepth(DepthStencilHandle);
+        }
+
+        LocalCommandList->SetPipelineState(PipelineState.Get());
+        LocalCommandList->SetGraphicsRootSignature(RootSignature.Get());
+
+        ID3D12DescriptorHeap* Heaps[] = { TextureDescriptorHeap.Get() };
+        LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+
+        LocalCommandList->RSSetViewports(1, &Viewport);
+        LocalCommandList->RSSetScissorRects(1, &ScissorRect);
+
+        for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+        {
+            const FSceneModelResource& Model = SceneModels[ModelIndex];
+            const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
+
+            UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset, Data.LightViewProjection);
+
+            PixSetMarker(LocalCommandList, L"DrawMesh");
+            LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            LocalCommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
+            LocalCommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
+
+            LocalCommandList->SetGraphicsRootConstantBufferView(
+                0,
+                ConstantBuffer->GetGPUVirtualAddress() + ConstantBufferOffset);
+            LocalCommandList->SetGraphicsRootDescriptorTable(1, Model.TextureHandle);
+
+            LocalCommandList->DrawIndexedInstanced(Model.Geometry.IndexCount, 1, 0, 0, 0);
+        }
+    });
+
+    Graph.Execute(CmdContext);
 }
 
 bool FForwardRenderer::CreateRootSignature(FDX12Device* Device)

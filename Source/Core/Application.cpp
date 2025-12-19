@@ -45,6 +45,7 @@ namespace
 
     void DrawAxisGizmo(const FMatrix& ViewMatrix, const ImVec2& DisplaySize)
     {
+#if WITH_IMGUI
         ImDrawList* DrawList = ImGui::GetForegroundDrawList();
 
         const float GizmoRadius = 14.0f;
@@ -80,6 +81,7 @@ namespace
             DrawList->AddCircleFilled(End, 3.5f, Axis.Color);
             DrawList->AddText(ImVec2(End.x + 6.0f, End.y - 10.0f), IM_COL32(240, 240, 240, 255), Axis.Label);
         }
+#endif
     }
 }
 

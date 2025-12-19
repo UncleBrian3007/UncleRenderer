@@ -90,6 +90,16 @@ void FDX12CommandContext::TransitionResource(ID3D12Resource* Resource, D3D12_RES
     CommandList->ResourceBarrier(1, &Barrier);
 }
 
+void FDX12CommandContext::TransitionResources(const std::vector<D3D12_RESOURCE_BARRIER>& Barriers)
+{
+    if (Barriers.empty())
+    {
+        return;
+    }
+
+    CommandList->ResourceBarrier(static_cast<UINT>(Barriers.size()), Barriers.data());
+}
+
 void FDX12CommandContext::SetRenderTarget(const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle, const D3D12_CPU_DESCRIPTOR_HANDLE* DsvHandle)
 {
     CommandList->OMSetRenderTargets(1, &RtvHandle, FALSE, DsvHandle);

@@ -2,6 +2,7 @@
 
 #include "ShaderCompiler.h"
 #include "RendererUtils.h"
+#include "RenderGraph.h"
 #include "../Scene/GltfLoader.h"
 #include "../Scene/Camera.h"
 #include "../Scene/Mesh.h"
@@ -47,6 +48,8 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
         LogError("Deferred renderer initialization failed: device is null");
         return false;
     }
+
+    this->Device = Device;
 
     LogInfo("Deferred renderer initialization started");
 
@@ -202,6 +205,7 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     }
     ConstantBuffer = ConstantBufferResource.Resource;
     ConstantBufferMapped = ConstantBufferResource.MappedData;
+    ConstantBuffer->SetName(L"SceneConstantBuffer");
 
     if (!CreateSceneTextures(Device, SceneModels))
     {
@@ -220,6 +224,11 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     {
         LogError("Deferred renderer initialization failed: sky resource creation failed");
         return false;
+    }
+
+    if (SkyConstantBuffer)
+    {
+        SkyConstantBuffer->SetName(L"SkyConstantBuffer");
     }
 
     FSkyPipelineConfig SkyPipelineConfig = {};
@@ -243,234 +252,369 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
     ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
 
     const bool bRenderShadows = bShadowsEnabled && ShadowPipeline && ShadowMap;
-
-    if (bRenderShadows)
-    {
-        PixSetMarker(CommandList, L"ShadowMap");
-
-        CmdContext.TransitionResource(ShadowMap.Get(), ShadowMapState, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-        ShadowMapState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
-        CmdContext.ClearDepth(ShadowDSVHandle, 1.0f);
-
-        ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
-        CommandList->SetPipelineState(ShadowPipeline.Get());
-        CommandList->SetGraphicsRootSignature(BasePassRootSignature.Get());
-        CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
-
-        CommandList->RSSetViewports(1, &ShadowViewport);
-        CommandList->RSSetScissorRects(1, &ShadowScissor);
-        CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        CommandList->OMSetRenderTargets(0, nullptr, FALSE, &ShadowDSVHandle);
-
-        for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
-        {
-            const FSceneModelResource& Model = SceneModels[ModelIndex];
-            const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
-
-            UpdateSceneConstants(Camera, Model, ConstantBufferOffset);
-
-            CommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
-            CommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
-
-            CommandList->SetGraphicsRootConstantBufferView(
-                0,
-                ConstantBuffer->GetGPUVirtualAddress() + ConstantBufferOffset);
-            CommandList->SetGraphicsRootDescriptorTable(1, Model.TextureHandle);
-
-            CommandList->DrawIndexedInstanced(Model.Geometry.IndexCount, 1, 0, 0, 0);
-        }
-
-        CmdContext.TransitionResource(ShadowMap.Get(), ShadowMapState, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        ShadowMapState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    }
-
     const bool bDoDepthPrepass = bDepthPrepassEnabled && DepthPrepassPipeline;
 
-    if (bDoDepthPrepass)
-    {
-        PixSetMarker(CommandList, L"DepthPrepass");
+    FRenderGraph Graph;
+    Graph.SetDevice(Device);
 
-        CmdContext.TransitionResource(DepthBuffer.Get(), DepthBufferState, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-        DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
-        CmdContext.ClearDepth(DepthStencilHandle);
+    FRGResourceHandle ShadowHandle = Graph.ImportTexture(
+        "ShadowMap",
+        ShadowMap.Get(),
+        &ShadowMapState,
+        { 2048, 2048, DXGI_FORMAT_D32_FLOAT });
+
+    const FRGTextureDesc DepthDesc =
+    {
+        static_cast<uint32>(Viewport.Width),
+        static_cast<uint32>(Viewport.Height),
+        DXGI_FORMAT_D24_UNORM_S8_UINT
+    };
+
+    FRGResourceHandle DepthHandle = Graph.ImportTexture("Depth", DepthBuffer.Get(), &DepthBufferState, DepthDesc);
+    FRGResourceHandle GBufferHandles[3] =
+    {
+        Graph.ImportTexture("GBufferA", GBufferA.Get(), &GBufferStates[0], { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), GBufferFormats[0] }),
+        Graph.ImportTexture("GBufferB", GBufferB.Get(), &GBufferStates[1], { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), GBufferFormats[1] }),
+        Graph.ImportTexture("GBufferC", GBufferC.Get(), &GBufferStates[2], { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), GBufferFormats[2] }),
+    };
+
+    FRGResourceHandle LightingHandle = Graph.ImportTexture(
+        "Lighting",
+        LightingBuffer.Get(),
+        &LightingBufferState,
+        { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), LightingBufferFormat });
+
+    struct FShadowPassData
+    {
+        bool bEnabled = false;
+        const FCamera* Camera = nullptr;
+    };
+
+    Graph.AddPass<FShadowPassData>("ShadowMap", [&, bRenderShadows](FShadowPassData& Data, FRGPassBuilder& Builder)
+    {
+        Data.bEnabled = bRenderShadows;
+        Data.Camera = &Camera;
+
+        if (bRenderShadows)
+        {
+            Builder.WriteTexture(ShadowHandle, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        }
+    }, [this](const FShadowPassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
+
+        PixSetMarker(LocalCommandList, L"ShadowMap");
+        Cmd.ClearDepth(ShadowDSVHandle, 1.0f);
 
         ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
-        CommandList->SetPipelineState(DepthPrepassPipeline.Get());
-        CommandList->SetGraphicsRootSignature(BasePassRootSignature.Get());
-        CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        LocalCommandList->SetPipelineState(ShadowPipeline.Get());
+        LocalCommandList->SetGraphicsRootSignature(BasePassRootSignature.Get());
+        LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
 
-        CommandList->RSSetViewports(1, &Viewport);
-        CommandList->RSSetScissorRects(1, &ScissorRect);
-
-        CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        CommandList->OMSetRenderTargets(0, nullptr, FALSE, &DepthStencilHandle);
+        LocalCommandList->RSSetViewports(1, &ShadowViewport);
+        LocalCommandList->RSSetScissorRects(1, &ShadowScissor);
+        LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        LocalCommandList->OMSetRenderTargets(0, nullptr, FALSE, &ShadowDSVHandle);
 
         for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
         {
             const FSceneModelResource& Model = SceneModels[ModelIndex];
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
 
-            UpdateSceneConstants(Camera, Model, ConstantBufferOffset);
+            UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset);
 
-            CommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
-            CommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
+            LocalCommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
+            LocalCommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
 
-            CommandList->SetGraphicsRootConstantBufferView(
+            LocalCommandList->SetGraphicsRootConstantBufferView(
                 0,
                 ConstantBuffer->GetGPUVirtualAddress() + ConstantBufferOffset);
-            CommandList->SetGraphicsRootDescriptorTable(1, Model.TextureHandle);
+            LocalCommandList->SetGraphicsRootDescriptorTable(1, Model.TextureHandle);
 
-            CommandList->DrawIndexedInstanced(Model.Geometry.IndexCount, 1, 0, 0, 0);
+            LocalCommandList->DrawIndexedInstanced(Model.Geometry.IndexCount, 1, 0, 0, 0);
         }
-    }
 
-    PixSetMarker(CommandList, L"GBuffer BasePass");
+    });
 
-    CmdContext.TransitionResource(LightingBuffer.Get(), LightingBufferState, D3D12_RESOURCE_STATE_RENDER_TARGET);
-    LightingBufferState = D3D12_RESOURCE_STATE_RENDER_TARGET;
-
-    CmdContext.TransitionResource(DepthBuffer.Get(), DepthBufferState, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-    DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
-
-    D3D12_CPU_DESCRIPTOR_HANDLE BasePassRTVs[4] =
+    struct FDepthPrepassData
     {
-        GBufferRTVHandles[0],
-        GBufferRTVHandles[1],
-        GBufferRTVHandles[2],
-        LightingRTVHandle
+        bool bEnabled = false;
+        const FCamera* Camera = nullptr;
     };
 
-    CmdContext.SetRenderTarget(BasePassRTVs[0], &DepthStencilHandle);
-    if (!bDoDepthPrepass)
+    Graph.AddPass<FDepthPrepassData>("DepthPrepass", [&, bDoDepthPrepass](FDepthPrepassData& Data, FRGPassBuilder& Builder)
     {
-        CmdContext.ClearDepth(DepthStencilHandle);
-    }
+        Data.bEnabled = bDoDepthPrepass;
+        Data.Camera = &Camera;
 
-    for (const D3D12_CPU_DESCRIPTOR_HANDLE& Handle : GBufferRTVHandles)
-    {
-        const float ClearValue[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
-        CmdContext.ClearRenderTarget(Handle, ClearValue);
-    }
-
-    const float SceneClear[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
-    CmdContext.ClearRenderTarget(LightingRTVHandle, SceneClear);
-
-    CommandList->SetGraphicsRootSignature(BasePassRootSignature.Get());
-
-    ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
-    CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
-
-    CommandList->RSSetViewports(1, &Viewport);
-    CommandList->RSSetScissorRects(1, &ScissorRect);
-
-    CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    CommandList->OMSetRenderTargets(4, BasePassRTVs, FALSE, &DepthStencilHandle);
-
-    ID3D12PipelineState* CurrentPipeline = nullptr;
-    for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
-    {
-        const FSceneModelResource& Model = SceneModels[ModelIndex];
-        const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
-
-        UpdateSceneConstants(Camera, Model, ConstantBufferOffset);
-
-        ID3D12PipelineState* DesiredPipeline = Model.bHasNormalMap ? BasePassPipelineWithNormalMap.Get() : BasePassPipelineWithoutNormalMap.Get();
-        if (DesiredPipeline != CurrentPipeline)
+        if (bDoDepthPrepass)
         {
-            CommandList->SetPipelineState(DesiredPipeline);
-            CurrentPipeline = DesiredPipeline;
+            Builder.WriteTexture(DepthHandle, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        }
+    }, [this](const FDepthPrepassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!Data.bEnabled)
+        {
+            return;
         }
 
-        CommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
-        CommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
+        ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
 
-        CommandList->SetGraphicsRootConstantBufferView(
-            0,
-            ConstantBuffer->GetGPUVirtualAddress() + ConstantBufferOffset);
-        CommandList->SetGraphicsRootDescriptorTable(1, Model.TextureHandle);
+        PixSetMarker(LocalCommandList, L"DepthPrepass");
 
-        CommandList->DrawIndexedInstanced(Model.Geometry.IndexCount, 1, 0, 0, 0);
-    }
+        Cmd.ClearDepth(DepthStencilHandle);
 
-    CmdContext.TransitionResource(GBufferA.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    CmdContext.TransitionResource(GBufferB.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    CmdContext.TransitionResource(GBufferC.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
+        LocalCommandList->SetPipelineState(DepthPrepassPipeline.Get());
+        LocalCommandList->SetGraphicsRootSignature(BasePassRootSignature.Get());
+        LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
 
-    PixSetMarker(CommandList, L"LightingPass");
-    CmdContext.SetRenderTarget(LightingRTVHandle, nullptr);
+        LocalCommandList->RSSetViewports(1, &Viewport);
+        LocalCommandList->RSSetScissorRects(1, &ScissorRect);
 
-    CommandList->SetPipelineState(LightingPipeline.Get());
-    CommandList->SetGraphicsRootSignature(LightingRootSignature.Get());
-    CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        LocalCommandList->OMSetRenderTargets(0, nullptr, FALSE, &DepthStencilHandle);
 
-    CommandList->RSSetViewports(1, &Viewport);
-    CommandList->RSSetScissorRects(1, &ScissorRect);
+        for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+        {
+            const FSceneModelResource& Model = SceneModels[ModelIndex];
+            const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
 
-    CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    CommandList->SetGraphicsRootConstantBufferView(0, ConstantBuffer->GetGPUVirtualAddress());
-    CommandList->SetGraphicsRootDescriptorTable(1, GBufferGpuHandles[0]);
+            UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset);
 
-    CommandList->DrawInstanced(3, 1, 0, 0);
+            LocalCommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
+            LocalCommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
 
-    if (SkyPipelineState && SkyRootSignature && SkyGeometry.IndexCount > 0)
+            LocalCommandList->SetGraphicsRootConstantBufferView(
+                0,
+                ConstantBuffer->GetGPUVirtualAddress() + ConstantBufferOffset);
+            LocalCommandList->SetGraphicsRootDescriptorTable(1, Model.TextureHandle);
+
+            LocalCommandList->DrawIndexedInstanced(Model.Geometry.IndexCount, 1, 0, 0, 0);
+        }
+    });
+
+    struct FBasePassData
     {
-        CmdContext.TransitionResource(DepthBuffer.Get(), DepthBufferState, D3D12_RESOURCE_STATE_DEPTH_READ);
-        DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_READ;
-
-        PixSetMarker(CommandList, L"SkyAtmosphere");
-        CommandList->SetPipelineState(SkyPipelineState.Get());
-        CommandList->SetGraphicsRootSignature(SkyRootSignature.Get());
-        CommandList->RSSetViewports(1, &Viewport);
-        CommandList->RSSetScissorRects(1, &ScissorRect);
-        CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        CommandList->IASetVertexBuffers(0, 1, &SkyGeometry.VertexBufferView);
-        CommandList->IASetIndexBuffer(&SkyGeometry.IndexBufferView);
-        CommandList->OMSetRenderTargets(1, &LightingRTVHandle, FALSE, &DepthStencilHandle);
-
-        UpdateSkyConstants(Camera);
-        CommandList->SetGraphicsRootConstantBufferView(0, SkyConstantBuffer->GetGPUVirtualAddress());
-        CommandList->DrawIndexedInstanced(SkyGeometry.IndexCount, 1, 0, 0, 0);
-    }
-
-    CmdContext.TransitionResource(GBufferA.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
-    CmdContext.TransitionResource(GBufferB.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
-    CmdContext.TransitionResource(GBufferC.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-    PixSetMarker(CommandList, L"Tonemap");
-    CmdContext.TransitionResource(LightingBuffer.Get(), LightingBufferState, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    LightingBufferState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    CmdContext.SetRenderTarget(RtvHandle, nullptr);
-
-    struct FTonemapConstants
-    {
-        uint32_t Enabled;
-        float Exposure;
-        float WhitePoint;
-        float Gamma;
+        bool bDoDepthPrepass = false;
+        const FCamera* Camera = nullptr;
     };
 
-    const FTonemapConstants TonemapConstants =
+    Graph.AddPass<FBasePassData>("GBuffer BasePass", [&](FBasePassData& Data, FRGPassBuilder& Builder)
     {
-        bTonemapEnabled ? 1u : 0u,
-        TonemapExposure,
-        TonemapWhitePoint,
-        TonemapGamma
+        Data.bDoDepthPrepass = bDoDepthPrepass;
+        Data.Camera = &Camera;
+
+        for (int i = 0; i < 3; ++i)
+        {
+            Builder.WriteTexture(GBufferHandles[i], D3D12_RESOURCE_STATE_RENDER_TARGET);
+        }
+
+        Builder.WriteTexture(LightingHandle, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        Builder.WriteTexture(DepthHandle, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    }, [this](const FBasePassData& Data, FDX12CommandContext& Cmd)
+    {
+        ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
+
+        PixSetMarker(LocalCommandList, L"GBuffer BasePass");
+
+        D3D12_CPU_DESCRIPTOR_HANDLE BasePassRTVs[4] =
+        {
+            GBufferRTVHandles[0],
+            GBufferRTVHandles[1],
+            GBufferRTVHandles[2],
+            LightingRTVHandle
+        };
+
+        if (!Data.bDoDepthPrepass)
+        {
+            Cmd.ClearDepth(DepthStencilHandle);
+        }
+
+        for (const D3D12_CPU_DESCRIPTOR_HANDLE& Handle : GBufferRTVHandles)
+        {
+            const float ClearValue[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+            Cmd.ClearRenderTarget(Handle, ClearValue);
+        }
+
+        const float SceneClear[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+        Cmd.ClearRenderTarget(LightingRTVHandle, SceneClear);
+
+        LocalCommandList->SetGraphicsRootSignature(BasePassRootSignature.Get());
+
+        ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
+        LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+
+        LocalCommandList->RSSetViewports(1, &Viewport);
+        LocalCommandList->RSSetScissorRects(1, &ScissorRect);
+
+        LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        LocalCommandList->OMSetRenderTargets(_countof(BasePassRTVs), BasePassRTVs, FALSE, &DepthStencilHandle);
+
+        for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+        {
+            const FSceneModelResource& Model = SceneModels[ModelIndex];
+            const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
+
+            UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset);
+
+            LocalCommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
+            LocalCommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
+
+            LocalCommandList->SetGraphicsRootConstantBufferView(0, ConstantBuffer->GetGPUVirtualAddress() + ConstantBufferOffset);
+            LocalCommandList->SetGraphicsRootDescriptorTable(1, Model.TextureHandle);
+
+            const bool bUseNormalMap = Model.bHasNormalMap;
+
+            LocalCommandList->SetPipelineState(bUseNormalMap ? BasePassPipelineWithNormalMap.Get() : BasePassPipelineWithoutNormalMap.Get());
+
+            LocalCommandList->DrawIndexedInstanced(Model.Geometry.IndexCount, 1, 0, 0, 0);
+        }
+
+    });
+
+    struct FLightingPassData
+    {
+        bool bUseShadows = false;
     };
 
-    CommandList->SetPipelineState(TonemapPipeline.Get());
-    CommandList->SetGraphicsRootSignature(TonemapRootSignature.Get());
-    CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+    Graph.AddPass<FLightingPassData>("Lighting", [&](FLightingPassData& Data, FRGPassBuilder& Builder)
+    {
+        Data.bUseShadows = bRenderShadows;
 
-    CommandList->RSSetViewports(1, &Viewport);
-    CommandList->RSSetScissorRects(1, &ScissorRect);
+        Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(GBufferHandles[1], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(GBufferHandles[2], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
-    CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    CommandList->SetGraphicsRoot32BitConstants(0, sizeof(TonemapConstants) / sizeof(uint32_t), &TonemapConstants, 0);
-    CommandList->SetGraphicsRootDescriptorTable(1, LightingBufferHandle);
-    CommandList->DrawInstanced(3, 1, 0, 0);
+        if (Data.bUseShadows)
+        {
+            Builder.ReadTexture(ShadowHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        }
 
-    CmdContext.TransitionResource(LightingBuffer.Get(), LightingBufferState, D3D12_RESOURCE_STATE_RENDER_TARGET);
-    LightingBufferState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        Builder.WriteTexture(LightingHandle, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    }, [this](const FLightingPassData&, FDX12CommandContext& Cmd)
+    {
+        ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
+
+        PixSetMarker(LocalCommandList, L"Lighting");
+
+        ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
+        LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        Cmd.SetRenderTarget(LightingRTVHandle, nullptr);
+
+        LocalCommandList->SetPipelineState(LightingPipeline.Get());
+        LocalCommandList->SetGraphicsRootSignature(LightingRootSignature.Get());
+        LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+
+        LocalCommandList->RSSetViewports(1, &Viewport);
+        LocalCommandList->RSSetScissorRects(1, &ScissorRect);
+
+        LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        LocalCommandList->SetGraphicsRootConstantBufferView(0, ConstantBuffer->GetGPUVirtualAddress());
+        LocalCommandList->SetGraphicsRootDescriptorTable(1, GBufferGpuHandles[0]);
+
+        LocalCommandList->DrawInstanced(3, 1, 0, 0);
+    });
+
+    struct FSkyPassData
+    {
+        bool bEnabled = false;
+        const FCamera* Camera = nullptr;
+    };
+
+    Graph.AddPass<FSkyPassData>("Sky", [&](FSkyPassData& Data, FRGPassBuilder& Builder)
+    {
+        Data.bEnabled = SkyPipelineState && SkyRootSignature && SkyGeometry.IndexCount > 0;
+        Data.Camera = &Camera;
+
+        if (Data.bEnabled)
+        {
+            Builder.ReadTexture(DepthHandle, D3D12_RESOURCE_STATE_DEPTH_READ);
+            Builder.WriteTexture(LightingHandle, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        }
+    }, [this](const FSkyPassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
+
+        PixSetMarker(LocalCommandList, L"SkyAtmosphere");
+        LocalCommandList->SetPipelineState(SkyPipelineState.Get());
+        LocalCommandList->SetGraphicsRootSignature(SkyRootSignature.Get());
+        LocalCommandList->RSSetViewports(1, &Viewport);
+        LocalCommandList->RSSetScissorRects(1, &ScissorRect);
+        LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        LocalCommandList->IASetVertexBuffers(0, 1, &SkyGeometry.VertexBufferView);
+        LocalCommandList->IASetIndexBuffer(&SkyGeometry.IndexBufferView);
+        LocalCommandList->OMSetRenderTargets(1, &LightingRTVHandle, FALSE, &DepthStencilHandle);
+
+        UpdateSkyConstants(*Data.Camera);
+        LocalCommandList->SetGraphicsRootConstantBufferView(0, SkyConstantBuffer->GetGPUVirtualAddress());
+        LocalCommandList->DrawIndexedInstanced(SkyGeometry.IndexCount, 1, 0, 0, 0);
+    });
+
+    struct FTonemapPassData
+    {
+        D3D12_CPU_DESCRIPTOR_HANDLE OutputHandle{};
+    };
+
+    Graph.AddPass<FTonemapPassData>("Tonemap", [&](FTonemapPassData& Data, FRGPassBuilder& Builder)
+    {
+        Data.OutputHandle = RtvHandle;
+        Builder.ReadTexture(LightingHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        for (int i = 0; i < 3; ++i)
+        {
+            Builder.WriteTexture(GBufferHandles[i], D3D12_RESOURCE_STATE_RENDER_TARGET);
+        }
+    }, [this](const FTonemapPassData& Data, FDX12CommandContext& Cmd)
+    {
+        ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
+
+        PixSetMarker(LocalCommandList, L"Tonemap");
+        Cmd.SetRenderTarget(Data.OutputHandle, nullptr);
+
+        struct FTonemapConstants
+        {
+            uint32_t Enabled;
+            float Exposure;
+            float WhitePoint;
+            float Gamma;
+        };
+
+        const FTonemapConstants TonemapConstants =
+        {
+            bTonemapEnabled ? 1u : 0u,
+            TonemapExposure,
+            TonemapWhitePoint,
+            TonemapGamma
+        };
+
+        ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
+        LocalCommandList->SetPipelineState(TonemapPipeline.Get());
+        LocalCommandList->SetGraphicsRootSignature(TonemapRootSignature.Get());
+        LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+
+        LocalCommandList->RSSetViewports(1, &Viewport);
+        LocalCommandList->RSSetScissorRects(1, &ScissorRect);
+
+        LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        LocalCommandList->SetGraphicsRoot32BitConstants(0, sizeof(TonemapConstants) / sizeof(uint32_t), &TonemapConstants, 0);
+        LocalCommandList->SetGraphicsRootDescriptorTable(1, LightingBufferHandle);
+        LocalCommandList->DrawInstanced(3, 1, 0, 0);
+
+        Cmd.TransitionResource(LightingBuffer.Get(), LightingBufferState, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        LightingBufferState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    });
+
+    Graph.Execute(CmdContext);
 }
 
 bool FDeferredRenderer::CreateBasePassRootSignature(FDX12Device* Device)
@@ -1002,6 +1146,7 @@ bool FDeferredRenderer::CreateTonemapPipeline(FDX12Device* Device, DXGI_FORMAT B
 bool FDeferredRenderer::CreateGBufferResources(FDX12Device* Device, uint32_t Width, uint32_t Height)
 {
     Microsoft::WRL::ComPtr<ID3D12Resource>* Targets[3] = { &GBufferA, &GBufferB, &GBufferC };
+    const wchar_t* GBufferNames[3] = { L"GBufferA", L"GBufferB", L"GBufferC" };
 
     D3D12_RESOURCE_DESC Desc = {};
     Desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -1049,12 +1194,16 @@ bool FDeferredRenderer::CreateGBufferResources(FDX12Device* Device, uint32_t Wid
             &ClearValue,
             IID_PPV_ARGS(Targets[i]->GetAddressOf())));
 
+        Targets[i]->Get()->SetName(GBufferNames[i]);
+
         GBufferRTVHandles[i] = RtvHandle;
         D3D12_RENDER_TARGET_VIEW_DESC RtvDesc = {};
         RtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
         RtvDesc.Format = GBufferFormats[i];
         Device->GetDevice()->CreateRenderTargetView(Targets[i]->Get(), &RtvDesc, RtvHandle);
         RtvHandle.ptr += RtvDescriptorSize;
+
+        GBufferStates[i] = D3D12_RESOURCE_STATE_RENDER_TARGET;
     }
 
     Desc.Width = Width;
@@ -1075,6 +1224,8 @@ bool FDeferredRenderer::CreateGBufferResources(FDX12Device* Device, uint32_t Wid
         LightingBufferState,
         &LightingClear,
         IID_PPV_ARGS(LightingBuffer.GetAddressOf())));
+
+    LightingBuffer->SetName(L"LightingBuffer");
 
     LightingRTVHandle = RtvHandle;
     D3D12_RENDER_TARGET_VIEW_DESC LightingRtvDesc = {};
@@ -1118,6 +1269,8 @@ bool FDeferredRenderer::CreateShadowResources(FDX12Device* Device)
         D3D12_RESOURCE_STATE_DEPTH_WRITE,
         &ClearValue,
         IID_PPV_ARGS(ShadowMap.GetAddressOf())));
+
+    ShadowMap->SetName(L"ShadowMap");
 
     D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
     HeapDesc.NumDescriptors = 1;

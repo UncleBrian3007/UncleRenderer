@@ -77,4 +77,6 @@ private:
     float ShadowBias = 0.0005f;
     float ShadowStrength = 1.0f;
     bool bShadowsEnabled = true;
+
+    FDX12Device* Device = nullptr;
 };

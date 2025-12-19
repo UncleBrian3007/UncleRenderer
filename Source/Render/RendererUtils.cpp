@@ -428,6 +428,8 @@ bool RendererUtils::CreateDepthResources(FDX12Device* Device, uint32_t Width, ui
         &ClearValue,
         IID_PPV_ARGS(OutDepthResources.DepthBuffer.GetAddressOf())));
 
+    OutDepthResources.DepthBuffer->SetName(L"DepthBuffer");
+
     D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
     HeapDesc.NumDescriptors = 1;
     HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
@@ -476,6 +478,8 @@ bool RendererUtils::CreateMappedConstantBuffer(FDX12Device* Device, uint64_t Buf
         D3D12_RESOURCE_STATE_GENERIC_READ,
         nullptr,
         IID_PPV_ARGS(OutConstantBuffer.Resource.GetAddressOf())));
+
+    OutConstantBuffer.Resource->SetName(L"MappedConstantBuffer");
 
     D3D12_RANGE EmptyRange = { 0, 0 };
     HR_CHECK(OutConstantBuffer.Resource->Map(0, &EmptyRange, reinterpret_cast<void**>(&OutConstantBuffer.MappedData)));
