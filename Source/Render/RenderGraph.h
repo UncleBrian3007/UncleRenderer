@@ -133,9 +133,9 @@ private:
 
     static std::vector<FPooledTexture> TexturePool;
 
-    bool bEnableDebugRecording = true;
-    bool bEnableGraphDump = true;
-    bool bEnableResourceLifetimeLog = true;
+    bool bEnableDebugRecording = false;
+    bool bEnableGraphDump = false;
+    bool bEnableResourceLifetimeLog = false;
 };
 
 class FRGPassBuilder

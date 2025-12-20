@@ -253,15 +253,20 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
 
         CmdContext.TransitionResources(PendingBarriers);
 
-        auto PassBegin = std::chrono::high_resolution_clock::now();
+        std::chrono::high_resolution_clock::time_point PassBegin, PassEnd;
+        if (bEnableDebugRecording)
+        {
+            PassBegin = std::chrono::high_resolution_clock::now();
+		}
+
         if (Entry.ExecuteFunc)
         {
             Entry.ExecuteFunc(Entry.DataStorage, CmdContext);
         }
-        auto PassEnd = std::chrono::high_resolution_clock::now();
 
         if (bEnableDebugRecording)
         {
+            PassEnd = std::chrono::high_resolution_clock::now();
             const std::chrono::duration<double, std::milli> Elapsed = PassEnd - PassBegin;
             Entry.ElapsedMs = Elapsed.count();
         }
