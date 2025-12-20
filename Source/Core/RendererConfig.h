@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <string>
 
@@ -14,6 +15,7 @@ struct FRendererConfig
     ERendererType RendererType = ERendererType::Deferred;
     std::wstring SceneFile = L"Assets/Scenes/Scene.json";
     bool bUseDepthPrepass = true;
+    uint32_t FramesInFlight = 3;
     bool bEnableFrameOverlap = true;
     bool bEnableShadows = true;
     float ShadowBias = 0.0005f;

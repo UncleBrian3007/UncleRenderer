@@ -104,6 +104,20 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
         OutConfig.bEnableFrameOverlap = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
 
+    if (LowerKey == "framesinflight" || LowerKey == "inflightframes" || LowerKey == "swapchainbuffercount")
+    {
+        try
+        {
+            const int32_t ParsedValue = std::stoi(Value);
+            const int32_t ClampedValue = std::clamp(ParsedValue, 1, 8);
+            OutConfig.FramesInFlight = static_cast<uint32_t>(ClampedValue);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid frames in flight value in renderer config: " + Value);
+        }
+    }
+
     if (LowerKey == "enableshadows" || LowerKey == "shadows")
     {
         OutConfig.bEnableShadows = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
