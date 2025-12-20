@@ -10,9 +10,14 @@
 #include <array>
 #include <vector>
 #include <filesystem>
+#include <fstream>
+#include <cctype>
+#include <cwctype>
+#include <algorithm>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "../../ThirdParty/stb/stb_image.h"
+#include "../../ThirdParty/ddspp/ddspp.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -110,6 +115,186 @@ bool FTextureLoader::LoadTextureInternal(const std::wstring& FilePath, ComPtr<ID
     if (Device == nullptr || FilePath.empty())
     {
         return false;
+    }
+
+    const auto HasDDSExtension = [](const std::wstring& Path)
+    {
+        const std::filesystem::path Extension = std::filesystem::path(Path).extension();
+        std::wstring LowerExt = Extension.wstring();
+        for (wchar_t& Char : LowerExt)
+        {
+            Char = static_cast<wchar_t>(std::towlower(Char));
+        }
+        return LowerExt == L".dds";
+    };
+
+    if (HasDDSExtension(FilePath))
+    {
+        std::ifstream FileStream(FilePath, std::ios::binary | std::ios::ate);
+        if (!FileStream)
+        {
+            return false;
+        }
+
+        const std::streamsize FileSize = FileStream.tellg();
+        FileStream.seekg(0, std::ios::beg);
+
+        std::vector<uint8_t> FileData(static_cast<size_t>(FileSize));
+        if (!FileStream.read(reinterpret_cast<char*>(FileData.data()), FileSize))
+        {
+            return false;
+        }
+
+        ddspp::Descriptor Descriptor = {};
+        if (FileData.size() < sizeof(uint32_t) || ddspp::decode_header(FileData.data(), Descriptor) != ddspp::Result::Success)
+        {
+            return false;
+        }
+
+        if (Descriptor.format == ddspp::DXGIFormat::UNKNOWN)
+        {
+            return false;
+        }
+
+        const uint32_t ArraySize = Descriptor.type == ddspp::Texture3D ? 1u : std::max(1u, Descriptor.arraySize);
+        const uint32_t Depth = Descriptor.type == ddspp::Texture3D ? std::max(1u, Descriptor.depth) : 1u;
+        const UINT SubresourceCount = Descriptor.numMips * ArraySize;
+        const DXGI_FORMAT Format = static_cast<DXGI_FORMAT>(Descriptor.format);
+
+        D3D12_RESOURCE_DESC TextureDesc = {};
+        TextureDesc.Dimension = Descriptor.type == ddspp::Texture3D ? D3D12_RESOURCE_DIMENSION_TEXTURE3D : D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        TextureDesc.Width = Descriptor.width;
+        TextureDesc.Height = Descriptor.height;
+        TextureDesc.DepthOrArraySize = Descriptor.type == ddspp::Texture3D ? Depth : ArraySize;
+        TextureDesc.MipLevels = static_cast<UINT16>(Descriptor.numMips);
+        TextureDesc.Format = Format;
+        TextureDesc.SampleDesc.Count = 1;
+        TextureDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+
+        D3D12_HEAP_PROPERTIES DefaultHeap = {};
+        DefaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
+        DefaultHeap.CreationNodeMask = 1;
+        DefaultHeap.VisibleNodeMask = 1;
+
+        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+            &DefaultHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &TextureDesc,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            nullptr,
+            IID_PPV_ARGS(OutTexture.GetAddressOf())));
+
+        std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> Layouts(SubresourceCount);
+        std::vector<UINT> NumRows(SubresourceCount);
+        UINT64 UploadBufferSize = 0;
+        Device->GetDevice()->GetCopyableFootprints(&TextureDesc, 0, SubresourceCount, 0, Layouts.data(), NumRows.data(), nullptr, &UploadBufferSize);
+
+        D3D12_HEAP_PROPERTIES UploadHeap = {};
+        UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+        UploadHeap.CreationNodeMask = 1;
+        UploadHeap.VisibleNodeMask = 1;
+
+        D3D12_RESOURCE_DESC UploadDesc = {};
+        UploadDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        UploadDesc.Width = UploadBufferSize;
+        UploadDesc.Height = 1;
+        UploadDesc.DepthOrArraySize = 1;
+        UploadDesc.MipLevels = 1;
+        UploadDesc.Format = DXGI_FORMAT_UNKNOWN;
+        UploadDesc.SampleDesc.Count = 1;
+        UploadDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+        ComPtr<ID3D12Resource> UploadResource;
+        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+            &UploadHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &UploadDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(UploadResource.GetAddressOf())));
+
+        uint8_t* MappedData = nullptr;
+        D3D12_RANGE EmptyRange = { 0, 0 };
+        HR_CHECK(UploadResource->Map(0, &EmptyRange, reinterpret_cast<void**>(&MappedData)));
+
+        size_t DataOffset = Descriptor.headerSize;
+        for (uint32_t ArrayIndex = 0; ArrayIndex < ArraySize; ++ArrayIndex)
+        {
+            for (uint32_t Mip = 0; Mip < Descriptor.numMips; ++Mip)
+            {
+                const uint32_t SubresourceIndex = ArrayIndex * Descriptor.numMips + Mip;
+                const uint32_t MipWidth = std::max(1u, Descriptor.width >> Mip);
+                const uint32_t MipHeight = std::max(1u, Descriptor.height >> Mip);
+                const uint32_t MipDepth = Descriptor.type == ddspp::Texture3D ? std::max(1u, Descriptor.depth >> Mip) : 1u;
+                const uint32_t BlockWidth = std::max(1u, Descriptor.blockWidth);
+                const uint32_t BlockHeight = std::max(1u, Descriptor.blockHeight);
+                const uint32_t BlocksWide = Descriptor.compressed ? (MipWidth + BlockWidth - 1) / BlockWidth : MipWidth;
+                const uint32_t BlocksHigh = Descriptor.compressed ? (MipHeight + BlockHeight - 1) / BlockHeight : MipHeight;
+                const uint64_t SrcRowPitch = BlocksWide * Descriptor.bitsPerPixelOrBlock / 8;
+                const size_t SliceSize = static_cast<size_t>(SrcRowPitch) * BlocksHigh;
+                const size_t SubresourceSize = SliceSize * MipDepth;
+
+                if (DataOffset + SubresourceSize > FileData.size())
+                {
+                    UploadResource->Unmap(0, nullptr);
+                    return false;
+                }
+
+                uint8_t* DstSubresource = MappedData + Layouts[SubresourceIndex].Offset;
+                const uint8_t* SrcSubresource = FileData.data() + DataOffset;
+
+                for (uint32_t Z = 0; Z < MipDepth; ++Z)
+                {
+                    const uint8_t* SrcSlice = SrcSubresource + SliceSize * Z;
+                    uint8_t* DstSlice = DstSubresource + Layouts[SubresourceIndex].Footprint.RowPitch * NumRows[SubresourceIndex] * Z;
+
+                    for (uint32_t Row = 0; Row < BlocksHigh; ++Row)
+                    {
+                        memcpy(DstSlice + static_cast<size_t>(Row) * Layouts[SubresourceIndex].Footprint.RowPitch, SrcSlice + static_cast<size_t>(Row) * SrcRowPitch, SrcRowPitch);
+                    }
+                }
+
+                DataOffset += SubresourceSize;
+            }
+        }
+
+        UploadResource->Unmap(0, nullptr);
+
+        ComPtr<ID3D12CommandAllocator> UploadAllocator;
+        ComPtr<ID3D12GraphicsCommandList> UploadList;
+        HR_CHECK(Device->GetDevice()->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(UploadAllocator.GetAddressOf())));
+        HR_CHECK(Device->GetDevice()->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, UploadAllocator.Get(), nullptr, IID_PPV_ARGS(UploadList.GetAddressOf())));
+
+        for (UINT Subresource = 0; Subresource < SubresourceCount; ++Subresource)
+        {
+            D3D12_TEXTURE_COPY_LOCATION DstLocation = {};
+            DstLocation.pResource = OutTexture.Get();
+            DstLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            DstLocation.SubresourceIndex = Subresource;
+
+            D3D12_TEXTURE_COPY_LOCATION SrcLocation = {};
+            SrcLocation.pResource = UploadResource.Get();
+            SrcLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+            SrcLocation.PlacedFootprint = Layouts[Subresource];
+
+            UploadList->CopyTextureRegion(&DstLocation, 0, 0, 0, &SrcLocation, nullptr);
+        }
+
+        D3D12_RESOURCE_BARRIER Barrier = {};
+        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        Barrier.Transition.pResource = OutTexture.Get();
+        Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        UploadList->ResourceBarrier(1, &Barrier);
+
+        HR_CHECK(UploadList->Close());
+
+        ID3D12CommandList* Lists[] = { UploadList.Get() };
+        Device->GetGraphicsQueue()->GetD3DQueue()->ExecuteCommandLists(1, Lists);
+        Device->GetGraphicsQueue()->Flush();
+
+        return true;
     }
 
     int Width = 0;

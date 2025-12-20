@@ -1306,31 +1306,45 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
     D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle = DescriptorHeap->GetCPUDescriptorHandleForHeapStart();
     D3D12_GPU_DESCRIPTOR_HANDLE GpuHandle = DescriptorHeap->GetGPUDescriptorHandleForHeapStart();
 
-    D3D12_SHADER_RESOURCE_VIEW_DESC SceneSrvDesc = {};
-    SceneSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    SceneSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    SceneSrvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    SceneSrvDesc.Texture2D.MipLevels = 1;
+    const auto CreateSceneTextureSrv = [&](ID3D12Resource* Texture)
+    {
+        if (!Texture)
+        {
+            return;
+        }
+
+        const D3D12_RESOURCE_DESC TextureDesc = Texture->GetDesc();
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC SceneSrvDesc = {};
+        SceneSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        SceneSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        SceneSrvDesc.Format = TextureDesc.Format;
+        SceneSrvDesc.Texture2D.MipLevels = TextureDesc.MipLevels;
+        SceneSrvDesc.Texture2D.MostDetailedMip = 0;
+        SceneSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+
+        Device->GetDevice()->CreateShaderResourceView(Texture, &SceneSrvDesc, CpuHandle);
+    };
 
     for (size_t Index = 0; Index < SceneTextures.size(); ++Index)
     {
-        Device->GetDevice()->CreateShaderResourceView(SceneTextures[Index].BaseColor.Get(), &SceneSrvDesc, CpuHandle);
+        CreateSceneTextureSrv(SceneTextures[Index].BaseColor.Get());
         SceneModels[Index].TextureHandle = GpuHandle;
 
         CpuHandle.ptr += DescriptorSize;
         GpuHandle.ptr += DescriptorSize;
 
-        Device->GetDevice()->CreateShaderResourceView(SceneTextures[Index].MetallicRoughness.Get(), &SceneSrvDesc, CpuHandle);
+        CreateSceneTextureSrv(SceneTextures[Index].MetallicRoughness.Get());
 
         CpuHandle.ptr += DescriptorSize;
         GpuHandle.ptr += DescriptorSize;
 
-        Device->GetDevice()->CreateShaderResourceView(SceneTextures[Index].Normal.Get(), &SceneSrvDesc, CpuHandle);
+        CreateSceneTextureSrv(SceneTextures[Index].Normal.Get());
 
         CpuHandle.ptr += DescriptorSize;
         GpuHandle.ptr += DescriptorSize;
 
-        Device->GetDevice()->CreateShaderResourceView(SceneTextures[Index].Emissive.Get(), &SceneSrvDesc, CpuHandle);
+        CreateSceneTextureSrv(SceneTextures[Index].Emissive.Get());
 
         CpuHandle.ptr += DescriptorSize;
         GpuHandle.ptr += DescriptorSize;
