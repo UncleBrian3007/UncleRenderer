@@ -175,7 +175,7 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t H
         return false;
     }
 
-    const uint32 SwapChainBufferCount = (std::max)(1u, RendererConfig.FramesInFlight);
+    const uint32 SwapChainBufferCount = (std::max)(2u, RendererConfig.FramesInFlight);
 
     LogInfo("Initializing swap chain...");
     if (!SwapChain->Initialize(Device.get(), MainWindow->GetHWND(), Width, Height, SwapChainBufferCount))

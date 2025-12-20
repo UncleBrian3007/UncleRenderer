@@ -48,6 +48,9 @@
     <Filter Include="Assets">
       <UniqueIdentifier>{0E6DA4B1-EB6C-4F9A-9E95-3B9B68CDAE46}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Source Files\ThirdParty\ddspp">
+      <UniqueIdentifier>{f4a591e7-002b-4386-b419-8e35be6c8c19}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Source\Main.cpp">
@@ -262,8 +265,11 @@
     <ClInclude Include="ThirdParty\imgui\imstb_truetype.h">
       <Filter>Source Files\ThirdParty\imgui</Filter>
     </ClInclude>
+    <ClInclude Include="ThirdParty\ddspp\ddspp.h">
+      <Filter>Source Files\ThirdParty\ddspp</Filter>
+    </ClInclude>
     <ClInclude Include="Source\Core\GpuDebugMarkers.h">
-      <Filter>Header Files</Filter>
+      <Filter>Header Files\Core</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -289,7 +295,6 @@
     <None Include="Shaders\PBRCommon.hlsl">
       <Filter>Shaders</Filter>
     </None>
-    <None Include="Shaders\SkyAtmosphere.hlsl" />
     <None Include="bin\RendererConfig.ini">
       <Filter>Assets</Filter>
     </None>
@@ -298,6 +303,12 @@
     </None>
     <None Include="Shaders\Tonemap.hlsl">
       <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\SkyAtmosphere.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="ThirdParty\ddspp\LICENSE">
+      <Filter>Source Files\ThirdParty\ddspp</Filter>
     </None>
   </ItemGroup>
 </Project>
