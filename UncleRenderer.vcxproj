@@ -100,6 +100,7 @@
     <ClCompile Include="Source\Main.cpp" />
     <ClCompile Include="Source\Core\Application.cpp" />
     <ClCompile Include="Source\Core\Logger.cpp" />
+    <ClCompile Include="Source\Core\TaskSystem.cpp" />
     <ClCompile Include="Source\Core\Window.cpp" />
     <ClCompile Include="Source\RHI\DX12CommandContext.cpp" />
     <ClCompile Include="Source\RHI\DX12CommandQueue.cpp" />
@@ -135,6 +136,7 @@
     <ClInclude Include="Source\Core\ImGuiSupport.h" />
     <ClInclude Include="Source\Core\EngineTime.h" />
     <ClInclude Include="Source\Core\Logger.h" />
+    <ClInclude Include="Source\Core\TaskSystem.h" />
     <ClInclude Include="Source\Core\Window.h" />
     <ClInclude Include="Source\RHI\DX12CommandContext.h" />
     <ClInclude Include="Source\RHI\DX12CommandQueue.h" />

@@ -7,9 +7,12 @@
 #include "RendererUtils.h"
 #include "../RHI/DX12Commons.h"
 #include "../RHI/DX12Device.h"
+#include "../Core/TaskSystem.h"
+#include "../Core/Logger.h"
 #include <array>
 #include <vector>
 #include <filesystem>
+#include <mutex>
 #include <fstream>
 #include <cctype>
 #include <cwctype>
@@ -643,4 +646,71 @@ bool FTextureLoader::CreateSolidColorTexture(uint32_t Color, ComPtr<ID3D12Resour
 	Device->GetGraphicsQueue()->Flush();
 
     return true;
+}
+
+bool FTextureLoader::LoadTexturesParallel(std::vector<FTextureLoadRequest>& Requests)
+{
+    if (Requests.empty())
+    {
+        return true;
+    }
+
+    if (!FTaskScheduler::Get().IsRunning())
+    {
+        // Fallback to serial loading if task system is not initialized
+        LogWarning("Task system not initialized, falling back to serial texture loading");
+        for (FTextureLoadRequest& Request : Requests)
+        {
+            if (Request.bUseSolidColor)
+            {
+                Request.bSuccess = LoadOrSolidColor(Request.Path, Request.SolidColor, *Request.OutTexture);
+            }
+            else
+            {
+                Request.bSuccess = LoadOrDefault(Request.Path, *Request.OutTexture);
+            }
+        }
+    }
+    else
+    {
+        // Load textures in parallel
+        std::vector<FTask::FTaskFunction> Tasks;
+        Tasks.reserve(Requests.size());
+
+        for (FTextureLoadRequest& Request : Requests)
+        {
+            Tasks.push_back([this, &Request]()
+            {
+                if (Request.bUseSolidColor)
+                {
+                    Request.bSuccess = LoadOrSolidColor(Request.Path, Request.SolidColor, *Request.OutTexture);
+                }
+                else
+                {
+                    Request.bSuccess = LoadOrDefault(Request.Path, *Request.OutTexture);
+                }
+            });
+        }
+
+        std::vector<FTaskRef> ScheduledTasks = FTaskScheduler::Get().ScheduleTaskBatch(Tasks);
+        
+        // Wait for all texture loading tasks to complete
+        for (const FTaskRef& Task : ScheduledTasks)
+        {
+            FTaskScheduler::Get().WaitForTask(Task);
+        }
+    }
+
+    // Check if all textures loaded successfully
+    bool bAllSuccess = true;
+    for (const FTextureLoadRequest& Request : Requests)
+    {
+        if (!Request.bSuccess)
+        {
+            bAllSuccess = false;
+            break;
+        }
+    }
+
+    return bAllSuccess;
 }

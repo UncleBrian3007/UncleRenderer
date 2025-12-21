@@ -4,6 +4,7 @@
 #include "ImGuiSupport.h"
 #include "Logger.h"
 #include "GpuDebugMarkers.h"
+#include "TaskSystem.h"
 #include "../RHI/DX12Device.h"
 #include "../RHI/DX12SwapChain.h"
 #include "../RHI/DX12CommandContext.h"
@@ -104,12 +105,18 @@ FApplication::~FApplication()
         Device->GetGraphicsQueue()->Flush();
     }
 
+    // Shutdown task system
+    FTaskScheduler::Get().Shutdown();
+
     LogInfo("Application shutdown complete");
 }
 
 bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t Height)
 {
     LogInfo("Application initialization started");
+
+    // Initialize task system early
+    FTaskScheduler::Get().Initialize();
 
     MainWindow = std::make_unique<FWindow>();
     Device = std::make_unique<FDX12Device>();

@@ -1425,50 +1425,69 @@ bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, const std::vect
     SceneTextures.clear();
     SceneTextures.reserve(Models.size());
 
+    // Prepare all texture load requests
+    std::vector<FTextureLoadRequest> Requests;
+    Requests.reserve(Models.size() * 4); // 4 textures per model
+
+    // Pre-allocate texture sets
     for (const FSceneModelResource& Model : Models)
     {
         FModelTextureSet TextureSet;
-        const uint32_t BaseColorValue = PackColor(Model.BaseColorFactor);
-        if (Model.BaseColorTexturePath.empty())
-        {
-            if (!TextureLoader->LoadOrSolidColor(Model.BaseColorTexturePath, BaseColorValue, TextureSet.BaseColor))
-            {
-                return false;
-            }
-        }
-        else if (!TextureLoader->LoadOrDefault(Model.BaseColorTexturePath, TextureSet.BaseColor))
-        {
-            return false;
-        }
-
-        const uint32_t MetallicRoughnessValue = PackMetallicRoughness(Model.MetallicFactor, Model.RoughnessFactor);
-        if (!TextureLoader->LoadOrSolidColor(Model.MetallicRoughnessTexturePath, MetallicRoughnessValue, TextureSet.MetallicRoughness))
-        {
-            return false;
-        }
-
-        if (!TextureLoader->LoadOrSolidColor(Model.NormalTexturePath, 0xff8080ff, TextureSet.Normal))
-        {
-            return false;
-        }
-
-        const uint32_t EmissiveValue = PackColor(Model.EmissiveFactor);
-        if (Model.EmissiveTexturePath.empty())
-        {
-            if (!TextureLoader->LoadOrSolidColor(Model.EmissiveTexturePath, EmissiveValue, TextureSet.Emissive))
-            {
-                return false;
-            }
-        }
-        else if (!TextureLoader->LoadOrDefault(Model.EmissiveTexturePath, TextureSet.Emissive))
-        {
-            return false;
-        }
-
         SceneTextures.push_back(TextureSet);
     }
 
-    return true;
+    // Build load requests for all textures
+    for (size_t i = 0; i < Models.size(); ++i)
+    {
+        const FSceneModelResource& Model = Models[i];
+        FModelTextureSet& TextureSet = SceneTextures[i];
+
+        // Base color texture
+        const uint32_t BaseColorValue = PackColor(Model.BaseColorFactor);
+        FTextureLoadRequest BaseColorRequest;
+        BaseColorRequest.Path = Model.BaseColorTexturePath;
+        BaseColorRequest.SolidColor = BaseColorValue;
+        BaseColorRequest.bUseSolidColor = Model.BaseColorTexturePath.empty();
+        BaseColorRequest.OutTexture = &TextureSet.BaseColor;
+        Requests.push_back(BaseColorRequest);
+
+        // Metallic roughness texture - use solid color if path is empty
+        const uint32_t MetallicRoughnessValue = PackMetallicRoughness(Model.MetallicFactor, Model.RoughnessFactor);
+        FTextureLoadRequest MetallicRoughnessRequest;
+        MetallicRoughnessRequest.Path = Model.MetallicRoughnessTexturePath;
+        MetallicRoughnessRequest.SolidColor = MetallicRoughnessValue;
+        MetallicRoughnessRequest.bUseSolidColor = Model.MetallicRoughnessTexturePath.empty();
+        MetallicRoughnessRequest.OutTexture = &TextureSet.MetallicRoughness;
+        Requests.push_back(MetallicRoughnessRequest);
+
+        // Normal texture - use default normal if path is empty
+        FTextureLoadRequest NormalRequest;
+        NormalRequest.Path = Model.NormalTexturePath;
+        NormalRequest.SolidColor = 0xff8080ff;
+        NormalRequest.bUseSolidColor = Model.NormalTexturePath.empty();
+        NormalRequest.OutTexture = &TextureSet.Normal;
+        Requests.push_back(NormalRequest);
+
+        // Emissive texture
+        const uint32_t EmissiveValue = PackColor(Model.EmissiveFactor);
+        FTextureLoadRequest EmissiveRequest;
+        EmissiveRequest.Path = Model.EmissiveTexturePath;
+        EmissiveRequest.SolidColor = EmissiveValue;
+        EmissiveRequest.bUseSolidColor = Model.EmissiveTexturePath.empty();
+        EmissiveRequest.OutTexture = &TextureSet.Emissive;
+        Requests.push_back(EmissiveRequest);
+    }
+
+    // Load all textures in parallel
+    LogInfo("Loading " + std::to_string(Requests.size()) + " textures in parallel for " + std::to_string(Models.size()) + " models");
+    const bool bSuccess = TextureLoader->LoadTexturesParallel(Requests);
+
+    if (!bSuccess)
+    {
+        LogError("Failed to load scene textures");
+    }
+
+    return bSuccess;
 }
 
 void FDeferredRenderer::UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, uint64_t ConstantBufferOffset)

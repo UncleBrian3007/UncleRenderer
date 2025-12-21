@@ -1,6 +1,7 @@
 #include "ShaderCompiler.h"
 
 #include "Core/Logger.h"
+#include "../Core/TaskSystem.h"
 
 #include <cstring>
 #include <string>
@@ -127,5 +128,70 @@ bool FShaderCompiler::CompileFromFile(
     OutByteCode.resize(ShaderBlob->GetBufferSize());
     memcpy(OutByteCode.data(), ShaderBlob->GetBufferPointer(), ShaderBlob->GetBufferSize());
     return true;
+}
+
+bool FShaderCompiler::CompileShadersParallel(std::vector<FShaderCompileRequest>& Requests)
+{
+    if (Requests.empty())
+    {
+        return true;
+    }
+
+    if (!FTaskScheduler::Get().IsRunning())
+    {
+        // Fallback to serial compilation if task system is not initialized
+        LogWarning("Task system not initialized, falling back to serial shader compilation");
+        for (FShaderCompileRequest& Request : Requests)
+        {
+            Request.bSuccess = CompileFromFile(
+                Request.FilePath,
+                Request.EntryPoint,
+                Request.Target,
+                *Request.OutByteCode,
+                Request.Defines);
+        }
+    }
+    else
+    {
+        // Compile shaders in parallel
+        LogInfo("Compiling " + std::to_string(Requests.size()) + " shaders in parallel");
+        
+        std::vector<FTask::FTaskFunction> Tasks;
+        Tasks.reserve(Requests.size());
+
+        for (FShaderCompileRequest& Request : Requests)
+        {
+            Tasks.push_back([this, &Request]()
+            {
+                Request.bSuccess = CompileFromFile(
+                    Request.FilePath,
+                    Request.EntryPoint,
+                    Request.Target,
+                    *Request.OutByteCode,
+                    Request.Defines);
+            });
+        }
+
+        std::vector<FTaskRef> ScheduledTasks = FTaskScheduler::Get().ScheduleTaskBatch(Tasks);
+        
+        // Wait for all shader compilation tasks to complete
+        for (const FTaskRef& Task : ScheduledTasks)
+        {
+            FTaskScheduler::Get().WaitForTask(Task);
+        }
+    }
+
+    // Check if all shaders compiled successfully
+    bool bAllSuccess = true;
+    for (const FShaderCompileRequest& Request : Requests)
+    {
+        if (!Request.bSuccess)
+        {
+            bAllSuccess = false;
+            LogError("Failed to compile shader: " + WStringToUtf8(Request.FilePath));
+        }
+    }
+
+    return bAllSuccess;
 }
 

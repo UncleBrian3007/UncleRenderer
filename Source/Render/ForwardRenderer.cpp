@@ -731,13 +731,67 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
     }
 
     SceneTextures.clear();
-    SceneTextures.reserve(Models.size());
+    SceneTextures.reserve(Models.size() * 2); // 2 textures per model (base color + emissive)
 
     if (!ShadowMap)
     {
         return false;
     }
 
+    // Prepare parallel texture loading
+    struct FTextureLoadResult
+    {
+        Microsoft::WRL::ComPtr<ID3D12Resource> BaseColor;
+        Microsoft::WRL::ComPtr<ID3D12Resource> Emissive;
+    };
+    
+    std::vector<FTextureLoadResult> LoadResults(Models.size());
+    std::vector<FTextureLoadRequest> Requests;
+    Requests.reserve(Models.size() * 2);
+
+    const auto ClampToByte = [](float Value)
+    {
+        const float Clamped = (std::max)(0.0f, (std::min)(1.0f, Value));
+        return static_cast<uint32_t>(std::round(Clamped * 255.0f));
+    };
+
+    const auto PackColor = [&ClampToByte](const DirectX::XMFLOAT3& Color)
+    {
+        const uint32_t R = ClampToByte(Color.x);
+        const uint32_t G = ClampToByte(Color.y);
+        const uint32_t B = ClampToByte(Color.z);
+        return 0xff000000 | (B << 16) | (G << 8) | R;
+    };
+
+    // Build load requests for all textures
+    for (size_t Index = 0; Index < Models.size(); ++Index)
+    {
+        const uint32_t BaseColorValue = PackColor(Models[Index].BaseColorFactor);
+        FTextureLoadRequest BaseColorRequest;
+        BaseColorRequest.Path = Models[Index].BaseColorTexturePath;
+        BaseColorRequest.SolidColor = BaseColorValue;
+        BaseColorRequest.bUseSolidColor = Models[Index].BaseColorTexturePath.empty();
+        BaseColorRequest.OutTexture = &LoadResults[Index].BaseColor;
+        Requests.push_back(BaseColorRequest);
+
+        const uint32_t EmissiveColorValue = PackColor(Models[Index].EmissiveFactor);
+        FTextureLoadRequest EmissiveRequest;
+        EmissiveRequest.Path = Models[Index].EmissiveTexturePath;
+        EmissiveRequest.SolidColor = EmissiveColorValue;
+        EmissiveRequest.bUseSolidColor = Models[Index].EmissiveTexturePath.empty();
+        EmissiveRequest.OutTexture = &LoadResults[Index].Emissive;
+        Requests.push_back(EmissiveRequest);
+    }
+
+    // Load all textures in parallel
+    LogInfo("Loading " + std::to_string(Requests.size()) + " textures in parallel for " + std::to_string(Models.size()) + " models");
+    if (!TextureLoader->LoadTexturesParallel(Requests))
+    {
+        LogError("Failed to load scene textures");
+        return false;
+    }
+
+    // Create descriptor heap and SRVs
     D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
     HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     HeapDesc.NumDescriptors = static_cast<UINT>(Models.size() * 3);
