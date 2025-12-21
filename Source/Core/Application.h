@@ -4,6 +4,7 @@
 #include <memory>
 #include <cstdint>
 #include <DirectXMath.h>
+#include <atomic>
 #include "../RHI/DX12Commons.h"
 #include "RendererConfig.h"
 
@@ -39,6 +40,8 @@ private:
     void HandleCameraInput(float DeltaSeconds);
     void PositionCameraForScene();
     bool ReloadScene(const std::wstring& ScenePath);
+    void StartAsyncSceneReload(const std::wstring& ScenePath);
+    void CompleteAsyncSceneReload();
     std::wstring OpenSceneFileDialog(const std::wstring& InitialDirectory) const;
     bool InitializeImGui(int32_t Width, int32_t Height);
     void ShutdownImGui();
@@ -83,5 +86,12 @@ private:
     float LightIntensity = 1.0f;
     DirectX::XMFLOAT3 LightColor{ 1.0f, 1.0f, 1.0f };
     float ShadowBias = 0.0005f;
+
+    // Async scene loading
+    std::unique_ptr<FForwardRenderer>  AsyncForwardRenderer;
+    std::unique_ptr<FDeferredRenderer> AsyncDeferredRenderer;
+    FRenderer*                         AsyncActiveRenderer = nullptr;
+    std::wstring                       AsyncScenePath;
+    std::atomic<bool>                  bAsyncSceneLoadComplete{ false };
 };
 

@@ -13,6 +13,7 @@
 #include <vector>
 #include <filesystem>
 #include <mutex>
+#include <chrono>
 #include <fstream>
 #include <cctype>
 #include <cwctype>
@@ -655,6 +656,8 @@ bool FTextureLoader::LoadTexturesParallel(std::vector<FTextureLoadRequest>& Requ
         return true;
     }
 
+    const auto StartTime = std::chrono::high_resolution_clock::now();
+
     if (!FTaskScheduler::Get().IsRunning())
     {
         // Fallback to serial loading if task system is not initialized
@@ -670,6 +673,10 @@ bool FTextureLoader::LoadTexturesParallel(std::vector<FTextureLoadRequest>& Requ
                 Request.bSuccess = LoadOrDefault(Request.Path, *Request.OutTexture);
             }
         }
+
+        const auto EndTime = std::chrono::high_resolution_clock::now();
+        const auto Duration = std::chrono::duration_cast<std::chrono::milliseconds>(EndTime - StartTime);
+        LogInfo("Loaded " + std::to_string(Requests.size()) + " textures serially in " + std::to_string(Duration.count()) + " ms");
     }
     else
     {
@@ -699,6 +706,10 @@ bool FTextureLoader::LoadTexturesParallel(std::vector<FTextureLoadRequest>& Requ
         {
             FTaskScheduler::Get().WaitForTask(Task);
         }
+
+        const auto EndTime = std::chrono::high_resolution_clock::now();
+        const auto Duration = std::chrono::duration_cast<std::chrono::milliseconds>(EndTime - StartTime);
+        LogInfo("Loaded " + std::to_string(Requests.size()) + " textures in parallel in " + std::to_string(Duration.count()) + " ms");
     }
 
     // Check if all textures loaded successfully

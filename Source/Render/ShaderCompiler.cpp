@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include <Windows.h>
+#include <chrono>
 
 namespace
 {
@@ -137,49 +138,32 @@ bool FShaderCompiler::CompileShadersParallel(std::vector<FShaderCompileRequest>&
         return true;
     }
 
-    if (!FTaskScheduler::Get().IsRunning())
-    {
-        // Fallback to serial compilation if task system is not initialized
-        LogWarning("Task system not initialized, falling back to serial shader compilation");
-        for (FShaderCompileRequest& Request : Requests)
-        {
-            Request.bSuccess = CompileFromFile(
-                Request.FilePath,
-                Request.EntryPoint,
-                Request.Target,
-                *Request.OutByteCode,
-                Request.Defines);
-        }
-    }
-    else
-    {
-        // Compile shaders in parallel
-        LogInfo("Compiling " + std::to_string(Requests.size()) + " shaders in parallel");
-        
-        std::vector<FTask::FTaskFunction> Tasks;
-        Tasks.reserve(Requests.size());
+    const auto StartTime = std::chrono::high_resolution_clock::now();
 
-        for (FShaderCompileRequest& Request : Requests)
-        {
-            Tasks.push_back([this, &Request]()
-            {
-                Request.bSuccess = CompileFromFile(
-                    Request.FilePath,
-                    Request.EntryPoint,
-                    Request.Target,
-                    *Request.OutByteCode,
-                    Request.Defines);
-            });
-        }
-
-        std::vector<FTaskRef> ScheduledTasks = FTaskScheduler::Get().ScheduleTaskBatch(Tasks);
-        
-        // Wait for all shader compilation tasks to complete
-        for (const FTaskRef& Task : ScheduledTasks)
-        {
-            FTaskScheduler::Get().WaitForTask(Task);
-        }
+    // NOTE: Parallel shader compilation is disabled due to DXC thread-safety issues.
+    // DXC COM objects (IDxcCompiler3, IDxcUtils, IDxcIncludeHandler) are not thread-safe.
+    // When multiple threads access these shared objects concurrently, it causes D3D12 errors:
+    // "ID3D12CommandAllocator is being reset before previous executions have completed"
+    // 
+    // To enable true parallel compilation, each thread would need its own FShaderCompiler
+    // instance with separate DXC COM objects, but the performance benefit is minimal
+    // since DXC compilation is already quite fast and the overhead of thread coordination
+    // would likely negate any gains.
+    
+    // Compile shaders serially for thread safety
+    for (FShaderCompileRequest& Request : Requests)
+    {
+        Request.bSuccess = CompileFromFile(
+            Request.FilePath,
+            Request.EntryPoint,
+            Request.Target,
+            *Request.OutByteCode,
+            Request.Defines);
     }
+
+    const auto EndTime = std::chrono::high_resolution_clock::now();
+    const auto Duration = std::chrono::duration_cast<std::chrono::milliseconds>(EndTime - StartTime);
+    LogInfo("Compiled " + std::to_string(Requests.size()) + " shaders serially in " + std::to_string(Duration.count()) + " ms");
 
     // Check if all shaders compiled successfully
     bool bAllSuccess = true;

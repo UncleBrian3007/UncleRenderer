@@ -25,6 +25,7 @@
 #include <string>
 #include <filesystem>
 #include <iterator>
+#include <chrono>
 
 namespace
 {
@@ -279,20 +280,19 @@ bool FApplication::RenderFrame()
     ++FrameIndex;
     LogVerbose("Frame start: " + std::to_string(FrameIndex));
 
+    // Check if async scene load is complete (atomic read)
+    if (bAsyncSceneLoadComplete.load(std::memory_order_acquire))
+    {
+        CompleteAsyncSceneReload();
+    }
+
     if (!PendingScenePath.empty())
     {
-        if (Device && Device->GetGraphicsQueue())
-        {
-            Device->GetGraphicsQueue()->Flush();
-        }
-
         const std::wstring SceneToLoad = std::move(PendingScenePath);
         PendingScenePath.clear();
 
-        if (!ReloadScene(SceneToLoad))
-        {
-            LogError("Failed to reload scene: " + PathToUtf8String(SceneToLoad));
-        }
+        // Start async scene reload
+        StartAsyncSceneReload(SceneToLoad);
     }
 
     Time->Tick();
@@ -599,6 +599,153 @@ bool FApplication::ReloadScene(const std::wstring& ScenePath)
 
     LogInfo("Scene reloaded from: " + PathToUtf8String(ScenePath));
     return true;
+}
+
+void FApplication::StartAsyncSceneReload(const std::wstring& ScenePath)
+{
+    if (ScenePath.empty())
+    {
+        LogWarning("Cannot reload scene: path is empty");
+        return;
+    }
+
+    if (!Device || !SwapChain || !MainWindow)
+    {
+        LogError("Cannot reload scene: renderer prerequisites are missing");
+        return;
+    }
+
+    if (!FTaskScheduler::Get().IsRunning())
+    {
+        // Fallback to synchronous loading if task system is not available
+        LogWarning("Task system not available, using synchronous scene reload");
+        if (Device->GetGraphicsQueue())
+        {
+            Device->GetGraphicsQueue()->Flush();
+        }
+        if (!ReloadScene(ScenePath))
+        {
+            LogError("Failed to reload scene: " + PathToUtf8String(ScenePath));
+        }
+        return;
+    }
+
+    // Flush GPU before starting async load
+    if (Device->GetGraphicsQueue())
+    {
+        Device->GetGraphicsQueue()->Flush();
+    }
+
+    LogInfo("Starting async scene reload: " + PathToUtf8String(ScenePath));
+    const auto StartTime = std::chrono::high_resolution_clock::now();
+
+    AsyncScenePath = ScenePath;
+    bAsyncSceneLoadComplete.store(false, std::memory_order_release);
+
+    // Capture all required data for async loading
+    const uint32_t Width = static_cast<uint32_t>(MainWindow->GetWidth());
+    const uint32_t Height = static_cast<uint32_t>(MainWindow->GetHeight());
+    const DXGI_FORMAT BackBufferFormat = SwapChain->GetFormat();
+    
+    FRendererOptions RendererOptions{};
+    RendererOptions.SceneFilePath = ScenePath;
+    RendererOptions.bUseDepthPrepass = bDepthPrepassEnabled;
+    RendererOptions.bEnableShadows = bShadowsEnabled;
+    RendererOptions.ShadowBias = ShadowBias;
+    RendererOptions.bEnableTonemap = bTonemapEnabled;
+    RendererOptions.TonemapExposure = TonemapExposure;
+    RendererOptions.TonemapWhitePoint = TonemapWhitePoint;
+    RendererOptions.TonemapGamma = TonemapGamma;
+
+    const bool bPreferDeferred = ActiveRenderer == DeferredRenderer.get() || RendererConfig.RendererType == ERendererType::Deferred;
+
+    // Schedule async task
+    FTaskScheduler::Get().ScheduleTask([this, ScenePath, Width, Height, BackBufferFormat, RendererOptions, bPreferDeferred, StartTime]()
+    {
+        AsyncForwardRenderer = std::make_unique<FForwardRenderer>();
+        AsyncDeferredRenderer = std::make_unique<FDeferredRenderer>();
+        AsyncActiveRenderer = nullptr;
+
+        auto TryInitializeRenderer = [&](ERendererType Type) -> bool
+        {
+            if (Type == ERendererType::Deferred)
+            {
+                if (AsyncDeferredRenderer->Initialize(Device.get(), Width, Height, BackBufferFormat, RendererOptions))
+                {
+                    AsyncActiveRenderer = AsyncDeferredRenderer.get();
+                    return true;
+                }
+                return false;
+            }
+
+            if (AsyncForwardRenderer->Initialize(Device.get(), Width, Height, BackBufferFormat, RendererOptions))
+            {
+                AsyncActiveRenderer = AsyncForwardRenderer.get();
+                return true;
+            }
+            return false;
+        };
+
+        const bool bInitialized = bPreferDeferred ?
+            (TryInitializeRenderer(ERendererType::Deferred) || TryInitializeRenderer(ERendererType::Forward)) :
+            (TryInitializeRenderer(ERendererType::Forward) || TryInitializeRenderer(ERendererType::Deferred));
+
+        if (!bInitialized || AsyncActiveRenderer == nullptr)
+        {
+            LogError("Failed to reload scene asynchronously: renderer initialization failed for new scene");
+            AsyncForwardRenderer.reset();
+            AsyncDeferredRenderer.reset();
+            AsyncActiveRenderer = nullptr;
+            return;
+        }
+
+        const auto EndTime = std::chrono::high_resolution_clock::now();
+        const auto Duration = std::chrono::duration_cast<std::chrono::milliseconds>(EndTime - StartTime);
+        LogInfo("Async scene reload completed in " + std::to_string(Duration.count()) + " ms");
+
+        // Signal completion with atomic store (this flag will be checked on the main thread)
+        bAsyncSceneLoadComplete.store(true, std::memory_order_release);
+    });
+}
+
+void FApplication::CompleteAsyncSceneReload()
+{
+    // Atomic load to check completion
+    if (!bAsyncSceneLoadComplete.load(std::memory_order_acquire))
+    {
+        return;
+    }
+
+    bAsyncSceneLoadComplete.store(false, std::memory_order_release);
+
+    if (!AsyncActiveRenderer || (!AsyncForwardRenderer && !AsyncDeferredRenderer))
+    {
+        LogError("Async scene reload failed: no valid renderer was created");
+        AsyncForwardRenderer.reset();
+        AsyncDeferredRenderer.reset();
+        AsyncActiveRenderer = nullptr;
+        AsyncScenePath.clear();
+        return;
+    }
+
+    // Swap renderers on the main thread
+    ForwardRenderer = std::move(AsyncForwardRenderer);
+    DeferredRenderer = std::move(AsyncDeferredRenderer);
+    ActiveRenderer = AsyncActiveRenderer;
+    
+    CurrentScenePath = AsyncScenePath;
+    RendererConfig.SceneFile = AsyncScenePath;
+
+    UpdateRendererLighting();
+    PositionCameraForScene();
+
+    LogInfo("Scene swapped to: " + PathToUtf8String(AsyncScenePath));
+    
+    // Clean up
+    AsyncForwardRenderer.reset();
+    AsyncDeferredRenderer.reset();
+    AsyncActiveRenderer = nullptr;
+    AsyncScenePath.clear();
 }
 
 std::wstring FApplication::OpenSceneFileDialog(const std::wstring& InitialDirectory) const

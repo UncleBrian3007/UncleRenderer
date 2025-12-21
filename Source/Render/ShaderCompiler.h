@@ -30,6 +30,10 @@ public:
 
     /**
      * Compile multiple shaders in parallel using the task system.
+     * NOTE: Currently disabled due to DXC thread-safety issues.
+     * DXC COM objects (IDxcCompiler3, IDxcUtils) are not thread-safe and
+     * cause D3D12 command allocator errors when accessed concurrently.
+     * This function now compiles serially for safety.
      * @param Requests Vector of shader compilation requests
      * @return True if all shaders compiled successfully
      */
