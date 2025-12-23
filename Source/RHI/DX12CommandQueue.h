@@ -20,6 +20,7 @@ public:
     uint64 GetCompletedFenceValue() const { return Fence ? Fence->GetCompletedValue() : 0; }
     uint64 GetLastSignaledFenceValue() const { return CurrentFenceValue > 0 ? CurrentFenceValue - 1 : 0; }
 
+    void ExecuteCommandLists(uint32 NumCommandLists, ID3D12CommandList* const* CommandLists);
     uint64 Signal();
     void Wait(uint64 FenceValue);
     void Flush();

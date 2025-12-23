@@ -31,21 +31,23 @@ namespace
 }
 
 std::unordered_map<std::wstring, ComPtr<ID3D12Resource>> FTextureLoader::GlobalTextureCache;
+static std::mutex GTextureCacheMutex;
 
 FTextureLoader::FTextureLoader(FDX12Device* InDevice)
     : Device(InDevice)
 {
 }
 
-bool FTextureLoader::LoadOrDefault(const std::wstring& TexturePath, ComPtr<ID3D12Resource>& OutTexture)
+bool FTextureLoader::LoadOrDefault(const std::wstring& TexturePath, ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload)
 {
     if (TryGetCachedTexture(TexturePath, OutTexture))
     {
         return true;
     }
 
-    if (!TexturePath.empty() && LoadTextureInternal(TexturePath, OutTexture))
+    if (!TexturePath.empty() && LoadTextureInternal(TexturePath, OutTexture, RecordedUpload))
     {
+        std::lock_guard<std::mutex> Lock(GTextureCacheMutex);
         GlobalTextureCache[TexturePath] = OutTexture;
         return true;
     }
@@ -55,8 +57,9 @@ bool FTextureLoader::LoadOrDefault(const std::wstring& TexturePath, ComPtr<ID3D1
         return true;
     }
 
-    if (CreateDefaultGridTexture(OutTexture))
+    if (CreateDefaultGridTexture(OutTexture, RecordedUpload))
     {
+        std::lock_guard<std::mutex> Lock(GTextureCacheMutex);
         GlobalTextureCache[GDefaultGridCacheKey] = OutTexture;
         return true;
     }
@@ -64,15 +67,16 @@ bool FTextureLoader::LoadOrDefault(const std::wstring& TexturePath, ComPtr<ID3D1
     return false;
 }
 
-bool FTextureLoader::LoadOrSolidColor(const std::wstring& TexturePath, uint32_t Color, ComPtr<ID3D12Resource>& OutTexture)
+bool FTextureLoader::LoadOrSolidColor(const std::wstring& TexturePath, uint32_t Color, ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload)
 {
     if (TryGetCachedTexture(TexturePath, OutTexture))
     {
         return true;
     }
 
-    if (!TexturePath.empty() && LoadTextureInternal(TexturePath, OutTexture))
+    if (!TexturePath.empty() && LoadTextureInternal(TexturePath, OutTexture, RecordedUpload))
     {
+        std::lock_guard<std::mutex> Lock(GTextureCacheMutex);
         GlobalTextureCache[TexturePath] = OutTexture;
         return true;
     }
@@ -83,17 +87,19 @@ bool FTextureLoader::LoadOrSolidColor(const std::wstring& TexturePath, uint32_t 
         return true;
     }
 
-    if (!CreateSolidColorTexture(Color, OutTexture))
+    if (!CreateSolidColorTexture(Color, OutTexture, RecordedUpload))
     {
         return false;
     }
 
+    std::lock_guard<std::mutex> Lock(GTextureCacheMutex);
     GlobalTextureCache[CacheKey] = OutTexture;
     return true;
 }
 
 void FTextureLoader::ClearCache()
 {
+    std::lock_guard<std::mutex> Lock(GTextureCacheMutex);
     GlobalTextureCache.clear();
 }
 
@@ -104,6 +110,7 @@ bool FTextureLoader::TryGetCachedTexture(const std::wstring& TexturePath, ComPtr
         return false;
     }
 
+    std::lock_guard<std::mutex> Lock(GTextureCacheMutex);
     const auto It = GlobalTextureCache.find(TexturePath);
     if (It != GlobalTextureCache.end() && It->second)
     {
@@ -114,7 +121,7 @@ bool FTextureLoader::TryGetCachedTexture(const std::wstring& TexturePath, ComPtr
     return false;
 }
 
-bool FTextureLoader::LoadTextureInternal(const std::wstring& FilePath, ComPtr<ID3D12Resource>& OutTexture)
+bool FTextureLoader::LoadTextureInternal(const std::wstring& FilePath, ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload)
 {
     if (Device == nullptr || FilePath.empty())
     {
@@ -294,9 +301,18 @@ bool FTextureLoader::LoadTextureInternal(const std::wstring& FilePath, ComPtr<ID
 
         HR_CHECK(UploadList->Close());
 
-        ID3D12CommandList* Lists[] = { UploadList.Get() };
-        Device->GetGraphicsQueue()->GetD3DQueue()->ExecuteCommandLists(1, Lists);
-        Device->GetGraphicsQueue()->Flush();
+        if (RecordedUpload)
+        {
+            RecordedUpload->UploadResource = UploadResource;
+            RecordedUpload->CommandAllocator = UploadAllocator;
+            RecordedUpload->CommandList = UploadList;
+        }
+        else
+        {
+            ID3D12CommandList* Lists[] = { UploadList.Get() };
+            Device->GetGraphicsQueue()->ExecuteCommandLists(1, Lists);
+            Device->GetGraphicsQueue()->Flush();
+        }
 
         return true;
     }
@@ -411,14 +427,23 @@ bool FTextureLoader::LoadTextureInternal(const std::wstring& FilePath, ComPtr<ID
 
     HR_CHECK(UploadList->Close());
 
-    ID3D12CommandList* Lists[] = { UploadList.Get() };
-    Device->GetGraphicsQueue()->GetD3DQueue()->ExecuteCommandLists(1, Lists);
-    Device->GetGraphicsQueue()->Flush();
+    if (RecordedUpload)
+    {
+        RecordedUpload->UploadResource = UploadResource;
+        RecordedUpload->CommandAllocator = UploadAllocator;
+        RecordedUpload->CommandList = UploadList;
+    }
+    else
+    {
+        ID3D12CommandList* Lists[] = { UploadList.Get() };
+        Device->GetGraphicsQueue()->ExecuteCommandLists(1, Lists);
+        Device->GetGraphicsQueue()->Flush();
+    }
 
     return true;
 }
 
-bool FTextureLoader::CreateDefaultGridTexture(ComPtr<ID3D12Resource>& OutTexture)
+bool FTextureLoader::CreateDefaultGridTexture(ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload)
 {
     if (Device == nullptr)
     {
@@ -536,14 +561,23 @@ bool FTextureLoader::CreateDefaultGridTexture(ComPtr<ID3D12Resource>& OutTexture
 
     HR_CHECK(UploadList->Close());
 
-    ID3D12CommandList* Lists[] = { UploadList.Get() };
-    Device->GetGraphicsQueue()->GetD3DQueue()->ExecuteCommandLists(1, Lists);
-    Device->GetGraphicsQueue()->Flush();
+    if (RecordedUpload)
+    {
+        RecordedUpload->UploadResource = UploadResource;
+        RecordedUpload->CommandAllocator = UploadAllocator;
+        RecordedUpload->CommandList = UploadList;
+    }
+    else
+    {
+        ID3D12CommandList* Lists[] = { UploadList.Get() };
+        Device->GetGraphicsQueue()->ExecuteCommandLists(1, Lists);
+        Device->GetGraphicsQueue()->Flush();
+    }
 
     return true;
 }
 
-bool FTextureLoader::CreateSolidColorTexture(uint32_t Color, ComPtr<ID3D12Resource>& OutTexture)
+bool FTextureLoader::CreateSolidColorTexture(uint32_t Color, ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload)
 {
     if (Device == nullptr)
     {
@@ -642,9 +676,18 @@ bool FTextureLoader::CreateSolidColorTexture(uint32_t Color, ComPtr<ID3D12Resour
 
     HR_CHECK(UploadList->Close());
 
-    ID3D12CommandList* CommandLists[] = { UploadList.Get() };
-	Device->GetGraphicsQueue()->GetD3DQueue()->ExecuteCommandLists(1, CommandLists);
-	Device->GetGraphicsQueue()->Flush();
+    if (RecordedUpload)
+    {
+        RecordedUpload->UploadResource = UploadResource;
+        RecordedUpload->CommandAllocator = UploadAllocator;
+        RecordedUpload->CommandList = UploadList;
+    }
+    else
+    {
+        ID3D12CommandList* CommandLists[] = { UploadList.Get() };
+        Device->GetGraphicsQueue()->ExecuteCommandLists(1, CommandLists);
+        Device->GetGraphicsQueue()->Flush();
+    }
 
     return true;
 }
@@ -681,20 +724,24 @@ bool FTextureLoader::LoadTexturesParallel(std::vector<FTextureLoadRequest>& Requ
     else
     {
         // Load textures in parallel
+        std::vector<FTextureUploadWork> UploadWork(Requests.size());
         std::vector<FTask::FTaskFunction> Tasks;
         Tasks.reserve(Requests.size());
 
-        for (FTextureLoadRequest& Request : Requests)
+        for (size_t Index = 0; Index < Requests.size(); ++Index)
         {
-            Tasks.push_back([this, &Request]()
+            FTextureLoadRequest& Request = Requests[Index];
+            FTextureUploadWork* Work = &UploadWork[Index];
+
+            Tasks.push_back([this, &Request, Work]()
             {
                 if (Request.bUseSolidColor)
                 {
-                    Request.bSuccess = LoadOrSolidColor(Request.Path, Request.SolidColor, *Request.OutTexture);
+                    Request.bSuccess = LoadOrSolidColor(Request.Path, Request.SolidColor, *Request.OutTexture, Work);
                 }
                 else
                 {
-                    Request.bSuccess = LoadOrDefault(Request.Path, *Request.OutTexture);
+                    Request.bSuccess = LoadOrDefault(Request.Path, *Request.OutTexture, Work);
                 }
             });
         }
@@ -705,6 +752,23 @@ bool FTextureLoader::LoadTexturesParallel(std::vector<FTextureLoadRequest>& Requ
         for (const FTaskRef& Task : ScheduledTasks)
         {
             FTaskScheduler::Get().WaitForTask(Task);
+        }
+
+        std::vector<ID3D12CommandList*> RecordedLists;
+        RecordedLists.reserve(UploadWork.size());
+
+        for (size_t Index = 0; Index < UploadWork.size(); ++Index)
+        {
+            if (Requests[Index].bSuccess && UploadWork[Index].CommandList)
+            {
+                RecordedLists.push_back(UploadWork[Index].CommandList.Get());
+            }
+        }
+
+        if (!RecordedLists.empty())
+        {
+            Device->GetGraphicsQueue()->ExecuteCommandLists(static_cast<UINT>(RecordedLists.size()), RecordedLists.data());
+            Device->GetGraphicsQueue()->Flush();
         }
 
         const auto EndTime = std::chrono::high_resolution_clock::now();

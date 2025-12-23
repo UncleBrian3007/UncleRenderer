@@ -18,13 +18,20 @@ struct FTextureLoadRequest
     bool bSuccess = false;
 };
 
+struct FTextureUploadWork
+{
+    Microsoft::WRL::ComPtr<ID3D12Resource> UploadResource;
+    Microsoft::WRL::ComPtr<ID3D12CommandAllocator> CommandAllocator;
+    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> CommandList;
+};
+
 class FTextureLoader
 {
 public:
     explicit FTextureLoader(FDX12Device* InDevice);
 
-    bool LoadOrDefault(const std::wstring& TexturePath, Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture);
-    bool LoadOrSolidColor(const std::wstring& TexturePath, uint32_t Color, Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture);
+    bool LoadOrDefault(const std::wstring& TexturePath, Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload = nullptr);
+    bool LoadOrSolidColor(const std::wstring& TexturePath, uint32_t Color, Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload = nullptr);
     void ClearCache();
 
     /**
@@ -36,9 +43,9 @@ public:
 
 private:
     bool TryGetCachedTexture(const std::wstring& TexturePath, Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture) const;
-    bool LoadTextureInternal(const std::wstring& TexturePath, Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture);
-    bool CreateDefaultGridTexture(Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture);
-    bool CreateSolidColorTexture(uint32_t Color, Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture);
+    bool LoadTextureInternal(const std::wstring& TexturePath, Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload);
+    bool CreateDefaultGridTexture(Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload);
+    bool CreateSolidColorTexture(uint32_t Color, Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload);
 
 private:
     FDX12Device* Device = nullptr;

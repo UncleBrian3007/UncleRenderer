@@ -120,7 +120,7 @@ void FDX12CommandContext::CloseAndExecute()
     HR_CHECK(CommandList->Close());
 
     ID3D12CommandList* Lists[] = { CommandList.Get() };
-    Queue->GetD3DQueue()->ExecuteCommandLists(1, Lists);
+    Queue->ExecuteCommandLists(1, Lists);
 }
 
 void FDX12CommandContext::SetFrameFenceValue(uint32 FrameIndex, uint64 FenceValue)

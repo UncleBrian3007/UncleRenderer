@@ -36,6 +36,11 @@ bool FDX12CommandQueue::Initialize(ID3D12Device* InDevice, EDX12QueueType Type)
     return FenceEvent != nullptr;
 }
 
+void FDX12CommandQueue::ExecuteCommandLists(uint32 NumCommandLists, ID3D12CommandList* const* CommandLists)
+{
+    D3DCommandQueue->ExecuteCommandLists(NumCommandLists, CommandLists);
+}
+
 uint64 FDX12CommandQueue::Signal()
 {
     const uint64 FenceValueToSignal = CurrentFenceValue;
@@ -55,5 +60,10 @@ void FDX12CommandQueue::Wait(uint64 FenceValue)
 
 void FDX12CommandQueue::Flush()
 {
-    Wait(Signal());
+    uint64 FenceValueToWait = 0;
+    FenceValueToWait = CurrentFenceValue;
+    HR_CHECK(D3DCommandQueue->Signal(Fence.Get(), FenceValueToWait));
+    CurrentFenceValue++;
+
+    Wait(FenceValueToWait);
 }
