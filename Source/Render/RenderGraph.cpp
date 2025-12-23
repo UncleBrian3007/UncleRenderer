@@ -5,12 +5,82 @@
 #include <algorithm>
 #include <sstream>
 #include "../Core/Logger.h"
+#include <filesystem>
+
+std::vector<FRenderGraph::FPooledTexture> FRenderGraph::TexturePool;
+std::unordered_map<uint32, FRenderGraph::FGpuTimingData> FRenderGraph::PendingGpuTimings;
+
+namespace
+{
+    std::string ResourceStateToString(D3D12_RESOURCE_STATES State)
+    {
+        if (State == D3D12_RESOURCE_STATE_COMMON)
+        {
+            return "COMMON";
+        }
+
+        struct FStateName
+        {
+            D3D12_RESOURCE_STATES State;
+            const char* Name;
+        };
+
+        static constexpr FStateName StateNames[] =
+        {
+            { D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, "VERTEX|CONSTANT" },
+            { D3D12_RESOURCE_STATE_INDEX_BUFFER, "INDEX" },
+            { D3D12_RESOURCE_STATE_RENDER_TARGET, "RENDER_TARGET" },
+            { D3D12_RESOURCE_STATE_UNORDERED_ACCESS, "UNORDERED_ACCESS" },
+            { D3D12_RESOURCE_STATE_DEPTH_WRITE, "DEPTH_WRITE" },
+            { D3D12_RESOURCE_STATE_DEPTH_READ, "DEPTH_READ" },
+            { D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, "NON_PIXEL_SHADER_RESOURCE" },
+            { D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, "PIXEL_SHADER_RESOURCE" },
+            { D3D12_RESOURCE_STATE_STREAM_OUT, "STREAM_OUT" },
+            { D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, "INDIRECT_ARGUMENT" },
+            { D3D12_RESOURCE_STATE_COPY_DEST, "COPY_DEST" },
+            { D3D12_RESOURCE_STATE_COPY_SOURCE, "COPY_SOURCE" },
+            { D3D12_RESOURCE_STATE_RESOLVE_DEST, "RESOLVE_DEST" },
+            { D3D12_RESOURCE_STATE_RESOLVE_SOURCE, "RESOLVE_SOURCE" },
+            { D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, "RAYTRACING_ACCELERATION_STRUCTURE" },
+            { D3D12_RESOURCE_STATE_SHADING_RATE_SOURCE, "SHADING_RATE_SOURCE" },
+        };
+
+        std::ostringstream Stream;
+        bool bFirst = true;
+        D3D12_RESOURCE_STATES Remaining = State;
+
+        for (const FStateName& Entry : StateNames)
+        {
+            if ((State & Entry.State) != 0)
+            {
+                if (!bFirst)
+                {
+                    Stream << " | ";
+                }
+
+                Stream << Entry.Name;
+                bFirst = false;
+                Remaining &= ~Entry.State;
+            }
+        }
+
+        if (Remaining != 0 || bFirst)
+        {
+            if (!bFirst)
+            {
+                Stream << " | ";
+            }
+
+            Stream << "0x" << std::hex << static_cast<uint32_t>(Remaining);
+        }
+
+        return Stream.str();
+    }
+}
 
 FRenderGraph::FRenderGraph()
 {
 }
-
-std::vector<FRenderGraph::FPooledTexture> FRenderGraph::TexturePool;
 
 FRGPassBuilder::FRGPassBuilder(FRenderGraph& InGraph, FRenderGraph::PassEntry& InEntry)
     : Graph(&InGraph)
@@ -114,6 +184,14 @@ FRenderGraph::FRGTextureResource* FRenderGraph::ResolveResource(const FRGResourc
 
 void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
 {
+    if (!Device)
+    {
+        LogError("RenderGraph Execute called without a valid device");
+        return;
+    }
+
+    ProcessPendingGpuTimings(CmdContext.GetCurrentFrameIndex());
+
     const size_t ResourceCount = Textures.size();
 
     std::vector<int32_t> FirstUse(ResourceCount, -1);
@@ -204,6 +282,62 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
         DumpDebugInfo(PassRequired, ResourceRequired);
     }
 
+    uint32 ActivePassCount = 0;
+    for (int32_t PassIndex = 0; PassIndex < static_cast<int32_t>(Passes.size()); ++PassIndex)
+    {
+        if (PassRequired[PassIndex])
+        {
+            ActivePassCount++;
+        }
+    }
+
+    const bool bDoGpuTiming = bEnableGpuTiming && ActivePassCount > 0;
+    std::vector<std::string> GpuTimedPassNames;
+    Microsoft::WRL::ComPtr<ID3D12QueryHeap> QueryHeap;
+    Microsoft::WRL::ComPtr<ID3D12Resource> QueryReadback;
+    uint64 TimestampFrequency = 0;
+    uint32 QueryIndex = 0;
+
+    if (bDoGpuTiming)
+    {
+        ID3D12CommandQueue* Queue = CmdContext.GetQueue() ? CmdContext.GetQueue()->GetD3DQueue() : nullptr;
+        ID3D12Device* D3DDevice = Device->GetDevice();
+
+        if (Queue && D3DDevice)
+        {
+            Queue->GetTimestampFrequency(&TimestampFrequency);
+
+            D3D12_QUERY_HEAP_DESC HeapDesc = {};
+            HeapDesc.Count = ActivePassCount * 2;
+            HeapDesc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+            HeapDesc.NodeMask = 0;
+
+            if (SUCCEEDED(D3DDevice->CreateQueryHeap(&HeapDesc, IID_PPV_ARGS(QueryHeap.GetAddressOf()))))
+            {
+                const UINT64 ReadbackSize = static_cast<UINT64>(HeapDesc.Count) * sizeof(uint64);
+
+                CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_READBACK);
+                CD3DX12_RESOURCE_DESC BufferDesc = CD3DX12_RESOURCE_DESC::Buffer(ReadbackSize);
+
+                if (FAILED(D3DDevice->CreateCommittedResource(
+                    &HeapProps,
+                    D3D12_HEAP_FLAG_NONE,
+                    &BufferDesc,
+                    D3D12_RESOURCE_STATE_COPY_DEST,
+                    nullptr,
+                    IID_PPV_ARGS(QueryReadback.GetAddressOf()))))
+                {
+                    QueryHeap.Reset();
+                }
+            }
+        }
+
+        if (!QueryHeap || !QueryReadback || TimestampFrequency == 0)
+        {
+            LogWarning("GPU timing disabled for this frame due to initialization failure");
+        }
+    }
+
     for (int32_t PassIndex = 0; PassIndex < static_cast<int32_t>(Passes.size()); ++PassIndex)
     {
         PassEntry& Entry = Passes[PassIndex];
@@ -212,6 +346,12 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
         if (Entry.bCulled)
         {
             continue;
+        }
+
+        if (QueryHeap && QueryReadback)
+        {
+            CmdContext.GetCommandList()->EndQuery(QueryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, QueryIndex++);
+            GpuTimedPassNames.push_back(Entry.Name);
         }
 
         std::vector<D3D12_RESOURCE_BARRIER> PendingBarriers;
@@ -246,6 +386,15 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
                 Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
                 PendingBarriers.push_back(Barrier);
 
+                if (bEnableBarrierLogs)
+                {
+                    std::ostringstream Stream;
+                    Stream << "[RG] Pass '" << Entry.Name << "' transitioning '"
+                        << (Resource->Name.empty() ? "<Unnamed>" : Resource->Name) << "': "
+                        << ResourceStateToString(StateRef) << " -> " << ResourceStateToString(Usage.RequiredState);
+                    LogInfo(Stream.str());
+                }
+
                 StateRef = Usage.RequiredState;
                 Resource->CurrentState = Usage.RequiredState;
             }
@@ -257,7 +406,7 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
         if (bEnableDebugRecording)
         {
             PassBegin = std::chrono::high_resolution_clock::now();
-		}
+        }
 
         if (Entry.ExecuteFunc)
         {
@@ -269,6 +418,11 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
             PassEnd = std::chrono::high_resolution_clock::now();
             const std::chrono::duration<double, std::milli> Elapsed = PassEnd - PassBegin;
             Entry.ElapsedMs = Elapsed.count();
+        }
+
+        if (QueryHeap && QueryReadback)
+        {
+            CmdContext.GetCommandList()->EndQuery(QueryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, QueryIndex++);
         }
 
         for (const FRGResourceUsage& Usage : Entry.ResourceUsages)
@@ -284,6 +438,24 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
                 ReleaseTransientTexture(*Resource);
             }
         }
+    }
+
+    if (QueryHeap && QueryReadback && QueryIndex > 0)
+    {
+        CmdContext.GetCommandList()->ResolveQueryData(
+            QueryHeap.Get(),
+            D3D12_QUERY_TYPE_TIMESTAMP,
+            0,
+            QueryIndex,
+            QueryReadback.Get(),
+            0);
+
+        FGpuTimingData& Pending = PendingGpuTimings[CmdContext.GetCurrentFrameIndex()];
+        Pending.ReadbackBuffer = QueryReadback;
+        Pending.QueryCount = QueryIndex;
+        Pending.Frequency = TimestampFrequency;
+        Pending.PassNames = std::move(GpuTimedPassNames);
+        Pending.bPending = true;
     }
 
     if (bEnableDebugRecording)
@@ -469,5 +641,64 @@ void FRenderGraph::LogTimingSummary()
         Stream << " - [" << PassIndex << "] " << Entry.Name << ": " << Entry.ElapsedMs;
         LogInfo(Stream.str());
     }
+}
+
+void FRenderGraph::ProcessPendingGpuTimings(uint32 FrameIndex)
+{
+    auto It = PendingGpuTimings.find(FrameIndex);
+    if (It == PendingGpuTimings.end())
+    {
+        return;
+    }
+
+    FGpuTimingData& Timing = It->second;
+    if (!bEnableGpuTiming)
+    {
+        PendingGpuTimings.erase(It);
+        return;
+    }
+
+    if (!Timing.bPending || !Timing.ReadbackBuffer || Timing.QueryCount == 0 || Timing.Frequency == 0)
+    {
+        PendingGpuTimings.erase(It);
+        return;
+    }
+
+    const UINT64 ReadbackSize = static_cast<UINT64>(Timing.QueryCount) * sizeof(uint64);
+    uint64* TimestampData = nullptr;
+    D3D12_RANGE ReadRange{ 0, ReadbackSize };
+
+    HRESULT MapResult = Timing.ReadbackBuffer->Map(0, &ReadRange, reinterpret_cast<void**>(&TimestampData));
+    if (FAILED(MapResult) || !TimestampData)
+    {
+        PendingGpuTimings.erase(It);
+        return;
+    }
+
+    LogInfo("RenderGraph GPU Timing (ms):");
+
+    const size_t PassCount = Timing.PassNames.size();
+    for (size_t Index = 0; Index < PassCount; ++Index)
+    {
+        const size_t StartIdx = Index * 2;
+        const size_t EndIdx = StartIdx + 1;
+
+        if (EndIdx >= Timing.QueryCount)
+        {
+            continue;
+        }
+
+        const uint64 StartTimestamp = TimestampData[StartIdx];
+        const uint64 EndTimestamp = TimestampData[EndIdx];
+        const double Delta = static_cast<double>(EndTimestamp - StartTimestamp) / static_cast<double>(Timing.Frequency);
+        const double Milliseconds = Delta * 1000.0;
+
+        std::ostringstream Stream;
+        Stream << " - " << Timing.PassNames[Index] << ": " << Milliseconds;
+        LogInfo(Stream.str());
+    }
+
+    Timing.ReadbackBuffer->Unmap(0, nullptr);
+    PendingGpuTimings.erase(It);
 }
 

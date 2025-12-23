@@ -45,6 +45,9 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
     bDepthPrepassEnabled = Options.bUseDepthPrepass;
     bShadowsEnabled = Options.bEnableShadows;
     ShadowBias = Options.ShadowBias;
+    bLogResourceBarriers = Options.bLogResourceBarriers;
+    bEnableGraphDump = Options.bEnableGraphDump;
+    bEnableGpuTiming = Options.bEnableGpuTiming;
 
     Viewport.TopLeftX = 0.0f;
     Viewport.TopLeftY = 0.0f;
@@ -196,6 +199,9 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
 
     FRenderGraph Graph;
     Graph.SetDevice(Device);
+    Graph.SetBarrierLoggingEnabled(bLogResourceBarriers);
+    Graph.SetGraphDumpEnabled(bEnableGraphDump);
+    Graph.SetGpuTimingEnabled(bEnableGpuTiming);
 
     FRGResourceHandle ShadowHandle = Graph.ImportTexture(
         "ShadowMap",

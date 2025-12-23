@@ -116,8 +116,28 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t H
 {
     LogInfo("Application initialization started");
 
-    // Initialize task system early
-    FTaskScheduler::Get().Initialize();
+    const std::filesystem::path ConfigPath = std::filesystem::current_path() / "bin/RendererConfig.ini";
+    RendererConfig = FRendererConfigLoader::LoadOrDefault(ConfigPath);
+    bTaskSystemEnabled = RendererConfig.bEnableTaskSystem;
+    bFrameOverlapEnabled = RendererConfig.bEnableFrameOverlap;
+    bDepthPrepassEnabled = RendererConfig.bUseDepthPrepass;
+    bShadowsEnabled = RendererConfig.bEnableShadows;
+    bGpuTimingEnabled = RendererConfig.bEnableGpuTiming;
+    ShadowBias = RendererConfig.ShadowBias;
+    bTonemapEnabled = RendererConfig.bEnableTonemap;
+    TonemapExposure = RendererConfig.TonemapExposure;
+    TonemapWhitePoint = RendererConfig.TonemapWhitePoint;
+    TonemapGamma = RendererConfig.TonemapGamma;
+
+    if (bTaskSystemEnabled)
+    {
+        // Initialize task system early
+        FTaskScheduler::Get().Initialize();
+    }
+    else
+    {
+        LogInfo("Task system disabled via renderer config; running tasks on main thread");
+    }
 
     MainWindow = std::make_unique<FWindow>();
     Device = std::make_unique<FDX12Device>();
@@ -128,17 +148,6 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t H
     DeferredRenderer = std::make_unique<FDeferredRenderer>();
     Camera = std::make_unique<FCamera>();
 
-    const std::filesystem::path ConfigPath = std::filesystem::current_path() / "bin/RendererConfig.ini";
-    RendererConfig = FRendererConfigLoader::LoadOrDefault(ConfigPath);
-    bFrameOverlapEnabled = RendererConfig.bEnableFrameOverlap;
-    bDepthPrepassEnabled = RendererConfig.bUseDepthPrepass;
-    bShadowsEnabled = RendererConfig.bEnableShadows;
-    ShadowBias = RendererConfig.ShadowBias;
-    bTonemapEnabled = RendererConfig.bEnableTonemap;
-    TonemapExposure = RendererConfig.TonemapExposure;
-    TonemapWhitePoint = RendererConfig.TonemapWhitePoint;
-    TonemapGamma = RendererConfig.TonemapGamma;
-
     FRendererOptions RendererOptions{};
     RendererOptions.SceneFilePath = RendererConfig.SceneFile;
     RendererOptions.bUseDepthPrepass = RendererConfig.bUseDepthPrepass;
@@ -148,6 +157,10 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t H
     RendererOptions.TonemapExposure = TonemapExposure;
     RendererOptions.TonemapWhitePoint = TonemapWhitePoint;
     RendererOptions.TonemapGamma = TonemapGamma;
+    RendererOptions.bEnableHZB = bHZBEnabled;
+    RendererOptions.bLogResourceBarriers = RendererConfig.bLogResourceBarriers;
+    RendererOptions.bEnableGraphDump = RendererConfig.bEnableGraphDump;
+    RendererOptions.bEnableGpuTiming = RendererConfig.bEnableGpuTiming;
 
     const std::wstring SceneFilePath = RendererOptions.SceneFilePath.empty() ? L"Assets/Scenes/Scene.json" : RendererOptions.SceneFilePath;
     RendererOptions.SceneFilePath = SceneFilePath;
@@ -546,6 +559,7 @@ bool FApplication::ReloadScene(const std::wstring& ScenePath)
     RendererOptions.bUseDepthPrepass = bDepthPrepassEnabled;
     RendererOptions.bEnableShadows = bShadowsEnabled;
     RendererOptions.ShadowBias = ShadowBias;
+    RendererOptions.bEnableHZB = bHZBEnabled;
 
     const uint32_t Width = static_cast<uint32_t>(MainWindow->GetWidth());
     const uint32_t Height = static_cast<uint32_t>(MainWindow->GetHeight());
@@ -656,6 +670,8 @@ void FApplication::StartAsyncSceneReload(const std::wstring& ScenePath)
     RendererOptions.TonemapExposure = TonemapExposure;
     RendererOptions.TonemapWhitePoint = TonemapWhitePoint;
     RendererOptions.TonemapGamma = TonemapGamma;
+
+    RendererOptions.bEnableHZB = bHZBEnabled;
 
     const bool bPreferDeferred = ActiveRenderer == DeferredRenderer.get() || RendererConfig.RendererType == ERendererType::Deferred;
 
@@ -1043,7 +1059,19 @@ void FApplication::RenderUI()
         }
     }
 
-	ImGui::Separator();
+        ImGui::Separator();
+    bool bBuildHZB = bHZBEnabled;
+    if (ImGui::Checkbox("Build HZB", &bBuildHZB))
+    {
+        bHZBEnabled = bBuildHZB;
+
+        if (DeferredRenderer)
+        {
+            DeferredRenderer->SetHZBEnabled(bHZBEnabled);
+        }
+    }
+
+        ImGui::Separator();
     bool bShadows = bShadowsEnabled;
     if (ImGui::Checkbox("Shadows", &bShadows))
     {

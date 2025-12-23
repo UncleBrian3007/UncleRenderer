@@ -68,9 +68,12 @@ private:
 #endif
 
     bool bIsRunning;
+    bool bTaskSystemEnabled = true;
     bool bDepthPrepassEnabled = false;
     bool bFrameOverlapEnabled = false;
     bool bShadowsEnabled = true;
+    bool bHZBEnabled = true;
+    bool bGpuTimingEnabled = false;
     bool bTonemapEnabled = true;
     float TonemapExposure = 0.5f;
     float TonemapWhitePoint = 4.0f;

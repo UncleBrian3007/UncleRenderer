@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <wrl.h>
 #include <chrono>
+#include <unordered_map>
 #include "../RHI/DX12Commons.h"
 
 class FDX12CommandContext;
@@ -73,6 +74,8 @@ public:
     void SetDebugRecording(bool bEnable) { bEnableDebugRecording = bEnable; }
     void SetGraphDumpEnabled(bool bEnable) { bEnableGraphDump = bEnable; }
     void SetResourceLifetimeLogging(bool bEnable) { bEnableResourceLifetimeLog = bEnable; }
+    void SetBarrierLoggingEnabled(bool bEnable) { bEnableBarrierLogs = bEnable; }
+    void SetGpuTimingEnabled(bool bEnable) { bEnableGpuTiming = bEnable; }
 
 private:
     struct FRGResourceUsage
@@ -104,6 +107,7 @@ private:
         std::vector<FRGResourceUsage> ResourceUsages;
         bool bCulled = false;
         double ElapsedMs = 0.0;
+        double GpuElapsedMs = 0.0;
     };
 
     FRGResourceHandle RegisterTexture(const std::string& Name, const FRGTextureDesc& Desc);
@@ -133,9 +137,24 @@ private:
 
     static std::vector<FPooledTexture> TexturePool;
 
+    struct FGpuTimingData
+    {
+        Microsoft::WRL::ComPtr<ID3D12Resource> ReadbackBuffer;
+        uint32 QueryCount = 0;
+        uint64 Frequency = 0;
+        std::vector<std::string> PassNames;
+        bool bPending = false;
+    };
+
+    static std::unordered_map<uint32, FGpuTimingData> PendingGpuTimings;
+
+    void ProcessPendingGpuTimings(uint32 FrameIndex);
+
     bool bEnableDebugRecording = false;
     bool bEnableGraphDump = false;
     bool bEnableResourceLifetimeLog = false;
+    bool bEnableBarrierLogs = false;
+    bool bEnableGpuTiming = false;
 };
 
 class FRGPassBuilder

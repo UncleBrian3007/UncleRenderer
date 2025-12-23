@@ -14,6 +14,10 @@ struct FRendererOptions
     float TonemapExposure = 0.5f;
     float TonemapWhitePoint = 4.0f;
     float TonemapGamma = 1.0f;
+    bool bLogResourceBarriers = false;
+    bool bEnableGraphDump = false;
+    bool bEnableGpuTiming = false;
+    bool bEnableHZB = true;
 };
 
 class FDX12Device;

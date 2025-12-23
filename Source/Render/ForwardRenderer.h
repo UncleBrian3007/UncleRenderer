@@ -77,6 +77,9 @@ private:
     float ShadowBias = 0.0005f;
     float ShadowStrength = 1.0f;
     bool bShadowsEnabled = true;
+    bool bLogResourceBarriers = false;
+    bool bEnableGraphDump = false;
+    bool bEnableGpuTiming = false;
 
     FDX12Device* Device = nullptr;
 };

@@ -405,13 +405,20 @@ bool RendererUtils::CreateDepthResources(FDX12Device* Device, uint32_t Width, ui
     Desc.Height = Height;
     Desc.DepthOrArraySize = 1;
     Desc.MipLevels = 1;
-    Desc.Format = Format;
+    if (Format == DXGI_FORMAT_D24_UNORM_S8_UINT)
+    {
+        Desc.Format = DXGI_FORMAT_R24G8_TYPELESS;
+    }
+    else
+    {
+        Desc.Format = Format;
+    }
     Desc.SampleDesc.Count = 1;
     Desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
     Desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
 
     D3D12_CLEAR_VALUE ClearValue = {};
-    ClearValue.Format = Desc.Format;
+    ClearValue.Format = Format;
     ClearValue.DepthStencil.Depth = 0.0f;
     ClearValue.DepthStencil.Stencil = 0;
 
@@ -439,7 +446,7 @@ bool RendererUtils::CreateDepthResources(FDX12Device* Device, uint32_t Width, ui
     OutDepthResources.DepthStencilHandle = OutDepthResources.DSVHeap->GetCPUDescriptorHandleForHeapStart();
 
     D3D12_DEPTH_STENCIL_VIEW_DESC ViewDesc = {};
-    ViewDesc.Format = Desc.Format;
+    ViewDesc.Format = Format;
     ViewDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
     ViewDesc.Flags = D3D12_DSV_FLAG_NONE;
     Device->GetDevice()->CreateDepthStencilView(OutDepthResources.DepthBuffer.Get(), &ViewDesc, OutDepthResources.DepthStencilHandle);

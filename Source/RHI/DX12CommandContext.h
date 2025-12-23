@@ -26,6 +26,9 @@ public:
 
     void SetFrameFenceValue(uint32 FrameIndex, uint64 FenceValue);
 
+    FDX12CommandQueue* GetQueue() const { return Queue; }
+    uint32 GetCurrentFrameIndex() const { return CurrentAllocatorIndex; }
+
     ID3D12GraphicsCommandList* GetCommandList() const { return CommandList.Get(); }
 
 private:

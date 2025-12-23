@@ -23,6 +23,10 @@ struct FRendererConfig
     float TonemapExposure = 0.5f;
     float TonemapWhitePoint = 4.0f;
     float TonemapGamma = 1.0f;
+    bool bEnableTaskSystem = true;
+    bool bLogResourceBarriers = false;
+    bool bEnableGraphDump = false;
+    bool bEnableGpuTiming = false;
 };
 
 class FRendererConfigLoader

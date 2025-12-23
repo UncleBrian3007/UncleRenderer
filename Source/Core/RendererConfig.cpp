@@ -175,6 +175,26 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
             LogWarning("Invalid tonemap gamma value in renderer config: " + Value);
         }
     }
+
+    if (LowerKey == "usetasksystem" || LowerKey == "enabletasksystem" || LowerKey == "tasksystem")
+    {
+        OutConfig.bEnableTaskSystem = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+
+    if (LowerKey == "logresourcebarriers" || LowerKey == "logbarriers" || LowerKey == "barrierlogging")
+    {
+        OutConfig.bLogResourceBarriers = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+
+    if (LowerKey == "graphdump" || LowerKey == "enablegraphdump" || LowerKey == "dumpgraph")
+    {
+        OutConfig.bEnableGraphDump = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+
+    if (LowerKey == "gputiming" || LowerKey == "enablegputiming" || LowerKey == "recordgputiming")
+    {
+        OutConfig.bEnableGpuTiming = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
 }
 
 std::string FRendererConfigLoader::TrimCopy(const std::string& Input)

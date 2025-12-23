@@ -49,6 +49,9 @@ public:
     void SetShadowBias(float Bias) { ShadowBias = Bias; }
     float GetShadowBias() const { return ShadowBias; }
 
+    void SetHZBEnabled(bool bEnabled) { bHZBEnabled = bEnabled; }
+    bool IsHZBEnabled() const { return bHZBEnabled; }
+
 private:
     bool CreateBasePassRootSignature(FDX12Device* Device);
     bool CreateLightingRootSignature(FDX12Device* Device);
@@ -56,9 +59,12 @@ private:
     bool CreateDepthPrepassPipeline(FDX12Device* Device);
     bool CreateShadowPipeline(FDX12Device* Device);
     bool CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
+    bool CreateHZBRootSignature(FDX12Device* Device);
+    bool CreateHZBPipeline(FDX12Device* Device);
     bool CreateTonemapRootSignature(FDX12Device* Device);
     bool CreateTonemapPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateGBufferResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
+    bool CreateHZBResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateShadowResources(FDX12Device* Device);
     bool CreateDescriptorHeap(FDX12Device* Device);
     bool CreateSceneTextures(FDX12Device* Device, const std::vector<FSceneModelResource>& Models);
@@ -68,11 +74,13 @@ private:
 private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> BasePassRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> LightingRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> HZBRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> BasePassPipelineWithNormalMap;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> BasePassPipelineWithoutNormalMap;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ShadowPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> LightingPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> HZBPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> TonemapPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> SkyPipelineState;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> SkyRootSignature;
@@ -86,6 +94,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> SceneTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> ShadowMap;
     Microsoft::WRL::ComPtr<ID3D12Resource> LightingBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> HierarchicalZBuffer;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> DescriptorHeap;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> DSVHeap;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> ShadowDSVHeap;
@@ -103,6 +112,10 @@ private:
     D3D12_CPU_DESCRIPTOR_HANDLE LightingRTVHandle{};
     D3D12_GPU_DESCRIPTOR_HANDLE GBufferGpuHandles[3]{};
     D3D12_GPU_DESCRIPTOR_HANDLE LightingBufferHandle{};
+    D3D12_GPU_DESCRIPTOR_HANDLE DepthBufferHandle{};
+    D3D12_GPU_DESCRIPTOR_HANDLE HZBSrvHandle{};
+    std::vector<D3D12_GPU_DESCRIPTOR_HANDLE> HZBSrvMipHandles;
+    std::vector<D3D12_GPU_DESCRIPTOR_HANDLE> HZBUavHandles;
     D3D12_GPU_DESCRIPTOR_HANDLE ShadowMapHandle{};
     D3D12_VIEWPORT Viewport{};
     D3D12_RECT ScissorRect{};
@@ -116,6 +129,7 @@ private:
         D3D12_RESOURCE_STATE_RENDER_TARGET,
     };
     D3D12_RESOURCE_STATES DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    D3D12_RESOURCE_STATES HZBState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES ShadowMapState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
     D3D12_RESOURCE_STATES LightingBufferState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     FMeshGeometryBuffers SkyGeometry;
@@ -132,7 +146,15 @@ private:
     float TonemapExposure = 0.9f;
     float TonemapWhitePoint = 6.0f;
     float TonemapGamma = 2.2f;
+    bool bLogResourceBarriers = false;
+    bool bEnableGraphDump = false;
+    bool bEnableGpuTiming = false;
+    bool bHZBEnabled = true;
 
     FDX12Device* Device = nullptr;
+
+    uint32_t HZBWidth = 0;
+    uint32_t HZBHeight = 0;
+    uint32_t HZBMipCount = 0;
 };
 
