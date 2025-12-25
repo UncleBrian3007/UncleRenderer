@@ -113,14 +113,11 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
         return false;
     }
 
-    if (bDepthPrepassEnabled)
+    LogInfo("Creating deferred renderer depth prepass pipeline...");
+    if (!CreateDepthPrepassPipeline(Device))
     {
-        LogInfo("Creating deferred renderer depth prepass pipeline...");
-        if (!CreateDepthPrepassPipeline(Device))
-        {
-            LogError("Deferred renderer initialization failed: depth prepass pipeline creation failed");
-            return false;
-        }
+        LogError("Deferred renderer initialization failed: depth prepass pipeline creation failed");
+        return false;
     }
 
     LogInfo("Creating deferred renderer shadow pipeline...");
@@ -432,7 +429,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         const FCamera* Camera = nullptr;
     };
 
-    Graph.AddPass<FBasePassData>("GBuffer BasePass", [&](FBasePassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FBasePassData>("GBuffer", [&](FBasePassData& Data, FRGPassBuilder& Builder)
     {
         Data.bDoDepthPrepass = bDoDepthPrepass;
         Data.Camera = &Camera;
@@ -448,7 +445,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
     {
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
 
-        PixSetMarker(LocalCommandList, L"GBuffer BasePass");
+        PixSetMarker(LocalCommandList, L"GBuffer");
 
         D3D12_CPU_DESCRIPTOR_HANDLE BasePassRTVs[4] =
         {
@@ -516,6 +513,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         D3D12_GPU_DESCRIPTOR_HANDLE HZBSrv{};
         std::vector<D3D12_GPU_DESCRIPTOR_HANDLE> HZBSrvMips;
         std::vector<D3D12_GPU_DESCRIPTOR_HANDLE> HZBUavs;
+        D3D12_GPU_DESCRIPTOR_HANDLE HZBNullUav{};
     };
 
     if (bHZBEnabled)
@@ -532,6 +530,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
             Data.HZBSrv = HZBSrvHandle;
             Data.HZBSrvMips = HZBSrvMipHandles;
             Data.HZBUavs = HZBUavHandles;
+            Data.HZBNullUav = HZBNullUavHandle;
 
             Builder.ReadTexture(DepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             Builder.WriteTexture(HZBHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -557,26 +556,35 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
                 uint32_t SourceHeight;
                 uint32_t DestWidth;
                 uint32_t DestHeight;
+                uint32_t DestWidth1;
+                uint32_t DestHeight1;
                 uint32_t SourceMip;
+                uint32_t HasSecondMip;
             };
 
             uint32_t CurrentWidth = Data.Width;
             uint32_t CurrentHeight = Data.Height;
 
-            for (uint32_t MipIndex = 0; MipIndex < Data.MipCount; ++MipIndex)
+            for (uint32_t MipIndex = 0; MipIndex < Data.MipCount; MipIndex += 2)
             {
                 const uint32_t SourceWidth = (MipIndex == 0) ? Data.SourceWidth : (std::max)(1u, CurrentWidth);
                 const uint32_t SourceHeight = (MipIndex == 0) ? Data.SourceHeight : (std::max)(1u, CurrentHeight);
 
                 const uint32_t DestWidth = (MipIndex == 0) ? CurrentWidth : (std::max)(1u, CurrentWidth / 2);
                 const uint32_t DestHeight = (MipIndex == 0) ? CurrentHeight : (std::max)(1u, CurrentHeight / 2);
+                const bool bHasSecondMip = (MipIndex + 1) < Data.MipCount;
+                const uint32_t DestWidth1 = bHasSecondMip ? (std::max)(1u, DestWidth / 2) : 0u;
+                const uint32_t DestHeight1 = bHasSecondMip ? (std::max)(1u, DestHeight / 2) : 0u;
 
                 FHZBConstants Constants = {};
                 Constants.SourceWidth = SourceWidth;
                 Constants.SourceHeight = SourceHeight;
                 Constants.DestWidth = DestWidth;
                 Constants.DestHeight = DestHeight;
-                Constants.SourceMip = (MipIndex == 0) ? 0u : (MipIndex - 1);
+                Constants.DestWidth1 = DestWidth1;
+                Constants.DestHeight1 = DestHeight1;
+                Constants.SourceMip = 0u;
+                Constants.HasSecondMip = bHasSecondMip ? 1u : 0u;
 
                 D3D12_GPU_DESCRIPTOR_HANDLE SourceHandle = Data.DepthSrv;
                 if (MipIndex > 0)
@@ -584,39 +592,57 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
                     const uint32_t SourceMipIndex = MipIndex - 1;
                     SourceHandle = (SourceMipIndex < Data.HZBSrvMips.size()) ? Data.HZBSrvMips[SourceMipIndex] : D3D12_GPU_DESCRIPTOR_HANDLE{};
                 }
-                const D3D12_GPU_DESCRIPTOR_HANDLE DestHandle = (MipIndex < Data.HZBUavs.size()) ? Data.HZBUavs[MipIndex] : D3D12_GPU_DESCRIPTOR_HANDLE{};
+                const D3D12_GPU_DESCRIPTOR_HANDLE DestHandle0 = (MipIndex < Data.HZBUavs.size()) ? Data.HZBUavs[MipIndex] : D3D12_GPU_DESCRIPTOR_HANDLE{};
+                const D3D12_GPU_DESCRIPTOR_HANDLE DestHandle1 = (bHasSecondMip && (MipIndex + 1) < Data.HZBUavs.size())
+                    ? Data.HZBUavs[MipIndex + 1]
+                    : Data.HZBNullUav;
 
-                if (SourceHandle.ptr == 0 || DestHandle.ptr == 0)
+                if (SourceHandle.ptr == 0 || DestHandle0.ptr == 0 || DestHandle1.ptr == 0)
                 {
                     break;
                 }
 
                 LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(Constants) / sizeof(uint32_t), &Constants, 0);
                 LocalCommandList->SetComputeRootDescriptorTable(1, SourceHandle);
-                LocalCommandList->SetComputeRootDescriptorTable(2, DestHandle);
+                LocalCommandList->SetComputeRootDescriptorTable(2, DestHandle0);
+                LocalCommandList->SetComputeRootDescriptorTable(3, DestHandle1);
 
                 const uint32_t GroupX = (Constants.DestWidth + 7) / 8;
                 const uint32_t GroupY = (Constants.DestHeight + 7) / 8;
                 LocalCommandList->Dispatch(GroupX, GroupY, 1);
 
-                CurrentWidth = DestWidth;
-                CurrentHeight = DestHeight;
+                CurrentWidth = bHasSecondMip ? DestWidth1 : DestWidth;
+                CurrentHeight = bHasSecondMip ? DestHeight1 : DestHeight;
 
                 if (MipIndex + 1 < Data.MipCount)
                 {
-                    D3D12_RESOURCE_BARRIER Barriers[2] = {};
+                    D3D12_RESOURCE_BARRIER Barriers[3] = {};
+                    uint32 BarrierCount = 0;
 
-                    Barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-                    Barriers[0].UAV.pResource = HierarchicalZBuffer.Get();
+                    Barriers[BarrierCount].Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+                    Barriers[BarrierCount].UAV.pResource = HierarchicalZBuffer.Get();
+                    BarrierCount++;
 
-                    Barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                    Barriers[1].Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-                    Barriers[1].Transition.pResource = HierarchicalZBuffer.Get();
-                    Barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-                    Barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-                    Barriers[1].Transition.Subresource = D3D12CalcSubresource(MipIndex, 0, 0, Data.MipCount, 1);
+                    Barriers[BarrierCount].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                    Barriers[BarrierCount].Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+                    Barriers[BarrierCount].Transition.pResource = HierarchicalZBuffer.Get();
+                    Barriers[BarrierCount].Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+                    Barriers[BarrierCount].Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+                    Barriers[BarrierCount].Transition.Subresource = D3D12CalcSubresource(MipIndex, 0, 0, Data.MipCount, 1);
+                    BarrierCount++;
 
-                    LocalCommandList->ResourceBarrier(_countof(Barriers), Barriers);
+                    if (bHasSecondMip && (MipIndex + 2 < Data.MipCount))
+                    {
+                        Barriers[BarrierCount].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                        Barriers[BarrierCount].Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+                        Barriers[BarrierCount].Transition.pResource = HierarchicalZBuffer.Get();
+                        Barriers[BarrierCount].Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+                        Barriers[BarrierCount].Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+                        Barriers[BarrierCount].Transition.Subresource = D3D12CalcSubresource(MipIndex + 1, 0, 0, Data.MipCount, 1);
+                        BarrierCount++;
+                    }
+
+                    LocalCommandList->ResourceBarrier(BarrierCount, Barriers);
                 }
             }
 
@@ -1208,7 +1234,7 @@ bool FDeferredRenderer::CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT 
 
 bool FDeferredRenderer::CreateHZBRootSignature(FDX12Device* Device)
 {
-    D3D12_DESCRIPTOR_RANGE1 DescriptorRanges[2] = {};
+    D3D12_DESCRIPTOR_RANGE1 DescriptorRanges[3] = {};
 
     DescriptorRanges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     DescriptorRanges[0].NumDescriptors = 1;
@@ -1224,11 +1250,18 @@ bool FDeferredRenderer::CreateHZBRootSignature(FDX12Device* Device)
     DescriptorRanges[1].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
     DescriptorRanges[1].OffsetInDescriptorsFromTableStart = 0;
 
-    D3D12_ROOT_PARAMETER1 RootParams[3] = {};
+    DescriptorRanges[2].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+    DescriptorRanges[2].NumDescriptors = 1;
+    DescriptorRanges[2].BaseShaderRegister = 1;
+    DescriptorRanges[2].RegisterSpace = 0;
+    DescriptorRanges[2].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
+    DescriptorRanges[2].OffsetInDescriptorsFromTableStart = 0;
+
+    D3D12_ROOT_PARAMETER1 RootParams[4] = {};
 
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[0].Constants.Num32BitValues = 5;
+    RootParams[0].Constants.Num32BitValues = 8;
     RootParams[0].Constants.RegisterSpace = 0;
     RootParams[0].Constants.ShaderRegister = 0;
 
@@ -1241,6 +1274,11 @@ bool FDeferredRenderer::CreateHZBRootSignature(FDX12Device* Device)
     RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[2].DescriptorTable.NumDescriptorRanges = 1;
     RootParams[2].DescriptorTable.pDescriptorRanges = &DescriptorRanges[1];
+
+    RootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    RootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[3].DescriptorTable.NumDescriptorRanges = 1;
+    RootParams[3].DescriptorTable.pDescriptorRanges = &DescriptorRanges[2];
 
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
     RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
@@ -1533,6 +1571,31 @@ bool FDeferredRenderer::CreateHZBResources(FDX12Device* Device, uint32_t Width, 
 
     HierarchicalZBuffer->SetName(L"HierarchicalZBuffer");
 
+    {
+        D3D12_RESOURCE_DESC NullDesc = {};
+        NullDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        NullDesc.Alignment = 0;
+        NullDesc.Width = 1;
+        NullDesc.Height = 1;
+        NullDesc.DepthOrArraySize = 1;
+        NullDesc.MipLevels = 1;
+        NullDesc.Format = DXGI_FORMAT_R32_FLOAT;
+        NullDesc.SampleDesc.Count = 1;
+        NullDesc.SampleDesc.Quality = 0;
+        NullDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        NullDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+            &HeapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &NullDesc,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            nullptr,
+            IID_PPV_ARGS(HZBNullUavResource.GetAddressOf())));
+
+        HZBNullUavResource->SetName(L"HZBNullUavResource");
+    }
+
     return true;
 }
 
@@ -1596,7 +1659,7 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
 {
     const UINT TextureCount = static_cast<UINT>(SceneTextures.size());
     const UINT MipCount = HZBMipCount == 0 ? 1u : static_cast<UINT>(HZBMipCount);
-    const UINT HZBDescriptorCount = 2 + (MipCount * 2);
+    const UINT HZBDescriptorCount = 3 + (MipCount * 2);
 
     D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
     HeapDesc.NumDescriptors = TextureCount * 4 + 5 + HZBDescriptorCount;
@@ -1756,6 +1819,20 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         GpuHandle.ptr += DescriptorSize;
     }
 
+    {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC NullUavDesc = {};
+        NullUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        NullUavDesc.Format = DXGI_FORMAT_R32_FLOAT;
+        NullUavDesc.Texture2D.MipSlice = 0;
+        NullUavDesc.Texture2D.PlaneSlice = 0;
+
+        Device->GetDevice()->CreateUnorderedAccessView(HZBNullUavResource.Get(), nullptr, &NullUavDesc, CpuHandle);
+        HZBNullUavHandle = GpuHandle;
+
+        CpuHandle.ptr += DescriptorSize;
+        GpuHandle.ptr += DescriptorSize;
+    }
+
     return true;
 }
 
@@ -1889,4 +1966,3 @@ void FDeferredRenderer::UpdateSkyConstants(const FCamera& Camera)
     const XMVECTOR LightDir = XMLoadFloat3(&LightDirection);
     RendererUtils::UpdateSkyConstants(Camera, World, LightDir, LightColor, SkyConstantBufferMapped);
 }
-

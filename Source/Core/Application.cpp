@@ -12,6 +12,7 @@
 #include "../Render/Renderer.h"
 #include "../Render/DeferredRenderer.h"
 #include "../Render/ForwardRenderer.h"
+#include "../Render/RenderGraph.h"
 #include "../Scene/Camera.h"
 #include "../Scene/SceneJsonLoader.h"
 #include "RendererConfig.h"
@@ -319,10 +320,90 @@ bool FApplication::RenderFrame()
 
     const D3D12_RESOURCE_STATES PreviousState = SwapChain->GetBackBufferState(BackBufferIndex);
 
+    if (bGpuTimingEnabled && Device && Device->GetGraphicsQueue())
+    {
+        ID3D12Device* D3DDevice = Device->GetDevice();
+        ID3D12CommandQueue* Queue = Device->GetGraphicsQueue()->GetD3DQueue();
+        const uint32 BufferCount = SwapChain->GetBackBufferCount();
+        const uint32 QueryCount = BufferCount * 2;
+
+        if (!FrameTimingQueryHeap || !FrameTimingReadback || FrameTimingFenceValues.size() != BufferCount)
+        {
+            FrameTimingFenceValues.assign(BufferCount, 0);
+
+            D3D12_QUERY_HEAP_DESC HeapDesc = {};
+            HeapDesc.Count = QueryCount;
+            HeapDesc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+            HeapDesc.NodeMask = 0;
+            HR_CHECK(D3DDevice->CreateQueryHeap(&HeapDesc, IID_PPV_ARGS(FrameTimingQueryHeap.GetAddressOf())));
+
+            const UINT64 ReadbackSize = static_cast<UINT64>(QueryCount) * sizeof(uint64);
+            D3D12_HEAP_PROPERTIES HeapProps = {};
+            HeapProps.Type = D3D12_HEAP_TYPE_READBACK;
+
+            D3D12_RESOURCE_DESC BufferDesc = {};
+            BufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+            BufferDesc.Width = ReadbackSize;
+            BufferDesc.Height = 1;
+            BufferDesc.DepthOrArraySize = 1;
+            BufferDesc.MipLevels = 1;
+            BufferDesc.Format = DXGI_FORMAT_UNKNOWN;
+            BufferDesc.SampleDesc.Count = 1;
+            BufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+            HR_CHECK(D3DDevice->CreateCommittedResource(
+                &HeapProps,
+                D3D12_HEAP_FLAG_NONE,
+                &BufferDesc,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                nullptr,
+                IID_PPV_ARGS(FrameTimingReadback.GetAddressOf())));
+
+            FrameTimingFrequency = 0;
+        }
+
+        if (FrameTimingFrequency == 0)
+        {
+            Queue->GetTimestampFrequency(&FrameTimingFrequency);
+        }
+
+        if (FrameTimingReadback && FrameTimingFrequency > 0 && BackBufferIndex < FrameTimingFenceValues.size())
+        {
+            const uint64 FenceValue = FrameTimingFenceValues[BackBufferIndex];
+            if (FenceValue > 0 && Device->GetGraphicsQueue()->GetCompletedFenceValue() >= FenceValue)
+            {
+                const UINT64 Offset = static_cast<UINT64>(BackBufferIndex * 2) * sizeof(uint64);
+                const UINT64 ReadbackSize = sizeof(uint64) * 2;
+                D3D12_RANGE ReadRange = { Offset, Offset + ReadbackSize };
+                uint64* TimestampData = nullptr;
+                if (SUCCEEDED(FrameTimingReadback->Map(0, &ReadRange, reinterpret_cast<void**>(&TimestampData))) && TimestampData)
+                {
+                    const uint64 Start = TimestampData[BackBufferIndex * 2];
+                    const uint64 End = TimestampData[BackBufferIndex * 2 + 1];
+                    if (End > Start)
+                    {
+                        const double Delta = static_cast<double>(End - Start) / static_cast<double>(FrameTimingFrequency);
+                        const double Milliseconds = Delta * 1000.0;
+                        FRenderGraph::AddExternalGpuTimingSample("Frame", Milliseconds);
+                    }
+                    FrameTimingReadback->Unmap(0, nullptr);
+                }
+
+                FrameTimingFenceValues[BackBufferIndex] = 0;
+            }
+        }
+    }
+
     CommandContext->BeginFrame(BackBufferIndex);
 
     {
         FScopedPixEvent FrameEvent(CommandContext->GetCommandList(), L"Frame");
+
+        if (bGpuTimingEnabled && FrameTimingQueryHeap && FrameTimingReadback)
+        {
+            const uint32 QueryIndex = BackBufferIndex * 2;
+            CommandContext->GetCommandList()->EndQuery(FrameTimingQueryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, QueryIndex);
+        }
 
         CommandContext->TransitionResource(
             BackBuffer,
@@ -349,6 +430,20 @@ bool FApplication::RenderFrame()
             D3D12_RESOURCE_STATE_PRESENT);
 
         PixSetMarker(CommandContext->GetCommandList(), L"Present");
+
+        if (bGpuTimingEnabled && FrameTimingQueryHeap && FrameTimingReadback)
+        {
+            const uint32 QueryIndex = BackBufferIndex * 2;
+            CommandContext->GetCommandList()->EndQuery(FrameTimingQueryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, QueryIndex + 1);
+            const UINT64 Offset = static_cast<UINT64>(QueryIndex) * sizeof(uint64);
+            CommandContext->GetCommandList()->ResolveQueryData(
+                FrameTimingQueryHeap.Get(),
+                D3D12_QUERY_TYPE_TIMESTAMP,
+                QueryIndex,
+                2,
+                FrameTimingReadback.Get(),
+                Offset);
+        }
     }
     CommandContext->CloseAndExecute();
 
@@ -366,6 +461,10 @@ bool FApplication::RenderFrame()
         Device->GetGraphicsQueue()->Wait(FenceValue);
     }
     CommandContext->SetFrameFenceValue(BackBufferIndex, FenceValue);
+    if (BackBufferIndex < FrameTimingFenceValues.size())
+    {
+        FrameTimingFenceValues[BackBufferIndex] = FenceValue;
+    }
 
     LogVerbose("Frame completed: " + std::to_string(FrameIndex));
 
@@ -997,6 +1096,35 @@ void FApplication::RenderUI()
     ImGui::Text("FPS: %.1f", Time->GetFPS());
 
     ImGui::Separator();
+    ImGui::Text("GPU Timing (avg/min/max ms)");
+
+    //float TimingWindowSeconds = static_cast<float>(FRenderGraph::GetGpuTimingWindowSeconds());
+    //if (ImGui::SliderFloat("GPU Timing Window (s)", &TimingWindowSeconds, 0.1f, 5.0f, "%.1f"))
+    //{
+    //    FRenderGraph::SetGpuTimingWindowSeconds(TimingWindowSeconds);
+    //}
+
+    int TimingDisplayCount = static_cast<int>(FRenderGraph::GetGpuTimingDisplayCount());
+    if (ImGui::SliderInt("GPU Timing Display Count", &TimingDisplayCount, 1, 20))
+    {
+        FRenderGraph::SetGpuTimingDisplayCount(static_cast<uint32>(TimingDisplayCount));
+    }
+
+    const std::vector<FRenderGraph::FGpuPassTimingStats>& TimingStats = FRenderGraph::GetGpuTimingStats();
+    const uint32 MaxDisplay = FRenderGraph::GetGpuTimingDisplayCount();
+    const uint32 DisplayCount = (std::min)(MaxDisplay, static_cast<uint32>(TimingStats.size()));
+    for (uint32 Index = 0; Index < DisplayCount; ++Index)
+    {
+        const FRenderGraph::FGpuPassTimingStats& Stats = TimingStats[Index];
+        ImGui::Text("%s: %.3f / %.3f / %.3f (n=%u)",
+            Stats.Name.c_str(),
+            Stats.AvgMs,
+            Stats.MinMs,
+            Stats.MaxMs,
+            Stats.SampleCount);
+    }
+
+    ImGui::Separator();
     const std::string ScenePathUtf8 = PathToUtf8String(CurrentScenePath);
     ImGui::TextWrapped("Scene: %s", ScenePathUtf8.c_str());
     if (ImGui::Button("Load Scene"))
@@ -1189,4 +1317,3 @@ void FApplication::RenderUI()
     ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), CommandContext->GetCommandList());
 #endif
 }
-

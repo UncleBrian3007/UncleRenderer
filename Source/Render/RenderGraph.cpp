@@ -9,6 +9,11 @@
 
 std::vector<FRenderGraph::FPooledTexture> FRenderGraph::TexturePool;
 std::unordered_map<uint32, FRenderGraph::FGpuTimingData> FRenderGraph::PendingGpuTimings;
+std::unordered_map<uint32, FRenderGraph::FGpuTimingResources> FRenderGraph::GpuTimingResources;
+std::unordered_map<std::string, std::deque<FRenderGraph::FGpuTimingSample>> FRenderGraph::GpuTimingSamples;
+std::vector<FRenderGraph::FGpuPassTimingStats> FRenderGraph::CachedGpuTimingStats;
+double FRenderGraph::GpuTimingWindowSeconds = 1.0;
+uint32 FRenderGraph::GpuTimingDisplayCount = 5;
 
 namespace
 {
@@ -80,6 +85,89 @@ namespace
 
 FRenderGraph::FRenderGraph()
 {
+}
+
+void FRenderGraph::SetGpuTimingWindowSeconds(double Seconds)
+{
+    GpuTimingWindowSeconds = (std::max)(0.1, Seconds);
+}
+
+double FRenderGraph::GetGpuTimingWindowSeconds()
+{
+    return GpuTimingWindowSeconds;
+}
+
+void FRenderGraph::SetGpuTimingDisplayCount(uint32 Count)
+{
+    GpuTimingDisplayCount = (std::max)(1u, Count);
+}
+
+uint32 FRenderGraph::GetGpuTimingDisplayCount()
+{
+    return GpuTimingDisplayCount;
+}
+
+const std::vector<FRenderGraph::FGpuPassTimingStats>& FRenderGraph::GetGpuTimingStats()
+{
+    return CachedGpuTimingStats;
+}
+
+void FRenderGraph::AddExternalGpuTimingSample(const std::string& Name, double Milliseconds)
+{
+    const auto Now = std::chrono::steady_clock::now();
+    std::deque<FGpuTimingSample>& Samples = GpuTimingSamples[Name];
+    Samples.push_back({ Now, Milliseconds });
+    UpdateCachedGpuTimingStats(Now);
+}
+
+void FRenderGraph::UpdateCachedGpuTimingStats(const std::chrono::steady_clock::time_point& Now)
+{
+    const double WindowSeconds = (std::max)(0.1, GpuTimingWindowSeconds);
+    const auto Cutoff = Now - std::chrono::duration<double>(WindowSeconds);
+
+    CachedGpuTimingStats.clear();
+    CachedGpuTimingStats.reserve(GpuTimingSamples.size());
+
+    for (auto MapIt = GpuTimingSamples.begin(); MapIt != GpuTimingSamples.end();)
+    {
+        std::deque<FGpuTimingSample>& Samples = MapIt->second;
+        while (!Samples.empty() && Samples.front().Timestamp < Cutoff)
+        {
+            Samples.pop_front();
+        }
+
+        if (Samples.empty())
+        {
+            MapIt = GpuTimingSamples.erase(MapIt);
+            continue;
+        }
+
+        double Sum = 0.0;
+        double MinValue = Samples.front().Milliseconds;
+        double MaxValue = Samples.front().Milliseconds;
+        for (const FGpuTimingSample& Sample : Samples)
+        {
+            Sum += Sample.Milliseconds;
+            MinValue = (std::min)(MinValue, Sample.Milliseconds);
+            MaxValue = (std::max)(MaxValue, Sample.Milliseconds);
+        }
+
+        FGpuPassTimingStats Stats;
+        Stats.Name = MapIt->first;
+        Stats.SampleCount = static_cast<uint32>(Samples.size());
+        Stats.AvgMs = Sum / static_cast<double>(Samples.size());
+        Stats.MinMs = MinValue;
+        Stats.MaxMs = MaxValue;
+        CachedGpuTimingStats.push_back(std::move(Stats));
+
+        ++MapIt;
+    }
+
+    std::sort(CachedGpuTimingStats.begin(), CachedGpuTimingStats.end(),
+        [](const FGpuPassTimingStats& A, const FGpuPassTimingStats& B)
+        {
+            return A.AvgMs > B.AvgMs;
+        });
 }
 
 FRGPassBuilder::FRGPassBuilder(FRenderGraph& InGraph, FRenderGraph::PassEntry& InEntry)
@@ -190,7 +278,7 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
         return;
     }
 
-    ProcessPendingGpuTimings(CmdContext.GetCurrentFrameIndex());
+    ProcessPendingGpuTimings(CmdContext, CmdContext.GetCurrentFrameIndex());
 
     const size_t ResourceCount = Textures.size();
 
@@ -300,6 +388,7 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
 
     if (bDoGpuTiming)
     {
+        const uint32 FrameIndex = CmdContext.GetCurrentFrameIndex();
         ID3D12CommandQueue* Queue = CmdContext.GetQueue() ? CmdContext.GetQueue()->GetD3DQueue() : nullptr;
         ID3D12Device* D3DDevice = Device->GetDevice();
 
@@ -307,29 +396,50 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
         {
             Queue->GetTimestampFrequency(&TimestampFrequency);
 
-            D3D12_QUERY_HEAP_DESC HeapDesc = {};
-            HeapDesc.Count = ActivePassCount * 2;
-            HeapDesc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
-            HeapDesc.NodeMask = 0;
+            FGpuTimingResources& Resources = GpuTimingResources[FrameIndex];
+            const uint32 NeededQueryCount = ActivePassCount * 2;
 
-            if (SUCCEEDED(D3DDevice->CreateQueryHeap(&HeapDesc, IID_PPV_ARGS(QueryHeap.GetAddressOf()))))
+            if (!Resources.QueryHeap || !Resources.ReadbackBuffer || Resources.QueryCapacity < NeededQueryCount)
             {
-                const UINT64 ReadbackSize = static_cast<UINT64>(HeapDesc.Count) * sizeof(uint64);
+                D3D12_QUERY_HEAP_DESC HeapDesc = {};
+                HeapDesc.Count = NeededQueryCount;
+                HeapDesc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+                HeapDesc.NodeMask = 0;
 
-                CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_READBACK);
-                CD3DX12_RESOURCE_DESC BufferDesc = CD3DX12_RESOURCE_DESC::Buffer(ReadbackSize);
-
-                if (FAILED(D3DDevice->CreateCommittedResource(
-                    &HeapProps,
-                    D3D12_HEAP_FLAG_NONE,
-                    &BufferDesc,
-                    D3D12_RESOURCE_STATE_COPY_DEST,
-                    nullptr,
-                    IID_PPV_ARGS(QueryReadback.GetAddressOf()))))
+                if (SUCCEEDED(D3DDevice->CreateQueryHeap(&HeapDesc, IID_PPV_ARGS(Resources.QueryHeap.ReleaseAndGetAddressOf()))))
                 {
-                    QueryHeap.Reset();
+                    const UINT64 ReadbackSize = static_cast<UINT64>(HeapDesc.Count) * sizeof(uint64);
+
+                    CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_READBACK);
+                    CD3DX12_RESOURCE_DESC BufferDesc = CD3DX12_RESOURCE_DESC::Buffer(ReadbackSize);
+
+                    if (FAILED(D3DDevice->CreateCommittedResource(
+                        &HeapProps,
+                        D3D12_HEAP_FLAG_NONE,
+                        &BufferDesc,
+                        D3D12_RESOURCE_STATE_COPY_DEST,
+                        nullptr,
+                        IID_PPV_ARGS(Resources.ReadbackBuffer.ReleaseAndGetAddressOf()))))
+                    {
+                        Resources.QueryHeap.Reset();
+                        Resources.ReadbackBuffer.Reset();
+                        Resources.QueryCapacity = 0;
+                    }
+                    else
+                    {
+                        Resources.QueryCapacity = HeapDesc.Count;
+                    }
+                }
+                else
+                {
+                    Resources.QueryHeap.Reset();
+                    Resources.ReadbackBuffer.Reset();
+                    Resources.QueryCapacity = 0;
                 }
             }
+
+            QueryHeap = Resources.QueryHeap;
+            QueryReadback = Resources.ReadbackBuffer;
         }
 
         if (!QueryHeap || !QueryReadback || TimestampFrequency == 0)
@@ -643,7 +753,7 @@ void FRenderGraph::LogTimingSummary()
     }
 }
 
-void FRenderGraph::ProcessPendingGpuTimings(uint32 FrameIndex)
+void FRenderGraph::ProcessPendingGpuTimings(const FDX12CommandContext& CmdContext, uint32 FrameIndex)
 {
     auto It = PendingGpuTimings.find(FrameIndex);
     if (It == PendingGpuTimings.end())
@@ -651,13 +761,20 @@ void FRenderGraph::ProcessPendingGpuTimings(uint32 FrameIndex)
         return;
     }
 
-    FGpuTimingData& Timing = It->second;
-    if (!bEnableGpuTiming)
+	if (!bEnableGpuTiming)
+	{
+		PendingGpuTimings.erase(It);
+		return;
+	}
+
+    const FDX12CommandQueue* Queue = Device ? Device->GetGraphicsQueue() : nullptr;
+    const uint64 FenceValue = CmdContext.GetFrameFenceValue(FrameIndex);
+    if (!Queue || FenceValue == 0 || Queue->GetCompletedFenceValue() < FenceValue)
     {
-        PendingGpuTimings.erase(It);
         return;
     }
 
+	FGpuTimingData& Timing = It->second;
     if (!Timing.bPending || !Timing.ReadbackBuffer || Timing.QueryCount == 0 || Timing.Frequency == 0)
     {
         PendingGpuTimings.erase(It);
@@ -675,9 +792,9 @@ void FRenderGraph::ProcessPendingGpuTimings(uint32 FrameIndex)
         return;
     }
 
-    LogInfo("RenderGraph GPU Timing (ms):");
-
     const size_t PassCount = Timing.PassNames.size();
+    const auto Now = std::chrono::steady_clock::now();
+    const double WindowSeconds = (std::max)(0.1, GpuTimingWindowSeconds);
     for (size_t Index = 0; Index < PassCount; ++Index)
     {
         const size_t StartIdx = Index * 2;
@@ -693,12 +810,20 @@ void FRenderGraph::ProcessPendingGpuTimings(uint32 FrameIndex)
         const double Delta = static_cast<double>(EndTimestamp - StartTimestamp) / static_cast<double>(Timing.Frequency);
         const double Milliseconds = Delta * 1000.0;
 
-        std::ostringstream Stream;
-        Stream << " - " << Timing.PassNames[Index] << ": " << Milliseconds;
-        LogInfo(Stream.str());
+        const std::string& PassName = Timing.PassNames[Index];
+        std::deque<FGpuTimingSample>& Samples = GpuTimingSamples[PassName];
+        Samples.push_back({ Now, Milliseconds });
+
+        const auto Cutoff = Now - std::chrono::duration<double>(WindowSeconds);
+        while (!Samples.empty() && Samples.front().Timestamp < Cutoff)
+        {
+            Samples.pop_front();
+        }
     }
 
     Timing.ReadbackBuffer->Unmap(0, nullptr);
+
+    UpdateCachedGpuTimingStats(Now);
+
     PendingGpuTimings.erase(It);
 }
-

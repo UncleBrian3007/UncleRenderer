@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <deque>
 #include <wrl.h>
 #include <chrono>
 #include <unordered_map>
@@ -37,6 +38,15 @@ class FRenderGraph
 {
 public:
     FRenderGraph();
+
+    struct FGpuPassTimingStats
+    {
+        std::string Name;
+        double AvgMs = 0.0;
+        double MinMs = 0.0;
+        double MaxMs = 0.0;
+        uint32 SampleCount = 0;
+    };
 
     void SetDevice(FDX12Device* InDevice) { Device = InDevice; }
 
@@ -76,6 +86,13 @@ public:
     void SetResourceLifetimeLogging(bool bEnable) { bEnableResourceLifetimeLog = bEnable; }
     void SetBarrierLoggingEnabled(bool bEnable) { bEnableBarrierLogs = bEnable; }
     void SetGpuTimingEnabled(bool bEnable) { bEnableGpuTiming = bEnable; }
+
+    static void SetGpuTimingWindowSeconds(double Seconds);
+    static double GetGpuTimingWindowSeconds();
+    static void SetGpuTimingDisplayCount(uint32 Count);
+    static uint32 GetGpuTimingDisplayCount();
+    static const std::vector<FGpuPassTimingStats>& GetGpuTimingStats();
+    static void AddExternalGpuTimingSample(const std::string& Name, double Milliseconds);
 
 private:
     struct FRGResourceUsage
@@ -148,7 +165,28 @@ private:
 
     static std::unordered_map<uint32, FGpuTimingData> PendingGpuTimings;
 
-    void ProcessPendingGpuTimings(uint32 FrameIndex);
+    void ProcessPendingGpuTimings(const FDX12CommandContext& CmdContext, uint32 FrameIndex);
+
+    struct FGpuTimingSample
+    {
+        std::chrono::steady_clock::time_point Timestamp;
+        double Milliseconds = 0.0;
+    };
+
+    static std::unordered_map<std::string, std::deque<FGpuTimingSample>> GpuTimingSamples;
+    static std::vector<FGpuPassTimingStats> CachedGpuTimingStats;
+    static double GpuTimingWindowSeconds;
+    static uint32 GpuTimingDisplayCount;
+
+    static void UpdateCachedGpuTimingStats(const std::chrono::steady_clock::time_point& Now);
+
+    struct FGpuTimingResources
+    {
+        Microsoft::WRL::ComPtr<ID3D12QueryHeap> QueryHeap;
+        Microsoft::WRL::ComPtr<ID3D12Resource> ReadbackBuffer;
+        uint32 QueryCapacity = 0;
+    };
+    static std::unordered_map<uint32, FGpuTimingResources> GpuTimingResources;
 
     bool bEnableDebugRecording = false;
     bool bEnableGraphDump = false;
@@ -170,4 +208,3 @@ private:
     FRenderGraph* Graph = nullptr;
     FRenderGraph::PassEntry* Entry = nullptr;
 };
-

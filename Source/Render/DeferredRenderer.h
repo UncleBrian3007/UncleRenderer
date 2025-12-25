@@ -95,6 +95,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> ShadowMap;
     Microsoft::WRL::ComPtr<ID3D12Resource> LightingBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> HierarchicalZBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> HZBNullUavResource;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> DescriptorHeap;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> DSVHeap;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> ShadowDSVHeap;
@@ -116,6 +117,7 @@ private:
     D3D12_GPU_DESCRIPTOR_HANDLE HZBSrvHandle{};
     std::vector<D3D12_GPU_DESCRIPTOR_HANDLE> HZBSrvMipHandles;
     std::vector<D3D12_GPU_DESCRIPTOR_HANDLE> HZBUavHandles;
+    D3D12_GPU_DESCRIPTOR_HANDLE HZBNullUavHandle{};
     D3D12_GPU_DESCRIPTOR_HANDLE ShadowMapHandle{};
     D3D12_VIEWPORT Viewport{};
     D3D12_RECT ScissorRect{};
@@ -157,4 +159,3 @@ private:
     uint32_t HZBHeight = 0;
     uint32_t HZBMipCount = 0;
 };
-

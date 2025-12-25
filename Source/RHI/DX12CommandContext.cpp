@@ -131,3 +131,12 @@ void FDX12CommandContext::SetFrameFenceValue(uint32 FrameIndex, uint64 FenceValu
     }
 }
 
+uint64 FDX12CommandContext::GetFrameFenceValue(uint32 FrameIndex) const
+{
+    if (FrameIndex < FrameFenceValues.size())
+    {
+        return FrameFenceValues[FrameIndex];
+    }
+
+    return 0;
+}

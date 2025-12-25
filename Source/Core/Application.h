@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <DirectXMath.h>
 #include <atomic>
+#include <vector>
 #include "../RHI/DX12Commons.h"
 #include "RendererConfig.h"
 
@@ -89,6 +90,10 @@ private:
     float LightIntensity = 1.0f;
     DirectX::XMFLOAT3 LightColor{ 1.0f, 1.0f, 1.0f };
     float ShadowBias = 0.0005f;
+    ComPtr<ID3D12QueryHeap>            FrameTimingQueryHeap;
+    ComPtr<ID3D12Resource>             FrameTimingReadback;
+    std::vector<uint64>                FrameTimingFenceValues;
+    uint64                             FrameTimingFrequency = 0;
 
     // Async scene loading
     std::unique_ptr<FForwardRenderer>  AsyncForwardRenderer;
@@ -97,4 +102,3 @@ private:
     std::wstring                       AsyncScenePath;
     std::atomic<bool>                  bAsyncSceneLoadComplete{ false };
 };
-
