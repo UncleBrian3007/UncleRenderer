@@ -222,6 +222,18 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     ConstantBufferMapped = ConstantBufferResource.MappedData;
     ConstantBuffer->SetName(L"SceneConstantBuffer");
 
+    if (!TextureLoader->LoadOrDefault(L"Assets/Textures/output_pmrem.dds", EnvironmentCubeTexture))
+    {
+        LogError("Deferred renderer initialization failed: environment cube texture loading failed");
+        return false;
+    }
+
+    if (!TextureLoader->LoadOrDefault(L"Assets/Textures/PreintegratedGF.dds", BrdfLutTexture))
+    {
+        LogError("Deferred renderer initialization failed: BRDF LUT texture loading failed");
+        return false;
+    }
+
     if (!CreateSceneTextures(Device, SceneModels))
     {
         LogError("Deferred renderer initialization failed: scene texture creation failed");
@@ -701,7 +713,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
                 std::vector<D3D12_RESOURCE_BARRIER> RestoreBarriers;
                 RestoreBarriers.reserve(Data.MipCount);
 
-                for (uint32_t MipIndex = 0; MipIndex + 1 < Data.MipCount; ++MipIndex)
+                for (uint32_t MipIndex = 0; MipIndex < Data.MipCount; ++MipIndex)
                 {
                     D3D12_RESOURCE_BARRIER Barrier = {};
                     Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -920,8 +932,8 @@ bool FDeferredRenderer::CreateBasePassRootSignature(FDX12Device* Device)
 
 bool FDeferredRenderer::CreateLightingRootSignature(FDX12Device* Device)
 {
-    D3D12_DESCRIPTOR_RANGE1 DescriptorRanges[4] = {};
-    for (int i = 0; i < 4; ++i)
+    D3D12_DESCRIPTOR_RANGE1 DescriptorRanges[6] = {};
+    for (int i = 0; i < 6; ++i)
     {
         DescriptorRanges[i].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
         DescriptorRanges[i].NumDescriptors = 1;
@@ -943,7 +955,7 @@ bool FDeferredRenderer::CreateLightingRootSignature(FDX12Device* Device)
     RootParams[1].DescriptorTable.NumDescriptorRanges = _countof(DescriptorRanges);
     RootParams[1].DescriptorTable.pDescriptorRanges = DescriptorRanges;
 
-    D3D12_STATIC_SAMPLER_DESC Samplers[2] = {};
+    D3D12_STATIC_SAMPLER_DESC Samplers[3] = {};
     Samplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
     Samplers[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
     Samplers[0].AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
@@ -967,6 +979,18 @@ bool FDeferredRenderer::CreateLightingRootSignature(FDX12Device* Device)
     Samplers[1].ShaderRegister = 1;
     Samplers[1].RegisterSpace = 0;
     Samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    Samplers[2].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    Samplers[2].AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    Samplers[2].AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    Samplers[2].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    Samplers[2].ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    Samplers[2].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
+    Samplers[2].MinLOD = 0.0f;
+    Samplers[2].MaxLOD = D3D12_FLOAT32_MAX;
+    Samplers[2].ShaderRegister = 2;
+    Samplers[2].RegisterSpace = 0;
+    Samplers[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
     RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
@@ -1742,7 +1766,7 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
     const UINT HZBDescriptorCount = 3 + (MipCount * 2);
 
     D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
-    HeapDesc.NumDescriptors = TextureCount * 4 + 5 + HZBDescriptorCount;
+    HeapDesc.NumDescriptors = TextureCount * 4 + 7 + HZBDescriptorCount;
     HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(DescriptorHeap.GetAddressOf())));
@@ -1819,6 +1843,36 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
 
     CpuHandle.ptr += DescriptorSize;
     GpuHandle.ptr += DescriptorSize;
+
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC EnvSrvDesc = {};
+        EnvSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+        EnvSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        EnvSrvDesc.Format = EnvironmentCubeTexture->GetDesc().Format;
+        EnvSrvDesc.TextureCube.MipLevels = EnvironmentCubeTexture->GetDesc().MipLevels;
+        EnvSrvDesc.TextureCube.MostDetailedMip = 0;
+        EnvSrvDesc.TextureCube.ResourceMinLODClamp = 0.0f;
+        Device->GetDevice()->CreateShaderResourceView(EnvironmentCubeTexture.Get(), &EnvSrvDesc, CpuHandle);
+        EnvironmentCubeHandle = GpuHandle;
+
+        CpuHandle.ptr += DescriptorSize;
+        GpuHandle.ptr += DescriptorSize;
+    }
+
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC BrdfSrvDesc = {};
+        BrdfSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        BrdfSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        BrdfSrvDesc.Format = BrdfLutTexture->GetDesc().Format;
+        BrdfSrvDesc.Texture2D.MipLevels = BrdfLutTexture->GetDesc().MipLevels;
+        BrdfSrvDesc.Texture2D.MostDetailedMip = 0;
+        BrdfSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+        Device->GetDevice()->CreateShaderResourceView(BrdfLutTexture.Get(), &BrdfSrvDesc, CpuHandle);
+        BrdfLutHandle = GpuHandle;
+
+        CpuHandle.ptr += DescriptorSize;
+        GpuHandle.ptr += DescriptorSize;
+    }
 
     {
         D3D12_SHADER_RESOURCE_VIEW_DESC LightingSrvDesc = {};

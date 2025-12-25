@@ -167,16 +167,18 @@ bool FTextureLoader::LoadTextureInternal(const std::wstring& FilePath, ComPtr<ID
             return false;
         }
 
+        const bool bIsCubemap = Descriptor.type == ddspp::Cubemap;
         const uint32_t ArraySize = Descriptor.type == ddspp::Texture3D ? 1u : std::max(1u, Descriptor.arraySize);
+        const uint32_t SliceCount = bIsCubemap ? ArraySize * 6u : ArraySize;
         const uint32_t Depth = Descriptor.type == ddspp::Texture3D ? std::max(1u, Descriptor.depth) : 1u;
-        const UINT SubresourceCount = Descriptor.numMips * ArraySize;
+        const UINT SubresourceCount = Descriptor.numMips * SliceCount;
         const DXGI_FORMAT Format = static_cast<DXGI_FORMAT>(Descriptor.format);
 
         D3D12_RESOURCE_DESC TextureDesc = {};
         TextureDesc.Dimension = Descriptor.type == ddspp::Texture3D ? D3D12_RESOURCE_DIMENSION_TEXTURE3D : D3D12_RESOURCE_DIMENSION_TEXTURE2D;
         TextureDesc.Width = Descriptor.width;
         TextureDesc.Height = Descriptor.height;
-        TextureDesc.DepthOrArraySize = Descriptor.type == ddspp::Texture3D ? Depth : ArraySize;
+        TextureDesc.DepthOrArraySize = Descriptor.type == ddspp::Texture3D ? Depth : static_cast<UINT16>(SliceCount);
         TextureDesc.MipLevels = static_cast<UINT16>(Descriptor.numMips);
         TextureDesc.Format = Format;
         TextureDesc.SampleDesc.Count = 1;
@@ -229,7 +231,7 @@ bool FTextureLoader::LoadTextureInternal(const std::wstring& FilePath, ComPtr<ID
         HR_CHECK(UploadResource->Map(0, &EmptyRange, reinterpret_cast<void**>(&MappedData)));
 
         size_t DataOffset = Descriptor.headerSize;
-        for (uint32_t ArrayIndex = 0; ArrayIndex < ArraySize; ++ArrayIndex)
+        for (uint32_t ArrayIndex = 0; ArrayIndex < SliceCount; ++ArrayIndex)
         {
             for (uint32_t Mip = 0; Mip < Descriptor.numMips; ++Mip)
             {

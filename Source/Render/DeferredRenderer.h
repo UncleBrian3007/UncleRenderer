@@ -97,6 +97,8 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> LightingBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> HierarchicalZBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> HZBNullUavResource;
+    Microsoft::WRL::ComPtr<ID3D12Resource> EnvironmentCubeTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> BrdfLutTexture;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> DescriptorHeap;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> DSVHeap;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> ShadowDSVHeap;
@@ -120,6 +122,8 @@ private:
     std::vector<D3D12_GPU_DESCRIPTOR_HANDLE> HZBUavHandles;
     D3D12_GPU_DESCRIPTOR_HANDLE HZBNullUavHandle{};
     D3D12_GPU_DESCRIPTOR_HANDLE ShadowMapHandle{};
+    D3D12_GPU_DESCRIPTOR_HANDLE EnvironmentCubeHandle{};
+    D3D12_GPU_DESCRIPTOR_HANDLE BrdfLutHandle{};
     D3D12_VIEWPORT Viewport{};
     D3D12_RECT ScissorRect{};
     D3D12_VIEWPORT ShadowViewport{};

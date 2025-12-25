@@ -40,8 +40,11 @@ Texture2D GBufferA : register(t0);
 Texture2D GBufferB : register(t1);
 Texture2D GBufferC : register(t2);
 Texture2D ShadowMap : register(t3);
+TextureCube EnvironmentMap : register(t4);
+Texture2D BrdfLut : register(t5);
 SamplerState GBufferSampler : register(s0);
 SamplerState ShadowSampler : register(s1);
+SamplerState IblSampler : register(s2);
 
 VSOutput VSMain(uint VertexId : SV_VertexID)
 {
@@ -93,7 +96,26 @@ float4 PSMain(VSOutput Input) : SV_Target
 
     float3 lighting = EvaluatePBR(albedo, metallic, roughness, F0, normal, V, L) * LightIntensity * LightColor * shadow;
 
-    float3 ambient = albedo * 0.03f;
-    float3 color = lighting + ambient + 0.1;
+    float3 worldNormal = normalize(mul(normal, (float3x3)ViewInverse));
+    float3 worldView = normalize(CameraPosition - worldPos);
+    float3 reflection = reflect(-worldView, worldNormal);
+
+    uint envWidth;
+    uint envHeight;
+    uint envMipCount;
+    EnvironmentMap.GetDimensions(0, envWidth, envHeight, envMipCount);
+    float maxMip = max(0.0f, float(envMipCount - 1));
+    float mipLevel = roughness * maxMip;
+    float3 prefilteredColor = EnvironmentMap.SampleLevel(IblSampler, reflection, mipLevel).rgb;
+
+    float NdotV = saturate(dot(worldNormal, worldView));
+    float2 brdf = BrdfLut.Sample(IblSampler, float2(NdotV, roughness)).rg;
+    float3 specularIbl = prefilteredColor * (F0 * brdf.x + brdf.y);
+
+    float3 irradiance = EnvironmentMap.SampleLevel(IblSampler, worldNormal, maxMip).rgb;
+    float3 diffuseIbl = irradiance * albedo * (1.0f - metallic);
+
+    float3 ambient = diffuseIbl + specularIbl;
+    float3 color = lighting + ambient;
     return float4(color, 1.0);
 }
