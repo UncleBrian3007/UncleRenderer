@@ -536,7 +536,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
             Builder.WriteTexture(HZBHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         }, [this](const FHZBPassData& Data, FDX12CommandContext& Cmd)
         {
-            if (!HZBPipeline || !HZBRootSignature || Data.MipCount == 0)
+            if (!HZBRootSignature || Data.MipCount == 0)
             {
                 return;
             }
@@ -547,7 +547,6 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
             ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
             LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
-            LocalCommandList->SetPipelineState(HZBPipeline.Get());
             LocalCommandList->SetComputeRootSignature(HZBRootSignature.Get());
 
             struct FHZBConstants
@@ -558,23 +557,36 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
                 uint32_t DestHeight;
                 uint32_t DestWidth1;
                 uint32_t DestHeight1;
+                uint32_t DestWidth2;
+                uint32_t DestHeight2;
+                uint32_t DestWidth3;
+                uint32_t DestHeight3;
                 uint32_t SourceMip;
-                uint32_t HasSecondMip;
             };
 
             uint32_t CurrentWidth = Data.Width;
             uint32_t CurrentHeight = Data.Height;
 
-            for (uint32_t MipIndex = 0; MipIndex < Data.MipCount; MipIndex += 2)
+            uint32_t MipIndex = 0;
+            while (MipIndex < Data.MipCount)
             {
+                const uint32_t RemainingMips = Data.MipCount - MipIndex;
+                const uint32_t MipsThisDispatch = (std::min)(4u, RemainingMips);
+                const bool bHasSecondMip = MipsThisDispatch > 1;
+                const bool bHasThirdMip = MipsThisDispatch > 2;
+                const bool bHasFourthMip = MipsThisDispatch > 3;
+
                 const uint32_t SourceWidth = (MipIndex == 0) ? Data.SourceWidth : (std::max)(1u, CurrentWidth);
                 const uint32_t SourceHeight = (MipIndex == 0) ? Data.SourceHeight : (std::max)(1u, CurrentHeight);
 
                 const uint32_t DestWidth = (MipIndex == 0) ? CurrentWidth : (std::max)(1u, CurrentWidth / 2);
                 const uint32_t DestHeight = (MipIndex == 0) ? CurrentHeight : (std::max)(1u, CurrentHeight / 2);
-                const bool bHasSecondMip = (MipIndex + 1) < Data.MipCount;
                 const uint32_t DestWidth1 = bHasSecondMip ? (std::max)(1u, DestWidth / 2) : 0u;
                 const uint32_t DestHeight1 = bHasSecondMip ? (std::max)(1u, DestHeight / 2) : 0u;
+                const uint32_t DestWidth2 = bHasThirdMip ? (std::max)(1u, DestWidth1 / 2) : 0u;
+                const uint32_t DestHeight2 = bHasThirdMip ? (std::max)(1u, DestHeight1 / 2) : 0u;
+                const uint32_t DestWidth3 = bHasFourthMip ? (std::max)(1u, DestWidth2 / 2) : 0u;
+                const uint32_t DestHeight3 = bHasFourthMip ? (std::max)(1u, DestHeight2 / 2) : 0u;
 
                 FHZBConstants Constants = {};
                 Constants.SourceWidth = SourceWidth;
@@ -583,8 +595,11 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
                 Constants.DestHeight = DestHeight;
                 Constants.DestWidth1 = DestWidth1;
                 Constants.DestHeight1 = DestHeight1;
+                Constants.DestWidth2 = DestWidth2;
+                Constants.DestHeight2 = DestHeight2;
+                Constants.DestWidth3 = DestWidth3;
+                Constants.DestHeight3 = DestHeight3;
                 Constants.SourceMip = 0u;
-                Constants.HasSecondMip = bHasSecondMip ? 1u : 0u;
 
                 D3D12_GPU_DESCRIPTOR_HANDLE SourceHandle = Data.DepthSrv;
                 if (MipIndex > 0)
@@ -596,54 +611,89 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
                 const D3D12_GPU_DESCRIPTOR_HANDLE DestHandle1 = (bHasSecondMip && (MipIndex + 1) < Data.HZBUavs.size())
                     ? Data.HZBUavs[MipIndex + 1]
                     : Data.HZBNullUav;
+                const D3D12_GPU_DESCRIPTOR_HANDLE DestHandle2 = (bHasThirdMip && (MipIndex + 2) < Data.HZBUavs.size())
+                    ? Data.HZBUavs[MipIndex + 2]
+                    : Data.HZBNullUav;
+                const D3D12_GPU_DESCRIPTOR_HANDLE DestHandle3 = (bHasFourthMip && (MipIndex + 3) < Data.HZBUavs.size())
+                    ? Data.HZBUavs[MipIndex + 3]
+                    : Data.HZBNullUav;
 
-                if (SourceHandle.ptr == 0 || DestHandle0.ptr == 0 || DestHandle1.ptr == 0)
+                if (SourceHandle.ptr == 0 || DestHandle0.ptr == 0 || DestHandle1.ptr == 0 || DestHandle2.ptr == 0 || DestHandle3.ptr == 0)
                 {
                     break;
                 }
 
+                ID3D12PipelineState* SelectedPipeline = HZBPipelines[MipsThisDispatch - 1].Get();
+                if (!SelectedPipeline)
+                {
+                    break;
+                }
+
+                LocalCommandList->SetPipelineState(SelectedPipeline);
                 LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(Constants) / sizeof(uint32_t), &Constants, 0);
                 LocalCommandList->SetComputeRootDescriptorTable(1, SourceHandle);
                 LocalCommandList->SetComputeRootDescriptorTable(2, DestHandle0);
                 LocalCommandList->SetComputeRootDescriptorTable(3, DestHandle1);
+                LocalCommandList->SetComputeRootDescriptorTable(4, DestHandle2);
+                LocalCommandList->SetComputeRootDescriptorTable(5, DestHandle3);
 
                 const uint32_t GroupX = (Constants.DestWidth + 7) / 8;
                 const uint32_t GroupY = (Constants.DestHeight + 7) / 8;
                 LocalCommandList->Dispatch(GroupX, GroupY, 1);
 
-                CurrentWidth = bHasSecondMip ? DestWidth1 : DestWidth;
-                CurrentHeight = bHasSecondMip ? DestHeight1 : DestHeight;
+                if (bHasFourthMip)
+                {
+                    CurrentWidth = DestWidth3;
+                    CurrentHeight = DestHeight3;
+                }
+                else if (bHasThirdMip)
+                {
+                    CurrentWidth = DestWidth2;
+                    CurrentHeight = DestHeight2;
+                }
+                else if (bHasSecondMip)
+                {
+                    CurrentWidth = DestWidth1;
+                    CurrentHeight = DestHeight1;
+                }
+                else
+                {
+                    CurrentWidth = DestWidth;
+                    CurrentHeight = DestHeight;
+                }
 
                 if (MipIndex + 1 < Data.MipCount)
                 {
-                    D3D12_RESOURCE_BARRIER Barriers[3] = {};
+                    D3D12_RESOURCE_BARRIER Barriers[5] = {};
                     uint32 BarrierCount = 0;
 
                     Barriers[BarrierCount].Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
                     Barriers[BarrierCount].UAV.pResource = HierarchicalZBuffer.Get();
+//                    LogInfo("HZB Barrier: UAV -> UAV sync");
                     BarrierCount++;
 
-                    Barriers[BarrierCount].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                    Barriers[BarrierCount].Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-                    Barriers[BarrierCount].Transition.pResource = HierarchicalZBuffer.Get();
-                    Barriers[BarrierCount].Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-                    Barriers[BarrierCount].Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-                    Barriers[BarrierCount].Transition.Subresource = D3D12CalcSubresource(MipIndex, 0, 0, Data.MipCount, 1);
-                    BarrierCount++;
-
-                    if (bHasSecondMip && (MipIndex + 2 < Data.MipCount))
+                    for (uint32_t LocalMip = 0; LocalMip < MipsThisDispatch; ++LocalMip)
                     {
+                        const uint32_t TargetMip = MipIndex + LocalMip;
+                        if (TargetMip >= Data.MipCount)
+                        {
+                            break;
+                        }
+
                         Barriers[BarrierCount].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
                         Barriers[BarrierCount].Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
                         Barriers[BarrierCount].Transition.pResource = HierarchicalZBuffer.Get();
                         Barriers[BarrierCount].Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
                         Barriers[BarrierCount].Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-                        Barriers[BarrierCount].Transition.Subresource = D3D12CalcSubresource(MipIndex + 1, 0, 0, Data.MipCount, 1);
+                        Barriers[BarrierCount].Transition.Subresource = D3D12CalcSubresource(TargetMip, 0, 0, Data.MipCount, 1);
+//                        LogInfo("HZB Barrier: Transition mip " + std::to_string(TargetMip) + " UAV -> SRV");
                         BarrierCount++;
                     }
 
                     LocalCommandList->ResourceBarrier(BarrierCount, Barriers);
                 }
+
+                MipIndex += MipsThisDispatch;
             }
 
             if (Data.MipCount > 1)
@@ -660,6 +710,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
                     Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
                     Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
                     Barrier.Transition.Subresource = D3D12CalcSubresource(MipIndex, 0, 0, Data.MipCount, 1);
+//                    LogInfo("HZB Barrier: Restore mip " + std::to_string(MipIndex) + " SRV -> UAV");
 
                     RestoreBarriers.push_back(Barrier);
                 }
@@ -1234,7 +1285,7 @@ bool FDeferredRenderer::CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT 
 
 bool FDeferredRenderer::CreateHZBRootSignature(FDX12Device* Device)
 {
-    D3D12_DESCRIPTOR_RANGE1 DescriptorRanges[3] = {};
+    D3D12_DESCRIPTOR_RANGE1 DescriptorRanges[5] = {};
 
     DescriptorRanges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     DescriptorRanges[0].NumDescriptors = 1;
@@ -1257,11 +1308,25 @@ bool FDeferredRenderer::CreateHZBRootSignature(FDX12Device* Device)
     DescriptorRanges[2].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
     DescriptorRanges[2].OffsetInDescriptorsFromTableStart = 0;
 
-    D3D12_ROOT_PARAMETER1 RootParams[4] = {};
+    DescriptorRanges[3].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+    DescriptorRanges[3].NumDescriptors = 1;
+    DescriptorRanges[3].BaseShaderRegister = 2;
+    DescriptorRanges[3].RegisterSpace = 0;
+    DescriptorRanges[3].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
+    DescriptorRanges[3].OffsetInDescriptorsFromTableStart = 0;
+
+    DescriptorRanges[4].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+    DescriptorRanges[4].NumDescriptors = 1;
+    DescriptorRanges[4].BaseShaderRegister = 3;
+    DescriptorRanges[4].RegisterSpace = 0;
+    DescriptorRanges[4].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
+    DescriptorRanges[4].OffsetInDescriptorsFromTableStart = 0;
+
+    D3D12_ROOT_PARAMETER1 RootParams[6] = {};
 
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[0].Constants.Num32BitValues = 8;
+    RootParams[0].Constants.Num32BitValues = 11;
     RootParams[0].Constants.RegisterSpace = 0;
     RootParams[0].Constants.ShaderRegister = 0;
 
@@ -1279,6 +1344,16 @@ bool FDeferredRenderer::CreateHZBRootSignature(FDX12Device* Device)
     RootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[3].DescriptorTable.NumDescriptorRanges = 1;
     RootParams[3].DescriptorTable.pDescriptorRanges = &DescriptorRanges[2];
+
+    RootParams[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    RootParams[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[4].DescriptorTable.NumDescriptorRanges = 1;
+    RootParams[4].DescriptorTable.pDescriptorRanges = &DescriptorRanges[3];
+
+    RootParams[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    RootParams[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[5].DescriptorTable.NumDescriptorRanges = 1;
+    RootParams[5].DescriptorTable.pDescriptorRanges = &DescriptorRanges[4];
 
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
     RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
@@ -1304,21 +1379,26 @@ bool FDeferredRenderer::CreateHZBRootSignature(FDX12Device* Device)
 bool FDeferredRenderer::CreateHZBPipeline(FDX12Device* Device)
 {
     FShaderCompiler Compiler;
-    std::vector<uint8_t> CSByteCode;
-
     const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
     const std::wstring CSTarget = BuildShaderTarget(L"cs", ShaderModel);
 
-    if (!Compiler.CompileFromFile(L"Shaders/BuildHZB.hlsl", L"BuildHZB", CSTarget, CSByteCode))
+    for (size_t PipelineIndex = 0; PipelineIndex < HZBPipelines.size(); ++PipelineIndex)
     {
-        return false;
+        std::vector<uint8_t> CSByteCode;
+        const std::wstring Define = L"HZB_MIPS_PER_DISPATCH=" + std::to_wstring(PipelineIndex + 1);
+        const std::vector<std::wstring> Defines = { Define };
+
+        if (!Compiler.CompileFromFile(L"Shaders/BuildHZB.hlsl", L"BuildHZB", CSTarget, CSByteCode, Defines))
+        {
+            return false;
+        }
+
+        D3D12_COMPUTE_PIPELINE_STATE_DESC PsoDesc = {};
+        PsoDesc.pRootSignature = HZBRootSignature.Get();
+        PsoDesc.CS = { CSByteCode.data(), CSByteCode.size() };
+
+        HR_CHECK(Device->GetDevice()->CreateComputePipelineState(&PsoDesc, IID_PPV_ARGS(HZBPipelines[PipelineIndex].GetAddressOf())));
     }
-
-    D3D12_COMPUTE_PIPELINE_STATE_DESC PsoDesc = {};
-    PsoDesc.pRootSignature = HZBRootSignature.Get();
-    PsoDesc.CS = { CSByteCode.data(), CSByteCode.size() };
-
-    HR_CHECK(Device->GetDevice()->CreateComputePipelineState(&PsoDesc, IID_PPV_ARGS(HZBPipeline.GetAddressOf())));
     return true;
 }
 

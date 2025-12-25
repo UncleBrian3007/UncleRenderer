@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <memory>
 #include <vector>
 #include <wrl.h>
@@ -80,7 +81,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ShadowPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> LightingPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> HZBPipeline;
+    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> HZBPipelines;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> TonemapPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> SkyPipelineState;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> SkyRootSignature;

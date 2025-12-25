@@ -1,3 +1,7 @@
+#ifndef HZB_MIPS_PER_DISPATCH
+#define HZB_MIPS_PER_DISPATCH 1
+#endif
+
 cbuffer HZBConstants : register(b0)
 {
     uint SourceWidth;
@@ -6,15 +10,26 @@ cbuffer HZBConstants : register(b0)
     uint DestHeight;
     uint DestWidth1;
     uint DestHeight1;
+    uint DestWidth2;
+    uint DestHeight2;
+    uint DestWidth3;
+    uint DestHeight3;
     uint SourceMip;
-    uint HasSecondMip;
 };
 
 Texture2D<float> SourceTexture : register(t0);
 RWTexture2D<float> DestTexture0 : register(u0);
 RWTexture2D<float> DestTexture1 : register(u1);
+RWTexture2D<float> DestTexture2 : register(u2);
+RWTexture2D<float> DestTexture3 : register(u3);
 
 groupshared float SharedDepth[8][8];
+#if HZB_MIPS_PER_DISPATCH >= 2
+groupshared float SharedDepth1[4][4];
+#endif
+#if HZB_MIPS_PER_DISPATCH >= 3
+groupshared float SharedDepth2[2][2];
+#endif
 
 float SampleDepth(uint2 coord)
 {
@@ -46,11 +61,7 @@ void BuildHZB(
     SharedDepth[groupThreadId.y][groupThreadId.x] = maxDepth;
     GroupMemoryBarrierWithGroupSync();
 
-    if (HasSecondMip == 0)
-    {
-        return;
-    }
-
+#if HZB_MIPS_PER_DISPATCH >= 2
     if (groupThreadId.x < 4 && groupThreadId.y < 4)
     {
         const uint2 destCoord1 = groupId.xy * 4 + groupThreadId.xy;
@@ -61,7 +72,55 @@ void BuildHZB(
             const float s1 = SharedDepth[base.y][base.x + 1];
             const float s2 = SharedDepth[base.y + 1][base.x];
             const float s3 = SharedDepth[base.y + 1][base.x + 1];
-            DestTexture1[destCoord1] = max(max(s0, s1), max(s2, s3));
+            const float maxDepth1 = max(max(s0, s1), max(s2, s3));
+            DestTexture1[destCoord1] = maxDepth1;
+            SharedDepth1[groupThreadId.y][groupThreadId.x] = maxDepth1;
+        }
+        else
+        {
+            SharedDepth1[groupThreadId.y][groupThreadId.x] = 0.0f;
         }
     }
+
+#if HZB_MIPS_PER_DISPATCH >= 3
+    GroupMemoryBarrierWithGroupSync();
+
+    if (groupThreadId.x < 2 && groupThreadId.y < 2)
+    {
+        const uint2 destCoord2 = groupId.xy * 2 + groupThreadId.xy;
+        if (destCoord2.x < DestWidth2 && destCoord2.y < DestHeight2)
+        {
+            const uint2 base = groupThreadId.xy * 2;
+            const float s0 = SharedDepth1[base.y][base.x];
+            const float s1 = SharedDepth1[base.y][base.x + 1];
+            const float s2 = SharedDepth1[base.y + 1][base.x];
+            const float s3 = SharedDepth1[base.y + 1][base.x + 1];
+            const float maxDepth2 = max(max(s0, s1), max(s2, s3));
+            DestTexture2[destCoord2] = maxDepth2;
+            SharedDepth2[groupThreadId.y][groupThreadId.x] = maxDepth2;
+        }
+        else
+        {
+            SharedDepth2[groupThreadId.y][groupThreadId.x] = 0.0f;
+        }
+    }
+
+#if HZB_MIPS_PER_DISPATCH >= 4
+    GroupMemoryBarrierWithGroupSync();
+
+    if (groupThreadId.x == 0 && groupThreadId.y == 0)
+    {
+        const uint2 destCoord3 = groupId.xy;
+        if (destCoord3.x < DestWidth3 && destCoord3.y < DestHeight3)
+        {
+            const float s0 = SharedDepth2[0][0];
+            const float s1 = SharedDepth2[0][1];
+            const float s2 = SharedDepth2[1][0];
+            const float s3 = SharedDepth2[1][1];
+            DestTexture3[destCoord3] = max(max(s0, s1), max(s2, s3));
+        }
+    }
+#endif
+#endif
+#endif
 }

@@ -1094,6 +1094,25 @@ void FApplication::RenderUI()
 
     ImGui::Begin("Performance", nullptr, Flags);
     ImGui::Text("FPS: %.1f", Time->GetFPS());
+    ImGui::SameLine();
+    const double CpuFrameMs = Time->GetDeltaTimeSeconds() * 1000.0;
+    double GpuFrameMs = -1.0;
+    for (const FRenderGraph::FGpuPassTimingStats& Stats : FRenderGraph::GetGpuTimingStats())
+    {
+        if (Stats.Name == "Frame")
+        {
+            GpuFrameMs = Stats.AvgMs;
+            break;
+        }
+    }
+    if (GpuFrameMs >= 0.0)
+    {
+        ImGui::Text("CPU/GPU: %.3f / %.3f", CpuFrameMs, GpuFrameMs);
+    }
+    else
+    {
+        ImGui::Text("CPU/GPU: %.3f / N/A", CpuFrameMs);
+    }
 
     ImGui::Separator();
     ImGui::Text("GPU Timing (avg/min/max ms)");
@@ -1105,7 +1124,7 @@ void FApplication::RenderUI()
     //}
 
     int TimingDisplayCount = static_cast<int>(FRenderGraph::GetGpuTimingDisplayCount());
-    if (ImGui::SliderInt("GPU Timing Display Count", &TimingDisplayCount, 1, 20))
+    if (ImGui::SliderInt("Display Count", &TimingDisplayCount, 1, 20))
     {
         FRenderGraph::SetGpuTimingDisplayCount(static_cast<uint32>(TimingDisplayCount));
     }
