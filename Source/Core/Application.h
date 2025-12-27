@@ -33,13 +33,14 @@ public:
     FApplication();
     ~FApplication();
 
-    bool Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t Height);
+    bool Initialize(HINSTANCE InstanceHandle);
     int32_t Run();
 
 private:
     bool RenderFrame();
     void HandleCameraInput(float DeltaSeconds);
     void PositionCameraForScene();
+    void ApplySceneCameraFromJson(const std::wstring& ScenePath);
     bool ReloadScene(const std::wstring& ScenePath);
     void StartAsyncSceneReload(const std::wstring& ScenePath);
     void CompleteAsyncSceneReload();

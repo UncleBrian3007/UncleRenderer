@@ -197,6 +197,12 @@ bool FTextureLoader::LoadTextureInternal(const std::wstring& FilePath, ComPtr<ID
             nullptr,
             IID_PPV_ARGS(OutTexture.GetAddressOf())));
 
+        if (OutTexture)
+        {
+            const std::filesystem::path ResourcePath(FilePath);
+            OutTexture->SetName(ResourcePath.filename().c_str());
+        }
+
         std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> Layouts(SubresourceCount);
         std::vector<UINT> NumRows(SubresourceCount);
         UINT64 UploadBufferSize = 0;
@@ -359,6 +365,12 @@ bool FTextureLoader::LoadTextureInternal(const std::wstring& FilePath, ComPtr<ID
         D3D12_RESOURCE_STATE_COPY_DEST,
         nullptr,
         IID_PPV_ARGS(OutTexture.GetAddressOf())));
+
+    if (OutTexture)
+    {
+        const std::filesystem::path ResourcePath(FilePath);
+        OutTexture->SetName(ResourcePath.filename().c_str());
+    }
 
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT Layout = {};
     UINT NumRows = 0;

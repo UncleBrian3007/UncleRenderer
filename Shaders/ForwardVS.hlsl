@@ -37,6 +37,9 @@ cbuffer SceneConstants : register(b0)
     float ShadowStrength;
     float ShadowBias;
     float2 PaddingShadow;
+    float MetallicFactor;
+    float RoughnessFactor;
+    float2 PaddingMaterial;
     float4 BaseColorTransformOffsetScale;
     float4 BaseColorTransformRotation;
     float4 MetallicRoughnessTransformOffsetScale;
@@ -45,6 +48,8 @@ cbuffer SceneConstants : register(b0)
     float4 NormalTransformRotation;
     float4 EmissiveTransformOffsetScale;
     float4 EmissiveTransformRotation;
+    float EnvMapMipCount;
+    float3 PaddingEnvMap;
 };
 
 VSOutput VSMain(VSInput Input)

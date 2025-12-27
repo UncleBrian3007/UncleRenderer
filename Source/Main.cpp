@@ -80,11 +80,10 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPWSTR, _
     EnsureWorkingDirectory();
 
     FApplication App;
-    if (!App.Initialize(hInstance, 1280, 720))
+    if (!App.Initialize(hInstance))
     {
         return -1;
     }
 
     return App.Run();
 }
-

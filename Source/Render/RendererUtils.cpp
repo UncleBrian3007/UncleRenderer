@@ -647,6 +647,7 @@ void RendererUtils::UpdateSceneConstants(
     const DirectX::XMMATRIX& LightViewProjection,
     float ShadowStrength,
     float ShadowBias,
+    float EnvMapMipCount,
     uint8_t* ConstantBufferMapped,
     uint64_t ConstantBufferOffset)
 {
@@ -662,10 +663,9 @@ void RendererUtils::UpdateSceneConstants(
     const XMMATRIX Projection = Camera.GetProjectionMatrix();
     const XMMATRIX WorldMatrix = XMLoadFloat4x4(&Model.WorldMatrix);
 
-    const bool bHasBaseColorTexture = !Model.BaseColorTexturePath.empty();
     const bool bHasEmissiveTexture = !Model.EmissiveTexturePath.empty();
-    const XMFLOAT3 BaseColorFactor = bHasBaseColorTexture ? Model.BaseColorFactor : XMFLOAT3(1.0f, 1.0f, 1.0f);
-    const XMFLOAT3 EmissiveFactor = bHasEmissiveTexture ? Model.EmissiveFactor : XMFLOAT3(1.0f, 1.0f, 1.0f);
+    const XMFLOAT3 BaseColorFactor = Model.BaseColorFactor;
+    const XMFLOAT3 EmissiveFactor = Model.EmissiveFactor;
 
     FSceneConstants Constants = {};
     XMStoreFloat4x4(&Constants.World, WorldMatrix);
@@ -681,6 +681,9 @@ void RendererUtils::UpdateSceneConstants(
     XMStoreFloat4x4(&Constants.LightViewProjection, LightViewProjection);
     Constants.ShadowStrength = ShadowStrength;
     Constants.ShadowBias = ShadowBias;
+    Constants.MetallicFactor = Model.MetallicFactor;
+    Constants.RoughnessFactor = Model.RoughnessFactor;
+    Constants.EnvMapMipCount = EnvMapMipCount;
     FillTransformConstants(Model.BaseColorTransformOffsetScale, Model.BaseColorTransformRotation, Constants.BaseColorTransformOffsetScale, Constants.BaseColorTransformRotation);
     FillTransformConstants(Model.MetallicRoughnessTransformOffsetScale, Model.MetallicRoughnessTransformRotation, Constants.MetallicRoughnessTransformOffsetScale, Constants.MetallicRoughnessTransformRotation);
     FillTransformConstants(Model.NormalTransformOffsetScale, Model.NormalTransformRotation, Constants.NormalTransformOffsetScale, Constants.NormalTransformRotation);
@@ -738,4 +741,3 @@ DirectX::XMMATRIX RendererUtils::BuildDirectionalLightViewProjection(
 
     return XMMatrixMultiply(View, Projection);
 }
-

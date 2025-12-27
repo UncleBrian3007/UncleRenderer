@@ -150,6 +150,17 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
 
     TextureLoader = std::make_unique<FTextureLoader>(Device);
 
+    if (!TextureLoader->LoadOrSolidColor(L"", 0xffffffff, NullTexture))
+    {
+        LogError("Deferred renderer initialization failed: null texture creation failed");
+        return false;
+    }
+
+    if (NullTexture)
+    {
+        NullTexture->SetName(L"NullTexture");
+    }
+
     FDepthResources DepthResources = {};
     if (!RendererUtils::CreateDepthResources(Device, Width, Height, DXGI_FORMAT_D24_UNORM_S8_UINT, DepthResources))
     {
@@ -232,6 +243,12 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     {
         LogError("Deferred renderer initialization failed: BRDF LUT texture loading failed");
         return false;
+    }
+
+    if (EnvironmentCubeTexture)
+    {
+        const D3D12_RESOURCE_DESC EnvDesc = EnvironmentCubeTexture->GetDesc();
+        EnvironmentMipCount = static_cast<float>((std::max)(1u, static_cast<uint32_t>(EnvDesc.MipLevels)));
     }
 
     if (!CreateSceneTextures(Device, SceneModels))
@@ -506,8 +523,39 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
             LocalCommandList->SetGraphicsRootDescriptorTable(1, Model.TextureHandle);
 
             const bool bUseNormalMap = Model.bHasNormalMap;
+            const bool bUseMetallicRoughnessMap = !Model.MetallicRoughnessTexturePath.empty();
+            const bool bUseBaseColorMap = !Model.BaseColorTexturePath.empty();
+            const bool bUseEmissiveMap = !Model.EmissiveTexturePath.empty();
 
-            LocalCommandList->SetPipelineState(bUseNormalMap ? BasePassPipelineWithNormalMap.Get() : BasePassPipelineWithoutNormalMap.Get());
+            auto SelectPipeline = [&](bool UseNormal, bool UseMr, bool UseBaseColor, bool UseEmissive)
+            {
+                if (UseEmissive)
+                {
+                    if (UseBaseColor)
+                    {
+                        return UseNormal
+                            ? (UseMr ? BasePassPipelineWithNormalMap.Get() : BasePassPipelineWithNormalMapNoMr.Get())
+                            : (UseMr ? BasePassPipelineWithoutNormalMap.Get() : BasePassPipelineWithoutNormalMapNoMr.Get());
+                    }
+
+                    return UseNormal
+                        ? (UseMr ? BasePassPipelineWithNormalMapNoBaseColor.Get() : BasePassPipelineWithNormalMapNoMrNoBaseColor.Get())
+                        : (UseMr ? BasePassPipelineWithoutNormalMapNoBaseColor.Get() : BasePassPipelineWithoutNormalMapNoMrNoBaseColor.Get());
+                }
+
+                if (UseBaseColor)
+                {
+                    return UseNormal
+                        ? (UseMr ? BasePassPipelineWithNormalMapNoEmissive.Get() : BasePassPipelineWithNormalMapNoMrNoEmissive.Get())
+                        : (UseMr ? BasePassPipelineWithoutNormalMapNoEmissive.Get() : BasePassPipelineWithoutNormalMapNoMrNoEmissive.Get());
+                }
+
+                return UseNormal
+                    ? (UseMr ? BasePassPipelineWithNormalMapNoBaseColorNoEmissive.Get() : BasePassPipelineWithNormalMapNoMrNoBaseColorNoEmissive.Get())
+                    : (UseMr ? BasePassPipelineWithoutNormalMapNoBaseColorNoEmissive.Get() : BasePassPipelineWithoutNormalMapNoMrNoBaseColorNoEmissive.Get());
+            };
+
+            LocalCommandList->SetPipelineState(SelectPipeline(bUseNormalMap, bUseMetallicRoughnessMap, bUseBaseColorMap, bUseEmissiveMap));
 
             LocalCommandList->DrawIndexedInstanced(Model.Geometry.IndexCount, 1, 0, 0, 0);
         }
@@ -1029,8 +1077,22 @@ bool FDeferredRenderer::CreateBasePassPipeline(FDX12Device* Device, DXGI_FORMAT 
         return false;
     }
 
-    const std::vector<std::wstring> WithNormalDefines = { L"USE_NORMAL_MAP=1" };
-    const std::vector<std::wstring> WithoutNormalDefines = { L"USE_NORMAL_MAP=0" };
+    const std::vector<std::wstring> WithNormalDefines = { L"USE_NORMAL_MAP=1", L"USE_METALLIC_ROUGHNESS_MAP=1", L"USE_BASE_COLOR_MAP=1", L"USE_EMISSIVE_MAP=1" };
+    const std::vector<std::wstring> WithoutNormalDefines = { L"USE_NORMAL_MAP=0", L"USE_METALLIC_ROUGHNESS_MAP=1", L"USE_BASE_COLOR_MAP=1", L"USE_EMISSIVE_MAP=1" };
+    const std::vector<std::wstring> WithNormalNoMrDefines = { L"USE_NORMAL_MAP=1", L"USE_METALLIC_ROUGHNESS_MAP=0", L"USE_BASE_COLOR_MAP=1", L"USE_EMISSIVE_MAP=1" };
+    const std::vector<std::wstring> WithoutNormalNoMrDefines = { L"USE_NORMAL_MAP=0", L"USE_METALLIC_ROUGHNESS_MAP=0", L"USE_BASE_COLOR_MAP=1", L"USE_EMISSIVE_MAP=1" };
+    const std::vector<std::wstring> WithNormalNoBaseColorDefines = { L"USE_NORMAL_MAP=1", L"USE_METALLIC_ROUGHNESS_MAP=1", L"USE_BASE_COLOR_MAP=0", L"USE_EMISSIVE_MAP=1" };
+    const std::vector<std::wstring> WithoutNormalNoBaseColorDefines = { L"USE_NORMAL_MAP=0", L"USE_METALLIC_ROUGHNESS_MAP=1", L"USE_BASE_COLOR_MAP=0", L"USE_EMISSIVE_MAP=1" };
+    const std::vector<std::wstring> WithNormalNoMrNoBaseColorDefines = { L"USE_NORMAL_MAP=1", L"USE_METALLIC_ROUGHNESS_MAP=0", L"USE_BASE_COLOR_MAP=0", L"USE_EMISSIVE_MAP=1" };
+    const std::vector<std::wstring> WithoutNormalNoMrNoBaseColorDefines = { L"USE_NORMAL_MAP=0", L"USE_METALLIC_ROUGHNESS_MAP=0", L"USE_BASE_COLOR_MAP=0", L"USE_EMISSIVE_MAP=1" };
+    const std::vector<std::wstring> WithNormalNoEmissiveDefines = { L"USE_NORMAL_MAP=1", L"USE_METALLIC_ROUGHNESS_MAP=1", L"USE_BASE_COLOR_MAP=1", L"USE_EMISSIVE_MAP=0" };
+    const std::vector<std::wstring> WithoutNormalNoEmissiveDefines = { L"USE_NORMAL_MAP=0", L"USE_METALLIC_ROUGHNESS_MAP=1", L"USE_BASE_COLOR_MAP=1", L"USE_EMISSIVE_MAP=0" };
+    const std::vector<std::wstring> WithNormalNoMrNoEmissiveDefines = { L"USE_NORMAL_MAP=1", L"USE_METALLIC_ROUGHNESS_MAP=0", L"USE_BASE_COLOR_MAP=1", L"USE_EMISSIVE_MAP=0" };
+    const std::vector<std::wstring> WithoutNormalNoMrNoEmissiveDefines = { L"USE_NORMAL_MAP=0", L"USE_METALLIC_ROUGHNESS_MAP=0", L"USE_BASE_COLOR_MAP=1", L"USE_EMISSIVE_MAP=0" };
+    const std::vector<std::wstring> WithNormalNoBaseColorNoEmissiveDefines = { L"USE_NORMAL_MAP=1", L"USE_METALLIC_ROUGHNESS_MAP=1", L"USE_BASE_COLOR_MAP=0", L"USE_EMISSIVE_MAP=0" };
+    const std::vector<std::wstring> WithoutNormalNoBaseColorNoEmissiveDefines = { L"USE_NORMAL_MAP=0", L"USE_METALLIC_ROUGHNESS_MAP=1", L"USE_BASE_COLOR_MAP=0", L"USE_EMISSIVE_MAP=0" };
+    const std::vector<std::wstring> WithNormalNoMrNoBaseColorNoEmissiveDefines = { L"USE_NORMAL_MAP=1", L"USE_METALLIC_ROUGHNESS_MAP=0", L"USE_BASE_COLOR_MAP=0", L"USE_EMISSIVE_MAP=0" };
+    const std::vector<std::wstring> WithoutNormalNoMrNoBaseColorNoEmissiveDefines = { L"USE_NORMAL_MAP=0", L"USE_METALLIC_ROUGHNESS_MAP=0", L"USE_BASE_COLOR_MAP=0", L"USE_EMISSIVE_MAP=0" };
 
     if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"PSMain", PSTarget, PSByteCodeWithNormalMap, WithNormalDefines))
     {
@@ -1038,6 +1100,91 @@ bool FDeferredRenderer::CreateBasePassPipeline(FDX12Device* Device, DXGI_FORMAT 
     }
 
     if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"PSMain", PSTarget, PSByteCodeWithoutNormalMap, WithoutNormalDefines))
+    {
+        return false;
+    }
+
+    std::vector<uint8_t> PSByteCodeWithNormalMapNoMr;
+    std::vector<uint8_t> PSByteCodeWithoutNormalMapNoMr;
+    std::vector<uint8_t> PSByteCodeWithNormalMapNoBaseColor;
+    std::vector<uint8_t> PSByteCodeWithoutNormalMapNoBaseColor;
+    std::vector<uint8_t> PSByteCodeWithNormalMapNoMrNoBaseColor;
+    std::vector<uint8_t> PSByteCodeWithoutNormalMapNoMrNoBaseColor;
+    std::vector<uint8_t> PSByteCodeWithNormalMapNoEmissive;
+    std::vector<uint8_t> PSByteCodeWithoutNormalMapNoEmissive;
+    std::vector<uint8_t> PSByteCodeWithNormalMapNoMrNoEmissive;
+    std::vector<uint8_t> PSByteCodeWithoutNormalMapNoMrNoEmissive;
+    std::vector<uint8_t> PSByteCodeWithNormalMapNoBaseColorNoEmissive;
+    std::vector<uint8_t> PSByteCodeWithoutNormalMapNoBaseColorNoEmissive;
+    std::vector<uint8_t> PSByteCodeWithNormalMapNoMrNoBaseColorNoEmissive;
+    std::vector<uint8_t> PSByteCodeWithoutNormalMapNoMrNoBaseColorNoEmissive;
+
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"PSMain", PSTarget, PSByteCodeWithNormalMapNoMr, WithNormalNoMrDefines))
+    {
+        return false;
+    }
+
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"PSMain", PSTarget, PSByteCodeWithoutNormalMapNoMr, WithoutNormalNoMrDefines))
+    {
+        return false;
+    }
+
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"PSMain", PSTarget, PSByteCodeWithNormalMapNoBaseColor, WithNormalNoBaseColorDefines))
+    {
+        return false;
+    }
+
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"PSMain", PSTarget, PSByteCodeWithoutNormalMapNoBaseColor, WithoutNormalNoBaseColorDefines))
+    {
+        return false;
+    }
+
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"PSMain", PSTarget, PSByteCodeWithNormalMapNoMrNoBaseColor, WithNormalNoMrNoBaseColorDefines))
+    {
+        return false;
+    }
+
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"PSMain", PSTarget, PSByteCodeWithoutNormalMapNoMrNoBaseColor, WithoutNormalNoMrNoBaseColorDefines))
+    {
+        return false;
+    }
+
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"PSMain", PSTarget, PSByteCodeWithNormalMapNoEmissive, WithNormalNoEmissiveDefines))
+    {
+        return false;
+    }
+
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"PSMain", PSTarget, PSByteCodeWithoutNormalMapNoEmissive, WithoutNormalNoEmissiveDefines))
+    {
+        return false;
+    }
+
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"PSMain", PSTarget, PSByteCodeWithNormalMapNoMrNoEmissive, WithNormalNoMrNoEmissiveDefines))
+    {
+        return false;
+    }
+
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"PSMain", PSTarget, PSByteCodeWithoutNormalMapNoMrNoEmissive, WithoutNormalNoMrNoEmissiveDefines))
+    {
+        return false;
+    }
+
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"PSMain", PSTarget, PSByteCodeWithNormalMapNoBaseColorNoEmissive, WithNormalNoBaseColorNoEmissiveDefines))
+    {
+        return false;
+    }
+
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"PSMain", PSTarget, PSByteCodeWithoutNormalMapNoBaseColorNoEmissive, WithoutNormalNoBaseColorNoEmissiveDefines))
+    {
+        return false;
+    }
+
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"PSMain", PSTarget, PSByteCodeWithNormalMapNoMrNoBaseColorNoEmissive, WithNormalNoMrNoBaseColorNoEmissiveDefines))
+    {
+        return false;
+    }
+
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"PSMain", PSTarget, PSByteCodeWithoutNormalMapNoMrNoBaseColorNoEmissive, WithoutNormalNoMrNoBaseColorNoEmissiveDefines))
     {
         return false;
     }
@@ -1122,6 +1269,48 @@ bool FDeferredRenderer::CreateBasePassPipeline(FDX12Device* Device, DXGI_FORMAT 
     InitializeBasePassDesc(PsoDesc);
     PsoDesc.PS = { PSByteCodeWithoutNormalMap.data(), PSByteCodeWithoutNormalMap.size() };
     HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipelineWithoutNormalMap.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeWithNormalMapNoMr.data(), PSByteCodeWithNormalMapNoMr.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipelineWithNormalMapNoMr.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeWithoutNormalMapNoMr.data(), PSByteCodeWithoutNormalMapNoMr.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipelineWithoutNormalMapNoMr.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeWithNormalMapNoBaseColor.data(), PSByteCodeWithNormalMapNoBaseColor.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipelineWithNormalMapNoBaseColor.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeWithoutNormalMapNoBaseColor.data(), PSByteCodeWithoutNormalMapNoBaseColor.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipelineWithoutNormalMapNoBaseColor.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeWithNormalMapNoMrNoBaseColor.data(), PSByteCodeWithNormalMapNoMrNoBaseColor.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipelineWithNormalMapNoMrNoBaseColor.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeWithoutNormalMapNoMrNoBaseColor.data(), PSByteCodeWithoutNormalMapNoMrNoBaseColor.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipelineWithoutNormalMapNoMrNoBaseColor.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeWithNormalMapNoEmissive.data(), PSByteCodeWithNormalMapNoEmissive.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipelineWithNormalMapNoEmissive.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeWithoutNormalMapNoEmissive.data(), PSByteCodeWithoutNormalMapNoEmissive.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipelineWithoutNormalMapNoEmissive.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeWithNormalMapNoMrNoEmissive.data(), PSByteCodeWithNormalMapNoMrNoEmissive.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipelineWithNormalMapNoMrNoEmissive.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeWithoutNormalMapNoMrNoEmissive.data(), PSByteCodeWithoutNormalMapNoMrNoEmissive.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipelineWithoutNormalMapNoMrNoEmissive.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeWithNormalMapNoBaseColorNoEmissive.data(), PSByteCodeWithNormalMapNoBaseColorNoEmissive.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipelineWithNormalMapNoBaseColorNoEmissive.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeWithoutNormalMapNoBaseColorNoEmissive.data(), PSByteCodeWithoutNormalMapNoBaseColorNoEmissive.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipelineWithoutNormalMapNoBaseColorNoEmissive.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeWithNormalMapNoMrNoBaseColorNoEmissive.data(), PSByteCodeWithNormalMapNoMrNoBaseColorNoEmissive.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipelineWithNormalMapNoMrNoBaseColorNoEmissive.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeWithoutNormalMapNoMrNoBaseColorNoEmissive.data(), PSByteCodeWithoutNormalMapNoMrNoBaseColorNoEmissive.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipelineWithoutNormalMapNoMrNoBaseColorNoEmissive.GetAddressOf())));
     return true;
 }
 
@@ -1777,12 +1966,13 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
 
     const auto CreateSceneTextureSrv = [&](ID3D12Resource* Texture)
     {
-        if (!Texture)
+        ID3D12Resource* Resource = Texture ? Texture : NullTexture.Get();
+        if (!Resource)
         {
             return;
         }
 
-        const D3D12_RESOURCE_DESC TextureDesc = Texture->GetDesc();
+        const D3D12_RESOURCE_DESC TextureDesc = Resource->GetDesc();
 
         D3D12_SHADER_RESOURCE_VIEW_DESC SceneSrvDesc = {};
         SceneSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
@@ -1792,7 +1982,7 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         SceneSrvDesc.Texture2D.MostDetailedMip = 0;
         SceneSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
 
-        Device->GetDevice()->CreateShaderResourceView(Texture, &SceneSrvDesc, CpuHandle);
+        Device->GetDevice()->CreateShaderResourceView(Resource, &SceneSrvDesc, CpuHandle);
     };
 
     for (size_t Index = 0; Index < SceneTextures.size(); ++Index)
@@ -1986,12 +2176,6 @@ namespace
         return 0xff000000 | (B << 16) | (G << 8) | R;
     }
 
-    uint32_t PackMetallicRoughness(float Metallic, float Roughness)
-    {
-        const uint32_t M = ClampToByte(Metallic);
-        const uint32_t R = ClampToByte(Roughness);
-        return 0xff000000 | (R << 8) | M;
-    }
 }
 
 bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, const std::vector<FSceneModelResource>& Models)
@@ -2021,23 +2205,25 @@ bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, const std::vect
         const FSceneModelResource& Model = Models[i];
         FModelTextureSet& TextureSet = SceneTextures[i];
 
-        // Base color texture
-        const uint32_t BaseColorValue = PackColor(Model.BaseColorFactor);
-        FTextureLoadRequest BaseColorRequest;
-        BaseColorRequest.Path = Model.BaseColorTexturePath;
-        BaseColorRequest.SolidColor = BaseColorValue;
-        BaseColorRequest.bUseSolidColor = Model.BaseColorTexturePath.empty();
-        BaseColorRequest.OutTexture = &TextureSet.BaseColor;
-        Requests.push_back(BaseColorRequest);
+        // Base color texture - skip when missing
+        if (!Model.BaseColorTexturePath.empty())
+        {
+            FTextureLoadRequest BaseColorRequest;
+            BaseColorRequest.Path = Model.BaseColorTexturePath;
+            BaseColorRequest.bUseSolidColor = false;
+            BaseColorRequest.OutTexture = &TextureSet.BaseColor;
+            Requests.push_back(BaseColorRequest);
+        }
 
-        // Metallic roughness texture - use solid color if path is empty
-        const uint32_t MetallicRoughnessValue = PackMetallicRoughness(Model.MetallicFactor, Model.RoughnessFactor);
-        FTextureLoadRequest MetallicRoughnessRequest;
-        MetallicRoughnessRequest.Path = Model.MetallicRoughnessTexturePath;
-        MetallicRoughnessRequest.SolidColor = MetallicRoughnessValue;
-        MetallicRoughnessRequest.bUseSolidColor = Model.MetallicRoughnessTexturePath.empty();
-        MetallicRoughnessRequest.OutTexture = &TextureSet.MetallicRoughness;
-        Requests.push_back(MetallicRoughnessRequest);
+        // Metallic roughness texture - skip when missing
+        if (!Model.MetallicRoughnessTexturePath.empty())
+        {
+            FTextureLoadRequest MetallicRoughnessRequest;
+            MetallicRoughnessRequest.Path = Model.MetallicRoughnessTexturePath;
+            MetallicRoughnessRequest.bUseSolidColor = false;
+            MetallicRoughnessRequest.OutTexture = &TextureSet.MetallicRoughness;
+            Requests.push_back(MetallicRoughnessRequest);
+        }
 
         // Normal texture - use default normal if path is empty
         FTextureLoadRequest NormalRequest;
@@ -2047,14 +2233,15 @@ bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, const std::vect
         NormalRequest.OutTexture = &TextureSet.Normal;
         Requests.push_back(NormalRequest);
 
-        // Emissive texture
-        const uint32_t EmissiveValue = PackColor(Model.EmissiveFactor);
-        FTextureLoadRequest EmissiveRequest;
-        EmissiveRequest.Path = Model.EmissiveTexturePath;
-        EmissiveRequest.SolidColor = EmissiveValue;
-        EmissiveRequest.bUseSolidColor = Model.EmissiveTexturePath.empty();
-        EmissiveRequest.OutTexture = &TextureSet.Emissive;
-        Requests.push_back(EmissiveRequest);
+        // Emissive texture - skip when missing
+        if (!Model.EmissiveTexturePath.empty())
+        {
+            FTextureLoadRequest EmissiveRequest;
+            EmissiveRequest.Path = Model.EmissiveTexturePath;
+            EmissiveRequest.bUseSolidColor = false;
+            EmissiveRequest.OutTexture = &TextureSet.Emissive;
+            Requests.push_back(EmissiveRequest);
+        }
     }
 
     // Load all textures in parallel
@@ -2084,6 +2271,7 @@ void FDeferredRenderer::UpdateSceneConstants(const FCamera& Camera, const FScene
         LightVP,
         bShadowsEnabled ? ShadowStrength : 0.0f,
         ShadowBias,
+        EnvironmentMipCount,
         ConstantBufferMapped,
         ConstantBufferOffset);
 }

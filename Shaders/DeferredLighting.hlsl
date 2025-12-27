@@ -26,6 +26,9 @@ cbuffer SceneConstants : register(b0)
     float ShadowStrength;
     float ShadowBias;
     float2 PaddingShadow;
+    float MetallicFactor;
+    float RoughnessFactor;
+    float2 PaddingMaterial;
     float4 BaseColorTransformOffsetScale;
     float4 BaseColorTransformRotation;
     float4 MetallicRoughnessTransformOffsetScale;
@@ -34,6 +37,8 @@ cbuffer SceneConstants : register(b0)
     float4 NormalTransformRotation;
     float4 EmissiveTransformOffsetScale;
     float4 EmissiveTransformRotation;
+    float EnvMapMipCount;
+    float3 PaddingEnvMap;
 };
 
 Texture2D GBufferA : register(t0);
@@ -100,11 +105,7 @@ float4 PSMain(VSOutput Input) : SV_Target
     float3 worldView = normalize(CameraPosition - worldPos);
     float3 reflection = reflect(-worldView, worldNormal);
 
-    uint envWidth;
-    uint envHeight;
-    uint envMipCount;
-    EnvironmentMap.GetDimensions(0, envWidth, envHeight, envMipCount);
-    float maxMip = max(0.0f, float(envMipCount - 1));
+    float maxMip = max(0.0f, EnvMapMipCount - 1.0f);
     float mipLevel = roughness * maxMip;
     float3 prefilteredColor = EnvironmentMap.SampleLevel(IblSampler, reflection, mipLevel).rgb;
 

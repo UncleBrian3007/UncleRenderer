@@ -20,6 +20,15 @@ struct VSOutput
 #ifndef USE_NORMAL_MAP
 #define USE_NORMAL_MAP 1
 #endif
+#ifndef USE_METALLIC_ROUGHNESS_MAP
+#define USE_METALLIC_ROUGHNESS_MAP 1
+#endif
+#ifndef USE_BASE_COLOR_MAP
+#define USE_BASE_COLOR_MAP 1
+#endif
+#ifndef USE_EMISSIVE_MAP
+#define USE_EMISSIVE_MAP 1
+#endif
 
 cbuffer SceneConstants : register(b0)
 {
@@ -41,6 +50,9 @@ cbuffer SceneConstants : register(b0)
     float ShadowStrength;
     float ShadowBias;
     float2 PaddingShadow;
+    float MetallicFactor;
+    float RoughnessFactor;
+    float2 PaddingMaterial;
     float4 BaseColorTransformOffsetScale;
     float4 BaseColorTransformRotation;
     float4 MetallicRoughnessTransformOffsetScale;
@@ -49,12 +61,18 @@ cbuffer SceneConstants : register(b0)
     float4 NormalTransformRotation;
     float4 EmissiveTransformOffsetScale;
     float4 EmissiveTransformRotation;
+    float EnvMapMipCount;
+    float3 PaddingEnvMap;
 };
 
 Texture2D AlbedoTexture : register(t0);
+#if USE_METALLIC_ROUGHNESS_MAP
 Texture2D MetallicRoughnessTexture : register(t1);
+#endif
 Texture2D NormalTexture : register(t2);
+#if USE_EMISSIVE_MAP
 Texture2D EmissiveTexture : register(t3);
+#endif
 SamplerState AlbedoSampler : register(s0);
 
 float2 ApplyTextureTransform(float2 uv, float4 offsetScale, float4 rotation)
@@ -121,18 +139,30 @@ PSOutput PSMain(VSOutput Input)
 
     float3 viewNormal = ComputeViewNormal(Input, normalUV);
 
-    float3 albedo = AlbedoTexture.Sample(AlbedoSampler, baseUV).rgb * BaseColor * Input.Color.rgb;
+    float3 albedo = BaseColor * Input.Color.rgb;
+#if USE_BASE_COLOR_MAP
+    albedo *= AlbedoTexture.Sample(AlbedoSampler, baseUV).rgb;
+#endif
 
     float viewDepth = -mul(float4(Input.WorldPos, 1.0), View).z;
     Output.GBufferA = float4(viewNormal, viewDepth);
 
     const float specular = 0.04f;
+    float metallic = MetallicFactor;
+    float roughness = RoughnessFactor;
+#if USE_METALLIC_ROUGHNESS_MAP
     float2 metallicRoughness = MetallicRoughnessTexture.Sample(AlbedoSampler, mrUV).bg;
-    Output.GBufferB = float4(specular, metallicRoughness.x, metallicRoughness.y, 1.0);
+    metallic *= metallicRoughness.x;
+    roughness *= metallicRoughness.y;
+#endif
+    Output.GBufferB = float4(specular, metallic, roughness, 1.0);
 
     Output.GBufferC = float4(albedo, 1.0);
 
-    float3 emissive = EmissiveTexture.Sample(AlbedoSampler, emissiveUV).rgb * EmissiveFactor;
+    float3 emissive = EmissiveFactor;
+#if USE_EMISSIVE_MAP
+    emissive *= EmissiveTexture.Sample(AlbedoSampler, emissiveUV).rgb;
+#endif
     Output.SceneColor = float4(emissive, 1.0);
     return Output;
 }

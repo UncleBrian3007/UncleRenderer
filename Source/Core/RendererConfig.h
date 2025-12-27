@@ -27,6 +27,8 @@ struct FRendererConfig
     bool bLogResourceBarriers = false;
     bool bEnableGraphDump = false;
     bool bEnableGpuTiming = false;
+    uint32_t WindowWidth = 1280;
+    uint32_t WindowHeight = 720;
 };
 
 class FRendererConfigLoader

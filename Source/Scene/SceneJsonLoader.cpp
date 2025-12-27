@@ -166,6 +166,52 @@ namespace
         return Result;
     }
 
+    bool TryParseVectorAttribute(const std::string& Text, const std::string& Key, FFloat3& OutValue)
+    {
+        const std::regex Pattern("\"" + Key + "\"\\s*:\\s*\\[([^\\]]*)\\]");
+        std::smatch Match;
+        if (!std::regex_search(Text, Match, Pattern) || Match.size() < 2)
+        {
+            return false;
+        }
+
+        FFloat3 Result = OutValue;
+        std::stringstream Stream(Match[1].str());
+        Stream >> Result.x;
+        Stream.ignore(std::numeric_limits<std::streamsize>::max(), ',');
+        Stream >> Result.y;
+        Stream.ignore(std::numeric_limits<std::streamsize>::max(), ',');
+        Stream >> Result.z;
+
+        if (!Stream)
+        {
+            return false;
+        }
+
+        OutValue = Result;
+        return true;
+    }
+
+    bool TryExtractFloat(const std::string& Text, const std::string& Key, float& OutValue)
+    {
+        const std::regex Pattern("\"" + Key + "\"\\s*:\\s*([-+]?[0-9]*\\.?[0-9]+(?:[eE][-+]?[0-9]+)?)");
+        std::smatch Match;
+        if (std::regex_search(Text, Match, Pattern) && Match.size() > 1)
+        {
+            try
+            {
+                OutValue = std::stof(Match[1].str());
+                return true;
+            }
+            catch (const std::exception&)
+            {
+                return false;
+            }
+        }
+
+        return false;
+    }
+
     size_t FindMatchingBracket(const std::string& Text, size_t StartIndex)
     {
         int Depth = 0;
@@ -185,6 +231,41 @@ namespace
             }
         }
         return std::string::npos;
+    }
+
+    size_t FindMatchingBrace(const std::string& Text, size_t StartIndex)
+    {
+        int Depth = 0;
+        for (size_t Index = StartIndex; Index < Text.size(); ++Index)
+        {
+            if (Text[Index] == '{')
+            {
+                ++Depth;
+            }
+            else if (Text[Index] == '}')
+            {
+                --Depth;
+                if (Depth == 0)
+                {
+                    return Index;
+                }
+            }
+        }
+        return std::string::npos;
+    }
+
+    FFloat3 BuildDirectionFromEulerDegrees(const FFloat3& RotationEuler)
+    {
+        constexpr float DegToRad = 3.14159265f / 180.0f;
+        const float Pitch = RotationEuler.x * DegToRad;
+        const float Yaw = RotationEuler.y * DegToRad;
+
+        const float CosPitch = std::cos(Pitch);
+        const float SinPitch = std::sin(Pitch);
+        const float CosYaw = std::cos(Yaw);
+        const float SinYaw = std::sin(Yaw);
+
+        return FFloat3(CosPitch * SinYaw, SinPitch, CosPitch * CosYaw);
     }
 
     bool ExtractLights(const std::string& Contents, FSceneLightDesc& OutLight)
@@ -235,10 +316,57 @@ namespace
             OutLight.Direction = ParseVectorAttribute(LightText, "direction", OutLight.Direction);
             OutLight.Intensity = ExtractFloat(LightText, "intensity", OutLight.Intensity);
             OutLight.Color = ParseVectorAttribute(LightText, "color", OutLight.Color);
+
+            FFloat3 RotationEuler = {};
+            bool bHasRotation = TryParseVectorAttribute(LightText, "rotation", RotationEuler);
+            if (!bHasRotation)
+            {
+                bHasRotation = TryParseVectorAttribute(LightText, "rotation_euler", RotationEuler);
+            }
+
+            if (bHasRotation)
+            {
+                OutLight.Direction = BuildDirectionFromEulerDegrees(RotationEuler);
+            }
             return true;
         }
 
         return false;
+    }
+
+    bool ExtractCamera(const std::string& Contents, FSceneCameraDesc& OutCamera)
+    {
+        const size_t CameraKey = Contents.find("\"camera\"");
+        if (CameraKey == std::string::npos)
+        {
+            return false;
+        }
+
+        const size_t ObjectStart = Contents.find('{', CameraKey);
+        if (ObjectStart == std::string::npos)
+        {
+            return false;
+        }
+
+        const size_t ObjectEnd = FindMatchingBrace(Contents, ObjectStart);
+        if (ObjectEnd == std::string::npos)
+        {
+            return false;
+        }
+
+        const std::string CameraBlock = Contents.substr(ObjectStart, ObjectEnd - ObjectStart + 1);
+
+        TryParseVectorAttribute(CameraBlock, "position", OutCamera.Position);
+        OutCamera.bHasLookAt = TryParseVectorAttribute(CameraBlock, "look_at", OutCamera.LookAt);
+
+        OutCamera.bHasRotation = TryParseVectorAttribute(CameraBlock, "rotation", OutCamera.RotationEuler);
+        if (!OutCamera.bHasRotation)
+        {
+            OutCamera.bHasRotation = TryParseVectorAttribute(CameraBlock, "rotation_euler", OutCamera.RotationEuler);
+        }
+
+        TryExtractFloat(CameraBlock, "fov_y", OutCamera.FovYDegrees);
+        return true;
     }
 }
 
@@ -339,4 +467,17 @@ bool FSceneJsonLoader::LoadSceneLighting(const std::wstring& FilePath, FSceneLig
     }
 
     return true;
+}
+
+bool FSceneJsonLoader::LoadSceneCamera(const std::wstring& FilePath, FSceneCameraDesc& OutCamera)
+{
+    OutCamera = FSceneCameraDesc{};
+
+    const std::string Contents = ReadFileToString(FilePath);
+    if (Contents.empty())
+    {
+        return false;
+    }
+
+    return ExtractCamera(Contents, OutCamera);
 }

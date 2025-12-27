@@ -113,7 +113,7 @@ FApplication::~FApplication()
     LogInfo("Application shutdown complete");
 }
 
-bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t Height)
+bool FApplication::Initialize(HINSTANCE InstanceHandle)
 {
     LogInfo("Application initialization started");
 
@@ -139,6 +139,9 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t H
     {
         LogInfo("Task system disabled via renderer config; running tasks on main thread");
     }
+
+    const int32_t WindowWidth = static_cast<int32_t>(RendererConfig.WindowWidth);
+    const int32_t WindowHeight = static_cast<int32_t>(RendererConfig.WindowHeight);
 
     MainWindow = std::make_unique<FWindow>();
     Device = std::make_unique<FDX12Device>();
@@ -184,7 +187,7 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t H
     }
 
     LogInfo("Creating window...");
-    if (!MainWindow->Create(InstanceHandle, Width, Height, L"UncleRenderer"))
+    if (!MainWindow->Create(InstanceHandle, WindowWidth, WindowHeight, L"UncleRenderer"))
     {
         LogError("Failed to create window");
         return false;
@@ -200,7 +203,7 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t H
     const uint32 SwapChainBufferCount = (std::max)(2u, RendererConfig.FramesInFlight);
 
     LogInfo("Initializing swap chain...");
-    if (!SwapChain->Initialize(Device.get(), MainWindow->GetHWND(), Width, Height, SwapChainBufferCount))
+    if (!SwapChain->Initialize(Device.get(), MainWindow->GetHWND(), WindowWidth, WindowHeight, SwapChainBufferCount))
     {
         LogError("Failed to initialize swap chain");
         return false;
@@ -213,14 +216,14 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t H
         return false;
     }
 
-    Camera->SetPerspective(DirectX::XM_PIDIV4, static_cast<float>(Width) / static_cast<float>(Height), 0.1f, 1000.0f);
+    Camera->SetPerspective(DirectX::XM_PIDIV4, static_cast<float>(WindowWidth) / static_cast<float>(WindowHeight), 0.1f, 1000.0f);
 
     auto TryInitializeRenderer = [&](ERendererType Type) -> bool
     {
         if (Type == ERendererType::Deferred)
         {
             LogInfo("Attempting to initialize deferred renderer...");
-            if (DeferredRenderer->Initialize(Device.get(), Width, Height, SwapChain->GetFormat(), RendererOptions))
+            if (DeferredRenderer->Initialize(Device.get(), WindowWidth, WindowHeight, SwapChain->GetFormat(), RendererOptions))
             {
                 LogInfo("Deferred renderer activated");
                 ActiveRenderer = DeferredRenderer.get();
@@ -232,7 +235,7 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t H
         }
 
         LogInfo("Attempting to initialize forward renderer...");
-        if (ForwardRenderer->Initialize(Device.get(), Width, Height, SwapChain->GetFormat(), RendererOptions))
+        if (ForwardRenderer->Initialize(Device.get(), WindowWidth, WindowHeight, SwapChain->GetFormat(), RendererOptions))
         {
             LogInfo("Forward renderer activated");
             ActiveRenderer = ForwardRenderer.get();
@@ -255,9 +258,9 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle, int32_t Width, int32_t H
     }
 
     UpdateRendererLighting();
-    PositionCameraForScene();
+    ApplySceneCameraFromJson(RendererConfig.SceneFile);
 
-    if (!InitializeImGui(Width, Height))
+    if (!InitializeImGui(WindowWidth, WindowHeight))
     {
         LogError("Failed to initialize ImGui");
         return false;
@@ -523,6 +526,12 @@ void FApplication::HandleCameraInput(float DeltaSeconds)
             if (!bIsRotatingWithMouse)
             {
                 bIsRotatingWithMouse = true;
+                {
+                    const XMVECTOR ForwardVec = XMVector3Normalize(XMLoadFloat3(&Camera->GetForward()));
+                    const float ForwardY = std::clamp(XMVectorGetY(ForwardVec), -1.0f, 1.0f);
+                    CameraPitch = -asinf(ForwardY);
+                    CameraYaw = atan2f(XMVectorGetX(ForwardVec), XMVectorGetZ(ForwardVec));
+                }
                 LastMousePosition = CursorPos;
             }
             else
@@ -630,7 +639,54 @@ void FApplication::PositionCameraForScene()
     Camera->SetForward(Forward);
     Camera->SetUp(Up);
 
-    CameraPitch = asinf(DirectX::XMVectorGetY(ForwardVec));
+    CameraPitch = -asinf(DirectX::XMVectorGetY(ForwardVec));
+    CameraYaw = atan2f(DirectX::XMVectorGetX(ForwardVec), DirectX::XMVectorGetZ(ForwardVec));
+}
+
+void FApplication::ApplySceneCameraFromJson(const std::wstring& ScenePath)
+{
+    if (!Camera)
+    {
+        return;
+    }
+
+    FSceneCameraDesc SceneCamera;
+    if (!FSceneJsonLoader::LoadSceneCamera(ScenePath, SceneCamera))
+    {
+        PositionCameraForScene();
+        return;
+    }
+
+    const float FovRadians = DirectX::XMConvertToRadians(SceneCamera.FovYDegrees);
+    Camera->SetPerspective(FovRadians, Camera->GetAspectRatio(), Camera->GetNearClip(), Camera->GetFarClip());
+    Camera->SetPosition(SceneCamera.Position);
+
+    const DirectX::XMVECTOR UpVec = DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+    DirectX::XMVECTOR ForwardVec = DirectX::XMLoadFloat3(&Camera->GetForward());
+
+    if (SceneCamera.bHasLookAt)
+    {
+        const DirectX::XMVECTOR Eye = DirectX::XMLoadFloat3(&SceneCamera.Position);
+        const DirectX::XMVECTOR Target = DirectX::XMLoadFloat3(&SceneCamera.LookAt);
+        ForwardVec = DirectX::XMVector3Normalize(DirectX::XMVectorSubtract(Target, Eye));
+    }
+    else if (SceneCamera.bHasRotation)
+    {
+        const float Pitch = DirectX::XMConvertToRadians(SceneCamera.RotationEuler.x);
+        const float Yaw = DirectX::XMConvertToRadians(SceneCamera.RotationEuler.y);
+        const float Roll = DirectX::XMConvertToRadians(SceneCamera.RotationEuler.z);
+        const DirectX::XMMATRIX Rotation = DirectX::XMMatrixRotationRollPitchYaw(Pitch, Yaw, Roll);
+        ForwardVec = DirectX::XMVector3Normalize(DirectX::XMVector3TransformNormal(DirectX::XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f), Rotation));
+    }
+
+    FFloat3 Forward;
+    FFloat3 Up;
+    DirectX::XMStoreFloat3(&Forward, ForwardVec);
+    DirectX::XMStoreFloat3(&Up, UpVec);
+    Camera->SetForward(Forward);
+    Camera->SetUp(Up);
+
+    CameraPitch = -asinf(DirectX::XMVectorGetY(ForwardVec));
     CameraYaw = atan2f(DirectX::XMVectorGetX(ForwardVec), DirectX::XMVectorGetZ(ForwardVec));
 }
 
@@ -708,7 +764,7 @@ bool FApplication::ReloadScene(const std::wstring& ScenePath)
     RendererConfig.SceneFile = ScenePath;
 
     UpdateRendererLighting();
-    PositionCameraForScene();
+    ApplySceneCameraFromJson(ScenePath);
 
     LogInfo("Scene reloaded from: " + PathToUtf8String(ScenePath));
     return true;
@@ -769,6 +825,7 @@ void FApplication::StartAsyncSceneReload(const std::wstring& ScenePath)
     RendererOptions.TonemapExposure = TonemapExposure;
     RendererOptions.TonemapWhitePoint = TonemapWhitePoint;
     RendererOptions.TonemapGamma = TonemapGamma;
+    RendererOptions.bEnableGpuTiming = bGpuTimingEnabled;
 
     RendererOptions.bEnableHZB = bHZBEnabled;
 
@@ -843,6 +900,11 @@ void FApplication::CompleteAsyncSceneReload()
         return;
     }
 
+    if (Device && Device->GetGraphicsQueue())
+    {
+        Device->GetGraphicsQueue()->Flush();
+    }
+
     // Swap renderers on the main thread
     ForwardRenderer = std::move(AsyncForwardRenderer);
     DeferredRenderer = std::move(AsyncDeferredRenderer);
@@ -852,7 +914,7 @@ void FApplication::CompleteAsyncSceneReload()
     RendererConfig.SceneFile = AsyncScenePath;
 
     UpdateRendererLighting();
-    PositionCameraForScene();
+    ApplySceneCameraFromJson(AsyncScenePath);
 
     LogInfo("Scene swapped to: " + PathToUtf8String(AsyncScenePath));
     
@@ -1094,234 +1156,239 @@ void FApplication::RenderUI()
 
     ImGui::Begin("Performance", nullptr, Flags);
     ImGui::Text("FPS: %.1f", Time->GetFPS());
-    ImGui::SameLine();
-    const double CpuFrameMs = Time->GetDeltaTimeSeconds() * 1000.0;
-    double GpuFrameMs = -1.0;
-    for (const FRenderGraph::FGpuPassTimingStats& Stats : FRenderGraph::GetGpuTimingStats())
-    {
-        if (Stats.Name == "Frame")
-        {
-            GpuFrameMs = Stats.AvgMs;
-            break;
-        }
-    }
-    if (GpuFrameMs >= 0.0)
-    {
-        ImGui::Text("CPU/GPU: %.3f / %.3f", CpuFrameMs, GpuFrameMs);
-    }
-    else
-    {
-        ImGui::Text("CPU/GPU: %.3f / N/A", CpuFrameMs);
-    }
 
-    ImGui::Separator();
-    ImGui::Text("GPU Timing (avg/min/max ms)");
-
-    //float TimingWindowSeconds = static_cast<float>(FRenderGraph::GetGpuTimingWindowSeconds());
-    //if (ImGui::SliderFloat("GPU Timing Window (s)", &TimingWindowSeconds, 0.1f, 5.0f, "%.1f"))
-    //{
-    //    FRenderGraph::SetGpuTimingWindowSeconds(TimingWindowSeconds);
-    //}
-
-    int TimingDisplayCount = static_cast<int>(FRenderGraph::GetGpuTimingDisplayCount());
-    if (ImGui::SliderInt("Display Count", &TimingDisplayCount, 1, 20))
-    {
-        FRenderGraph::SetGpuTimingDisplayCount(static_cast<uint32>(TimingDisplayCount));
-    }
-
-    const std::vector<FRenderGraph::FGpuPassTimingStats>& TimingStats = FRenderGraph::GetGpuTimingStats();
-    const uint32 MaxDisplay = FRenderGraph::GetGpuTimingDisplayCount();
-    const uint32 DisplayCount = (std::min)(MaxDisplay, static_cast<uint32>(TimingStats.size()));
-    for (uint32 Index = 0; Index < DisplayCount; ++Index)
-    {
-        const FRenderGraph::FGpuPassTimingStats& Stats = TimingStats[Index];
-        ImGui::Text("%s: %.3f / %.3f / %.3f (n=%u)",
-            Stats.Name.c_str(),
-            Stats.AvgMs,
-            Stats.MinMs,
-            Stats.MaxMs,
-            Stats.SampleCount);
-    }
-
-    ImGui::Separator();
-    const std::string ScenePathUtf8 = PathToUtf8String(CurrentScenePath);
-    ImGui::TextWrapped("Scene: %s", ScenePathUtf8.c_str());
-    if (ImGui::Button("Load Scene"))
-    {
-        const std::filesystem::path ScenePath(CurrentScenePath);
-        const std::filesystem::path InitialDir = ScenePath.has_parent_path() ? ScenePath.parent_path() : std::filesystem::path();
-        const std::wstring SelectedScene = OpenSceneFileDialog(InitialDir.wstring());
-        if (!SelectedScene.empty())
-        {
-            PendingScenePath = SelectedScene;
-        }
-    }
-
-    DXGI_QUERY_VIDEO_MEMORY_INFO LocalMemoryInfo = {};
-    if (Device && Device->QueryLocalVideoMemory(LocalMemoryInfo))
-    {
-        const double UsageMB = static_cast<double>(LocalMemoryInfo.CurrentUsage) / (1024.0 * 1024.0);
-        const double BudgetMB = static_cast<double>(LocalMemoryInfo.Budget) / (1024.0 * 1024.0);
-        const double AvailableMB = static_cast<double>(LocalMemoryInfo.AvailableForReservation) / (1024.0 * 1024.0);
-		const double ReservedMB = static_cast<double>(LocalMemoryInfo.CurrentReservation) / (1024.0 * 1024.0);
-
-        ImGui::Separator();
-        ImGui::Text("GPU Memory (Local)");
-        ImGui::Text("Usage: %.1f MB", UsageMB);
-        ImGui::Text("Budget: %.1f MB", BudgetMB);
-        ImGui::Text("Available: %.1f MB", AvailableMB);
-		ImGui::Text("Reserved: %.1f MB", ReservedMB);
-    }
-	ImGui::Separator();
-
-    bool bFrameOverlap = bFrameOverlapEnabled;
-    if (ImGui::Checkbox("Frame Overlap", &bFrameOverlap))
-    {
-        bFrameOverlapEnabled = bFrameOverlap;
-    }
-
-    if (Device && Device->GetGraphicsQueue())
-    {
-        const uint64 CompletedFence = Device->GetGraphicsQueue()->GetCompletedFenceValue();
-        const uint64 LastSignaledFence = Device->GetGraphicsQueue()->GetLastSignaledFenceValue();
-        const uint64 InFlightFrames = (LastSignaledFence > CompletedFence) ? (LastSignaledFence - CompletedFence) : 0;
-
-        ImGui::Text("In-flight frames: %llu", static_cast<unsigned long long>(InFlightFrames));
-//        ImGui::Text("GPU fences: completed %llu / last signaled %llu", static_cast<unsigned long long>(CompletedFence), static_cast<unsigned long long>(LastSignaledFence));
-    }
-
-    bool bDepthPrepass = bDepthPrepassEnabled;
-    if (ImGui::Checkbox("Depth Prepass", &bDepthPrepass))
-    {
-        bDepthPrepassEnabled = bDepthPrepass;
-
-        if (ForwardRenderer)
-        {
-            ForwardRenderer->SetDepthPrepassEnabled(bDepthPrepassEnabled);
-        }
-
-        if (DeferredRenderer)
-        {
-            DeferredRenderer->SetDepthPrepassEnabled(bDepthPrepassEnabled);
-        }
-    }
-
-        ImGui::Separator();
-    bool bBuildHZB = bHZBEnabled;
-    if (ImGui::Checkbox("Build HZB", &bBuildHZB))
-    {
-        bHZBEnabled = bBuildHZB;
-
-        if (DeferredRenderer)
-        {
-            DeferredRenderer->SetHZBEnabled(bHZBEnabled);
-        }
-    }
-
-        ImGui::Separator();
-    bool bShadows = bShadowsEnabled;
-    if (ImGui::Checkbox("Shadows", &bShadows))
-    {
-        bShadowsEnabled = bShadows;
-
-        if (DeferredRenderer)
-        {
-            DeferredRenderer->SetShadowsEnabled(bShadowsEnabled);
-        }
-
-        if (ForwardRenderer)
-        {
-            ForwardRenderer->SetShadowsEnabled(bShadowsEnabled);
-        }
-    }
-
-	float ShadowBiasValue = ShadowBias;
-	if (ImGui::SliderFloat("Shadow Bias", &ShadowBiasValue, 0.0f, 0.01f, "%.5f"))
+	ImGui::SameLine();
+	const double CpuFrameMs = Time->GetDeltaTimeSeconds() * 1000.0;
+	double GpuFrameMs = -1.0;
+	for (const FRenderGraph::FGpuPassTimingStats& Stats : FRenderGraph::GetGpuTimingStats())
 	{
-		ShadowBias = ShadowBiasValue;
-
-		if (DeferredRenderer)
+		if (Stats.Name == "Frame")
 		{
-			DeferredRenderer->SetShadowBias(ShadowBias);
-		}
-
-		if (ForwardRenderer)
-		{
-			ForwardRenderer->SetShadowBias(ShadowBias);
+			GpuFrameMs = Stats.AvgMs;
+			break;
 		}
 	}
+	if (GpuFrameMs >= 0.0)
+	{
+		ImGui::Text("CPU/GPU: %.3f / %.3f", CpuFrameMs, GpuFrameMs);
+	}
+	else
+	{
+		ImGui::Text("CPU/GPU: %.3f / N/A", CpuFrameMs);
+	}
 
-	ImGui::Separator();
-    bool bTonemap = bTonemapEnabled;
-    if (ImGui::Checkbox("Tonemap", &bTonemap))
+    if (ImGui::CollapsingHeader("Details", ImGuiTreeNodeFlags_DefaultOpen))
     {
-        bTonemapEnabled = bTonemap;
+        ImGui::Separator();
+        ImGui::Text("GPU Timing (avg/min/max ms)");
 
-        if (DeferredRenderer)
+        //float TimingWindowSeconds = static_cast<float>(FRenderGraph::GetGpuTimingWindowSeconds());
+        //if (ImGui::SliderFloat("GPU Timing Window (s)", &TimingWindowSeconds, 0.1f, 5.0f, "%.1f"))
+        //{
+        //    FRenderGraph::SetGpuTimingWindowSeconds(TimingWindowSeconds);
+        //}
+
+        int TimingDisplayCount = static_cast<int>(FRenderGraph::GetGpuTimingDisplayCount());
+        if (ImGui::SliderInt("Display Count", &TimingDisplayCount, 1, 20))
         {
-            DeferredRenderer->SetTonemapEnabled(bTonemapEnabled);
+            FRenderGraph::SetGpuTimingDisplayCount(static_cast<uint32>(TimingDisplayCount));
+        }
+
+        const std::vector<FRenderGraph::FGpuPassTimingStats>& TimingStats = FRenderGraph::GetGpuTimingStats();
+        const uint32 MaxDisplay = FRenderGraph::GetGpuTimingDisplayCount();
+        const uint32 DisplayCount = (std::min)(MaxDisplay, static_cast<uint32>(TimingStats.size()));
+        for (uint32 Index = 0; Index < DisplayCount; ++Index)
+        {
+            const FRenderGraph::FGpuPassTimingStats& Stats = TimingStats[Index];
+            ImGui::Text("%s: %.3f / %.3f / %.3f (n=%u)",
+                Stats.Name.c_str(),
+                Stats.AvgMs,
+                Stats.MinMs,
+                Stats.MaxMs,
+                Stats.SampleCount);
+        }
+
+            ImGui::Separator();
+            const std::string ScenePathUtf8 = PathToUtf8String(CurrentScenePath);
+            ImGui::TextWrapped("Scene: %s", ScenePathUtf8.c_str());
+            if (ImGui::Button("Load Scene"))
+            {
+                const std::filesystem::path ScenePath(CurrentScenePath);
+                const std::filesystem::path InitialDir = ScenePath.has_parent_path() ? ScenePath.parent_path() : std::filesystem::path();
+                const std::wstring SelectedScene = OpenSceneFileDialog(InitialDir.wstring());
+                if (!SelectedScene.empty())
+                {
+                    PendingScenePath = SelectedScene;
+                }
+            }
+
+        DXGI_QUERY_VIDEO_MEMORY_INFO LocalMemoryInfo = {};
+        if (Device && Device->QueryLocalVideoMemory(LocalMemoryInfo))
+        {
+            const double UsageMB = static_cast<double>(LocalMemoryInfo.CurrentUsage) / (1024.0 * 1024.0);
+            const double BudgetMB = static_cast<double>(LocalMemoryInfo.Budget) / (1024.0 * 1024.0);
+            const double AvailableMB = static_cast<double>(LocalMemoryInfo.AvailableForReservation) / (1024.0 * 1024.0);
+		    const double ReservedMB = static_cast<double>(LocalMemoryInfo.CurrentReservation) / (1024.0 * 1024.0);
+
+            ImGui::Separator();
+            ImGui::Text("GPU Memory (Local)");
+            ImGui::Text("Usage: %.1f MB", UsageMB);
+            ImGui::Text("Budget: %.1f MB", BudgetMB);
+            ImGui::Text("Available: %.1f MB", AvailableMB);
+		    ImGui::Text("Reserved: %.1f MB", ReservedMB);
+        }
+	    ImGui::Separator();
+
+        bool bFrameOverlap = bFrameOverlapEnabled;
+        if (ImGui::Checkbox("Frame Overlap", &bFrameOverlap))
+        {
+            bFrameOverlapEnabled = bFrameOverlap;
+        }
+
+        if (Device && Device->GetGraphicsQueue())
+        {
+            const uint64 CompletedFence = Device->GetGraphicsQueue()->GetCompletedFenceValue();
+            const uint64 LastSignaledFence = Device->GetGraphicsQueue()->GetLastSignaledFenceValue();
+            const uint64 InFlightFrames = (LastSignaledFence > CompletedFence) ? (LastSignaledFence - CompletedFence) : 0;
+
+            ImGui::Text("In-flight frames: %llu", static_cast<unsigned long long>(InFlightFrames));
+    //        ImGui::Text("GPU fences: completed %llu / last signaled %llu", static_cast<unsigned long long>(CompletedFence), static_cast<unsigned long long>(LastSignaledFence));
+        }
+
+        bool bDepthPrepass = bDepthPrepassEnabled;
+        if (ImGui::Checkbox("Depth Prepass", &bDepthPrepass))
+        {
+            bDepthPrepassEnabled = bDepthPrepass;
+
+            if (ForwardRenderer)
+            {
+                ForwardRenderer->SetDepthPrepassEnabled(bDepthPrepassEnabled);
+            }
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetDepthPrepassEnabled(bDepthPrepassEnabled);
+            }
+        }
+
+        ImGui::Separator();
+        bool bBuildHZB = bHZBEnabled;
+        if (ImGui::Checkbox("Build HZB", &bBuildHZB))
+        {
+            bHZBEnabled = bBuildHZB;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetHZBEnabled(bHZBEnabled);
+            }
+        }
+
+        ImGui::Separator();
+        bool bShadows = bShadowsEnabled;
+        if (ImGui::Checkbox("Shadows", &bShadows))
+        {
+            bShadowsEnabled = bShadows;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetShadowsEnabled(bShadowsEnabled);
+            }
+
+            if (ForwardRenderer)
+            {
+                ForwardRenderer->SetShadowsEnabled(bShadowsEnabled);
+            }
+        }
+
+        float ShadowBiasValue = ShadowBias;
+        if (ImGui::SliderFloat("Shadow Bias", &ShadowBiasValue, 0.0f, 0.01f, "%.5f"))
+        {
+            ShadowBias = ShadowBiasValue;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetShadowBias(ShadowBias);
+            }
+
+            if (ForwardRenderer)
+            {
+                ForwardRenderer->SetShadowBias(ShadowBias);
+            }
+        }
+
+        ImGui::Separator();
+        bool bTonemap = bTonemapEnabled;
+        if (ImGui::Checkbox("Tonemap", &bTonemap))
+        {
+            bTonemapEnabled = bTonemap;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetTonemapEnabled(bTonemapEnabled);
+            }
+        }
+
+        float TonemapExposureValue = TonemapExposure;
+        if (ImGui::SliderFloat("Tonemap Exposure", &TonemapExposureValue, 0.1f, 5.0f, "%.2f"))
+        {
+            TonemapExposure = TonemapExposureValue;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetTonemapExposure(TonemapExposure);
+            }
+        }
+
+        float TonemapWhitePointValue = TonemapWhitePoint;
+        if (ImGui::SliderFloat("Tonemap White Point", &TonemapWhitePointValue, 0.5f, 16.0f, "%.2f"))
+        {
+            TonemapWhitePoint = TonemapWhitePointValue;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetTonemapWhitePoint(TonemapWhitePoint);
+            }
+        }
+
+        float TonemapGammaValue = TonemapGamma;
+        if (ImGui::SliderFloat("Tonemap Gamma", &TonemapGammaValue, 1.0f, 3.0f, "%.2f"))
+        {
+            TonemapGamma = TonemapGammaValue;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetTonemapGamma(TonemapGamma);
+            }
+        }
+
+        ImGui::Separator();
+        bool bLightingChanged = false;
+
+        float YawDegrees = DirectX::XMConvertToDegrees(LightYaw);
+        if (ImGui::SliderFloat("Light Yaw", &YawDegrees, -180.0f, 180.0f, "%.1f deg"))
+        {
+            LightYaw = DirectX::XMConvertToRadians(YawDegrees);
+            bLightingChanged = true;
+        }
+
+        float PitchDegrees = DirectX::XMConvertToDegrees(LightPitch);
+        if (ImGui::SliderFloat("Light Pitch", &PitchDegrees, -89.0f, 89.0f, "%.1f deg"))
+        {
+            LightPitch = DirectX::XMConvertToRadians(PitchDegrees);
+            bLightingChanged = true;
+        }
+
+        if (ImGui::SliderFloat("Light Intensity", &LightIntensity, 0.0f, 5.0f, "%.2f"))
+        {
+            bLightingChanged = true;
+        }
+
+        if (bLightingChanged)
+        {
+            UpdateRendererLighting();
         }
     }
 
-    float TonemapExposureValue = TonemapExposure;
-    if (ImGui::SliderFloat("Tonemap Exposure", &TonemapExposureValue, 0.1f, 5.0f, "%.2f"))
-    {
-        TonemapExposure = TonemapExposureValue;
-
-        if (DeferredRenderer)
-        {
-            DeferredRenderer->SetTonemapExposure(TonemapExposure);
-        }
-    }
-
-    float TonemapWhitePointValue = TonemapWhitePoint;
-    if (ImGui::SliderFloat("Tonemap White Point", &TonemapWhitePointValue, 0.5f, 16.0f, "%.2f"))
-    {
-        TonemapWhitePoint = TonemapWhitePointValue;
-
-        if (DeferredRenderer)
-        {
-            DeferredRenderer->SetTonemapWhitePoint(TonemapWhitePoint);
-        }
-    }
-
-    float TonemapGammaValue = TonemapGamma;
-    if (ImGui::SliderFloat("Tonemap Gamma", &TonemapGammaValue, 1.0f, 3.0f, "%.2f"))
-    {
-        TonemapGamma = TonemapGammaValue;
-
-        if (DeferredRenderer)
-        {
-            DeferredRenderer->SetTonemapGamma(TonemapGamma);
-        }
-    }
-
-    ImGui::Separator();
-    bool bLightingChanged = false;
-
-    float YawDegrees = DirectX::XMConvertToDegrees(LightYaw);
-    if (ImGui::SliderFloat("Light Yaw", &YawDegrees, -180.0f, 180.0f, "%.1f deg"))
-    {
-        LightYaw = DirectX::XMConvertToRadians(YawDegrees);
-        bLightingChanged = true;
-    }
-
-    float PitchDegrees = DirectX::XMConvertToDegrees(LightPitch);
-    if (ImGui::SliderFloat("Light Pitch", &PitchDegrees, -89.0f, 89.0f, "%.1f deg"))
-    {
-        LightPitch = DirectX::XMConvertToRadians(PitchDegrees);
-        bLightingChanged = true;
-    }
-
-    if (ImGui::SliderFloat("Light Intensity", &LightIntensity, 0.0f, 5.0f, "%.2f"))
-    {
-        bLightingChanged = true;
-    }
-
-    if (bLightingChanged)
-    {
-        UpdateRendererLighting();
-    }
     ImGui::End();
 
     if (Camera)

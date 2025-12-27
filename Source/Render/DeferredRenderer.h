@@ -78,6 +78,20 @@ private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> HZBRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> BasePassPipelineWithNormalMap;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> BasePassPipelineWithoutNormalMap;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> BasePassPipelineWithNormalMapNoMr;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> BasePassPipelineWithoutNormalMapNoMr;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> BasePassPipelineWithNormalMapNoBaseColor;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> BasePassPipelineWithoutNormalMapNoBaseColor;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> BasePassPipelineWithNormalMapNoMrNoBaseColor;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> BasePassPipelineWithoutNormalMapNoMrNoBaseColor;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> BasePassPipelineWithNormalMapNoEmissive;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> BasePassPipelineWithoutNormalMapNoEmissive;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> BasePassPipelineWithNormalMapNoMrNoEmissive;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> BasePassPipelineWithoutNormalMapNoMrNoEmissive;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> BasePassPipelineWithNormalMapNoBaseColorNoEmissive;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> BasePassPipelineWithoutNormalMapNoBaseColorNoEmissive;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> BasePassPipelineWithNormalMapNoMrNoBaseColorNoEmissive;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> BasePassPipelineWithoutNormalMapNoMrNoBaseColorNoEmissive;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ShadowPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> LightingPipeline;
@@ -97,6 +111,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> LightingBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> HierarchicalZBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> HZBNullUavResource;
+    Microsoft::WRL::ComPtr<ID3D12Resource> NullTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> EnvironmentCubeTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> BrdfLutTexture;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> DescriptorHeap;
@@ -153,6 +168,7 @@ private:
     float TonemapExposure = 0.9f;
     float TonemapWhitePoint = 6.0f;
     float TonemapGamma = 2.2f;
+    float EnvironmentMipCount = 1.0f;
     bool bLogResourceBarriers = false;
     bool bEnableGraphDump = false;
     bool bEnableGpuTiming = false;

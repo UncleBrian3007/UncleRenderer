@@ -43,6 +43,21 @@ private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> SkyRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineState;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoBaseColor;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoMr;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoMrNoBaseColor;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoEmissive;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoBaseColorNoEmissive;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoMrNoEmissive;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoMrNoBaseColorNoEmissive;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoNormal;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoBaseColorNoNormal;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoMrNoNormal;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoMrNoBaseColorNoNormal;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoEmissiveNoNormal;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoBaseColorNoEmissiveNoNormal;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoMrNoEmissiveNoNormal;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoMrNoBaseColorNoEmissiveNoNormal;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ShadowPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> SkyPipelineState;
@@ -58,6 +73,9 @@ private:
     D3D12_CPU_DESCRIPTOR_HANDLE ShadowDSVHandle{};
     Microsoft::WRL::ComPtr<ID3D12Resource> SceneTexture;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> TextureDescriptorHeap;
+    Microsoft::WRL::ComPtr<ID3D12Resource> NullTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> EnvironmentCubeTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> BrdfLutTexture;
     std::unique_ptr<FTextureLoader> TextureLoader;
     FMeshGeometryBuffers SkyGeometry;
     float SkySphereRadius = 1000.0f;
@@ -80,6 +98,7 @@ private:
     bool bLogResourceBarriers = false;
     bool bEnableGraphDump = false;
     bool bEnableGpuTiming = false;
+    float EnvironmentMipCount = 1.0f;
 
     FDX12Device* Device = nullptr;
 };

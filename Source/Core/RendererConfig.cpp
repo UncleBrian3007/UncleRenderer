@@ -195,6 +195,51 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     {
         OutConfig.bEnableGpuTiming = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
+
+    if (LowerKey == "width" || LowerKey == "windowwidth")
+    {
+        try
+        {
+            const int32_t ParsedValue = std::stoi(Value);
+            OutConfig.WindowWidth = static_cast<uint32_t>((std::max)(1, ParsedValue));
+        }
+        catch (...)
+        {
+            LogWarning("Invalid window width value in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "height" || LowerKey == "windowheight")
+    {
+        try
+        {
+            const int32_t ParsedValue = std::stoi(Value);
+            OutConfig.WindowHeight = static_cast<uint32_t>((std::max)(1, ParsedValue));
+        }
+        catch (...)
+        {
+            LogWarning("Invalid window height value in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "resolution")
+    {
+        const size_t Separator = Value.find_first_of("xX");
+        if (Separator != std::string::npos)
+        {
+            try
+            {
+                const int32_t ParsedWidth = std::stoi(Value.substr(0, Separator));
+                const int32_t ParsedHeight = std::stoi(Value.substr(Separator + 1));
+                OutConfig.WindowWidth = static_cast<uint32_t>((std::max)(1, ParsedWidth));
+                OutConfig.WindowHeight = static_cast<uint32_t>((std::max)(1, ParsedHeight));
+            }
+            catch (...)
+            {
+                LogWarning("Invalid resolution value in renderer config: " + Value);
+            }
+        }
+    }
 }
 
 std::string FRendererConfigLoader::TrimCopy(const std::string& Input)

@@ -57,6 +57,9 @@ struct FSceneConstants
     float ShadowStrength = 1.0f;
     float ShadowBias = 0.005f;
     DirectX::XMFLOAT2 PaddingShadow{ 0.0f, 0.0f };
+    float MetallicFactor = 1.0f;
+    float RoughnessFactor = 1.0f;
+    DirectX::XMFLOAT2 PaddingMaterial{ 0.0f, 0.0f };
     DirectX::XMFLOAT4 BaseColorTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
     DirectX::XMFLOAT4 BaseColorTransformRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT4 MetallicRoughnessTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
@@ -65,6 +68,8 @@ struct FSceneConstants
     DirectX::XMFLOAT4 NormalTransformRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT4 EmissiveTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
     DirectX::XMFLOAT4 EmissiveTransformRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
+    float EnvMapMipCount = 1.0f;
+    DirectX::XMFLOAT3 PaddingEnvMap{ 0.0f, 0.0f, 0.0f };
 };
 
 struct FSkyAtmosphereConstants
@@ -154,6 +159,7 @@ namespace RendererUtils
         const DirectX::XMMATRIX& LightViewProjection,
         float ShadowStrength,
         float ShadowBias,
+        float EnvMapMipCount,
         uint8_t* ConstantBufferMapped,
         uint64_t ConstantBufferOffset = 0);
     void UpdateSkyConstants(
@@ -167,4 +173,3 @@ namespace RendererUtils
         float SceneRadius,
         const DirectX::XMFLOAT3& LightDirection);
 }
-

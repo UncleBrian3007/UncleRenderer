@@ -96,6 +96,35 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
 
     TextureLoader = std::make_unique<FTextureLoader>(Device);
 
+    if (!TextureLoader->LoadOrSolidColor(L"", 0xffffffff, NullTexture))
+    {
+        LogError("Forward renderer initialization failed: null texture creation failed");
+        return false;
+    }
+
+    if (NullTexture)
+    {
+        NullTexture->SetName(L"NullTexture");
+    }
+
+    if (!TextureLoader->LoadOrDefault(L"Assets/Textures/output_pmrem.dds", EnvironmentCubeTexture))
+    {
+        LogError("Forward renderer initialization failed: environment cube texture loading failed");
+        return false;
+    }
+
+    if (!TextureLoader->LoadOrDefault(L"Assets/Textures/PreintegratedGF.dds", BrdfLutTexture))
+    {
+        LogError("Forward renderer initialization failed: BRDF LUT texture loading failed");
+        return false;
+    }
+
+    if (EnvironmentCubeTexture)
+    {
+        const D3D12_RESOURCE_DESC EnvDesc = EnvironmentCubeTexture->GetDesc();
+        EnvironmentMipCount = static_cast<float>((std::max)(1u, static_cast<uint32_t>(EnvDesc.MipLevels)));
+    }
+
     FDepthResources DepthResources = {};
     if (!RendererUtils::CreateDepthResources(Device, Width, Height, DXGI_FORMAT_D24_UNORM_S8_UINT, DepthResources))
     {
@@ -434,6 +463,53 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
             LocalCommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
             LocalCommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
 
+            const bool bUseBaseColorMap = !Model.BaseColorTexturePath.empty();
+            const bool bUseMetallicRoughnessMap = !Model.MetallicRoughnessTexturePath.empty();
+            const bool bUseEmissiveMap = !Model.EmissiveTexturePath.empty();
+            const bool bUseNormalMap = Model.bHasNormalMap;
+
+            auto SelectPipeline = [&](bool UseNormal, bool UseMr, bool UseBaseColor, bool UseEmissive)
+            {
+                if (UseNormal)
+                {
+                    if (UseEmissive)
+                    {
+                        if (UseBaseColor)
+                        {
+                            return UseMr ? PipelineState.Get() : PipelineStateNoMr.Get();
+                        }
+
+                        return UseMr ? PipelineStateNoBaseColor.Get() : PipelineStateNoMrNoBaseColor.Get();
+                    }
+
+                    if (UseBaseColor)
+                    {
+                        return UseMr ? PipelineStateNoEmissive.Get() : PipelineStateNoMrNoEmissive.Get();
+                    }
+
+                    return UseMr ? PipelineStateNoBaseColorNoEmissive.Get() : PipelineStateNoMrNoBaseColorNoEmissive.Get();
+                }
+
+                if (UseEmissive)
+                {
+                    if (UseBaseColor)
+                    {
+                        return UseMr ? PipelineStateNoNormal.Get() : PipelineStateNoMrNoNormal.Get();
+                    }
+
+                    return UseMr ? PipelineStateNoBaseColorNoNormal.Get() : PipelineStateNoMrNoBaseColorNoNormal.Get();
+                }
+
+                if (UseBaseColor)
+                {
+                    return UseMr ? PipelineStateNoEmissiveNoNormal.Get() : PipelineStateNoMrNoEmissiveNoNormal.Get();
+                }
+
+                return UseMr ? PipelineStateNoBaseColorNoEmissiveNoNormal.Get() : PipelineStateNoMrNoBaseColorNoEmissiveNoNormal.Get();
+            };
+
+            LocalCommandList->SetPipelineState(SelectPipeline(bUseNormalMap, bUseMetallicRoughnessMap, bUseBaseColorMap, bUseEmissiveMap));
+
             LocalCommandList->SetGraphicsRootConstantBufferView(
                 0,
                 ConstantBuffer->GetGPUVirtualAddress() + ConstantBufferOffset);
@@ -450,7 +526,7 @@ bool FForwardRenderer::CreateRootSignature(FDX12Device* Device)
 {
     D3D12_DESCRIPTOR_RANGE1 DescriptorRange = {};
     DescriptorRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    DescriptorRange.NumDescriptors = 3;
+    DescriptorRange.NumDescriptors = 7;
     DescriptorRange.BaseShaderRegister = 0;
     DescriptorRange.RegisterSpace = 0;
     DescriptorRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
@@ -468,7 +544,7 @@ bool FForwardRenderer::CreateRootSignature(FDX12Device* Device)
     RootParams[1].DescriptorTable.NumDescriptorRanges = 1;
     RootParams[1].DescriptorTable.pDescriptorRanges = &DescriptorRange;
 
-    D3D12_STATIC_SAMPLER_DESC Samplers[2] = {};
+    D3D12_STATIC_SAMPLER_DESC Samplers[3] = {};
     Samplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
     Samplers[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
     Samplers[0].AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
@@ -494,6 +570,18 @@ bool FForwardRenderer::CreateRootSignature(FDX12Device* Device)
     Samplers[1].ShaderRegister = 1;
     Samplers[1].RegisterSpace = 0;
     Samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    Samplers[2].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    Samplers[2].AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    Samplers[2].AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    Samplers[2].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    Samplers[2].ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    Samplers[2].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
+    Samplers[2].MinLOD = 0.0f;
+    Samplers[2].MaxLOD = D3D12_FLOAT32_MAX;
+    Samplers[2].ShaderRegister = 2;
+    Samplers[2].RegisterSpace = 0;
+    Samplers[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootDesc = {};
     RootDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
@@ -521,6 +609,21 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
     FShaderCompiler Compiler;
     std::vector<uint8_t> VSByteCode;
     std::vector<uint8_t> PSByteCode;
+    std::vector<uint8_t> PSByteCodeNoBaseColor;
+    std::vector<uint8_t> PSByteCodeNoMr;
+    std::vector<uint8_t> PSByteCodeNoMrNoBaseColor;
+    std::vector<uint8_t> PSByteCodeNoEmissive;
+    std::vector<uint8_t> PSByteCodeNoBaseColorNoEmissive;
+    std::vector<uint8_t> PSByteCodeNoMrNoEmissive;
+    std::vector<uint8_t> PSByteCodeNoMrNoBaseColorNoEmissive;
+    std::vector<uint8_t> PSByteCodeNoNormal;
+    std::vector<uint8_t> PSByteCodeNoBaseColorNoNormal;
+    std::vector<uint8_t> PSByteCodeNoMrNoNormal;
+    std::vector<uint8_t> PSByteCodeNoMrNoBaseColorNoNormal;
+    std::vector<uint8_t> PSByteCodeNoEmissiveNoNormal;
+    std::vector<uint8_t> PSByteCodeNoBaseColorNoEmissiveNoNormal;
+    std::vector<uint8_t> PSByteCodeNoMrNoEmissiveNoNormal;
+    std::vector<uint8_t> PSByteCodeNoMrNoBaseColorNoEmissiveNoNormal;
 
     const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
     const std::wstring VSTarget = BuildShaderTarget(L"vs", ShaderModel);
@@ -531,7 +634,98 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
         return false;
     }
 
-    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCode))
+    const std::vector<std::wstring> DefaultDefines = { L"USE_BASE_COLOR_MAP=1", L"USE_METALLIC_ROUGHNESS_MAP=1", L"USE_EMISSIVE_MAP=1", L"USE_NORMAL_MAP=1" };
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCode, DefaultDefines))
+    {
+        return false;
+    }
+
+    const std::vector<std::wstring> NoBaseColorDefines = { L"USE_BASE_COLOR_MAP=0", L"USE_METALLIC_ROUGHNESS_MAP=1", L"USE_EMISSIVE_MAP=1", L"USE_NORMAL_MAP=1" };
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoBaseColor, NoBaseColorDefines))
+    {
+        return false;
+    }
+
+    const std::vector<std::wstring> NoMrDefines = { L"USE_BASE_COLOR_MAP=1", L"USE_METALLIC_ROUGHNESS_MAP=0", L"USE_EMISSIVE_MAP=1", L"USE_NORMAL_MAP=1" };
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoMr, NoMrDefines))
+    {
+        return false;
+    }
+
+    const std::vector<std::wstring> NoMrNoBaseColorDefines = { L"USE_BASE_COLOR_MAP=0", L"USE_METALLIC_ROUGHNESS_MAP=0", L"USE_EMISSIVE_MAP=1", L"USE_NORMAL_MAP=1" };
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoMrNoBaseColor, NoMrNoBaseColorDefines))
+    {
+        return false;
+    }
+
+    const std::vector<std::wstring> NoEmissiveDefines = { L"USE_BASE_COLOR_MAP=1", L"USE_METALLIC_ROUGHNESS_MAP=1", L"USE_EMISSIVE_MAP=0", L"USE_NORMAL_MAP=1" };
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoEmissive, NoEmissiveDefines))
+    {
+        return false;
+    }
+
+    const std::vector<std::wstring> NoBaseColorNoEmissiveDefines = { L"USE_BASE_COLOR_MAP=0", L"USE_METALLIC_ROUGHNESS_MAP=1", L"USE_EMISSIVE_MAP=0", L"USE_NORMAL_MAP=1" };
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoBaseColorNoEmissive, NoBaseColorNoEmissiveDefines))
+    {
+        return false;
+    }
+
+    const std::vector<std::wstring> NoMrNoEmissiveDefines = { L"USE_BASE_COLOR_MAP=1", L"USE_METALLIC_ROUGHNESS_MAP=0", L"USE_EMISSIVE_MAP=0", L"USE_NORMAL_MAP=1" };
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoMrNoEmissive, NoMrNoEmissiveDefines))
+    {
+        return false;
+    }
+
+    const std::vector<std::wstring> NoMrNoBaseColorNoEmissiveDefines = { L"USE_BASE_COLOR_MAP=0", L"USE_METALLIC_ROUGHNESS_MAP=0", L"USE_EMISSIVE_MAP=0", L"USE_NORMAL_MAP=1" };
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoMrNoBaseColorNoEmissive, NoMrNoBaseColorNoEmissiveDefines))
+    {
+        return false;
+    }
+
+    const std::vector<std::wstring> NoNormalDefines = { L"USE_BASE_COLOR_MAP=1", L"USE_METALLIC_ROUGHNESS_MAP=1", L"USE_EMISSIVE_MAP=1", L"USE_NORMAL_MAP=0" };
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoNormal, NoNormalDefines))
+    {
+        return false;
+    }
+
+    const std::vector<std::wstring> NoBaseColorNoNormalDefines = { L"USE_BASE_COLOR_MAP=0", L"USE_METALLIC_ROUGHNESS_MAP=1", L"USE_EMISSIVE_MAP=1", L"USE_NORMAL_MAP=0" };
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoBaseColorNoNormal, NoBaseColorNoNormalDefines))
+    {
+        return false;
+    }
+
+    const std::vector<std::wstring> NoMrNoNormalDefines = { L"USE_BASE_COLOR_MAP=1", L"USE_METALLIC_ROUGHNESS_MAP=0", L"USE_EMISSIVE_MAP=1", L"USE_NORMAL_MAP=0" };
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoMrNoNormal, NoMrNoNormalDefines))
+    {
+        return false;
+    }
+
+    const std::vector<std::wstring> NoMrNoBaseColorNoNormalDefines = { L"USE_BASE_COLOR_MAP=0", L"USE_METALLIC_ROUGHNESS_MAP=0", L"USE_EMISSIVE_MAP=1", L"USE_NORMAL_MAP=0" };
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoMrNoBaseColorNoNormal, NoMrNoBaseColorNoNormalDefines))
+    {
+        return false;
+    }
+
+    const std::vector<std::wstring> NoEmissiveNoNormalDefines = { L"USE_BASE_COLOR_MAP=1", L"USE_METALLIC_ROUGHNESS_MAP=1", L"USE_EMISSIVE_MAP=0", L"USE_NORMAL_MAP=0" };
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoEmissiveNoNormal, NoEmissiveNoNormalDefines))
+    {
+        return false;
+    }
+
+    const std::vector<std::wstring> NoBaseColorNoEmissiveNoNormalDefines = { L"USE_BASE_COLOR_MAP=0", L"USE_METALLIC_ROUGHNESS_MAP=1", L"USE_EMISSIVE_MAP=0", L"USE_NORMAL_MAP=0" };
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoBaseColorNoEmissiveNoNormal, NoBaseColorNoEmissiveNoNormalDefines))
+    {
+        return false;
+    }
+
+    const std::vector<std::wstring> NoMrNoEmissiveNoNormalDefines = { L"USE_BASE_COLOR_MAP=1", L"USE_METALLIC_ROUGHNESS_MAP=0", L"USE_EMISSIVE_MAP=0", L"USE_NORMAL_MAP=0" };
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoMrNoEmissiveNoNormal, NoMrNoEmissiveNoNormalDefines))
+    {
+        return false;
+    }
+
+    const std::vector<std::wstring> NoMrNoBaseColorNoEmissiveNoNormalDefines = { L"USE_BASE_COLOR_MAP=0", L"USE_METALLIC_ROUGHNESS_MAP=0", L"USE_EMISSIVE_MAP=0", L"USE_NORMAL_MAP=0" };
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoMrNoBaseColorNoEmissiveNoNormal, NoMrNoBaseColorNoEmissiveNoNormalDefines))
     {
         return false;
     }
@@ -601,6 +795,51 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
     PsoDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
 
     HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineState.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeNoBaseColor.data(), PSByteCodeNoBaseColor.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateNoBaseColor.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeNoMr.data(), PSByteCodeNoMr.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateNoMr.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeNoMrNoBaseColor.data(), PSByteCodeNoMrNoBaseColor.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateNoMrNoBaseColor.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeNoEmissive.data(), PSByteCodeNoEmissive.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateNoEmissive.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeNoBaseColorNoEmissive.data(), PSByteCodeNoBaseColorNoEmissive.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateNoBaseColorNoEmissive.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeNoMrNoEmissive.data(), PSByteCodeNoMrNoEmissive.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateNoMrNoEmissive.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeNoMrNoBaseColorNoEmissive.data(), PSByteCodeNoMrNoBaseColorNoEmissive.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateNoMrNoBaseColorNoEmissive.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeNoNormal.data(), PSByteCodeNoNormal.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateNoNormal.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeNoBaseColorNoNormal.data(), PSByteCodeNoBaseColorNoNormal.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateNoBaseColorNoNormal.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeNoMrNoNormal.data(), PSByteCodeNoMrNoNormal.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateNoMrNoNormal.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeNoMrNoBaseColorNoNormal.data(), PSByteCodeNoMrNoBaseColorNoNormal.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateNoMrNoBaseColorNoNormal.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeNoEmissiveNoNormal.data(), PSByteCodeNoEmissiveNoNormal.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateNoEmissiveNoNormal.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeNoBaseColorNoEmissiveNoNormal.data(), PSByteCodeNoBaseColorNoEmissiveNoNormal.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateNoBaseColorNoEmissiveNoNormal.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeNoMrNoEmissiveNoNormal.data(), PSByteCodeNoMrNoEmissiveNoNormal.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateNoMrNoEmissiveNoNormal.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeNoMrNoBaseColorNoEmissiveNoNormal.data(), PSByteCodeNoMrNoBaseColorNoEmissiveNoNormal.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateNoMrNoBaseColorNoEmissiveNoNormal.GetAddressOf())));
 
     if (bDepthPrepassEnabled)
     {
@@ -737,7 +976,7 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
     }
 
     SceneTextures.clear();
-    SceneTextures.reserve(Models.size() * 2); // 2 textures per model (base color + emissive)
+    SceneTextures.reserve(Models.size() * 4); // 4 textures per model (base color + metallic roughness + normal + emissive)
 
     if (!ShadowMap)
     {
@@ -748,12 +987,14 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
     struct FTextureLoadResult
     {
         Microsoft::WRL::ComPtr<ID3D12Resource> BaseColor;
+        Microsoft::WRL::ComPtr<ID3D12Resource> MetallicRoughness;
+        Microsoft::WRL::ComPtr<ID3D12Resource> Normal;
         Microsoft::WRL::ComPtr<ID3D12Resource> Emissive;
     };
     
     std::vector<FTextureLoadResult> LoadResults(Models.size());
     std::vector<FTextureLoadRequest> Requests;
-    Requests.reserve(Models.size() * 2);
+    Requests.reserve(Models.size() * 4);
 
     const auto ClampToByte = [](float Value)
     {
@@ -772,21 +1013,41 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
     // Build load requests for all textures
     for (size_t Index = 0; Index < Models.size(); ++Index)
     {
-        const uint32_t BaseColorValue = PackColor(Models[Index].BaseColorFactor);
-        FTextureLoadRequest BaseColorRequest;
-        BaseColorRequest.Path = Models[Index].BaseColorTexturePath;
-        BaseColorRequest.SolidColor = BaseColorValue;
-        BaseColorRequest.bUseSolidColor = Models[Index].BaseColorTexturePath.empty();
-        BaseColorRequest.OutTexture = &LoadResults[Index].BaseColor;
-        Requests.push_back(BaseColorRequest);
+        if (!Models[Index].BaseColorTexturePath.empty())
+        {
+            FTextureLoadRequest BaseColorRequest;
+            BaseColorRequest.Path = Models[Index].BaseColorTexturePath;
+            BaseColorRequest.bUseSolidColor = false;
+            BaseColorRequest.OutTexture = &LoadResults[Index].BaseColor;
+            Requests.push_back(BaseColorRequest);
+        }
 
-        const uint32_t EmissiveColorValue = PackColor(Models[Index].EmissiveFactor);
-        FTextureLoadRequest EmissiveRequest;
-        EmissiveRequest.Path = Models[Index].EmissiveTexturePath;
-        EmissiveRequest.SolidColor = EmissiveColorValue;
-        EmissiveRequest.bUseSolidColor = Models[Index].EmissiveTexturePath.empty();
-        EmissiveRequest.OutTexture = &LoadResults[Index].Emissive;
-        Requests.push_back(EmissiveRequest);
+        if (!Models[Index].MetallicRoughnessTexturePath.empty())
+        {
+            FTextureLoadRequest MetallicRoughnessRequest;
+            MetallicRoughnessRequest.Path = Models[Index].MetallicRoughnessTexturePath;
+            MetallicRoughnessRequest.bUseSolidColor = false;
+            MetallicRoughnessRequest.OutTexture = &LoadResults[Index].MetallicRoughness;
+            Requests.push_back(MetallicRoughnessRequest);
+        }
+
+        if (!Models[Index].NormalTexturePath.empty())
+        {
+            FTextureLoadRequest NormalRequest;
+            NormalRequest.Path = Models[Index].NormalTexturePath;
+            NormalRequest.bUseSolidColor = false;
+            NormalRequest.OutTexture = &LoadResults[Index].Normal;
+            Requests.push_back(NormalRequest);
+        }
+
+        if (!Models[Index].EmissiveTexturePath.empty())
+        {
+            FTextureLoadRequest EmissiveRequest;
+            EmissiveRequest.Path = Models[Index].EmissiveTexturePath;
+            EmissiveRequest.bUseSolidColor = false;
+            EmissiveRequest.OutTexture = &LoadResults[Index].Emissive;
+            Requests.push_back(EmissiveRequest);
+        }
     }
 
     // Load all textures in parallel
@@ -800,7 +1061,7 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
     // Create descriptor heap and SRVs
     D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
     HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    HeapDesc.NumDescriptors = static_cast<UINT>(Models.size() * 3);
+    HeapDesc.NumDescriptors = static_cast<UINT>(Models.size() * 7);
     HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(TextureDescriptorHeap.GetAddressOf())));
 
@@ -810,12 +1071,13 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
 
     const auto CreateSceneTextureSrv = [&](ID3D12Resource* Texture)
     {
-        if (!Texture)
+        ID3D12Resource* Resource = Texture ? Texture : NullTexture.Get();
+        if (!Resource)
         {
             return;
         }
 
-        const D3D12_RESOURCE_DESC TextureDesc = Texture->GetDesc();
+        const D3D12_RESOURCE_DESC TextureDesc = Resource->GetDesc();
 
         D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc = {};
         SrvDesc.Format = TextureDesc.Format;
@@ -825,7 +1087,7 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
         SrvDesc.Texture2D.MostDetailedMip = 0;
         SrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
 
-        Device->GetDevice()->CreateShaderResourceView(Texture, &SrvDesc, CpuHandle);
+        Device->GetDevice()->CreateShaderResourceView(Resource, &SrvDesc, CpuHandle);
     };
 
     D3D12_SHADER_RESOURCE_VIEW_DESC ShadowSrvDesc = {};
@@ -836,64 +1098,60 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
     ShadowSrvDesc.Texture2D.MostDetailedMip = 0;
     ShadowSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
 
+    D3D12_SHADER_RESOURCE_VIEW_DESC EnvSrvDesc = {};
+    EnvSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+    EnvSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    EnvSrvDesc.Format = EnvironmentCubeTexture ? EnvironmentCubeTexture->GetDesc().Format : DXGI_FORMAT_UNKNOWN;
+    EnvSrvDesc.TextureCube.MipLevels = EnvironmentCubeTexture ? EnvironmentCubeTexture->GetDesc().MipLevels : 1;
+    EnvSrvDesc.TextureCube.MostDetailedMip = 0;
+    EnvSrvDesc.TextureCube.ResourceMinLODClamp = 0.0f;
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC BrdfSrvDesc = {};
+    BrdfSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    BrdfSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    BrdfSrvDesc.Format = BrdfLutTexture ? BrdfLutTexture->GetDesc().Format : DXGI_FORMAT_R8G8B8A8_UNORM;
+    BrdfSrvDesc.Texture2D.MipLevels = BrdfLutTexture ? BrdfLutTexture->GetDesc().MipLevels : 1;
+    BrdfSrvDesc.Texture2D.MostDetailedMip = 0;
+    BrdfSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+
     for (size_t Index = 0; Index < Models.size(); ++Index)
     {
-        const auto ClampToByte = [](float Value)
-        {
-            const float Clamped = (std::max)(0.0f, (std::min)(1.0f, Value));
-            return static_cast<uint32_t>(std::round(Clamped * 255.0f));
-        };
-
-        const auto PackColor = [&ClampToByte](const DirectX::XMFLOAT3& Color)
-        {
-            const uint32_t R = ClampToByte(Color.x);
-            const uint32_t G = ClampToByte(Color.y);
-            const uint32_t B = ClampToByte(Color.z);
-            return 0xff000000 | (B << 16) | (G << 8) | R;
-        };
-
-        Microsoft::WRL::ComPtr<ID3D12Resource> TextureResource;
-        Microsoft::WRL::ComPtr<ID3D12Resource> EmissiveResource;
-        const uint32_t BaseColorValue = PackColor(Models[Index].BaseColorFactor);
-        if (Models[Index].BaseColorTexturePath.empty())
-        {
-            if (!TextureLoader->LoadOrSolidColor(Models[Index].BaseColorTexturePath, BaseColorValue, TextureResource))
-            {
-                return false;
-            }
-        }
-        else if (!TextureLoader->LoadOrDefault(Models[Index].BaseColorTexturePath, TextureResource))
-        {
-            return false;
-        }
-
-        const uint32_t EmissiveColorValue = PackColor(Models[Index].EmissiveFactor);
-        if (Models[Index].EmissiveTexturePath.empty())
-        {
-            if (!TextureLoader->LoadOrSolidColor(Models[Index].EmissiveTexturePath, EmissiveColorValue, EmissiveResource))
-            {
-                return false;
-            }
-        }
-        else if (!TextureLoader->LoadOrDefault(Models[Index].EmissiveTexturePath, EmissiveResource))
-        {
-            return false;
-        }
-
-        SceneTextures.push_back(TextureResource);
-        CreateSceneTextureSrv(TextureResource.Get());
+        SceneTextures.push_back(LoadResults[Index].BaseColor);
+        CreateSceneTextureSrv(LoadResults[Index].BaseColor.Get());
         SceneModels[Index].TextureHandle = GpuHandle;
 
         CpuHandle.ptr += DescriptorSize;
         GpuHandle.ptr += DescriptorSize;
 
-        SceneTextures.push_back(EmissiveResource);
-        CreateSceneTextureSrv(EmissiveResource.Get());
+        SceneTextures.push_back(LoadResults[Index].MetallicRoughness);
+        CreateSceneTextureSrv(LoadResults[Index].MetallicRoughness.Get());
+
+        CpuHandle.ptr += DescriptorSize;
+        GpuHandle.ptr += DescriptorSize;
+
+        SceneTextures.push_back(LoadResults[Index].Normal);
+        CreateSceneTextureSrv(LoadResults[Index].Normal.Get());
+
+        CpuHandle.ptr += DescriptorSize;
+        GpuHandle.ptr += DescriptorSize;
+
+        SceneTextures.push_back(LoadResults[Index].Emissive);
+        CreateSceneTextureSrv(LoadResults[Index].Emissive.Get());
 
         CpuHandle.ptr += DescriptorSize;
         GpuHandle.ptr += DescriptorSize;
 
         Device->GetDevice()->CreateShaderResourceView(ShadowMap.Get(), &ShadowSrvDesc, CpuHandle);
+
+        CpuHandle.ptr += DescriptorSize;
+        GpuHandle.ptr += DescriptorSize;
+
+        Device->GetDevice()->CreateShaderResourceView(EnvironmentCubeTexture.Get(), &EnvSrvDesc, CpuHandle);
+
+        CpuHandle.ptr += DescriptorSize;
+        GpuHandle.ptr += DescriptorSize;
+
+        Device->GetDevice()->CreateShaderResourceView(BrdfLutTexture.Get(), &BrdfSrvDesc, CpuHandle);
 
         CpuHandle.ptr += DescriptorSize;
         GpuHandle.ptr += DescriptorSize;
@@ -916,6 +1174,7 @@ void FForwardRenderer::UpdateSceneConstants(const FCamera& Camera, const FSceneM
         LightViewProjection,
         bShadowsEnabled ? ShadowStrength : 0.0f,
         ShadowBias,
+        EnvironmentMipCount,
         ConstantBufferMapped,
         ConstantBufferOffset);
 }
