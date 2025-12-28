@@ -61,17 +61,21 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
     ScissorRect.right = static_cast<LONG>(Width);
     ScissorRect.bottom = static_cast<LONG>(Height);
 
+    constexpr uint32_t DefaultShadowMapSize = 2048;
+    ShadowMapWidth = DefaultShadowMapSize;
+    ShadowMapHeight = DefaultShadowMapSize;
+
     ShadowViewport.TopLeftX = 0.0f;
     ShadowViewport.TopLeftY = 0.0f;
-    ShadowViewport.Width = 2048.0f;
-    ShadowViewport.Height = 2048.0f;
+    ShadowViewport.Width = static_cast<float>(ShadowMapWidth);
+    ShadowViewport.Height = static_cast<float>(ShadowMapHeight);
     ShadowViewport.MinDepth = 0.0f;
     ShadowViewport.MaxDepth = 1.0f;
 
     ShadowScissor.left = 0;
     ShadowScissor.top = 0;
-    ShadowScissor.right = 2048;
-    ShadowScissor.bottom = 2048;
+    ShadowScissor.right = static_cast<LONG>(ShadowMapWidth);
+    ShadowScissor.bottom = static_cast<LONG>(ShadowMapHeight);
 
     LogInfo("Creating forward renderer root signature...");
     if (!CreateRootSignature(Device))
@@ -559,12 +563,12 @@ bool FForwardRenderer::CreateRootSignature(FDX12Device* Device)
     Samplers[0].RegisterSpace = 0;
     Samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    Samplers[1].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+    Samplers[1].Filter = D3D12_FILTER_COMPARISON_MIN_MAG_MIP_POINT;
     Samplers[1].AddressU = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
     Samplers[1].AddressV = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
     Samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
     Samplers[1].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
-    Samplers[1].ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    Samplers[1].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
     Samplers[1].MinLOD = 0.0f;
     Samplers[1].MaxLOD = D3D12_FLOAT32_MAX;
     Samplers[1].ShaderRegister = 1;
@@ -914,13 +918,17 @@ bool FForwardRenderer::CreateShadowPipeline(FDX12Device* Device)
 
 bool FForwardRenderer::CreateShadowResources(FDX12Device* Device)
 {
-    constexpr uint32_t ShadowSize = 2048;
+    if (ShadowMapWidth == 0 || ShadowMapHeight == 0)
+    {
+        ShadowMapWidth = 2048;
+        ShadowMapHeight = 2048;
+    }
 
     D3D12_RESOURCE_DESC Desc = {};
     Desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     Desc.Alignment = 0;
-    Desc.Width = ShadowSize;
-    Desc.Height = ShadowSize;
+    Desc.Width = ShadowMapWidth;
+    Desc.Height = ShadowMapHeight;
     Desc.DepthOrArraySize = 1;
     Desc.MipLevels = 1;
     Desc.Format = DXGI_FORMAT_R32_TYPELESS;
@@ -1174,6 +1182,8 @@ void FForwardRenderer::UpdateSceneConstants(const FCamera& Camera, const FSceneM
         LightViewProjection,
         bShadowsEnabled ? ShadowStrength : 0.0f,
         ShadowBias,
+        static_cast<float>(ShadowMapWidth),
+        static_cast<float>(ShadowMapHeight),
         EnvironmentMipCount,
         ConstantBufferMapped,
         ConstantBufferOffset);

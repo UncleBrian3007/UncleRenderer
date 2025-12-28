@@ -1,4 +1,5 @@
 #include "PBRCommon.hlsl"
+#include "SceneConstants.hlsl"
 
 struct VSOutput
 {
@@ -23,40 +24,6 @@ struct VSOutput
 #define USE_NORMAL_MAP 1
 #endif
 
-cbuffer SceneConstants : register(b0)
-{
-    row_major float4x4 World;
-    row_major float4x4 View;
-    row_major float4x4 ViewInverse;
-    row_major float4x4 Projection;
-    float3 BaseColor;
-    float LightIntensity;
-    float3 LightDirection;
-    float Padding1;
-    float3 CameraPosition;
-    float Padding2;
-    float3 LightColor;
-    float Padding3;
-    float3 EmissiveFactor;
-    float Padding4;
-    row_major float4x4 LightViewProjection;
-    float ShadowStrength;
-    float ShadowBias;
-    float2 PaddingShadow;
-    float MetallicFactor;
-    float RoughnessFactor;
-    float2 PaddingMaterial;
-    float4 BaseColorTransformOffsetScale;
-    float4 BaseColorTransformRotation;
-    float4 MetallicRoughnessTransformOffsetScale;
-    float4 MetallicRoughnessTransformRotation;
-    float4 NormalTransformOffsetScale;
-    float4 NormalTransformRotation;
-    float4 EmissiveTransformOffsetScale;
-    float4 EmissiveTransformRotation;
-    float EnvMapMipCount;
-    float3 PaddingEnvMap;
-};
 
 Texture2D AlbedoTexture : register(t0);
 Texture2D MetallicRoughnessTexture : register(t1);
@@ -66,7 +33,7 @@ Texture2D ShadowMap : register(t4);
 TextureCube EnvironmentMap : register(t5);
 Texture2D BrdfLut : register(t6);
 SamplerState AlbedoSampler : register(s0);
-SamplerState ShadowSampler : register(s1);
+SamplerComparisonState ShadowSampler : register(s1);
 SamplerState IblSampler : register(s2);
 
 float2 ApplyTextureTransform(float2 uv, float4 offsetScale, float4 rotation)
@@ -134,8 +101,13 @@ float4 PSMain(VSOutput Input) : SV_Target
     float shadow = 1.0f;
     if (ShadowStrength > 0.0f && all(shadowUV >= 0.0f) && all(shadowUV <= 1.0f))
     {
-        float shadowMapDepth = ShadowMap.Sample(ShadowSampler, shadowUV).r;
-        shadow = shadowMapDepth + ShadowBias >= shadowDepth ? 1.0f : 0.0f;
+        float2 halfTexel = 0.5f / ShadowMapSize;
+        float shadowCompare = shadowDepth - ShadowBias;
+        shadow = 0.25f * (
+            ShadowMap.SampleCmpLevelZero(ShadowSampler, shadowUV + float2(halfTexel.x, halfTexel.y), shadowCompare) +
+            ShadowMap.SampleCmpLevelZero(ShadowSampler, shadowUV + float2(-halfTexel.x, halfTexel.y), shadowCompare) +
+            ShadowMap.SampleCmpLevelZero(ShadowSampler, shadowUV + float2(halfTexel.x, -halfTexel.y), shadowCompare) +
+            ShadowMap.SampleCmpLevelZero(ShadowSampler, shadowUV + float2(-halfTexel.x, -halfTexel.y), shadowCompare));
         shadow = lerp(1.0f, shadow, ShadowStrength);
     }
 

@@ -18,7 +18,7 @@ struct FRendererConfig
     uint32_t FramesInFlight = 3;
     bool bEnableFrameOverlap = true;
     bool bEnableShadows = true;
-    float ShadowBias = 0.0005f;
+    float ShadowBias = 0.0f;
     bool bEnableTonemap = true;
     float TonemapExposure = 0.5f;
     float TonemapWhitePoint = 4.0f;

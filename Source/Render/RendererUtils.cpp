@@ -647,6 +647,8 @@ void RendererUtils::UpdateSceneConstants(
     const DirectX::XMMATRIX& LightViewProjection,
     float ShadowStrength,
     float ShadowBias,
+    float ShadowMapWidth,
+    float ShadowMapHeight,
     float EnvMapMipCount,
     uint8_t* ConstantBufferMapped,
     uint64_t ConstantBufferOffset)
@@ -681,6 +683,7 @@ void RendererUtils::UpdateSceneConstants(
     XMStoreFloat4x4(&Constants.LightViewProjection, LightViewProjection);
     Constants.ShadowStrength = ShadowStrength;
     Constants.ShadowBias = ShadowBias;
+    Constants.ShadowMapSize = DirectX::XMFLOAT2(ShadowMapWidth, ShadowMapHeight);
     Constants.MetallicFactor = Model.MetallicFactor;
     Constants.RoughnessFactor = Model.RoughnessFactor;
     Constants.EnvMapMipCount = EnvMapMipCount;

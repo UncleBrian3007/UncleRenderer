@@ -55,8 +55,8 @@ struct FSceneConstants
     float Padding4 = 0.0f;
     DirectX::XMFLOAT4X4 LightViewProjection;
     float ShadowStrength = 1.0f;
-    float ShadowBias = 0.005f;
-    DirectX::XMFLOAT2 PaddingShadow{ 0.0f, 0.0f };
+    float ShadowBias = 0.0f;
+    DirectX::XMFLOAT2 ShadowMapSize{ 0.0f, 0.0f };
     float MetallicFactor = 1.0f;
     float RoughnessFactor = 1.0f;
     DirectX::XMFLOAT2 PaddingMaterial{ 0.0f, 0.0f };
@@ -159,6 +159,8 @@ namespace RendererUtils
         const DirectX::XMMATRIX& LightViewProjection,
         float ShadowStrength,
         float ShadowBias,
+        float ShadowMapWidth,
+        float ShadowMapHeight,
         float EnvMapMipCount,
         uint8_t* ConstantBufferMapped,
         uint64_t ConstantBufferOffset = 0);

@@ -9,7 +9,7 @@ struct FRendererOptions
     std::wstring SceneFilePath = L"Assets/Scenes/Scene.json";
     bool bUseDepthPrepass = false;
     bool bEnableShadows = true;
-    float ShadowBias = 0.0005f;
+    float ShadowBias = 0.0f;
     bool bEnableTonemap = true;
     float TonemapExposure = 0.5f;
     float TonemapWhitePoint = 4.0f;
@@ -60,4 +60,3 @@ protected:
 
     bool bDepthPrepassEnabled = false;
 };
-

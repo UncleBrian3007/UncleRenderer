@@ -1300,21 +1300,21 @@ void FApplication::RenderUI()
             }
         }
 
-        float ShadowBiasValue = ShadowBias;
-        if (ImGui::SliderFloat("Shadow Bias", &ShadowBiasValue, 0.0f, 0.01f, "%.5f"))
-        {
-            ShadowBias = ShadowBiasValue;
+        //float ShadowBiasValue = ShadowBias;
+        //if (ImGui::SliderFloat("Shadow Bias", &ShadowBiasValue, 0.0f, 0.01f, "%.5f"))
+        //{
+        //    ShadowBias = ShadowBiasValue;
 
-            if (DeferredRenderer)
-            {
-                DeferredRenderer->SetShadowBias(ShadowBias);
-            }
+        //    if (DeferredRenderer)
+        //    {
+        //        DeferredRenderer->SetShadowBias(ShadowBias);
+        //    }
 
-            if (ForwardRenderer)
-            {
-                ForwardRenderer->SetShadowBias(ShadowBias);
-            }
-        }
+        //    if (ForwardRenderer)
+        //    {
+        //        ForwardRenderer->SetShadowBias(ShadowBias);
+        //    }
+        //}
 
         ImGui::Separator();
         bool bTonemap = bTonemapEnabled;

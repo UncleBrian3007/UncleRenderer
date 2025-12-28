@@ -161,8 +161,10 @@ private:
     uint8_t* ConstantBufferMapped = nullptr;
     uint8_t* SkyConstantBufferMapped = nullptr;
     uint64_t SceneConstantBufferStride = 0;
-    float ShadowBias = 0.0005f;
+    float ShadowBias = 0.0f;
     float ShadowStrength = 1.0f;
+    uint32_t ShadowMapWidth = 0;
+    uint32_t ShadowMapHeight = 0;
     bool bShadowsEnabled = true;
     bool bTonemapEnabled = true;
     float TonemapExposure = 0.9f;

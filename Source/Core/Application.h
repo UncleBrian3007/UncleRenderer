@@ -90,7 +90,7 @@ private:
     float LightPitch = -1.07681236f;
     float LightIntensity = 1.0f;
     DirectX::XMFLOAT3 LightColor{ 1.0f, 1.0f, 1.0f };
-    float ShadowBias = 0.0005f;
+    float ShadowBias = 0.0f;
     ComPtr<ID3D12QueryHeap>            FrameTimingQueryHeap;
     ComPtr<ID3D12Resource>             FrameTimingReadback;
     std::vector<uint64>                FrameTimingFenceValues;
