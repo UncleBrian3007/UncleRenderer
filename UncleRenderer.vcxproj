@@ -179,6 +179,7 @@
     <None Include="Shaders\ForwardPS.hlsl" />
     <None Include="Shaders\ForwardVS.hlsl" />
     <None Include="Shaders\FullscreenTriangle.hlsl" />
+    <None Include="Shaders\ObjectId.hlsl" />
     <None Include="Assets\Scenes\Scene.json" />
     <None Include="ThirdParty\ddspp\LICENSE" />
   </ItemGroup>

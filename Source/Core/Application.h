@@ -1,11 +1,17 @@
 #pragma once
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #include <Windows.h>
 #include <memory>
 #include <cstdint>
+#include <string>
 #include <DirectXMath.h>
 #include <atomic>
 #include <vector>
+#include "../Scene/Camera.h"
 #include "../RHI/DX12Commons.h"
 #include "RendererConfig.h"
 
@@ -41,6 +47,8 @@ private:
     void HandleCameraInput(float DeltaSeconds);
     void PositionCameraForScene();
     void ApplySceneCameraFromJson(const std::wstring& ScenePath);
+    void UpdateSelectionFromMouseClick();
+    void DrawSelectionBounds(float DisplayWidth, float DisplayHeight);
     bool ReloadScene(const std::wstring& ScenePath);
     void StartAsyncSceneReload(const std::wstring& ScenePath);
     void CompleteAsyncSceneReload();
@@ -80,9 +88,17 @@ private:
     float TonemapExposure = 0.5f;
     float TonemapWhitePoint = 4.0f;
     float TonemapGamma = 1.0f;
+    bool bFreezeCamera = false;
+    FCamera FrozenCamera;
+    int32_t SelectedModelIndex = -1;
+    std::string SelectedModelName;
+    bool bPendingObjectIdReadback = false;
+    uint32_t PendingObjectIdX = 0;
+    uint32_t PendingObjectIdY = 0;
     float CameraYaw = 0.0f;
     float CameraPitch = 0.0f;
     bool bIsRotatingWithMouse = false;
+    bool bWasLeftMouseDown = false;
     POINT LastMousePosition = {};
     std::wstring CurrentScenePath = L"Assets/Scenes/Scene.json";
     std::wstring PendingScenePath;

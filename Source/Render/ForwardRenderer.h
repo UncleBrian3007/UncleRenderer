@@ -23,6 +23,10 @@ public:
 
     bool Initialize(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT BackBufferFormat, const FRendererOptions& Options) override;
     void RenderFrame(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle, const FCamera& Camera, float DeltaTime) override;
+    const std::vector<FSceneModelResource>* GetSceneModels() const override { return &SceneModels; }
+    bool GetSceneModelStats(size_t& OutTotal, size_t& OutCulled) const override;
+    void RequestObjectIdReadback(uint32_t X, uint32_t Y) override;
+    bool ConsumeObjectIdReadback(uint32_t& OutObjectId) override;
 
     void SetShadowsEnabled(bool bEnabled) { bShadowsEnabled = bEnabled; }
     bool IsShadowsEnabled() const { return bShadowsEnabled; }
@@ -35,9 +39,12 @@ private:
     bool CreatePipelineState(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateShadowPipeline(FDX12Device* Device);
     bool CreateShadowResources(FDX12Device* Device);
+    bool CreateObjectIdResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
+    bool CreateObjectIdPipeline(FDX12Device* Device);
     bool CreateSceneTextures(FDX12Device* Device, const std::vector<FSceneModelResource>& Models);
     void UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, uint64_t ConstantBufferOffset, const DirectX::XMMATRIX& LightViewProjection);
     void UpdateSkyConstants(const FCamera& Camera);
+    void UpdateCullingVisibility(const FCamera& Camera);
 
 private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSignature;
@@ -61,8 +68,10 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ShadowPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> SkyPipelineState;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> ObjectIdPipeline;
 
     std::vector<FSceneModelResource> SceneModels;
+    std::vector<bool> SceneModelVisibility;
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SceneTextures;
     Microsoft::WRL::ComPtr<ID3D12Resource> ConstantBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> SkyConstantBuffer;
@@ -76,6 +85,9 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> NullTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> EnvironmentCubeTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> BrdfLutTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> ObjectIdTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> ObjectIdReadback;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> ObjectIdRtvHeap;
     std::unique_ptr<FTextureLoader> TextureLoader;
     FMeshGeometryBuffers SkyGeometry;
     float SkySphereRadius = 1000.0f;
@@ -88,6 +100,7 @@ private:
 
     D3D12_RESOURCE_STATES DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
     D3D12_RESOURCE_STATES ShadowMapState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    D3D12_RESOURCE_STATES ObjectIdState = D3D12_RESOURCE_STATE_RENDER_TARGET;
 
     uint8_t* ConstantBufferMapped = nullptr;
     uint8_t* SkyConstantBufferMapped = nullptr;
@@ -101,6 +114,13 @@ private:
     bool bEnableGraphDump = false;
     bool bEnableGpuTiming = false;
     float EnvironmentMipCount = 1.0f;
+    bool bObjectIdReadbackRequested = false;
+    bool bObjectIdReadbackRecorded = false;
+    uint32_t ObjectIdReadbackX = 0;
+    uint32_t ObjectIdReadbackY = 0;
+    D3D12_CPU_DESCRIPTOR_HANDLE ObjectIdRtvHandle{};
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT ObjectIdFootprint{};
+    uint32_t ObjectIdRowPitch = 0;
 
     FDX12Device* Device = nullptr;
 };

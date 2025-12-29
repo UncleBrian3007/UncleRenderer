@@ -21,6 +21,32 @@ using Microsoft::WRL::ComPtr;
 
 FDeferredRenderer::FDeferredRenderer() = default;
 
+bool FDeferredRenderer::GetSceneModelStats(size_t& OutTotal, size_t& OutCulled) const
+{
+    return RendererUtils::ComputeSceneModelStats(SceneModels, SceneModelVisibility, OutTotal, OutCulled);
+}
+
+void FDeferredRenderer::RequestObjectIdReadback(uint32_t X, uint32_t Y)
+{
+    RendererUtils::RequestObjectIdReadback(
+        X,
+        Y,
+        bObjectIdReadbackRequested,
+        bObjectIdReadbackRecorded,
+        ObjectIdReadbackX,
+        ObjectIdReadbackY);
+}
+
+bool FDeferredRenderer::ConsumeObjectIdReadback(uint32_t& OutObjectId)
+{
+    return RendererUtils::ConsumeObjectIdReadback(
+        ObjectIdReadback,
+        ObjectIdRowPitch,
+        bObjectIdReadbackRequested,
+        bObjectIdReadbackRecorded,
+        OutObjectId);
+}
+
 namespace
 {
     std::wstring BuildShaderTarget(const wchar_t* StagePrefix, D3D_SHADER_MODEL ShaderModel)
@@ -117,6 +143,13 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
         return false;
     }
 
+    LogInfo("Creating deferred renderer object ID pipeline...");
+    if (!CreateObjectIdPipeline(Device))
+    {
+        LogError("Deferred renderer initialization failed: object ID pipeline creation failed");
+        return false;
+    }
+
     LogInfo("Creating deferred renderer depth prepass pipeline...");
     if (!CreateDepthPrepassPipeline(Device))
     {
@@ -176,6 +209,12 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     DepthStencilHandle = DepthResources.DepthStencilHandle;
     DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
 
+    if (!CreateObjectIdResources(Device, Width, Height))
+    {
+        LogError("Deferred renderer initialization failed: object ID resources creation failed");
+        return false;
+    }
+
     if (!CreateShadowResources(Device))
     {
         LogError("Deferred renderer initialization failed: shadow resources creation failed");
@@ -210,6 +249,10 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
         const DirectX::XMMATRIX DefaultWorld = DirectX::XMMatrixTranslation(-SceneCenter.x, -SceneCenter.y, -SceneCenter.z);
         DirectX::XMStoreFloat4x4(&DefaultModel.WorldMatrix, DefaultWorld);
         DefaultModel.Center = SceneCenter;
+        DefaultModel.Name = "DefaultMesh";
+        DefaultModel.BoundsMin = DirectX::XMFLOAT3(SceneCenter.x - SceneRadius, SceneCenter.y - SceneRadius, SceneCenter.z - SceneRadius);
+        DefaultModel.BoundsMax = DirectX::XMFLOAT3(SceneCenter.x + SceneRadius, SceneCenter.y + SceneRadius, SceneCenter.z + SceneRadius);
+        DefaultModel.ObjectId = 1;
         const FGltfMaterialTextureSet DefaultTextureSet = DefaultTextures.PerMesh.empty() ? FGltfMaterialTextureSet{} : DefaultTextures.PerMesh.front();
         DefaultModel.BaseColorTexturePath = DefaultTextureSet.BaseColor;
         DefaultModel.MetallicRoughnessTexturePath = DefaultTextureSet.MetallicRoughness;
@@ -299,6 +342,8 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 {
     ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
 
+    UpdateCullingVisibility(Camera);
+
     const bool bRenderShadows = bShadowsEnabled && ShadowPipeline && ShadowMap;
     const bool bDoDepthPrepass = bDepthPrepassEnabled && DepthPrepassPipeline;
 
@@ -322,6 +367,11 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
     };
 
     FRGResourceHandle DepthHandle = Graph.ImportTexture("Depth", DepthBuffer.Get(), &DepthBufferState, DepthDesc);
+    FRGResourceHandle ObjectIdHandle = Graph.ImportTexture(
+        "ObjectId",
+        ObjectIdTexture.Get(),
+        &ObjectIdState,
+        { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), DXGI_FORMAT_R32_UINT });
     FRGResourceHandle GBufferHandles[3] =
     {
         Graph.ImportTexture("GBufferA", GBufferA.Get(), &GBufferStates[0], { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), GBufferFormats[0] }),
@@ -380,6 +430,11 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
         for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
         {
+            if (!SceneModelVisibility.empty() && !SceneModelVisibility[ModelIndex])
+            {
+                continue;
+            }
+
             const FSceneModelResource& Model = SceneModels[ModelIndex];
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
 
@@ -439,6 +494,11 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
         for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
         {
+            if (!SceneModelVisibility.empty() && !SceneModelVisibility[ModelIndex])
+            {
+                continue;
+            }
+
             const FSceneModelResource& Model = SceneModels[ModelIndex];
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
 
@@ -515,6 +575,11 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
         for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
         {
+            if (!SceneModelVisibility.empty() && !SceneModelVisibility[ModelIndex])
+            {
+                continue;
+            }
+
             const FSceneModelResource& Model = SceneModels[ModelIndex];
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
 
@@ -564,6 +629,103 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
             LocalCommandList->DrawIndexedInstanced(Model.Geometry.IndexCount, 1, 0, 0, 0);
         }
 
+    });
+
+    struct FObjectIdPassData
+    {
+        bool bEnabled = false;
+        const FCamera* Camera = nullptr;
+    };
+
+    Graph.AddPass<FObjectIdPassData>("ObjectId", [this, &Camera, ObjectIdHandle, DepthHandle](FObjectIdPassData& Data, FRGPassBuilder& Builder)
+    {
+        Data.bEnabled = bObjectIdReadbackRequested && ObjectIdPipeline && ObjectIdTexture;
+        Data.Camera = &Camera;
+        if (Data.bEnabled)
+        {
+            Builder.WriteTexture(ObjectIdHandle, D3D12_RESOURCE_STATE_RENDER_TARGET);
+            Builder.ReadTexture(DepthHandle, D3D12_RESOURCE_STATE_DEPTH_READ);
+        }
+    }, [this](const FObjectIdPassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
+
+        PixSetMarker(LocalCommandList, L"ObjectIdPass");
+
+        LocalCommandList->SetPipelineState(ObjectIdPipeline.Get());
+        LocalCommandList->SetGraphicsRootSignature(BasePassRootSignature.Get());
+        LocalCommandList->RSSetViewports(1, &Viewport);
+        LocalCommandList->RSSetScissorRects(1, &ScissorRect);
+        LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        LocalCommandList->OMSetRenderTargets(1, &ObjectIdRtvHandle, FALSE, &DepthStencilHandle);
+
+        const UINT ClearValue[4] = { 0, 0, 0, 0 };
+        LocalCommandList->ClearRenderTargetView(ObjectIdRtvHandle, reinterpret_cast<const float*>(ClearValue), 0, nullptr);
+
+        for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+        {
+            if (!SceneModelVisibility.empty() && !SceneModelVisibility[ModelIndex])
+            {
+                continue;
+            }
+
+            const FSceneModelResource& Model = SceneModels[ModelIndex];
+            const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
+
+            UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset);
+
+            LocalCommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
+            LocalCommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
+
+            LocalCommandList->SetGraphicsRootConstantBufferView(
+                0,
+                ConstantBuffer->GetGPUVirtualAddress() + ConstantBufferOffset);
+
+            LocalCommandList->DrawIndexedInstanced(Model.Geometry.IndexCount, 1, 0, 0, 0);
+        }
+
+        const uint32_t Width = static_cast<uint32_t>(Viewport.Width);
+        const uint32_t Height = static_cast<uint32_t>(Viewport.Height);
+        const uint32_t ReadX = (std::min)(ObjectIdReadbackX, Width > 0 ? Width - 1 : 0);
+        const uint32_t ReadY = (std::min)(ObjectIdReadbackY, Height > 0 ? Height - 1 : 0);
+
+        D3D12_RESOURCE_BARRIER Barrier = {};
+        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        Barrier.Transition.pResource = ObjectIdTexture.Get();
+        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        LocalCommandList->ResourceBarrier(1, &Barrier);
+
+        D3D12_TEXTURE_COPY_LOCATION Src = {};
+        Src.pResource = ObjectIdTexture.Get();
+        Src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        Src.SubresourceIndex = 0;
+
+        D3D12_TEXTURE_COPY_LOCATION Dst = {};
+        Dst.pResource = ObjectIdReadback.Get();
+        Dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        Dst.PlacedFootprint = ObjectIdFootprint;
+
+        D3D12_BOX SourceBox = {};
+        SourceBox.left = ReadX;
+        SourceBox.top = ReadY;
+        SourceBox.front = 0;
+        SourceBox.right = ReadX + 1;
+        SourceBox.bottom = ReadY + 1;
+        SourceBox.back = 1;
+
+        LocalCommandList->CopyTextureRegion(&Dst, 0, 0, 0, &Src, &SourceBox);
+
+        std::swap(Barrier.Transition.StateBefore, Barrier.Transition.StateAfter);
+        LocalCommandList->ResourceBarrier(1, &Barrier);
+
+        bObjectIdReadbackRecorded = true;
     });
 
     struct FHZBPassData
@@ -2168,6 +2330,30 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
     return true;
 }
 
+bool FDeferredRenderer::CreateObjectIdResources(FDX12Device* Device, uint32_t Width, uint32_t Height)
+{
+    const bool bCreated = RendererUtils::CreateObjectIdResources(
+        Device,
+        Width,
+        Height,
+        ObjectIdTexture,
+        ObjectIdRtvHeap,
+        ObjectIdRtvHandle,
+        ObjectIdReadback,
+        ObjectIdFootprint,
+        ObjectIdRowPitch);
+    if (bCreated)
+    {
+        ObjectIdState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    }
+    return bCreated;
+}
+
+bool FDeferredRenderer::CreateObjectIdPipeline(FDX12Device* Device)
+{
+    return RendererUtils::CreateObjectIdPipeline(Device, BasePassRootSignature.Get(), ObjectIdPipeline);
+}
+
 namespace
 {
     uint32_t ClampToByte(float Value)
@@ -2297,4 +2483,15 @@ void FDeferredRenderer::UpdateSkyConstants(const FCamera& Camera)
 
     const XMVECTOR LightDir = XMLoadFloat3(&LightDirection);
     RendererUtils::UpdateSkyConstants(Camera, World, LightDir, LightColor, SkyConstantBufferMapped);
+}
+
+void FDeferredRenderer::UpdateCullingVisibility(const FCamera& Camera)
+{
+    const FCamera* CullingCamera = GetCullingCameraOverride();
+    if (!CullingCamera)
+    {
+        CullingCamera = &Camera;
+    }
+
+    RendererUtils::UpdateCullingVisibility(*CullingCamera, SceneModels, SceneModelVisibility);
 }

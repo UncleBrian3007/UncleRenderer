@@ -18,6 +18,7 @@
 #include <array>
 #include <filesystem>
 #include <cmath>
+#include <limits>
 
 using Microsoft::WRL::ComPtr;
 
@@ -41,13 +42,15 @@ namespace
         return DirectX::XMFLOAT4(CosR, SinR, 0.0f, 0.0f);
     }
 
-    void ComputeMeshBounds(const FMesh& Mesh, FFloat3& OutCenter, float& OutRadius)
+    void ComputeMeshBounds(const FMesh& Mesh, FFloat3& OutCenter, float& OutRadius, FFloat3& OutMin, FFloat3& OutMax)
     {
         const auto& Vertices = Mesh.GetVertices();
         if (Vertices.empty())
         {
             OutCenter = FFloat3(0.0f, 0.0f, 0.0f);
             OutRadius = 1.0f;
+            OutMin = FFloat3(0.0f, 0.0f, 0.0f);
+            OutMax = FFloat3(0.0f, 0.0f, 0.0f);
             return;
         }
 
@@ -73,6 +76,8 @@ namespace
         const DirectX::XMVECTOR Extents = DirectX::XMVectorSet(Max.x - Min.x, Max.y - Min.y, Max.z - Min.z, 0.0f);
         OutRadius = DirectX::XMVectorGetX(DirectX::XMVector3Length(Extents)) * 0.5f;
         OutRadius = std::max(OutRadius, 1.0f);
+        OutMin = Min;
+        OutMax = Max;
     }
 
     std::wstring BuildShaderTarget(const wchar_t* StagePrefix, D3D_SHADER_MODEL ShaderModel)
@@ -169,7 +174,9 @@ bool RendererUtils::CreateDefaultSceneGeometry(FDX12Device* Device, FMeshGeometr
     if (FGltfLoader::LoadSceneFromFile(L"Assets/Duck/Duck.gltf", Scene) && !Scene.Meshes.empty())
     {
         const FMesh& FirstMesh = Scene.Meshes.front();
-        ComputeMeshBounds(FirstMesh, OutCenter, OutRadius);
+        FFloat3 LocalMin{};
+        FFloat3 LocalMax{};
+        ComputeMeshBounds(FirstMesh, OutCenter, OutRadius, LocalMin, LocalMax);
 
         if (OutTexturePaths)
         {
@@ -185,7 +192,9 @@ bool RendererUtils::CreateDefaultSceneGeometry(FDX12Device* Device, FMeshGeometr
     }
 
     const FMesh Cube = FMesh::CreateCube();
-    ComputeMeshBounds(Cube, OutCenter, OutRadius);
+    FFloat3 LocalMin{};
+    FFloat3 LocalMax{};
+    ComputeMeshBounds(Cube, OutCenter, OutRadius, LocalMin, LocalMax);
     return CreateMeshGeometry(Device, Cube, OutGeometry);
 }
 
@@ -220,6 +229,7 @@ bool RendererUtils::CreateSceneModelsFromJson(
     float& OutSceneRadius)
 {
     OutModels.clear();
+    uint32_t NextObjectId = 1;
 
     const std::filesystem::path ScenePath(SceneFilePath);
     const std::string ScenePathUtf8 = PathToUtf8String(ScenePath);
@@ -259,11 +269,13 @@ bool RendererUtils::CreateSceneModelsFromJson(
         std::vector<FMeshGeometryBuffers> MeshGeometries(LoadedScene.Meshes.size());
         std::vector<FFloat3> MeshCenters(LoadedScene.Meshes.size());
         std::vector<float> MeshRadii(LoadedScene.Meshes.size());
+        std::vector<FFloat3> MeshMins(LoadedScene.Meshes.size());
+        std::vector<FFloat3> MeshMaxs(LoadedScene.Meshes.size());
 
         for (size_t MeshIndex = 0; MeshIndex < LoadedScene.Meshes.size(); ++MeshIndex)
         {
             const FMesh& Mesh = LoadedScene.Meshes[MeshIndex];
-            ComputeMeshBounds(Mesh, MeshCenters[MeshIndex], MeshRadii[MeshIndex]);
+            ComputeMeshBounds(Mesh, MeshCenters[MeshIndex], MeshRadii[MeshIndex], MeshMins[MeshIndex], MeshMaxs[MeshIndex]);
 
             if (!CreateMeshGeometry(Device, Mesh, MeshGeometries[MeshIndex]))
             {
@@ -289,6 +301,7 @@ bool RendererUtils::CreateSceneModelsFromJson(
                     0.0f, 1.0f, 0.0f, 0.0f,
                     0.0f, 0.0f, 1.0f, 0.0f,
                     0.0f, 0.0f, 0.0f, 1.0f);
+                DefaultNode.Name = "Mesh_" + std::to_string(MeshIndex);
                 LoadedScene.Nodes.push_back(DefaultNode);
             }
         }
@@ -307,6 +320,8 @@ bool RendererUtils::CreateSceneModelsFromJson(
 
             const FFloat3 MeshCenter = MeshCenters[MeshIndex];
             float MeshRadius = MeshRadii[MeshIndex];
+            const FFloat3 MeshMin = MeshMins[MeshIndex];
+            const FFloat3 MeshMax = MeshMaxs[MeshIndex];
 
             const std::array<float, 3> ScaleComponents = { Model.Scale.x, Model.Scale.y, Model.Scale.z };
             float MaxScale = 1.0f;
@@ -335,6 +350,33 @@ bool RendererUtils::CreateSceneModelsFromJson(
             const XMVECTOR CenterVec = XMVector3TransformCoord(XMVectorSet(MeshCenter.x, MeshCenter.y, MeshCenter.z, 1.0f), World);
             XMStoreFloat3(&ModelResource.Center, CenterVec);
             ModelResource.Radius = MeshRadius * NodeScale;
+            ModelResource.Name = LoadedNode.Name.empty() ? ("Mesh_" + std::to_string(MeshIndex)) : LoadedNode.Name;
+            ModelResource.ObjectId = NextObjectId++;
+
+            const std::array<XMVECTOR, 8> LocalCorners =
+            {
+                XMVectorSet(MeshMin.x, MeshMin.y, MeshMin.z, 1.0f),
+                XMVectorSet(MeshMax.x, MeshMin.y, MeshMin.z, 1.0f),
+                XMVectorSet(MeshMin.x, MeshMax.y, MeshMin.z, 1.0f),
+                XMVectorSet(MeshMax.x, MeshMax.y, MeshMin.z, 1.0f),
+                XMVectorSet(MeshMin.x, MeshMin.y, MeshMax.z, 1.0f),
+                XMVectorSet(MeshMax.x, MeshMin.y, MeshMax.z, 1.0f),
+                XMVectorSet(MeshMin.x, MeshMax.y, MeshMax.z, 1.0f),
+                XMVectorSet(MeshMax.x, MeshMax.y, MeshMax.z, 1.0f)
+            };
+
+            XMVECTOR BoundsMin = XMVectorSet(std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), 1.0f);
+            XMVECTOR BoundsMax = XMVectorSet(std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(), 1.0f);
+
+            for (const XMVECTOR Corner : LocalCorners)
+            {
+                const XMVECTOR WorldCorner = XMVector3TransformCoord(Corner, World);
+                BoundsMin = XMVectorMin(BoundsMin, WorldCorner);
+                BoundsMax = XMVectorMax(BoundsMax, WorldCorner);
+            }
+
+            XMStoreFloat3(&ModelResource.BoundsMin, BoundsMin);
+            XMStoreFloat3(&ModelResource.BoundsMax, BoundsMax);
 
             const std::wstring EmptyTexture;
 
@@ -452,6 +494,244 @@ bool RendererUtils::CreateDepthResources(FDX12Device* Device, uint32_t Width, ui
     Device->GetDevice()->CreateDepthStencilView(OutDepthResources.DepthBuffer.Get(), &ViewDesc, OutDepthResources.DepthStencilHandle);
 
     return true;
+}
+
+bool RendererUtils::CreateObjectIdResources(
+    FDX12Device* Device,
+    uint32_t Width,
+    uint32_t Height,
+    ComPtr<ID3D12Resource>& OutTexture,
+    ComPtr<ID3D12DescriptorHeap>& OutRtvHeap,
+    D3D12_CPU_DESCRIPTOR_HANDLE& OutRtvHandle,
+    ComPtr<ID3D12Resource>& OutReadback,
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT& OutFootprint,
+    uint32_t& OutRowPitch)
+{
+    if (!Device)
+    {
+        return false;
+    }
+
+    D3D12_RESOURCE_DESC Desc = {};
+    Desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    Desc.Width = Width;
+    Desc.Height = Height;
+    Desc.DepthOrArraySize = 1;
+    Desc.MipLevels = 1;
+    Desc.Format = DXGI_FORMAT_R32_UINT;
+    Desc.SampleDesc.Count = 1;
+    Desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    Desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+    D3D12_CLEAR_VALUE ClearValue = {};
+    ClearValue.Format = DXGI_FORMAT_R32_UINT;
+
+    D3D12_HEAP_PROPERTIES HeapProps = {};
+    HeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &HeapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &Desc,
+        D3D12_RESOURCE_STATE_RENDER_TARGET,
+        &ClearValue,
+        IID_PPV_ARGS(OutTexture.ReleaseAndGetAddressOf())));
+    OutTexture->SetName(L"ObjectIdTexture");
+
+    D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
+    HeapDesc.NumDescriptors = 1;
+    HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(OutRtvHeap.ReleaseAndGetAddressOf())));
+    OutRtvHandle = OutRtvHeap->GetCPUDescriptorHandleForHeapStart();
+
+    D3D12_RENDER_TARGET_VIEW_DESC RtvDesc = {};
+    RtvDesc.Format = DXGI_FORMAT_R32_UINT;
+    RtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+    Device->GetDevice()->CreateRenderTargetView(OutTexture.Get(), &RtvDesc, OutRtvHandle);
+
+    OutRowPitch = D3D12_TEXTURE_DATA_PITCH_ALIGNMENT;
+    OutFootprint.Offset = 0;
+    OutFootprint.Footprint.Format = DXGI_FORMAT_R32_UINT;
+    OutFootprint.Footprint.Width = 1;
+    OutFootprint.Footprint.Height = 1;
+    OutFootprint.Footprint.Depth = 1;
+    OutFootprint.Footprint.RowPitch = OutRowPitch;
+
+    D3D12_RESOURCE_DESC BufferDesc = {};
+    BufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    BufferDesc.Width = OutRowPitch;
+    BufferDesc.Height = 1;
+    BufferDesc.DepthOrArraySize = 1;
+    BufferDesc.MipLevels = 1;
+    BufferDesc.Format = DXGI_FORMAT_UNKNOWN;
+    BufferDesc.SampleDesc.Count = 1;
+    BufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    D3D12_HEAP_PROPERTIES ReadbackProps = {};
+    ReadbackProps.Type = D3D12_HEAP_TYPE_READBACK;
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &ReadbackProps,
+        D3D12_HEAP_FLAG_NONE,
+        &BufferDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        nullptr,
+        IID_PPV_ARGS(OutReadback.ReleaseAndGetAddressOf())));
+    OutReadback->SetName(L"ObjectIdReadback");
+    return true;
+}
+
+bool RendererUtils::CreateObjectIdPipeline(
+    FDX12Device* Device,
+    ID3D12RootSignature* RootSignature,
+    ComPtr<ID3D12PipelineState>& OutPipelineState)
+{
+    if (!Device || !RootSignature)
+    {
+        return false;
+    }
+
+    FShaderCompiler Compiler;
+    std::vector<uint8_t> VSByteCode;
+    std::vector<uint8_t> PSByteCode;
+
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring VSTarget = BuildShaderTarget(L"vs", ShaderModel);
+    const std::wstring PSTarget = BuildShaderTarget(L"ps", ShaderModel);
+
+    if (!Compiler.CompileFromFile(L"Shaders/ObjectId.hlsl", L"VSMain", VSTarget, VSByteCode))
+    {
+        return false;
+    }
+
+    if (!Compiler.CompileFromFile(L"Shaders/ObjectId.hlsl", L"PSMain", PSTarget, PSByteCode))
+    {
+        return false;
+    }
+
+    D3D12_INPUT_ELEMENT_DESC InputLayout[] =
+    {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,   D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TANGENT",  0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 48, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
+    PsoDesc.pRootSignature = RootSignature;
+    PsoDesc.InputLayout = { InputLayout, _countof(InputLayout) };
+    PsoDesc.VS = { VSByteCode.data(), VSByteCode.size() };
+    PsoDesc.PS = { PSByteCode.data(), PSByteCode.size() };
+    PsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    PsoDesc.SampleDesc.Count = 1;
+    PsoDesc.SampleMask = UINT_MAX;
+
+    PsoDesc.RasterizerState = {};
+    PsoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    PsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+    PsoDesc.RasterizerState.FrontCounterClockwise = TRUE;
+    PsoDesc.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
+    PsoDesc.RasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
+    PsoDesc.RasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
+    PsoDesc.RasterizerState.DepthClipEnable = TRUE;
+
+    PsoDesc.BlendState = {};
+    PsoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    PsoDesc.NumRenderTargets = 1;
+    PsoDesc.RTVFormats[0] = DXGI_FORMAT_R32_UINT;
+    PsoDesc.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
+    PsoDesc.DepthStencilState = {};
+    PsoDesc.DepthStencilState.DepthEnable = TRUE;
+    PsoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+    PsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+    PsoDesc.DepthStencilState.StencilEnable = FALSE;
+
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(OutPipelineState.ReleaseAndGetAddressOf())));
+    return true;
+}
+
+void RendererUtils::RequestObjectIdReadback(
+    uint32_t X,
+    uint32_t Y,
+    bool& OutRequested,
+    bool& OutRecorded,
+    uint32_t& OutX,
+    uint32_t& OutY)
+{
+    OutRequested = true;
+    OutRecorded = false;
+    OutX = X;
+    OutY = Y;
+}
+
+bool RendererUtils::ConsumeObjectIdReadback(
+    const ComPtr<ID3D12Resource>& ReadbackResource,
+    uint32_t RowPitch,
+    bool& InOutRequested,
+    bool& InOutRecorded,
+    uint32_t& OutObjectId)
+{
+    if (!InOutRecorded || !ReadbackResource)
+    {
+        return false;
+    }
+
+    void* MappedData = nullptr;
+    D3D12_RANGE ReadRange = { 0, RowPitch };
+    if (FAILED(ReadbackResource->Map(0, &ReadRange, &MappedData)) || !MappedData)
+    {
+        return false;
+    }
+
+    OutObjectId = *static_cast<const uint32_t*>(MappedData);
+    D3D12_RANGE WriteRange = { 0, 0 };
+    ReadbackResource->Unmap(0, &WriteRange);
+    InOutRequested = false;
+    InOutRecorded = false;
+    return true;
+}
+
+bool RendererUtils::ComputeSceneModelStats(
+    const std::vector<FSceneModelResource>& Models,
+    const std::vector<bool>& Visibility,
+    size_t& OutTotal,
+    size_t& OutCulled)
+{
+    OutTotal = Models.size();
+    if (Visibility.empty())
+    {
+        OutCulled = 0;
+        return true;
+    }
+
+    const size_t VisibleCountMax = (std::min)(Models.size(), Visibility.size());
+    size_t VisibleCount = 0;
+    for (size_t Index = 0; Index < VisibleCountMax; ++Index)
+    {
+        if (Visibility[Index])
+        {
+            ++VisibleCount;
+        }
+    }
+
+    OutCulled = OutTotal > VisibleCount ? (OutTotal - VisibleCount) : 0;
+    return true;
+}
+
+void RendererUtils::UpdateCullingVisibility(
+    const FCamera& Camera,
+    const std::vector<FSceneModelResource>& Models,
+    std::vector<bool>& OutVisibility)
+{
+    OutVisibility.assign(Models.size(), true);
+    DirectX::XMVECTOR Planes[6] = {};
+    RendererUtils::BuildCameraFrustumPlanes(Camera, Planes);
+    for (size_t ModelIndex = 0; ModelIndex < Models.size(); ++ModelIndex)
+    {
+        const FSceneModelResource& Model = Models[ModelIndex];
+        OutVisibility[ModelIndex] = RendererUtils::IsAabbInCameraFrustum(Planes, Model.BoundsMin, Model.BoundsMax);
+    }
 }
 
 bool RendererUtils::CreateMappedConstantBuffer(FDX12Device* Device, uint64_t BufferSize, FMappedConstantBuffer& OutConstantBuffer)
@@ -687,6 +967,7 @@ void RendererUtils::UpdateSceneConstants(
     Constants.MetallicFactor = Model.MetallicFactor;
     Constants.RoughnessFactor = Model.RoughnessFactor;
     Constants.EnvMapMipCount = EnvMapMipCount;
+    Constants.ObjectId = Model.ObjectId;
     FillTransformConstants(Model.BaseColorTransformOffsetScale, Model.BaseColorTransformRotation, Constants.BaseColorTransformOffsetScale, Constants.BaseColorTransformRotation);
     FillTransformConstants(Model.MetallicRoughnessTransformOffsetScale, Model.MetallicRoughnessTransformRotation, Constants.MetallicRoughnessTransformOffsetScale, Constants.MetallicRoughnessTransformRotation);
     FillTransformConstants(Model.NormalTransformOffsetScale, Model.NormalTransformRotation, Constants.NormalTransformOffsetScale, Constants.NormalTransformRotation);
@@ -743,4 +1024,77 @@ DirectX::XMMATRIX RendererUtils::BuildDirectionalLightViewProjection(
     const XMMATRIX Projection = XMMatrixOrthographicLH(OrthoSize, OrthoSize, NearZ, FarZ);
 
     return XMMatrixMultiply(View, Projection);
+}
+
+void RendererUtils::BuildCameraFrustumPlanes(
+    const FCamera& Camera,
+    DirectX::XMVECTOR OutPlanes[6])
+{
+    using namespace DirectX;
+
+    const XMMATRIX View = Camera.GetViewMatrix();
+    const XMMATRIX Projection = Camera.GetProjectionMatrix();
+    const XMMATRIX ViewProjection = XMMatrixMultiply(View, Projection);
+
+    XMFLOAT4X4 ViewProjectionMatrix;
+    XMStoreFloat4x4(&ViewProjectionMatrix, ViewProjection);
+
+    OutPlanes[0] = XMPlaneNormalize(XMVectorSet(
+        ViewProjectionMatrix._14 + ViewProjectionMatrix._11,
+        ViewProjectionMatrix._24 + ViewProjectionMatrix._21,
+        ViewProjectionMatrix._34 + ViewProjectionMatrix._31,
+        ViewProjectionMatrix._44 + ViewProjectionMatrix._41));
+    OutPlanes[1] = XMPlaneNormalize(XMVectorSet(
+        ViewProjectionMatrix._14 - ViewProjectionMatrix._11,
+        ViewProjectionMatrix._24 - ViewProjectionMatrix._21,
+        ViewProjectionMatrix._34 - ViewProjectionMatrix._31,
+        ViewProjectionMatrix._44 - ViewProjectionMatrix._41));
+    OutPlanes[2] = XMPlaneNormalize(XMVectorSet(
+        ViewProjectionMatrix._14 + ViewProjectionMatrix._12,
+        ViewProjectionMatrix._24 + ViewProjectionMatrix._22,
+        ViewProjectionMatrix._34 + ViewProjectionMatrix._32,
+        ViewProjectionMatrix._44 + ViewProjectionMatrix._42));
+    OutPlanes[3] = XMPlaneNormalize(XMVectorSet(
+        ViewProjectionMatrix._14 - ViewProjectionMatrix._12,
+        ViewProjectionMatrix._24 - ViewProjectionMatrix._22,
+        ViewProjectionMatrix._34 - ViewProjectionMatrix._32,
+        ViewProjectionMatrix._44 - ViewProjectionMatrix._42));
+    OutPlanes[4] = XMPlaneNormalize(XMVectorSet(
+        ViewProjectionMatrix._13,
+        ViewProjectionMatrix._23,
+        ViewProjectionMatrix._33,
+        ViewProjectionMatrix._43));
+    OutPlanes[5] = XMPlaneNormalize(XMVectorSet(
+        ViewProjectionMatrix._14 - ViewProjectionMatrix._13,
+        ViewProjectionMatrix._24 - ViewProjectionMatrix._23,
+        ViewProjectionMatrix._34 - ViewProjectionMatrix._33,
+        ViewProjectionMatrix._44 - ViewProjectionMatrix._43));
+}
+
+bool RendererUtils::IsAabbInCameraFrustum(
+    const DirectX::XMVECTOR Planes[6],
+    const DirectX::XMFLOAT3& BoundsMin,
+    const DirectX::XMFLOAT3& BoundsMax)
+{
+    using namespace DirectX;
+
+    for (int PlaneIndex = 0; PlaneIndex < 6; ++PlaneIndex)
+    {
+        const XMVECTOR Plane = Planes[PlaneIndex];
+        const float PlaneX = XMVectorGetX(Plane);
+        const float PlaneY = XMVectorGetY(Plane);
+        const float PlaneZ = XMVectorGetZ(Plane);
+
+        const float X = PlaneX >= 0.0f ? BoundsMax.x : BoundsMin.x;
+        const float Y = PlaneY >= 0.0f ? BoundsMax.y : BoundsMin.y;
+        const float Z = PlaneZ >= 0.0f ? BoundsMax.z : BoundsMin.z;
+        const XMVECTOR Vertex = XMVectorSet(X, Y, Z, 1.0f);
+
+        if (XMVectorGetX(XMVector4Dot(Plane, Vertex)) < 0.0f)
+        {
+            return false;
+        }
+    }
+
+    return true;
 }

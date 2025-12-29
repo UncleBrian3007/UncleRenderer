@@ -40,6 +40,7 @@ struct FGltfNode
 {
     int MeshIndex = -1;
     DirectX::XMFLOAT4X4 WorldMatrix{};
+    std::string Name;
 };
 
 struct FGltfScene

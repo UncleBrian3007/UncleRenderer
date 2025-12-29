@@ -13,6 +13,7 @@
 #include "../Render/DeferredRenderer.h"
 #include "../Render/ForwardRenderer.h"
 #include "../Render/RenderGraph.h"
+#include "../Render/RendererUtils.h"
 #include "../Scene/Camera.h"
 #include "../Scene/SceneJsonLoader.h"
 #include "RendererConfig.h"
@@ -26,6 +27,7 @@
 #include <string>
 #include <filesystem>
 #include <iterator>
+#include <array>
 #include <chrono>
 
 namespace
@@ -36,6 +38,7 @@ namespace
         return std::string(Utf8.begin(), Utf8.end());
     }
 
+#if WITH_IMGUI
     ImVec2 ProjectAxisToScreen(const DirectX::XMVECTOR& ViewSpaceDir, float Scale)
     {
         const float X = DirectX::XMVectorGetX(ViewSpaceDir);
@@ -48,7 +51,6 @@ namespace
 
     void DrawAxisGizmo(const FMatrix& ViewMatrix, const ImVec2& DisplaySize)
     {
-#if WITH_IMGUI
         ImDrawList* DrawList = ImGui::GetForegroundDrawList();
 
         const float GizmoRadius = 14.0f;
@@ -84,7 +86,30 @@ namespace
             DrawList->AddCircleFilled(End, 3.5f, Axis.Color);
             DrawList->AddText(ImVec2(End.x + 6.0f, End.y - 10.0f), IM_COL32(240, 240, 240, 255), Axis.Label);
         }
+    }
 #endif
+
+    bool ProjectWorldToScreen(
+        const DirectX::XMVECTOR& WorldPosition,
+        const DirectX::XMMATRIX& ViewProjection,
+        float DisplayWidth,
+        float DisplayHeight,
+        ImVec2& OutScreen)
+    {
+        const DirectX::XMVECTOR Clip = DirectX::XMVector4Transform(WorldPosition, ViewProjection);
+        const float W = DirectX::XMVectorGetW(Clip);
+        if (W <= 0.0f)
+        {
+            return false;
+        }
+
+        const float InvW = 1.0f / W;
+        const float NdcX = DirectX::XMVectorGetX(Clip) * InvW;
+        const float NdcY = DirectX::XMVectorGetY(Clip) * InvW;
+
+        OutScreen.x = (NdcX * 0.5f + 0.5f) * DisplayWidth;
+        OutScreen.y = (1.0f - (NdcY * 0.5f + 0.5f)) * DisplayHeight;
+        return true;
     }
 }
 
@@ -422,6 +447,20 @@ bool FApplication::RenderFrame()
 
         if (ActiveRenderer && Camera)
         {
+            if (bPendingObjectIdReadback)
+            {
+                ActiveRenderer->RequestObjectIdReadback(PendingObjectIdX, PendingObjectIdY);
+            }
+
+            if (bFreezeCamera)
+            {
+                ActiveRenderer->SetCullingCameraOverride(&FrozenCamera);
+            }
+            else
+            {
+                ActiveRenderer->SetCullingCameraOverride(nullptr);
+            }
+
             ActiveRenderer->RenderFrame(*CommandContext, RtvHandle, *Camera, DeltaSeconds);
         }
 
@@ -449,6 +488,31 @@ bool FApplication::RenderFrame()
         }
     }
     CommandContext->CloseAndExecute();
+
+    if (bPendingObjectIdReadback && ActiveRenderer && Device && Device->GetGraphicsQueue())
+    {
+        Device->GetGraphicsQueue()->Flush();
+        uint32_t ObjectId = 0;
+        if (ActiveRenderer->ConsumeObjectIdReadback(ObjectId))
+        {
+            const std::vector<FSceneModelResource>* Models = ActiveRenderer->GetSceneModels();
+            if (ObjectId > 0 && Models && ObjectId <= Models->size())
+            {
+                SelectedModelIndex = static_cast<int32_t>(ObjectId - 1);
+                SelectedModelName = (*Models)[SelectedModelIndex].Name;
+                if (SelectedModelName.empty())
+                {
+                    SelectedModelName = "Unnamed";
+                }
+            }
+            else
+            {
+                SelectedModelIndex = -1;
+                SelectedModelName.clear();
+            }
+        }
+        bPendingObjectIdReadback = false;
+    }
 
     LogVerbose("Preparing frame end: " + std::to_string(FrameIndex));
 
@@ -505,6 +569,7 @@ void FApplication::HandleCameraInput(float DeltaSeconds)
 	if (!bWindowInForeground)
 	{
 		bIsRotatingWithMouse = false;
+        bWasLeftMouseDown = false;
 		return;
 	}
 
@@ -518,7 +583,14 @@ void FApplication::HandleCameraInput(float DeltaSeconds)
     const float RotationSpeed = 0.005f;
 
     const bool LeftButtonDown = IsKeyDown(VK_LBUTTON);
-    if (LeftButtonDown)
+    if (LeftButtonDown && !bWasLeftMouseDown)
+    {
+        UpdateSelectionFromMouseClick();
+    }
+    bWasLeftMouseDown = LeftButtonDown;
+
+    const bool RightButtonDown = IsKeyDown(VK_RBUTTON);
+    if (RightButtonDown)
     {
         POINT CursorPos{};
         if (GetCursorPos(&CursorPos))
@@ -603,6 +675,102 @@ void FApplication::HandleCameraInput(float DeltaSeconds)
     Camera->SetFovY(FovY);
 }
 
+void FApplication::UpdateSelectionFromMouseClick()
+{
+    if (!ActiveRenderer || !MainWindow)
+    {
+        return;
+    }
+
+    POINT CursorPos{};
+    if (!GetCursorPos(&CursorPos))
+    {
+        return;
+    }
+
+    if (!ScreenToClient(MainWindow->GetHWND(), &CursorPos))
+    {
+        return;
+    }
+
+    if (CursorPos.x < 0 || CursorPos.y < 0)
+    {
+        return;
+    }
+
+    PendingObjectIdX = static_cast<uint32_t>(CursorPos.x);
+    PendingObjectIdY = static_cast<uint32_t>(CursorPos.y);
+    bPendingObjectIdReadback = true;
+}
+
+void FApplication::DrawSelectionBounds(float DisplayWidth, float DisplayHeight)
+{
+#if WITH_IMGUI
+    if (!Camera || !ActiveRenderer || SelectedModelIndex < 0)
+    {
+        return;
+    }
+
+    const std::vector<FSceneModelResource>* Models = ActiveRenderer->GetSceneModels();
+    if (!Models || SelectedModelIndex >= static_cast<int32_t>(Models->size()))
+    {
+        return;
+    }
+
+    const FSceneModelResource& Model = (*Models)[SelectedModelIndex];
+    const DirectX::XMMATRIX View = Camera->GetViewMatrix();
+    const DirectX::XMMATRIX Projection = Camera->GetProjectionMatrix();
+    const DirectX::XMMATRIX ViewProjection = DirectX::XMMatrixMultiply(View, Projection);
+
+    const DirectX::XMFLOAT3 Min = Model.BoundsMin;
+    const DirectX::XMFLOAT3 Max = Model.BoundsMax;
+
+    const std::array<DirectX::XMVECTOR, 8> Corners =
+    {
+        DirectX::XMVectorSet(Min.x, Min.y, Min.z, 1.0f),
+        DirectX::XMVectorSet(Max.x, Min.y, Min.z, 1.0f),
+        DirectX::XMVectorSet(Min.x, Max.y, Min.z, 1.0f),
+        DirectX::XMVectorSet(Max.x, Max.y, Min.z, 1.0f),
+        DirectX::XMVectorSet(Min.x, Min.y, Max.z, 1.0f),
+        DirectX::XMVectorSet(Max.x, Min.y, Max.z, 1.0f),
+        DirectX::XMVectorSet(Min.x, Max.y, Max.z, 1.0f),
+        DirectX::XMVectorSet(Max.x, Max.y, Max.z, 1.0f)
+    };
+
+    std::array<ImVec2, 8> ScreenPoints{};
+    std::array<bool, 8> ScreenValid{};
+    for (size_t Index = 0; Index < Corners.size(); ++Index)
+    {
+        ScreenValid[Index] = ProjectWorldToScreen(Corners[Index], ViewProjection, DisplayWidth, DisplayHeight, ScreenPoints[Index]);
+    }
+
+    ImDrawList* DrawList = ImGui::GetForegroundDrawList();
+    const ImU32 Color = IM_COL32(255, 200, 64, 220);
+    const float Thickness = 2.0f;
+
+    const auto DrawEdge = [&](int32_t A, int32_t B)
+    {
+        if (ScreenValid[A] && ScreenValid[B])
+        {
+            DrawList->AddLine(ScreenPoints[A], ScreenPoints[B], Color, Thickness);
+        }
+    };
+
+    DrawEdge(0, 1);
+    DrawEdge(1, 3);
+    DrawEdge(3, 2);
+    DrawEdge(2, 0);
+    DrawEdge(4, 5);
+    DrawEdge(5, 7);
+    DrawEdge(7, 6);
+    DrawEdge(6, 4);
+    DrawEdge(0, 4);
+    DrawEdge(1, 5);
+    DrawEdge(2, 6);
+    DrawEdge(3, 7);
+#endif
+}
+
 void FApplication::PositionCameraForScene()
 {
     if (!Camera)
@@ -641,6 +809,12 @@ void FApplication::PositionCameraForScene()
 
     CameraPitch = -asinf(DirectX::XMVectorGetY(ForwardVec));
     CameraYaw = atan2f(DirectX::XMVectorGetX(ForwardVec), DirectX::XMVectorGetZ(ForwardVec));
+
+    const DirectX::XMVECTOR DefaultUp = DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+    const DirectX::XMMATRIX Rotation = DirectX::XMMatrixRotationRollPitchYaw(CameraPitch, CameraYaw, 0.0f);
+    const DirectX::XMVECTOR RecomputedUp = DirectX::XMVector3Normalize(DirectX::XMVector3TransformNormal(DefaultUp, Rotation));
+    DirectX::XMStoreFloat3(&Up, RecomputedUp);
+    Camera->SetUp(Up);
 }
 
 void FApplication::ApplySceneCameraFromJson(const std::wstring& ScenePath)
@@ -688,6 +862,12 @@ void FApplication::ApplySceneCameraFromJson(const std::wstring& ScenePath)
 
     CameraPitch = -asinf(DirectX::XMVectorGetY(ForwardVec));
     CameraYaw = atan2f(DirectX::XMVectorGetX(ForwardVec), DirectX::XMVectorGetZ(ForwardVec));
+
+    const DirectX::XMVECTOR DefaultUp = DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+    const DirectX::XMMATRIX Rotation = DirectX::XMMatrixRotationRollPitchYaw(CameraPitch, CameraYaw, 0.0f);
+    const DirectX::XMVECTOR RecomputedUp = DirectX::XMVector3Normalize(DirectX::XMVector3TransformNormal(DefaultUp, Rotation));
+    DirectX::XMStoreFloat3(&Up, RecomputedUp);
+    Camera->SetUp(Up);
 }
 
 bool FApplication::ReloadScene(const std::wstring& ScenePath)
@@ -759,6 +939,9 @@ bool FApplication::ReloadScene(const std::wstring& ScenePath)
     ForwardRenderer = std::move(NewForwardRenderer);
     DeferredRenderer = std::move(NewDeferredRenderer);
     ActiveRenderer = NewActiveRenderer;
+    SelectedModelIndex = -1;
+    SelectedModelName.clear();
+    bPendingObjectIdReadback = false;
 
     CurrentScenePath = ScenePath;
     RendererConfig.SceneFile = ScenePath;
@@ -909,6 +1092,9 @@ void FApplication::CompleteAsyncSceneReload()
     ForwardRenderer = std::move(AsyncForwardRenderer);
     DeferredRenderer = std::move(AsyncDeferredRenderer);
     ActiveRenderer = AsyncActiveRenderer;
+    SelectedModelIndex = -1;
+    SelectedModelName.clear();
+    bPendingObjectIdReadback = false;
     
     CurrentScenePath = AsyncScenePath;
     RendererConfig.SceneFile = AsyncScenePath;
@@ -1168,14 +1354,26 @@ void FApplication::RenderUI()
 			break;
 		}
 	}
-	if (GpuFrameMs >= 0.0)
-	{
-		ImGui::Text("CPU/GPU: %.3f / %.3f", CpuFrameMs, GpuFrameMs);
-	}
-	else
-	{
-		ImGui::Text("CPU/GPU: %.3f / N/A", CpuFrameMs);
-	}
+    if (GpuFrameMs >= 0.0)
+    {
+        ImGui::Text("CPU/GPU: %.3f / %.3f", CpuFrameMs, GpuFrameMs);
+    }
+    else
+    {
+        ImGui::Text("CPU/GPU: %.3f / N/A", CpuFrameMs);
+    }
+
+    size_t TotalModels = 0;
+    size_t CulledModels = 0;
+    const bool bHasModelStats = ActiveRenderer && ActiveRenderer->GetSceneModelStats(TotalModels, CulledModels);
+    if (bHasModelStats)
+    {
+        ImGui::Text("Models (Total/Culled): %zu / %zu", TotalModels, CulledModels);
+    }
+    else
+    {
+        ImGui::Text("Models (Total/Culled): N/A");
+    }
 
     if (ImGui::CollapsingHeader("Details", ImGuiTreeNodeFlags_DefaultOpen))
     {
@@ -1222,6 +1420,9 @@ void FApplication::RenderUI()
                 }
             }
 
+            const char* SelectedName = SelectedModelIndex >= 0 ? SelectedModelName.c_str() : "None";
+            ImGui::Text("Selected: %s", SelectedName);
+
         DXGI_QUERY_VIDEO_MEMORY_INFO LocalMemoryInfo = {};
         if (Device && Device->QueryLocalVideoMemory(LocalMemoryInfo))
         {
@@ -1232,10 +1433,8 @@ void FApplication::RenderUI()
 
             ImGui::Separator();
             ImGui::Text("GPU Memory (Local)");
-            ImGui::Text("Usage: %.1f MB", UsageMB);
-            ImGui::Text("Budget: %.1f MB", BudgetMB);
-            ImGui::Text("Available: %.1f MB", AvailableMB);
-		    ImGui::Text("Reserved: %.1f MB", ReservedMB);
+            ImGui::Text("Usage/Budget: %.1f / %.1f MB", UsageMB, BudgetMB);
+            ImGui::Text("Available/Reserved: %.1f / %.1f MB", AvailableMB, ReservedMB);
         }
 	    ImGui::Separator();
 
@@ -1268,6 +1467,18 @@ void FApplication::RenderUI()
             if (DeferredRenderer)
             {
                 DeferredRenderer->SetDepthPrepassEnabled(bDepthPrepassEnabled);
+            }
+        }
+
+        ImGui::Separator();
+        bool bFreezeCameraValue = bFreezeCamera;
+        if (ImGui::Checkbox("Freeze Camera", &bFreezeCameraValue))
+        {
+            bFreezeCamera = bFreezeCameraValue;
+            bIsRotatingWithMouse = false;
+            if (bFreezeCamera && Camera)
+            {
+                FrozenCamera = *Camera;
             }
         }
 
@@ -1394,6 +1605,7 @@ void FApplication::RenderUI()
     if (Camera)
     {
         DrawAxisGizmo(Camera->GetViewMatrix(), Io.DisplaySize);
+        DrawSelectionBounds(Io.DisplaySize.x, Io.DisplaySize.y);
     }
 
     ImGui::Render();

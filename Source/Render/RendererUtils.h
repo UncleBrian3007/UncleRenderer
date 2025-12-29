@@ -4,6 +4,7 @@
 #include <d3d12.h>
 #include <DirectXMath.h>
 #include <cstdint>
+#include <cmath>
 #include <string>
 #include <vector>
 #include "../Math/MathTypes.h"
@@ -70,6 +71,8 @@ struct FSceneConstants
     DirectX::XMFLOAT4 EmissiveTransformRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
     float EnvMapMipCount = 1.0f;
     DirectX::XMFLOAT3 PaddingEnvMap{ 0.0f, 0.0f, 0.0f };
+    uint32_t ObjectId = 0;
+    DirectX::XMFLOAT3 PaddingObjectId{ 0.0f, 0.0f, 0.0f };
 };
 
 struct FSkyAtmosphereConstants
@@ -117,6 +120,10 @@ struct FSceneModelResource
     DirectX::XMFLOAT4 NormalTransformRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT4 EmissiveTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
     DirectX::XMFLOAT4 EmissiveTransformRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
+    std::string Name;
+    DirectX::XMFLOAT3 BoundsMin{ 0.0f, 0.0f, 0.0f };
+    DirectX::XMFLOAT3 BoundsMax{ 0.0f, 0.0f, 0.0f };
+    uint32_t ObjectId = 0;
 };
 
 namespace RendererUtils
@@ -137,6 +144,45 @@ namespace RendererUtils
         DirectX::XMFLOAT3& OutSceneCenter,
         float& OutSceneRadius);
     bool CreateDepthResources(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT Format, FDepthResources& OutDepthResources);
+    bool CreateObjectIdResources(
+        FDX12Device* Device,
+        uint32_t Width,
+        uint32_t Height,
+        Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture,
+        Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>& OutRtvHeap,
+        D3D12_CPU_DESCRIPTOR_HANDLE& OutRtvHandle,
+        Microsoft::WRL::ComPtr<ID3D12Resource>& OutReadback,
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT& OutFootprint,
+        uint32_t& OutRowPitch);
+    bool CreateObjectIdPipeline(
+        FDX12Device* Device,
+        ID3D12RootSignature* RootSignature,
+        Microsoft::WRL::ComPtr<ID3D12PipelineState>& OutPipelineState);
+    void RequestObjectIdReadback(
+        uint32_t X,
+        uint32_t Y,
+        bool& OutRequested,
+        bool& OutRecorded,
+        uint32_t& OutX,
+        uint32_t& OutY);
+    bool ConsumeObjectIdReadback(
+        const Microsoft::WRL::ComPtr<ID3D12Resource>& ReadbackResource,
+        uint32_t RowPitch,
+        bool& InOutRequested,
+        bool& InOutRecorded,
+        uint32_t& OutObjectId);
+    bool ComputeSceneModelStats(
+        const std::vector<FSceneModelResource>& Models,
+        const std::vector<bool>& Visibility,
+        size_t& OutTotal,
+        size_t& OutCulled);
+    void BuildCameraFrustumPlanes(
+        const FCamera& Camera,
+        DirectX::XMVECTOR OutPlanes[6]);
+    void UpdateCullingVisibility(
+        const FCamera& Camera,
+        const std::vector<FSceneModelResource>& Models,
+        std::vector<bool>& OutVisibility);
     bool CreateMappedConstantBuffer(FDX12Device* Device, uint64_t BufferSize, FMappedConstantBuffer& OutConstantBuffer);
     bool CreateSkyAtmosphereResources(
         FDX12Device* Device,
@@ -174,4 +220,8 @@ namespace RendererUtils
         const DirectX::XMFLOAT3& SceneCenter,
         float SceneRadius,
         const DirectX::XMFLOAT3& LightDirection);
+    bool IsAabbInCameraFrustum(
+        const DirectX::XMVECTOR Planes[6],
+        const DirectX::XMFLOAT3& BoundsMin,
+        const DirectX::XMFLOAT3& BoundsMax);
 }

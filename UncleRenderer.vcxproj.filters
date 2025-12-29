@@ -294,6 +294,9 @@
     <None Include="Shaders\FullscreenTriangle.hlsl">
       <Filter>Shaders</Filter>
     </None>
+    <None Include="Shaders\ObjectId.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
     <None Include="Assets\Scenes\Scene.json">
       <Filter>Assets</Filter>
     </None>

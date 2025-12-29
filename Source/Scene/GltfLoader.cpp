@@ -570,6 +570,7 @@ namespace
             FGltfNode LoadedNode;
             LoadedNode.MeshIndex = static_cast<int>(MeshIndex);
             LoadedNode.WorldMatrix = ToFloat4x4(World);
+            LoadedNode.Name = GetStringField(Node, "name");
             OutNodes.push_back(LoadedNode);
         }
 
