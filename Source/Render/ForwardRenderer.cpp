@@ -15,6 +15,7 @@
 #include <vector>
 #include <algorithm>
 #include <cmath>
+#include <array>
 
 FForwardRenderer::FForwardRenderer() = default;
 
@@ -46,13 +47,13 @@ bool FForwardRenderer::ConsumeObjectIdReadback(uint32_t& OutObjectId)
 
 namespace
 {
-    std::wstring BuildShaderTarget(const wchar_t* StagePrefix, D3D_SHADER_MODEL ShaderModel)
+    uint32_t BuildPipelineKey(const FSceneModelResource& Model)
     {
-        uint32_t ShaderModelValue = static_cast<uint32_t>(ShaderModel);
-        uint32_t Major = (ShaderModelValue >> 4) & 0xF;
-        uint32_t Minor = ShaderModelValue & 0xF;
-
-        return std::wstring(StagePrefix) + L"_" + std::to_wstring(Major) + L"_" + std::to_wstring(Minor);
+        const uint32_t UseNormal = Model.bHasNormalMap ? 1u : 0u;
+        const uint32_t UseMr = !Model.MetallicRoughnessTexturePath.empty() ? 1u : 0u;
+        const uint32_t UseBase = !Model.BaseColorTexturePath.empty() ? 1u : 0u;
+        const uint32_t UseEmissive = !Model.EmissiveTexturePath.empty() ? 1u : 0u;
+        return (UseNormal) | (UseMr << 1) | (UseBase << 2) | (UseEmissive << 3);
     }
 }
 
@@ -74,6 +75,7 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
     bLogResourceBarriers = Options.bLogResourceBarriers;
     bEnableGraphDump = Options.bEnableGraphDump;
     bEnableGpuTiming = Options.bEnableGpuTiming;
+    bEnableIndirectDraw = Options.bEnableIndirectDraw;
 
     Viewport.TopLeftX = 0.0f;
     Viewport.TopLeftY = 0.0f;
@@ -205,14 +207,19 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
         DefaultModel.BoundsMin = DirectX::XMFLOAT3(SceneCenter.x - SceneRadius, SceneCenter.y - SceneRadius, SceneCenter.z - SceneRadius);
         DefaultModel.BoundsMax = DirectX::XMFLOAT3(SceneCenter.x + SceneRadius, SceneCenter.y + SceneRadius, SceneCenter.z + SceneRadius);
         DefaultModel.ObjectId = 1;
-        const FGltfMaterialTextureSet DefaultTextureSet = DefaultTextures.PerMesh.empty() ? FGltfMaterialTextureSet{} : DefaultTextures.PerMesh.front();
+        DefaultModel.DrawIndexStart = 0;
+        DefaultModel.DrawIndexCount = DefaultModel.Geometry.IndexCount;
+        const FGltfMaterialTextureSet DefaultTextureSet = DefaultTextures.PerPrimitive.empty() ? FGltfMaterialTextureSet{} : DefaultTextures.PerPrimitive.front();
         DefaultModel.BaseColorTexturePath = DefaultTextureSet.BaseColor;
         DefaultModel.MetallicRoughnessTexturePath = DefaultTextureSet.MetallicRoughness;
         DefaultModel.NormalTexturePath = DefaultTextureSet.Normal;
         DefaultModel.BaseColorFactor = { 1.0f, 1.0f, 1.0f };
+        DefaultModel.BaseColorAlpha = 1.0f;
         DefaultModel.MetallicFactor = 0.0f;
         DefaultModel.RoughnessFactor = 1.0f;
         DefaultModel.EmissiveFactor = { 0.0f, 0.0f, 0.0f };
+        DefaultModel.AlphaCutoff = 0.5f;
+        DefaultModel.AlphaMode = 0;
         DefaultModel.bHasNormalMap = !DefaultTextureSet.Normal.empty();
         SceneModels.push_back(std::move(DefaultModel));
     }
@@ -255,6 +262,11 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
         return false;
     }
 
+    if (!CreateGpuDrivenResources(Device))
+    {
+        LogWarning("Forward renderer GPU-driven resources creation failed; fallback to CPU-driven draws.");
+    }
+
     LogInfo("Forward renderer initialization completed");
     return true;
 }
@@ -265,7 +277,10 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
 
     ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
 
-    UpdateCullingVisibility(Camera);
+    if (!bEnableIndirectDraw)
+    {
+        UpdateCullingVisibility(Camera);
+    }
 
     const DirectX::XMMATRIX LightViewProjection = RendererUtils::BuildDirectionalLightViewProjection(
         SceneCenter,
@@ -300,6 +315,30 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
         ObjectIdTexture.Get(),
         &ObjectIdState,
         { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), DXGI_FORMAT_R32_UINT });
+
+    struct FGpuCullingPassData
+    {
+        bool bEnabled = false;
+        const FCamera* Camera = nullptr;
+    };
+
+    Graph.AddPass<FGpuCullingPassData>("GPU Culling", [this, &Camera, DepthHandle](FGpuCullingPassData& Data, FRGPassBuilder& Builder)
+    {
+        Data.bEnabled = bEnableIndirectDraw && CullingPipeline && CullingRootSignature && IndirectCommandBuffer && ModelBoundsBuffer;
+        Data.Camera = &Camera;
+        if (Data.bEnabled)
+        {
+            Builder.KeepAlive();
+        }
+    }, [this](const FGpuCullingPassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        DispatchGpuCulling(Cmd, *Data.Camera);
+    });
 
     struct FShadowPassData
     {
@@ -339,6 +378,13 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
 
         for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
         {
+            const FSceneModelResource& Model = SceneModels[ModelIndex];
+            const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
+            UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset, Data.LightViewProjection);
+        }
+
+        for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+        {
             if (!SceneModelVisibility.empty() && !SceneModelVisibility[ModelIndex])
             {
                 continue;
@@ -347,8 +393,6 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
             const FSceneModelResource& Model = SceneModels[ModelIndex];
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
 
-            UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset, Data.LightViewProjection);
-
             LocalCommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
             LocalCommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
 
@@ -356,7 +400,7 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
                 0,
                 ConstantBuffer->GetGPUVirtualAddress() + ConstantBufferOffset);
 
-            LocalCommandList->DrawIndexedInstanced(Model.Geometry.IndexCount, 1, 0, 0, 0);
+            LocalCommandList->DrawIndexedInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0, 0);
         }
 
     });
@@ -419,7 +463,7 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
                 ConstantBuffer->GetGPUVirtualAddress() + ConstantBufferOffset);
             LocalCommandList->SetGraphicsRootDescriptorTable(1, Model.TextureHandle);
 
-            LocalCommandList->DrawIndexedInstanced(Model.Geometry.IndexCount, 1, 0, 0, 0);
+            LocalCommandList->DrawIndexedInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0, 0);
         }
     });
 
@@ -517,28 +561,22 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
 
         for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
         {
-            if (!SceneModelVisibility.empty() && !SceneModelVisibility[ModelIndex])
-            {
-                continue;
-            }
-
             const FSceneModelResource& Model = SceneModels[ModelIndex];
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
-
             UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset, Data.LightViewProjection);
+        }
 
-            PixSetMarker(LocalCommandList, L"DrawMesh");
+        if (bEnableIndirectDraw && IndirectCommandSignature && IndirectCommandBuffer && !IndirectDrawRanges.empty())
+        {
             LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-            LocalCommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
-            LocalCommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
 
-            const bool bUseBaseColorMap = !Model.BaseColorTexturePath.empty();
-            const bool bUseMetallicRoughnessMap = !Model.MetallicRoughnessTexturePath.empty();
-            const bool bUseEmissiveMap = !Model.EmissiveTexturePath.empty();
-            const bool bUseNormalMap = Model.bHasNormalMap;
-
-            auto SelectPipeline = [&](bool UseNormal, bool UseMr, bool UseBaseColor, bool UseEmissive)
+            auto SelectPipelineByKey = [&](uint32_t Key)
             {
+                const bool UseNormal = (Key & 1u) != 0;
+                const bool UseMr = (Key & 2u) != 0;
+                const bool UseBaseColor = (Key & 4u) != 0;
+                const bool UseEmissive = (Key & 8u) != 0;
+
                 if (UseNormal)
                 {
                     if (UseEmissive)
@@ -577,14 +615,87 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
                 return UseMr ? PipelineStateNoBaseColorNoEmissiveNoNormal.Get() : PipelineStateNoMrNoBaseColorNoEmissiveNoNormal.Get();
             };
 
-            LocalCommandList->SetPipelineState(SelectPipeline(bUseNormalMap, bUseMetallicRoughnessMap, bUseBaseColorMap, bUseEmissiveMap));
+            for (const FIndirectDrawRange& Range : IndirectDrawRanges)
+            {
+                ID3D12PipelineState* Pipeline = SelectPipelineByKey(Range.PipelineKey);
+                LocalCommandList->SetPipelineState(Pipeline);
+                LocalCommandList->SetGraphicsRootDescriptorTable(1, Range.TextureHandle);
 
-            LocalCommandList->SetGraphicsRootConstantBufferView(
-                0,
-                ConstantBuffer->GetGPUVirtualAddress() + ConstantBufferOffset);
-            LocalCommandList->SetGraphicsRootDescriptorTable(1, Model.TextureHandle);
+                const uint64_t Offset = static_cast<uint64_t>(Range.Start) * sizeof(FIndirectDrawCommand);
+                LocalCommandList->ExecuteIndirect(IndirectCommandSignature.Get(), Range.Count, IndirectCommandBuffer.Get(), Offset, nullptr, 0);
+            }
+        }
+        else
+        {
+            for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+            {
+                if (!SceneModelVisibility.empty() && !SceneModelVisibility[ModelIndex])
+                {
+                    continue;
+                }
 
-            LocalCommandList->DrawIndexedInstanced(Model.Geometry.IndexCount, 1, 0, 0, 0);
+                const FSceneModelResource& Model = SceneModels[ModelIndex];
+                const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
+
+                PixSetMarker(LocalCommandList, L"DrawMesh");
+                LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                LocalCommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
+                LocalCommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
+
+                const bool bUseBaseColorMap = !Model.BaseColorTexturePath.empty();
+                const bool bUseMetallicRoughnessMap = !Model.MetallicRoughnessTexturePath.empty();
+                const bool bUseEmissiveMap = !Model.EmissiveTexturePath.empty();
+                const bool bUseNormalMap = Model.bHasNormalMap;
+
+                auto SelectPipeline = [&](bool UseNormal, bool UseMr, bool UseBaseColor, bool UseEmissive)
+                {
+                    if (UseNormal)
+                    {
+                        if (UseEmissive)
+                        {
+                            if (UseBaseColor)
+                            {
+                                return UseMr ? PipelineState.Get() : PipelineStateNoMr.Get();
+                            }
+
+                            return UseMr ? PipelineStateNoBaseColor.Get() : PipelineStateNoMrNoBaseColor.Get();
+                        }
+
+                        if (UseBaseColor)
+                        {
+                            return UseMr ? PipelineStateNoEmissive.Get() : PipelineStateNoMrNoEmissive.Get();
+                        }
+
+                        return UseMr ? PipelineStateNoBaseColorNoEmissive.Get() : PipelineStateNoMrNoBaseColorNoEmissive.Get();
+                    }
+
+                    if (UseEmissive)
+                    {
+                        if (UseBaseColor)
+                        {
+                            return UseMr ? PipelineStateNoNormal.Get() : PipelineStateNoMrNoNormal.Get();
+                        }
+
+                        return UseMr ? PipelineStateNoBaseColorNoNormal.Get() : PipelineStateNoMrNoBaseColorNoNormal.Get();
+                    }
+
+                    if (UseBaseColor)
+                    {
+                        return UseMr ? PipelineStateNoEmissiveNoNormal.Get() : PipelineStateNoMrNoEmissiveNoNormal.Get();
+                    }
+
+                    return UseMr ? PipelineStateNoBaseColorNoEmissiveNoNormal.Get() : PipelineStateNoMrNoBaseColorNoEmissiveNoNormal.Get();
+                };
+
+                LocalCommandList->SetPipelineState(SelectPipeline(bUseNormalMap, bUseMetallicRoughnessMap, bUseBaseColorMap, bUseEmissiveMap));
+
+                LocalCommandList->SetGraphicsRootConstantBufferView(
+                    0,
+                    ConstantBuffer->GetGPUVirtualAddress() + ConstantBufferOffset);
+                LocalCommandList->SetGraphicsRootDescriptorTable(1, Model.TextureHandle);
+
+                LocalCommandList->DrawIndexedInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0, 0);
+            }
         }
     });
 
@@ -629,6 +740,13 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
 
         for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
         {
+            const FSceneModelResource& Model = SceneModels[ModelIndex];
+            const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
+            UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset, Data.LightViewProjection);
+        }
+
+        for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+        {
             if (!SceneModelVisibility.empty() && !SceneModelVisibility[ModelIndex])
             {
                 continue;
@@ -637,15 +755,13 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
             const FSceneModelResource& Model = SceneModels[ModelIndex];
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
 
-            UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset, Data.LightViewProjection);
-
             LocalCommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
             LocalCommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
             LocalCommandList->SetGraphicsRootConstantBufferView(
                 0,
                 ConstantBuffer->GetGPUVirtualAddress() + ConstantBufferOffset);
 
-            LocalCommandList->DrawIndexedInstanced(Model.Geometry.IndexCount, 1, 0, 0, 0);
+            LocalCommandList->DrawIndexedInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0, 0);
         }
 
         const uint32_t Width = static_cast<uint32_t>(Viewport.Width);
@@ -805,8 +921,8 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
     std::vector<uint8_t> PSByteCodeNoMrNoBaseColorNoEmissiveNoNormal;
 
     const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
-    const std::wstring VSTarget = BuildShaderTarget(L"vs", ShaderModel);
-    const std::wstring PSTarget = BuildShaderTarget(L"ps", ShaderModel);
+    const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
+    const std::wstring PSTarget = RendererUtils::BuildShaderTarget(L"ps", ShaderModel);
 
     if (!Compiler.CompileFromFile(L"Shaders/ForwardVS.hlsl", L"VSMain", VSTarget, VSByteCode))
     {
@@ -1040,7 +1156,7 @@ bool FForwardRenderer::CreateShadowPipeline(FDX12Device* Device)
     std::vector<uint8_t> VSByteCode;
 
     const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
-    const std::wstring VSTarget = BuildShaderTarget(L"vs", ShaderModel);
+    const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
 
     if (!Compiler.CompileFromFile(L"Shaders/ShadowMap.hlsl", L"VSMain", VSTarget, VSByteCode))
     {
@@ -1342,6 +1458,331 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
 
     SceneTextureGpuHandle = TextureDescriptorHeap->GetGPUDescriptorHandleForHeapStart();
     return true;
+}
+
+bool FForwardRenderer::CreateGpuDrivenResources(FDX12Device* Device)
+{
+    if (!Device || SceneModels.empty() || !ConstantBuffer)
+    {
+        return false;
+    }
+
+    IndirectDrawRanges.clear();
+
+    std::vector<uint32_t> SortedIndices(SceneModels.size());
+    for (uint32_t Index = 0; Index < SortedIndices.size(); ++Index)
+    {
+        SortedIndices[Index] = Index;
+    }
+
+    std::sort(SortedIndices.begin(), SortedIndices.end(), [&](uint32_t A, uint32_t B)
+    {
+        const FSceneModelResource& ModelA = SceneModels[A];
+        const FSceneModelResource& ModelB = SceneModels[B];
+        const uint32_t KeyA = BuildPipelineKey(ModelA);
+        const uint32_t KeyB = BuildPipelineKey(ModelB);
+        if (KeyA != KeyB)
+        {
+            return KeyA < KeyB;
+        }
+        return ModelA.TextureHandle.ptr < ModelB.TextureHandle.ptr;
+    });
+
+    std::vector<FIndirectDrawCommand> Commands;
+    Commands.reserve(SceneModels.size());
+
+    std::vector<DirectX::XMFLOAT4> Bounds;
+    Bounds.reserve(SceneModels.size());
+
+    const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferBase = ConstantBuffer->GetGPUVirtualAddress();
+    auto AppendIndirectDrawData = [&](uint32_t SortedIndex)
+    {
+        const FSceneModelResource& Model = SceneModels[SortedIndex];
+        const uint32_t PipelineKey = BuildPipelineKey(Model);
+
+        if (IndirectDrawRanges.empty()
+            || IndirectDrawRanges.back().PipelineKey != PipelineKey
+            || IndirectDrawRanges.back().TextureHandle.ptr != Model.TextureHandle.ptr)
+        {
+            FIndirectDrawRange Range;
+            Range.Start = static_cast<uint32_t>(Commands.size());
+            Range.Count = 0;
+            Range.PipelineKey = PipelineKey;
+            Range.TextureHandle = Model.TextureHandle;
+            IndirectDrawRanges.push_back(Range);
+        }
+
+        FIndirectDrawCommand Command = {};
+        Command.VertexBufferView = Model.Geometry.VertexBufferView;
+        Command.IndexBufferView = Model.Geometry.IndexBufferView;
+        Command.ConstantBufferAddress = ConstantBufferBase + SceneConstantBufferStride * SortedIndex;
+        Command.DrawArguments.IndexCountPerInstance = Model.DrawIndexCount;
+        Command.DrawArguments.InstanceCount = 1;
+        Command.DrawArguments.StartIndexLocation = Model.DrawIndexStart;
+        Command.DrawArguments.BaseVertexLocation = 0;
+        Command.DrawArguments.StartInstanceLocation = SortedIndex;
+        Commands.push_back(Command);
+        Bounds.emplace_back(Model.Center.x, Model.Center.y, Model.Center.z, Model.Radius);
+        IndirectDrawRanges.back().Count += 1;
+    };
+
+    for (uint32_t SortedIndex : SortedIndices)
+    {
+        AppendIndirectDrawData(SortedIndex);
+    }
+
+    IndirectCommandCount = static_cast<uint32_t>(Commands.size());
+
+    const uint64_t CommandBufferSize = sizeof(FIndirectDrawCommand) * Commands.size();
+
+    D3D12_HEAP_PROPERTIES UploadHeap = {};
+    UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    UploadHeap.CreationNodeMask = 1;
+    UploadHeap.VisibleNodeMask = 1;
+
+    D3D12_HEAP_PROPERTIES DefaultHeap = {};
+    DefaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    DefaultHeap.CreationNodeMask = 1;
+    DefaultHeap.VisibleNodeMask = 1;
+
+    D3D12_RESOURCE_DESC BufferDesc = {};
+    BufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    BufferDesc.Width = CommandBufferSize;
+    BufferDesc.Height = 1;
+    BufferDesc.DepthOrArraySize = 1;
+    BufferDesc.MipLevels = 1;
+    BufferDesc.Format = DXGI_FORMAT_UNKNOWN;
+    BufferDesc.SampleDesc.Count = 1;
+    BufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    BufferDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+    D3D12_RESOURCE_DESC UploadDesc = BufferDesc;
+    UploadDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &DefaultHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &BufferDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        nullptr,
+        IID_PPV_ARGS(IndirectCommandBuffer.GetAddressOf())));
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &UploadHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &UploadDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(IndirectCommandUpload.GetAddressOf())));
+
+    const D3D12_RANGE EmptyRange = { 0, 0 };
+    void* UploadData = nullptr;
+    HR_CHECK(IndirectCommandUpload->Map(0, &EmptyRange, &UploadData));
+    std::memcpy(UploadData, Commands.data(), CommandBufferSize);
+    IndirectCommandUpload->Unmap(0, nullptr);
+
+    const uint64_t BoundsBufferSize = sizeof(DirectX::XMFLOAT4) * Bounds.size();
+    D3D12_RESOURCE_DESC BoundsDesc = BufferDesc;
+    BoundsDesc.Width = BoundsBufferSize;
+    BoundsDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+    D3D12_RESOURCE_DESC BoundsUploadDesc = BoundsDesc;
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &DefaultHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &BoundsDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        nullptr,
+        IID_PPV_ARGS(ModelBoundsBuffer.GetAddressOf())));
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &UploadHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &BoundsUploadDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(ModelBoundsUpload.GetAddressOf())));
+
+    UploadData = nullptr;
+    HR_CHECK(ModelBoundsUpload->Map(0, &EmptyRange, &UploadData));
+    std::memcpy(UploadData, Bounds.data(), BoundsBufferSize);
+    ModelBoundsUpload->Unmap(0, nullptr);
+
+    ComPtr<ID3D12CommandAllocator> UploadAllocator;
+    ComPtr<ID3D12GraphicsCommandList> UploadList;
+    HR_CHECK(Device->GetDevice()->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(UploadAllocator.GetAddressOf())));
+    HR_CHECK(Device->GetDevice()->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, UploadAllocator.Get(), nullptr, IID_PPV_ARGS(UploadList.GetAddressOf())));
+
+    UploadList->CopyBufferRegion(IndirectCommandBuffer.Get(), 0, IndirectCommandUpload.Get(), 0, CommandBufferSize);
+    UploadList->CopyBufferRegion(ModelBoundsBuffer.Get(), 0, ModelBoundsUpload.Get(), 0, BoundsBufferSize);
+
+    D3D12_RESOURCE_BARRIER Barriers[2] = {};
+    Barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    Barriers[0].Transition.pResource = IndirectCommandBuffer.Get();
+    Barriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    Barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    Barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+    Barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    Barriers[1].Transition.pResource = ModelBoundsBuffer.Get();
+    Barriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    Barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    Barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    UploadList->ResourceBarrier(2, Barriers);
+
+    HR_CHECK(UploadList->Close());
+    ID3D12CommandList* Lists[] = { UploadList.Get() };
+    Device->GetGraphicsQueue()->ExecuteCommandLists(1, Lists);
+    Device->GetGraphicsQueue()->Flush();
+
+    IndirectCommandState = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+
+    D3D12_ROOT_PARAMETER RootParams[3] = {};
+    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[0].Constants.ShaderRegister = 0;
+    RootParams[0].Constants.RegisterSpace = 0;
+    RootParams[0].Constants.Num32BitValues = 25;
+    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+    RootParams[1].Descriptor.ShaderRegister = 0;
+    RootParams[1].Descriptor.RegisterSpace = 0;
+    RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+    RootParams[2].Descriptor.ShaderRegister = 0;
+    RootParams[2].Descriptor.RegisterSpace = 0;
+    RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    D3D12_ROOT_SIGNATURE_DESC RootDesc = {};
+    RootDesc.NumParameters = _countof(RootParams);
+    RootDesc.pParameters = RootParams;
+    RootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+
+    ComPtr<ID3DBlob> SerializedSig;
+    ComPtr<ID3DBlob> ErrorBlob;
+    HR_CHECK(D3D12SerializeRootSignature(&RootDesc, D3D_ROOT_SIGNATURE_VERSION_1, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
+    HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(CullingRootSignature.GetAddressOf())));
+
+    FShaderCompiler Compiler;
+    std::vector<uint8_t> CsByteCode;
+    if (!Compiler.CompileFromFile(L"Shaders/CullIndirectArgs.hlsl", L"CSMain", L"cs_6_0", CsByteCode))
+    {
+        LogError("Failed to compile culling compute shader");
+        return false;
+    }
+
+    D3D12_COMPUTE_PIPELINE_STATE_DESC CsDesc = {};
+    CsDesc.pRootSignature = CullingRootSignature.Get();
+    CsDesc.CS = { CsByteCode.data(), CsByteCode.size() };
+    HR_CHECK(Device->GetDevice()->CreateComputePipelineState(&CsDesc, IID_PPV_ARGS(CullingPipeline.GetAddressOf())));
+
+    D3D12_INDIRECT_ARGUMENT_DESC IndirectArgs[4] = {};
+    IndirectArgs[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_VERTEX_BUFFER_VIEW;
+    IndirectArgs[0].VertexBuffer.Slot = 0;
+    IndirectArgs[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_INDEX_BUFFER_VIEW;
+    IndirectArgs[2].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT_BUFFER_VIEW;
+    IndirectArgs[2].ConstantBufferView.RootParameterIndex = 0;
+    IndirectArgs[3].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+
+    D3D12_COMMAND_SIGNATURE_DESC CommandDesc = {};
+    CommandDesc.pArgumentDescs = IndirectArgs;
+    CommandDesc.NumArgumentDescs = _countof(IndirectArgs);
+    CommandDesc.ByteStride = sizeof(FIndirectDrawCommand);
+    HR_CHECK(Device->GetDevice()->CreateCommandSignature(&CommandDesc, RootSignature.Get(), IID_PPV_ARGS(IndirectCommandSignature.GetAddressOf())));
+
+    return true;
+}
+
+void FForwardRenderer::DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamera& Camera)
+{
+    if (!CullingPipeline || !CullingRootSignature || !IndirectCommandBuffer || !ModelBoundsBuffer || IndirectCommandCount == 0)
+    {
+        return;
+    }
+
+    DirectX::XMVECTOR Planes[6] = {};
+    RendererUtils::BuildCameraFrustumPlanes(Camera, Planes);
+
+    std::array<uint32_t, 25> Constants = {};
+    for (uint32_t PlaneIndex = 0; PlaneIndex < 6; ++PlaneIndex)
+    {
+        DirectX::XMFLOAT4 Plane;
+        DirectX::XMStoreFloat4(&Plane, Planes[PlaneIndex]);
+        std::memcpy(Constants.data() + PlaneIndex * 4, &Plane, sizeof(DirectX::XMFLOAT4));
+    }
+    Constants[24] = IndirectCommandCount;
+
+    ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
+
+    if (IndirectCommandState != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+    {
+        D3D12_RESOURCE_BARRIER Barrier = {};
+        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        Barrier.Transition.pResource = IndirectCommandBuffer.Get();
+        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        Barrier.Transition.StateBefore = IndirectCommandState;
+        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        CommandList->ResourceBarrier(1, &Barrier);
+        IndirectCommandState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    }
+
+    CommandList->SetPipelineState(CullingPipeline.Get());
+    CommandList->SetComputeRootSignature(CullingRootSignature.Get());
+    CommandList->SetComputeRoot32BitConstants(0, static_cast<UINT>(Constants.size()), Constants.data(), 0);
+    CommandList->SetComputeRootShaderResourceView(1, ModelBoundsBuffer->GetGPUVirtualAddress());
+    CommandList->SetComputeRootUnorderedAccessView(2, IndirectCommandBuffer->GetGPUVirtualAddress());
+
+    const uint32_t DispatchCount = (IndirectCommandCount + 63) / 64;
+    CommandList->Dispatch(DispatchCount, 1, 1);
+
+    D3D12_RESOURCE_BARRIER Barrier = {};
+    Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    Barrier.Transition.pResource = IndirectCommandBuffer.Get();
+    Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    Barrier.Transition.StateBefore = IndirectCommandState;
+    Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+    CommandList->ResourceBarrier(1, &Barrier);
+    IndirectCommandState = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+}
+
+void FForwardRenderer::UpdateIndirectCommandBuffer()
+{
+    if (!IndirectCommandBuffer || !ConstantBuffer)
+    {
+        return;
+    }
+
+    const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferBase = ConstantBuffer->GetGPUVirtualAddress();
+    const uint64_t CommandBufferSize = sizeof(FIndirectDrawCommand) * SceneModels.size();
+
+    std::vector<FIndirectDrawCommand> Commands;
+    Commands.reserve(SceneModels.size());
+    for (uint32_t Index = 0; Index < SceneModels.size(); ++Index)
+    {
+        const FSceneModelResource& Model = SceneModels[Index];
+        FIndirectDrawCommand Command = {};
+        Command.VertexBufferView = Model.Geometry.VertexBufferView;
+        Command.IndexBufferView = Model.Geometry.IndexBufferView;
+        Command.ConstantBufferAddress = ConstantBufferBase + SceneConstantBufferStride * Index;
+        Command.DrawArguments.IndexCountPerInstance = Model.DrawIndexCount;
+        Command.DrawArguments.InstanceCount = 1;
+        Command.DrawArguments.StartIndexLocation = Model.DrawIndexStart;
+        Command.DrawArguments.BaseVertexLocation = 0;
+        Command.DrawArguments.StartInstanceLocation = Index;
+        Commands.push_back(Command);
+    }
+
+    if (!IndirectCommandUpload)
+    {
+        return;
+    }
+
+    const D3D12_RANGE EmptyRange = { 0, 0 };
+    void* UploadData = nullptr;
+    HR_CHECK(IndirectCommandUpload->Map(0, &EmptyRange, &UploadData));
+    std::memcpy(UploadData, Commands.data(), CommandBufferSize);
+    IndirectCommandUpload->Unmap(0, nullptr);
 }
 
 bool FForwardRenderer::CreateObjectIdResources(FDX12Device* Device, uint32_t Width, uint32_t Height)

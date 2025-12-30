@@ -1,6 +1,7 @@
 #include "RenderGraph.h"
 #include "../RHI/DX12CommandContext.h"
 #include "../RHI/DX12Device.h"
+#include "RendererUtils.h"
 #include <d3dx12.h>
 #include <algorithm>
 #include <sstream>
@@ -14,74 +15,6 @@ std::unordered_map<std::string, std::deque<FRenderGraph::FGpuTimingSample>> FRen
 std::vector<FRenderGraph::FGpuPassTimingStats> FRenderGraph::CachedGpuTimingStats;
 double FRenderGraph::GpuTimingWindowSeconds = 1.0;
 uint32 FRenderGraph::GpuTimingDisplayCount = 5;
-
-namespace
-{
-    std::string ResourceStateToString(D3D12_RESOURCE_STATES State)
-    {
-        if (State == D3D12_RESOURCE_STATE_COMMON)
-        {
-            return "COMMON";
-        }
-
-        struct FStateName
-        {
-            D3D12_RESOURCE_STATES State;
-            const char* Name;
-        };
-
-        static constexpr FStateName StateNames[] =
-        {
-            { D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, "VERTEX|CONSTANT" },
-            { D3D12_RESOURCE_STATE_INDEX_BUFFER, "INDEX" },
-            { D3D12_RESOURCE_STATE_RENDER_TARGET, "RENDER_TARGET" },
-            { D3D12_RESOURCE_STATE_UNORDERED_ACCESS, "UNORDERED_ACCESS" },
-            { D3D12_RESOURCE_STATE_DEPTH_WRITE, "DEPTH_WRITE" },
-            { D3D12_RESOURCE_STATE_DEPTH_READ, "DEPTH_READ" },
-            { D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, "NON_PIXEL_SHADER_RESOURCE" },
-            { D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, "PIXEL_SHADER_RESOURCE" },
-            { D3D12_RESOURCE_STATE_STREAM_OUT, "STREAM_OUT" },
-            { D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, "INDIRECT_ARGUMENT" },
-            { D3D12_RESOURCE_STATE_COPY_DEST, "COPY_DEST" },
-            { D3D12_RESOURCE_STATE_COPY_SOURCE, "COPY_SOURCE" },
-            { D3D12_RESOURCE_STATE_RESOLVE_DEST, "RESOLVE_DEST" },
-            { D3D12_RESOURCE_STATE_RESOLVE_SOURCE, "RESOLVE_SOURCE" },
-            { D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, "RAYTRACING_ACCELERATION_STRUCTURE" },
-            { D3D12_RESOURCE_STATE_SHADING_RATE_SOURCE, "SHADING_RATE_SOURCE" },
-        };
-
-        std::ostringstream Stream;
-        bool bFirst = true;
-        D3D12_RESOURCE_STATES Remaining = State;
-
-        for (const FStateName& Entry : StateNames)
-        {
-            if ((State & Entry.State) != 0)
-            {
-                if (!bFirst)
-                {
-                    Stream << " | ";
-                }
-
-                Stream << Entry.Name;
-                bFirst = false;
-                Remaining &= ~Entry.State;
-            }
-        }
-
-        if (Remaining != 0 || bFirst)
-        {
-            if (!bFirst)
-            {
-                Stream << " | ";
-            }
-
-            Stream << "0x" << std::hex << static_cast<uint32_t>(Remaining);
-        }
-
-        return Stream.str();
-    }
-}
 
 FRenderGraph::FRenderGraph()
 {
@@ -191,6 +124,14 @@ FRGResourceHandle FRGPassBuilder::WriteTexture(const FRGResourceHandle& Handle, 
 {
     Graph->RegisterUsage(*Entry, Handle, RequiredState, ERGResourceAccess::Write);
     return Handle;
+}
+
+void FRGPassBuilder::KeepAlive()
+{
+    if (Entry)
+    {
+        Entry->bForceExecute = true;
+    }
 }
 
 FRGResourceHandle FRenderGraph::ImportTexture(
@@ -347,7 +288,7 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
             }
         }
 
-        if (!bTouchesRequiredResource)
+        if (!bTouchesRequiredResource && !Entry.bForceExecute)
         {
             continue;
         }
@@ -501,7 +442,8 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
                     std::ostringstream Stream;
                     Stream << "[RG] Pass '" << Entry.Name << "' transitioning '"
                         << (Resource->Name.empty() ? "<Unnamed>" : Resource->Name) << "': "
-                        << ResourceStateToString(StateRef) << " -> " << ResourceStateToString(Usage.RequiredState);
+                        << RendererUtils::ResourceStateToString(StateRef) << " -> "
+                        << RendererUtils::ResourceStateToString(Usage.RequiredState);
                     LogInfo(Stream.str());
                 }
 

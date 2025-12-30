@@ -60,7 +60,10 @@ struct FSceneConstants
     DirectX::XMFLOAT2 ShadowMapSize{ 0.0f, 0.0f };
     float MetallicFactor = 1.0f;
     float RoughnessFactor = 1.0f;
-    DirectX::XMFLOAT2 PaddingMaterial{ 0.0f, 0.0f };
+    float BaseColorAlpha = 1.0f;
+    float AlphaCutoff = 0.5f;
+    uint32_t AlphaMode = 0;
+    DirectX::XMUINT3 PaddingMaterial{ 0, 0, 0 };
     DirectX::XMFLOAT4 BaseColorTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
     DirectX::XMFLOAT4 BaseColorTransformRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT4 MetallicRoughnessTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
@@ -96,16 +99,32 @@ struct FSkyPipelineConfig
     DXGI_FORMAT DsvFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
 };
 
+struct FIndirectDrawCommand
+{
+    D3D12_VERTEX_BUFFER_VIEW VertexBufferView{};
+    D3D12_INDEX_BUFFER_VIEW IndexBufferView{};
+    D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = 0;
+    D3D12_DRAW_INDEXED_ARGUMENTS DrawArguments{};
+    uint32_t Padding = 0;
+};
+
+static_assert(sizeof(FIndirectDrawCommand) == 64, "Indirect command layout must be 64 bytes.");
+
 struct FSceneModelResource
 {
     FMeshGeometryBuffers Geometry;
+    uint32_t DrawIndexStart = 0;
+    uint32_t DrawIndexCount = 0;
     DirectX::XMFLOAT4X4 WorldMatrix{};
     DirectX::XMFLOAT3 Center{ 0.0f, 0.0f, 0.0f };
     float Radius = 1.0f;
     DirectX::XMFLOAT3 BaseColorFactor{ 1.0f, 1.0f, 1.0f };
+    float BaseColorAlpha = 1.0f;
     float MetallicFactor = 1.0f;
     float RoughnessFactor = 1.0f;
     DirectX::XMFLOAT3 EmissiveFactor{ 0.0f, 0.0f, 0.0f };
+    float AlphaCutoff = 0.5f;
+    uint32_t AlphaMode = 0;
     std::wstring BaseColorTexturePath;
     std::wstring MetallicRoughnessTexturePath;
     std::wstring NormalTexturePath;
@@ -128,6 +147,8 @@ struct FSceneModelResource
 
 namespace RendererUtils
 {
+    std::wstring BuildShaderTarget(const wchar_t* StagePrefix, D3D_SHADER_MODEL ShaderModel);
+    std::string ResourceStateToString(D3D12_RESOURCE_STATES State);
     bool CreateMeshGeometry(FDX12Device* Device, const FMesh& Mesh, FMeshGeometryBuffers& OutGeometry);
     bool CreateCubeGeometry(FDX12Device* Device, FCubeGeometryBuffers& OutGeometry, float Size = 1.0f);
     bool CreateSphereGeometry(

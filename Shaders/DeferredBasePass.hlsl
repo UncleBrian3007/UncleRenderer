@@ -108,9 +108,16 @@ PSOutput PSMain(VSOutput Input)
     float3 viewNormal = ComputeViewNormal(Input, normalUV);
 
     float3 albedo = BaseColor * Input.Color.rgb;
+    float alpha = BaseColorAlpha * Input.Color.a;
 #if USE_BASE_COLOR_MAP
-    albedo *= AlbedoTexture.Sample(AlbedoSampler, baseUV).rgb;
+    float4 albedoSample = AlbedoTexture.Sample(AlbedoSampler, baseUV);
+    albedo *= albedoSample.rgb;
+    alpha *= albedoSample.a;
 #endif
+    if (AlphaMode == 1 && alpha < AlphaCutoff)
+    {
+        clip(alpha - AlphaCutoff);
+    }
 
     float viewDepth = -mul(float4(Input.WorldPos, 1.0), View).z;
     Output.GBufferA = float4(viewNormal, viewDepth);

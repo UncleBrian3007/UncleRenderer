@@ -74,9 +74,16 @@ float4 PSMain(VSOutput Input) : SV_Target
     float2 emissiveUV = ApplyTextureTransform(Input.UV, EmissiveTransformOffsetScale, EmissiveTransformRotation);
 
     float3 albedo = BaseColor * Input.Color.rgb;
+    float alpha = BaseColorAlpha * Input.Color.a;
 #if USE_BASE_COLOR_MAP
-    albedo *= AlbedoTexture.Sample(AlbedoSampler, baseUV).rgb;
+    float4 albedoSample = AlbedoTexture.Sample(AlbedoSampler, baseUV);
+    albedo *= albedoSample.rgb;
+    alpha *= albedoSample.a;
 #endif
+    if (AlphaMode == 1 && alpha < AlphaCutoff)
+    {
+        clip(alpha - AlphaCutoff);
+    }
     float3 emissive = EmissiveFactor;
 #if USE_EMISSIVE_MAP
     emissive *= EmissiveTexture.Sample(AlbedoSampler, emissiveUV).rgb;

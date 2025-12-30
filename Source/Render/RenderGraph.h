@@ -123,6 +123,7 @@ private:
         std::function<void(const std::vector<uint8_t>&, FDX12CommandContext&)> ExecuteFunc;
         std::vector<FRGResourceUsage> ResourceUsages;
         bool bCulled = false;
+        bool bForceExecute = false;
         double ElapsedMs = 0.0;
         double GpuElapsedMs = 0.0;
     };
@@ -203,6 +204,7 @@ public:
     FRGResourceHandle CreateTexture(const std::string& Name, const FRGTextureDesc& Desc);
     FRGResourceHandle ReadTexture(const FRGResourceHandle& Handle, D3D12_RESOURCE_STATES RequiredState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     FRGResourceHandle WriteTexture(const FRGResourceHandle& Handle, D3D12_RESOURCE_STATES RequiredState = D3D12_RESOURCE_STATE_RENDER_TARGET);
+    void KeepAlive();
 
 private:
     FRenderGraph* Graph = nullptr;

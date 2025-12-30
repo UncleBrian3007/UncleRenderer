@@ -21,6 +21,7 @@ struct FRendererOptions
     bool bEnableGraphDump = false;
     bool bEnableGpuTiming = false;
     bool bEnableHZB = true;
+    bool bEnableIndirectDraw = false;
 };
 
 class FDX12Device;

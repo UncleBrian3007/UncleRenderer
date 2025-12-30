@@ -20,7 +20,10 @@ cbuffer SceneConstants : register(b0)
     float2 ShadowMapSize;
     float MetallicFactor;
     float RoughnessFactor;
-    float2 PaddingMaterial;
+    float BaseColorAlpha;
+    float AlphaCutoff;
+    uint AlphaMode;
+    uint3 PaddingMaterial;
     float4 BaseColorTransformOffsetScale;
     float4 BaseColorTransformRotation;
     float4 MetallicRoughnessTransformOffsetScale;

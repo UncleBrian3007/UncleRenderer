@@ -87,7 +87,6 @@ namespace
             DrawList->AddText(ImVec2(End.x + 6.0f, End.y - 10.0f), IM_COL32(240, 240, 240, 255), Axis.Label);
         }
     }
-#endif
 
     bool ProjectWorldToScreen(
         const DirectX::XMVECTOR& WorldPosition,
@@ -111,6 +110,7 @@ namespace
         OutScreen.y = (1.0f - (NdcY * 0.5f + 0.5f)) * DisplayHeight;
         return true;
     }
+#endif
 }
 
 FApplication::FApplication()
@@ -190,6 +190,7 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     RendererOptions.bLogResourceBarriers = RendererConfig.bLogResourceBarriers;
     RendererOptions.bEnableGraphDump = RendererConfig.bEnableGraphDump;
     RendererOptions.bEnableGpuTiming = RendererConfig.bEnableGpuTiming;
+    RendererOptions.bEnableIndirectDraw = RendererConfig.bEnableIndirectDraw;
 
     const std::wstring SceneFilePath = RendererOptions.SceneFilePath.empty() ? L"Assets/Scenes/Scene.json" : RendererOptions.SceneFilePath;
     RendererOptions.SceneFilePath = SceneFilePath;
@@ -895,6 +896,7 @@ bool FApplication::ReloadScene(const std::wstring& ScenePath)
     RendererOptions.bEnableShadows = bShadowsEnabled;
     RendererOptions.ShadowBias = ShadowBias;
     RendererOptions.bEnableHZB = bHZBEnabled;
+    RendererOptions.bEnableIndirectDraw = RendererConfig.bEnableIndirectDraw;
 
     const uint32_t Width = static_cast<uint32_t>(MainWindow->GetWidth());
     const uint32_t Height = static_cast<uint32_t>(MainWindow->GetHeight());
@@ -1009,8 +1011,8 @@ void FApplication::StartAsyncSceneReload(const std::wstring& ScenePath)
     RendererOptions.TonemapWhitePoint = TonemapWhitePoint;
     RendererOptions.TonemapGamma = TonemapGamma;
     RendererOptions.bEnableGpuTiming = bGpuTimingEnabled;
-
     RendererOptions.bEnableHZB = bHZBEnabled;
+    RendererOptions.bEnableIndirectDraw = RendererConfig.bEnableIndirectDraw;
 
     const bool bPreferDeferred = ActiveRenderer == DeferredRenderer.get() || RendererConfig.RendererType == ERendererType::Deferred;
 

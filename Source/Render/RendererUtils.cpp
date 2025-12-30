@@ -16,6 +16,7 @@
 #include <cstring>
 #include <algorithm>
 #include <array>
+#include <sstream>
 #include <filesystem>
 #include <cmath>
 #include <limits>
@@ -80,14 +81,80 @@ namespace
         OutMax = Max;
     }
 
-    std::wstring BuildShaderTarget(const wchar_t* StagePrefix, D3D_SHADER_MODEL ShaderModel)
-    {
-        uint32_t ShaderModelValue = static_cast<uint32_t>(ShaderModel);
-        uint32_t Major = (ShaderModelValue >> 4) & 0xF;
-        uint32_t Minor = ShaderModelValue & 0xF;
+}
 
-        return std::wstring(StagePrefix) + L"_" + std::to_wstring(Major) + L"_" + std::to_wstring(Minor);
+std::wstring RendererUtils::BuildShaderTarget(const wchar_t* StagePrefix, D3D_SHADER_MODEL ShaderModel)
+{
+    uint32_t ShaderModelValue = static_cast<uint32_t>(ShaderModel);
+    uint32_t Major = (ShaderModelValue >> 4) & 0xF;
+    uint32_t Minor = ShaderModelValue & 0xF;
+
+    return std::wstring(StagePrefix) + L"_" + std::to_wstring(Major) + L"_" + std::to_wstring(Minor);
+}
+
+std::string RendererUtils::ResourceStateToString(D3D12_RESOURCE_STATES State)
+{
+    if (State == D3D12_RESOURCE_STATE_COMMON)
+    {
+        return "COMMON";
     }
+
+    struct FStateName
+    {
+        D3D12_RESOURCE_STATES State;
+        const char* Name;
+    };
+
+    static constexpr FStateName StateNames[] =
+    {
+        { D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, "VERTEX|CONSTANT" },
+        { D3D12_RESOURCE_STATE_INDEX_BUFFER, "INDEX" },
+        { D3D12_RESOURCE_STATE_RENDER_TARGET, "RENDER_TARGET" },
+        { D3D12_RESOURCE_STATE_UNORDERED_ACCESS, "UNORDERED_ACCESS" },
+        { D3D12_RESOURCE_STATE_DEPTH_WRITE, "DEPTH_WRITE" },
+        { D3D12_RESOURCE_STATE_DEPTH_READ, "DEPTH_READ" },
+        { D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, "NON_PIXEL_SHADER_RESOURCE" },
+        { D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, "PIXEL_SHADER_RESOURCE" },
+        { D3D12_RESOURCE_STATE_STREAM_OUT, "STREAM_OUT" },
+        { D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, "INDIRECT_ARGUMENT" },
+        { D3D12_RESOURCE_STATE_COPY_DEST, "COPY_DEST" },
+        { D3D12_RESOURCE_STATE_COPY_SOURCE, "COPY_SOURCE" },
+        { D3D12_RESOURCE_STATE_RESOLVE_DEST, "RESOLVE_DEST" },
+        { D3D12_RESOURCE_STATE_RESOLVE_SOURCE, "RESOLVE_SOURCE" },
+        { D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, "RAYTRACING_ACCELERATION_STRUCTURE" },
+        { D3D12_RESOURCE_STATE_SHADING_RATE_SOURCE, "SHADING_RATE_SOURCE" },
+    };
+
+    std::ostringstream Stream;
+    bool bFirst = true;
+    D3D12_RESOURCE_STATES Remaining = State;
+
+    for (const FStateName& Entry : StateNames)
+    {
+        if ((State & Entry.State) != 0)
+        {
+            if (!bFirst)
+            {
+                Stream << " | ";
+            }
+
+            Stream << Entry.Name;
+            bFirst = false;
+            Remaining &= ~Entry.State;
+        }
+    }
+
+    if (Remaining != 0 || bFirst)
+    {
+        if (!bFirst)
+        {
+            Stream << " | ";
+        }
+
+        Stream << "0x" << std::hex << static_cast<uint32_t>(Remaining);
+    }
+
+    return Stream.str();
 }
 
 bool RendererUtils::CreateMeshGeometry(FDX12Device* Device, const FMesh& Mesh, FMeshGeometryBuffers& OutGeometry)
@@ -180,7 +247,14 @@ bool RendererUtils::CreateDefaultSceneGeometry(FDX12Device* Device, FMeshGeometr
 
         if (OutTexturePaths)
         {
-            OutTexturePaths->PerMesh = Scene.MeshMaterials;
+            OutTexturePaths->PerPrimitive.clear();
+            if (!Scene.MeshPrimitiveSections.empty())
+            {
+                for (const FGltfPrimitiveSection& Section : Scene.MeshPrimitiveSections.front())
+                {
+                    OutTexturePaths->PerPrimitive.push_back(Section.Material);
+                }
+            }
         }
 
         return CreateMeshGeometry(Device, FirstMesh, OutGeometry);
@@ -188,7 +262,7 @@ bool RendererUtils::CreateDefaultSceneGeometry(FDX12Device* Device, FMeshGeometr
 
     if (OutTexturePaths)
     {
-        OutTexturePaths->PerMesh.clear();
+        OutTexturePaths->PerPrimitive.clear();
     }
 
     const FMesh Cube = FMesh::CreateCube();
@@ -315,9 +389,6 @@ bool RendererUtils::CreateSceneModelsFromJson(
 
             const size_t MeshIndex = static_cast<size_t>(LoadedNode.MeshIndex);
 
-            FSceneModelResource ModelResource = {};
-            ModelResource.Geometry = MeshGeometries[MeshIndex];
-
             const FFloat3 MeshCenter = MeshCenters[MeshIndex];
             float MeshRadius = MeshRadii[MeshIndex];
             const FFloat3 MeshMin = MeshMins[MeshIndex];
@@ -345,13 +416,6 @@ bool RendererUtils::CreateSceneModelsFromJson(
             const XMMATRIX Translation = XMMatrixTranslation(Model.Position.x, Model.Position.y, Model.Position.z);
 
             const XMMATRIX World = NodeWorld * Scale * Rotation * Translation;
-            XMStoreFloat4x4(&ModelResource.WorldMatrix, World);
-
-            const XMVECTOR CenterVec = XMVector3TransformCoord(XMVectorSet(MeshCenter.x, MeshCenter.y, MeshCenter.z, 1.0f), World);
-            XMStoreFloat3(&ModelResource.Center, CenterVec);
-            ModelResource.Radius = MeshRadius * NodeScale;
-            ModelResource.Name = LoadedNode.Name.empty() ? ("Mesh_" + std::to_string(MeshIndex)) : LoadedNode.Name;
-            ModelResource.ObjectId = NextObjectId++;
 
             const std::array<XMVECTOR, 8> LocalCorners =
             {
@@ -375,44 +439,88 @@ bool RendererUtils::CreateSceneModelsFromJson(
                 BoundsMax = XMVectorMax(BoundsMax, WorldCorner);
             }
 
-            XMStoreFloat3(&ModelResource.BoundsMin, BoundsMin);
-            XMStoreFloat3(&ModelResource.BoundsMax, BoundsMax);
+            const std::string BaseName = LoadedNode.Name.empty() ? ("Mesh_" + std::to_string(MeshIndex)) : LoadedNode.Name;
 
-            const std::wstring EmptyTexture;
-
-            const FGltfMaterialTextureSet* Material = (MeshIndex < LoadedScene.MeshMaterials.size())
-                ? &LoadedScene.MeshMaterials[MeshIndex]
-                : nullptr;
-
-            const std::wstring& BaseColorPath = (Material && !Material->BaseColor.empty()) ? Material->BaseColor : EmptyTexture;
-            const std::wstring& MetallicRoughnessPath = (Material && !Material->MetallicRoughness.empty()) ? Material->MetallicRoughness : EmptyTexture;
-            const std::wstring& NormalPath = (Material && !Material->Normal.empty()) ? Material->Normal : EmptyTexture;
-            const std::wstring& EmissivePath = (Material && !Material->Emissive.empty()) ? Material->Emissive : EmptyTexture;
-
-            ModelResource.BaseColorTexturePath = Model.BaseColorTexturePath.empty() ? BaseColorPath : Model.BaseColorTexturePath;
-            ModelResource.MetallicRoughnessTexturePath = Model.MetallicRoughnessTexturePath.empty() ? MetallicRoughnessPath : Model.MetallicRoughnessTexturePath;
-            ModelResource.NormalTexturePath = Model.NormalTexturePath.empty() ? NormalPath : Model.NormalTexturePath;
-            ModelResource.EmissiveTexturePath = Model.EmissiveTexturePath.empty() ? EmissivePath : Model.EmissiveTexturePath;
-            ModelResource.BaseColorFactor = Material ? Material->BaseColorFactor : FFloat3(1.0f, 1.0f, 1.0f);
-            ModelResource.MetallicFactor = Material ? Material->MetallicFactor : 1.0f;
-            ModelResource.RoughnessFactor = Material ? Material->RoughnessFactor : 1.0f;
-            ModelResource.EmissiveFactor = Material ? Material->EmissiveFactor : FFloat3(0.0f, 0.0f, 0.0f);
-            ModelResource.bHasNormalMap = !ModelResource.NormalTexturePath.empty();
-            if (Material)
+            std::vector<FGltfPrimitiveSection> DefaultSections;
+            const std::vector<FGltfPrimitiveSection>* PrimitiveSections = nullptr;
+            if (MeshIndex < LoadedScene.MeshPrimitiveSections.size())
             {
-                ModelResource.BaseColorTransformOffsetScale = BuildOffsetScale(Material->BaseColorTransform);
-                ModelResource.BaseColorTransformRotation = BuildRotationConstants(Material->BaseColorTransform);
-                ModelResource.MetallicRoughnessTransformOffsetScale = BuildOffsetScale(Material->MetallicRoughnessTransform);
-                ModelResource.MetallicRoughnessTransformRotation = BuildRotationConstants(Material->MetallicRoughnessTransform);
-                ModelResource.NormalTransformOffsetScale = BuildOffsetScale(Material->NormalTransform);
-                ModelResource.NormalTransformRotation = BuildRotationConstants(Material->NormalTransform);
-                ModelResource.EmissiveTransformOffsetScale = BuildOffsetScale(Material->EmissiveTransform);
-                ModelResource.EmissiveTransformRotation = BuildRotationConstants(Material->EmissiveTransform);
+                PrimitiveSections = &LoadedScene.MeshPrimitiveSections[MeshIndex];
             }
 
-            UpdateSceneBounds(ModelResource.Center, ModelResource.Radius, SceneMin, SceneMax);
+            if (!PrimitiveSections || PrimitiveSections->empty())
+            {
+                FGltfPrimitiveSection Section;
+                Section.IndexStart = 0;
+                Section.IndexCount = MeshGeometries[MeshIndex].IndexCount;
+                DefaultSections.push_back(Section);
+                PrimitiveSections = &DefaultSections;
+            }
 
-            OutModels.push_back(std::move(ModelResource));
+            const size_t SectionCount = PrimitiveSections->size();
+            for (size_t SectionIndex = 0; SectionIndex < SectionCount; ++SectionIndex)
+            {
+                const FGltfPrimitiveSection& Section = (*PrimitiveSections)[SectionIndex];
+
+                FSceneModelResource ModelResource = {};
+                ModelResource.Geometry = MeshGeometries[MeshIndex];
+                ModelResource.DrawIndexStart = Section.IndexStart;
+                ModelResource.DrawIndexCount = Section.IndexCount;
+
+                XMStoreFloat4x4(&ModelResource.WorldMatrix, World);
+
+                const XMVECTOR CenterVec = XMVector3TransformCoord(XMVectorSet(MeshCenter.x, MeshCenter.y, MeshCenter.z, 1.0f), World);
+                XMStoreFloat3(&ModelResource.Center, CenterVec);
+                ModelResource.Radius = MeshRadius * NodeScale;
+
+                if (SectionCount > 1)
+                {
+                    ModelResource.Name = BaseName + "_Prim" + std::to_string(SectionIndex);
+                }
+                else
+                {
+                    ModelResource.Name = BaseName;
+                }
+
+                ModelResource.ObjectId = NextObjectId++;
+
+                XMStoreFloat3(&ModelResource.BoundsMin, BoundsMin);
+                XMStoreFloat3(&ModelResource.BoundsMax, BoundsMax);
+
+                const std::wstring EmptyTexture;
+                const FGltfMaterialTextureSet& Material = Section.Material;
+
+                const std::wstring& BaseColorPath = !Material.BaseColor.empty() ? Material.BaseColor : EmptyTexture;
+                const std::wstring& MetallicRoughnessPath = !Material.MetallicRoughness.empty() ? Material.MetallicRoughness : EmptyTexture;
+                const std::wstring& NormalPath = !Material.Normal.empty() ? Material.Normal : EmptyTexture;
+                const std::wstring& EmissivePath = !Material.Emissive.empty() ? Material.Emissive : EmptyTexture;
+
+                ModelResource.BaseColorTexturePath = Model.BaseColorTexturePath.empty() ? BaseColorPath : Model.BaseColorTexturePath;
+                ModelResource.MetallicRoughnessTexturePath = Model.MetallicRoughnessTexturePath.empty() ? MetallicRoughnessPath : Model.MetallicRoughnessTexturePath;
+                ModelResource.NormalTexturePath = Model.NormalTexturePath.empty() ? NormalPath : Model.NormalTexturePath;
+                ModelResource.EmissiveTexturePath = Model.EmissiveTexturePath.empty() ? EmissivePath : Model.EmissiveTexturePath;
+                ModelResource.BaseColorFactor = Material.BaseColorFactor;
+                ModelResource.BaseColorAlpha = Material.BaseColorAlpha;
+                ModelResource.MetallicFactor = Material.MetallicFactor;
+                ModelResource.RoughnessFactor = Material.RoughnessFactor;
+                ModelResource.EmissiveFactor = Material.EmissiveFactor;
+                ModelResource.AlphaCutoff = Material.AlphaCutoff;
+                ModelResource.AlphaMode = Material.bAlphaMask ? 1u : 0u;
+                ModelResource.bHasNormalMap = !ModelResource.NormalTexturePath.empty();
+
+                ModelResource.BaseColorTransformOffsetScale = BuildOffsetScale(Material.BaseColorTransform);
+                ModelResource.BaseColorTransformRotation = BuildRotationConstants(Material.BaseColorTransform);
+                ModelResource.MetallicRoughnessTransformOffsetScale = BuildOffsetScale(Material.MetallicRoughnessTransform);
+                ModelResource.MetallicRoughnessTransformRotation = BuildRotationConstants(Material.MetallicRoughnessTransform);
+                ModelResource.NormalTransformOffsetScale = BuildOffsetScale(Material.NormalTransform);
+                ModelResource.NormalTransformRotation = BuildRotationConstants(Material.NormalTransform);
+                ModelResource.EmissiveTransformOffsetScale = BuildOffsetScale(Material.EmissiveTransform);
+                ModelResource.EmissiveTransformRotation = BuildRotationConstants(Material.EmissiveTransform);
+
+                UpdateSceneBounds(ModelResource.Center, ModelResource.Radius, SceneMin, SceneMax);
+
+                OutModels.push_back(std::move(ModelResource));
+            }
         }
     }
 
@@ -966,6 +1074,9 @@ void RendererUtils::UpdateSceneConstants(
     Constants.ShadowMapSize = DirectX::XMFLOAT2(ShadowMapWidth, ShadowMapHeight);
     Constants.MetallicFactor = Model.MetallicFactor;
     Constants.RoughnessFactor = Model.RoughnessFactor;
+    Constants.BaseColorAlpha = Model.BaseColorAlpha;
+    Constants.AlphaCutoff = Model.AlphaCutoff;
+    Constants.AlphaMode = Model.AlphaMode;
     Constants.EnvMapMipCount = EnvMapMipCount;
     Constants.ObjectId = Model.ObjectId;
     FillTransformConstants(Model.BaseColorTransformOffsetScale, Model.BaseColorTransformRotation, Constants.BaseColorTransformOffsetScale, Constants.BaseColorTransformRotation);

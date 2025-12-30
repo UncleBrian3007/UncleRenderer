@@ -58,6 +58,14 @@ public:
     bool IsHZBEnabled() const { return bHZBEnabled; }
 
 private:
+    struct FIndirectDrawRange
+    {
+        uint32_t Start = 0;
+        uint32_t Count = 0;
+        uint32_t PipelineKey = 0;
+        D3D12_GPU_DESCRIPTOR_HANDLE TextureHandle{};
+    };
+
     bool CreateBasePassRootSignature(FDX12Device* Device);
     bool CreateLightingRootSignature(FDX12Device* Device);
     bool CreateBasePassPipeline(FDX12Device* Device, DXGI_FORMAT LightingFormat);
@@ -75,6 +83,8 @@ private:
     bool CreateObjectIdPipeline(FDX12Device* Device);
     bool CreateDescriptorHeap(FDX12Device* Device);
     bool CreateSceneTextures(FDX12Device* Device, const std::vector<FSceneModelResource>& Models);
+    bool CreateGpuDrivenResources(FDX12Device* Device);
+    void DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamera& Camera);
     void UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, uint64_t ConstantBufferOffset);
     void UpdateSkyConstants(const FCamera& Camera);
     void UpdateCullingVisibility(const FCamera& Camera);
@@ -108,6 +118,9 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ObjectIdPipeline;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> SkyRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> TonemapRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> CullingRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> CullingPipeline;
+    Microsoft::WRL::ComPtr<ID3D12CommandSignature> IndirectCommandSignature;
 
     std::vector<FSceneModelResource> SceneModels;
     std::vector<bool> SceneModelVisibility;
@@ -125,6 +138,10 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> BrdfLutTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> ObjectIdTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> ObjectIdReadback;
+    Microsoft::WRL::ComPtr<ID3D12Resource> IndirectCommandBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> IndirectCommandUpload;
+    Microsoft::WRL::ComPtr<ID3D12Resource> ModelBoundsBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> ModelBoundsUpload;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> DescriptorHeap;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> ObjectIdRtvHeap;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> DSVHeap;
@@ -188,6 +205,7 @@ private:
     bool bLogResourceBarriers = false;
     bool bEnableGraphDump = false;
     bool bEnableGpuTiming = false;
+    bool bEnableIndirectDraw = false;
     bool bHZBEnabled = true;
     bool bObjectIdReadbackRequested = false;
     bool bObjectIdReadbackRecorded = false;
@@ -195,6 +213,9 @@ private:
     uint32_t ObjectIdReadbackY = 0;
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT ObjectIdFootprint{};
     uint32_t ObjectIdRowPitch = 0;
+    uint32_t IndirectCommandCount = 0;
+    D3D12_RESOURCE_STATES IndirectCommandState = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+    std::vector<FIndirectDrawRange> IndirectDrawRanges;
 
     FDX12Device* Device = nullptr;
 

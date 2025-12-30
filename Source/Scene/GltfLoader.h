@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -22,9 +23,12 @@ struct FGltfMaterialTextureSet
     std::wstring Normal;
     std::wstring Emissive;
     FFloat3 BaseColorFactor{ 1.0f, 1.0f, 1.0f };
+    float BaseColorAlpha = 1.0f;
     float MetallicFactor = 1.0f;
     float RoughnessFactor = 1.0f;
     FFloat3 EmissiveFactor{ 0.0f, 0.0f, 0.0f };
+    float AlphaCutoff = 0.5f;
+    bool bAlphaMask = false;
     FGltfTextureTransform BaseColorTransform;
     FGltfTextureTransform MetallicRoughnessTransform;
     FGltfTextureTransform NormalTransform;
@@ -33,7 +37,14 @@ struct FGltfMaterialTextureSet
 
 struct FGltfMaterialTextures
 {
-    std::vector<FGltfMaterialTextureSet> PerMesh;
+    std::vector<FGltfMaterialTextureSet> PerPrimitive;
+};
+
+struct FGltfPrimitiveSection
+{
+    uint32_t IndexStart = 0;
+    uint32_t IndexCount = 0;
+    FGltfMaterialTextureSet Material;
 };
 
 struct FGltfNode
@@ -46,7 +57,7 @@ struct FGltfNode
 struct FGltfScene
 {
     std::vector<FMesh> Meshes;
-    std::vector<FGltfMaterialTextureSet> MeshMaterials;
+    std::vector<std::vector<FGltfPrimitiveSection>> MeshPrimitiveSections;
     std::vector<FGltfNode> Nodes;
 };
 

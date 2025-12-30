@@ -297,9 +297,6 @@
     <None Include="Shaders\ObjectId.hlsl">
       <Filter>Shaders</Filter>
     </None>
-    <None Include="Assets\Scenes\Scene.json">
-      <Filter>Assets</Filter>
-    </None>
     <None Include="packages.config" />
     <None Include="Shaders\PBRCommon.hlsl">
       <Filter>Shaders</Filter>
@@ -324,6 +321,12 @@
     </None>
     <None Include="Shaders\SceneConstants.hlsl">
       <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\CullIndirectArgs.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Assets\Scenes\sponza.json">
+      <Filter>Assets</Filter>
     </None>
   </ItemGroup>
 </Project>

@@ -35,6 +35,14 @@ public:
     float GetShadowBias() const { return ShadowBias; }
 
 private:
+    struct FIndirectDrawRange
+    {
+        uint32_t Start = 0;
+        uint32_t Count = 0;
+        uint32_t PipelineKey = 0;
+        D3D12_GPU_DESCRIPTOR_HANDLE TextureHandle{};
+    };
+
     bool CreateRootSignature(FDX12Device* Device);
     bool CreatePipelineState(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateShadowPipeline(FDX12Device* Device);
@@ -42,6 +50,9 @@ private:
     bool CreateObjectIdResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateObjectIdPipeline(FDX12Device* Device);
     bool CreateSceneTextures(FDX12Device* Device, const std::vector<FSceneModelResource>& Models);
+    bool CreateGpuDrivenResources(FDX12Device* Device);
+    void DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamera& Camera);
+    void UpdateIndirectCommandBuffer();
     void UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, uint64_t ConstantBufferOffset, const DirectX::XMMATRIX& LightViewProjection);
     void UpdateSkyConstants(const FCamera& Camera);
     void UpdateCullingVisibility(const FCamera& Camera);
@@ -69,6 +80,9 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ShadowPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> SkyPipelineState;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ObjectIdPipeline;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> CullingRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> CullingPipeline;
+    Microsoft::WRL::ComPtr<ID3D12CommandSignature> IndirectCommandSignature;
 
     std::vector<FSceneModelResource> SceneModels;
     std::vector<bool> SceneModelVisibility;
@@ -87,6 +101,10 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> BrdfLutTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> ObjectIdTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> ObjectIdReadback;
+    Microsoft::WRL::ComPtr<ID3D12Resource> IndirectCommandBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> IndirectCommandUpload;
+    Microsoft::WRL::ComPtr<ID3D12Resource> ModelBoundsBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> ModelBoundsUpload;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> ObjectIdRtvHeap;
     std::unique_ptr<FTextureLoader> TextureLoader;
     FMeshGeometryBuffers SkyGeometry;
@@ -101,6 +119,7 @@ private:
     D3D12_RESOURCE_STATES DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
     D3D12_RESOURCE_STATES ShadowMapState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
     D3D12_RESOURCE_STATES ObjectIdState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    D3D12_RESOURCE_STATES IndirectCommandState = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
 
     uint8_t* ConstantBufferMapped = nullptr;
     uint8_t* SkyConstantBufferMapped = nullptr;
@@ -113,6 +132,7 @@ private:
     bool bLogResourceBarriers = false;
     bool bEnableGraphDump = false;
     bool bEnableGpuTiming = false;
+    bool bEnableIndirectDraw = false;
     float EnvironmentMipCount = 1.0f;
     bool bObjectIdReadbackRequested = false;
     bool bObjectIdReadbackRecorded = false;
@@ -121,6 +141,8 @@ private:
     D3D12_CPU_DESCRIPTOR_HANDLE ObjectIdRtvHandle{};
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT ObjectIdFootprint{};
     uint32_t ObjectIdRowPitch = 0;
+    uint32_t IndirectCommandCount = 0;
+    std::vector<FIndirectDrawRange> IndirectDrawRanges;
 
     FDX12Device* Device = nullptr;
 };
