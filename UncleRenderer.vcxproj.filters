@@ -95,6 +95,9 @@
     <ClCompile Include="Source\Render\DeferredRenderer.cpp">
       <Filter>Source Files\Render</Filter>
     </ClCompile>
+    <ClCompile Include="Source\Render\Renderer.cpp">
+      <Filter>Source Files\Render</Filter>
+    </ClCompile>
     <ClCompile Include="Source\Render\RendererUtils.cpp">
       <Filter>Source Files\Render</Filter>
     </ClCompile>

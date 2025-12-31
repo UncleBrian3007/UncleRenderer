@@ -2,15 +2,19 @@
 
 #include <d3d12.h>
 #include <DirectXMath.h>
+#include <wrl.h>
+#include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
 struct FSceneModelResource;
+class FTextureLoader;
 
 struct FRendererOptions
 {
     std::wstring SceneFilePath = L"Assets/Scenes/Scene.json";
-    bool bUseDepthPrepass = false;
+    bool bUseDepthPrepass = true;
     bool bEnableShadows = true;
     float ShadowBias = 0.0f;
     bool bEnableTonemap = true;
@@ -31,7 +35,7 @@ class FCamera;
 class FRenderer
 {
 public:
-    virtual ~FRenderer() = default;
+    virtual ~FRenderer();
 
     virtual bool Initialize(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT BackBufferFormat, const FRendererOptions& Options) = 0;
     virtual void RenderFrame(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle, const FCamera& Camera, float DeltaTime) = 0;
@@ -55,13 +59,21 @@ public:
 
     void SetCullingCameraOverride(const FCamera* Camera) { CullingCameraOverride = Camera; }
     const FCamera* GetCullingCameraOverride() const { return CullingCameraOverride; }
-    virtual const std::vector<FSceneModelResource>* GetSceneModels() const { return nullptr; }
-    virtual bool GetSceneModelStats(size_t& OutTotal, size_t& OutCulled) const { return false; }
-    virtual void RequestObjectIdReadback(uint32_t X, uint32_t Y) {}
-    virtual bool ConsumeObjectIdReadback(uint32_t& OutObjectId) { return false; }
+    void SetIndirectDrawEnabled(bool bEnabled) { bEnableIndirectDraw = bEnabled; }
+    bool IsIndirectDrawEnabled() const { return bEnableIndirectDraw; }
+    virtual const std::vector<FSceneModelResource>* GetSceneModels() const { return &SceneModels; }
+    virtual bool GetSceneModelStats(size_t& OutTotal, size_t& OutCulled) const;
+    virtual void RequestObjectIdReadback(uint32_t X, uint32_t Y);
+    virtual bool ConsumeObjectIdReadback(uint32_t& OutObjectId);
 
 protected:
+    void InitializeCommonSettings(uint32_t Width, uint32_t Height, const FRendererOptions& Options);
+    void DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamera& Camera);
+    void ConfigureHZBOcclusion(bool bEnabled, ID3D12DescriptorHeap* DescriptorHeap, D3D12_GPU_DESCRIPTOR_HANDLE Handle, uint32_t Width, uint32_t Height, uint32_t MipCount);
+
     D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilHandle{};
+    D3D12_CPU_DESCRIPTOR_HANDLE ShadowDSVHandle{};
+    D3D12_CPU_DESCRIPTOR_HANDLE ObjectIdRtvHandle{};
     DirectX::XMFLOAT3 SceneCenter{ 0.0f, 0.0f, 0.0f };
     float SceneRadius = 1.0f;
 
@@ -71,4 +83,76 @@ protected:
 
     bool bDepthPrepassEnabled = false;
     const FCamera* CullingCameraOverride = nullptr;
+
+    std::vector<FSceneModelResource> SceneModels;
+    std::vector<bool> SceneModelVisibility;
+    struct FIndirectDrawRange
+    {
+        uint32_t Start = 0;
+        uint32_t Count = 0;
+        uint32_t PipelineKey = 0;
+        D3D12_GPU_DESCRIPTOR_HANDLE TextureHandle{};
+        std::wstring Name;
+    };
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> ConstantBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> SkyConstantBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> DepthBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> ShadowMap;
+    Microsoft::WRL::ComPtr<ID3D12Resource> IndirectCommandBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> IndirectCommandUpload;
+    Microsoft::WRL::ComPtr<ID3D12Resource> ModelBoundsBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> ModelBoundsUpload;
+    Microsoft::WRL::ComPtr<ID3D12Resource> ObjectIdTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> ObjectIdReadback;
+    Microsoft::WRL::ComPtr<ID3D12Resource> NullTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> EnvironmentCubeTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> BrdfLutTexture;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> DSVHeap;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> ShadowDSVHeap;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> ObjectIdRtvHeap;
+    std::unique_ptr<FTextureLoader> TextureLoader;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> CullingRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> CullingPipeline;
+    Microsoft::WRL::ComPtr<ID3D12CommandSignature> IndirectCommandSignature;
+
+    D3D12_VIEWPORT Viewport{};
+    D3D12_RECT ScissorRect{};
+    D3D12_VIEWPORT ShadowViewport{};
+    D3D12_RECT ShadowScissor{};
+
+    D3D12_RESOURCE_STATES DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    D3D12_RESOURCE_STATES ShadowMapState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    D3D12_RESOURCE_STATES ObjectIdState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    D3D12_RESOURCE_STATES IndirectCommandState = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+
+    uint8_t* ConstantBufferMapped = nullptr;
+    uint8_t* SkyConstantBufferMapped = nullptr;
+    uint64_t SceneConstantBufferStride = 0;
+    float ShadowBias = 0.0f;
+    float ShadowStrength = 1.0f;
+    uint32_t ShadowMapWidth = 0;
+    uint32_t ShadowMapHeight = 0;
+    bool bShadowsEnabled = true;
+    bool bLogResourceBarriers = false;
+    bool bEnableGraphDump = false;
+    bool bEnableGpuTiming = false;
+    bool bEnableIndirectDraw = false;
+    float EnvironmentMipCount = 1.0f;
+    bool bObjectIdReadbackRequested = false;
+    bool bObjectIdReadbackRecorded = false;
+    uint32_t ObjectIdReadbackX = 0;
+    uint32_t ObjectIdReadbackY = 0;
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT ObjectIdFootprint{};
+    uint32_t ObjectIdRowPitch = 0;
+    uint32_t IndirectCommandCount = 0;
+    std::vector<FIndirectDrawRange> IndirectDrawRanges;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> CullingDescriptorHeap;
+    D3D12_GPU_DESCRIPTOR_HANDLE HZBCullingHandle{};
+    uint32_t HZBCullingWidth = 0;
+    uint32_t HZBCullingHeight = 0;
+    uint32_t HZBCullingMipCount = 0;
+    bool bHZBOcclusionEnabled = false;
+
+    FDX12Device* Device = nullptr;
 };

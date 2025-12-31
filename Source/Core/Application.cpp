@@ -29,6 +29,7 @@
 #include <iterator>
 #include <array>
 #include <chrono>
+#include <cwchar>
 
 namespace
 {
@@ -176,6 +177,8 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     ForwardRenderer = std::make_unique<FForwardRenderer>();
     DeferredRenderer = std::make_unique<FDeferredRenderer>();
     Camera = std::make_unique<FCamera>();
+    bIndirectDrawEnabled = RendererConfig.bEnableIndirectDraw;
+    SetModelPixEventsEnabled(bModelPixEventsEnabled);
 
     FRendererOptions RendererOptions{};
     RendererOptions.SceneFilePath = RendererConfig.SceneFile;
@@ -190,7 +193,7 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     RendererOptions.bLogResourceBarriers = RendererConfig.bLogResourceBarriers;
     RendererOptions.bEnableGraphDump = RendererConfig.bEnableGraphDump;
     RendererOptions.bEnableGpuTiming = RendererConfig.bEnableGpuTiming;
-    RendererOptions.bEnableIndirectDraw = RendererConfig.bEnableIndirectDraw;
+    RendererOptions.bEnableIndirectDraw = bIndirectDrawEnabled;
 
     const std::wstring SceneFilePath = RendererOptions.SceneFilePath.empty() ? L"Assets/Scenes/Scene.json" : RendererOptions.SceneFilePath;
     RendererOptions.SceneFilePath = SceneFilePath;
@@ -426,7 +429,9 @@ bool FApplication::RenderFrame()
     CommandContext->BeginFrame(BackBufferIndex);
 
     {
-        FScopedPixEvent FrameEvent(CommandContext->GetCommandList(), L"Frame");
+        wchar_t FrameLabel[64] = {};
+        swprintf_s(FrameLabel, L"Frame %llu", static_cast<unsigned long long>(FrameIndex));
+        FScopedPixEvent FrameEvent(CommandContext->GetCommandList(), FrameLabel);
 
         if (bGpuTimingEnabled && FrameTimingQueryHeap && FrameTimingReadback)
         {
@@ -472,7 +477,7 @@ bool FApplication::RenderFrame()
             D3D12_RESOURCE_STATE_RENDER_TARGET,
             D3D12_RESOURCE_STATE_PRESENT);
 
-        PixSetMarker(CommandContext->GetCommandList(), L"Present");
+        FScopedPixEvent PresentEvent(CommandContext->GetCommandList(), L"Present");
 
         if (bGpuTimingEnabled && FrameTimingQueryHeap && FrameTimingReadback)
         {
@@ -896,7 +901,7 @@ bool FApplication::ReloadScene(const std::wstring& ScenePath)
     RendererOptions.bEnableShadows = bShadowsEnabled;
     RendererOptions.ShadowBias = ShadowBias;
     RendererOptions.bEnableHZB = bHZBEnabled;
-    RendererOptions.bEnableIndirectDraw = RendererConfig.bEnableIndirectDraw;
+    RendererOptions.bEnableIndirectDraw = bIndirectDrawEnabled;
 
     const uint32_t Width = static_cast<uint32_t>(MainWindow->GetWidth());
     const uint32_t Height = static_cast<uint32_t>(MainWindow->GetHeight());
@@ -1012,7 +1017,7 @@ void FApplication::StartAsyncSceneReload(const std::wstring& ScenePath)
     RendererOptions.TonemapGamma = TonemapGamma;
     RendererOptions.bEnableGpuTiming = bGpuTimingEnabled;
     RendererOptions.bEnableHZB = bHZBEnabled;
-    RendererOptions.bEnableIndirectDraw = RendererConfig.bEnableIndirectDraw;
+    RendererOptions.bEnableIndirectDraw = bIndirectDrawEnabled;
 
     const bool bPreferDeferred = ActiveRenderer == DeferredRenderer.get() || RendererConfig.RendererType == ERendererType::Deferred;
 
@@ -1408,22 +1413,22 @@ void FApplication::RenderUI()
                 Stats.SampleCount);
         }
 
-            ImGui::Separator();
-            const std::string ScenePathUtf8 = PathToUtf8String(CurrentScenePath);
-            ImGui::TextWrapped("Scene: %s", ScenePathUtf8.c_str());
-            if (ImGui::Button("Load Scene"))
+        ImGui::Separator();
+        const std::string ScenePathUtf8 = PathToUtf8String(CurrentScenePath);
+        ImGui::TextWrapped("Scene: %s", ScenePathUtf8.c_str());
+        if (ImGui::Button("Load Scene"))
+        {
+            const std::filesystem::path ScenePath(CurrentScenePath);
+            const std::filesystem::path InitialDir = ScenePath.has_parent_path() ? ScenePath.parent_path() : std::filesystem::path();
+            const std::wstring SelectedScene = OpenSceneFileDialog(InitialDir.wstring());
+            if (!SelectedScene.empty())
             {
-                const std::filesystem::path ScenePath(CurrentScenePath);
-                const std::filesystem::path InitialDir = ScenePath.has_parent_path() ? ScenePath.parent_path() : std::filesystem::path();
-                const std::wstring SelectedScene = OpenSceneFileDialog(InitialDir.wstring());
-                if (!SelectedScene.empty())
-                {
-                    PendingScenePath = SelectedScene;
-                }
+                PendingScenePath = SelectedScene;
             }
+        }
 
-            const char* SelectedName = SelectedModelIndex >= 0 ? SelectedModelName.c_str() : "None";
-            ImGui::Text("Selected: %s", SelectedName);
+        const char* SelectedName = SelectedModelIndex >= 0 ? SelectedModelName.c_str() : "None";
+        ImGui::Text("Selected: %s [%d]", SelectedName, SelectedModelIndex);
 
         DXGI_QUERY_VIDEO_MEMORY_INFO LocalMemoryInfo = {};
         if (Device && Device->QueryLocalVideoMemory(LocalMemoryInfo))
@@ -1452,6 +1457,7 @@ void FApplication::RenderUI()
             const uint64 LastSignaledFence = Device->GetGraphicsQueue()->GetLastSignaledFenceValue();
             const uint64 InFlightFrames = (LastSignaledFence > CompletedFence) ? (LastSignaledFence - CompletedFence) : 0;
 
+			ImGui::SameLine();
             ImGui::Text("In-flight frames: %llu", static_cast<unsigned long long>(InFlightFrames));
     //        ImGui::Text("GPU fences: completed %llu / last signaled %llu", static_cast<unsigned long long>(CompletedFence), static_cast<unsigned long long>(LastSignaledFence));
         }
@@ -1472,7 +1478,7 @@ void FApplication::RenderUI()
             }
         }
 
-        ImGui::Separator();
+        ImGui::SameLine();
         bool bFreezeCameraValue = bFreezeCamera;
         if (ImGui::Checkbox("Freeze Camera", &bFreezeCameraValue))
         {
@@ -1493,6 +1499,24 @@ void FApplication::RenderUI()
             if (DeferredRenderer)
             {
                 DeferredRenderer->SetHZBEnabled(bHZBEnabled);
+            }
+        }
+
+        ImGui::SameLine();
+        bool bIndirectDraw = bIndirectDrawEnabled;
+        if (ImGui::Checkbox("Indirect Draw", &bIndirectDraw))
+        {
+            bIndirectDrawEnabled = bIndirectDraw;
+            RendererConfig.bEnableIndirectDraw = bIndirectDrawEnabled;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetIndirectDrawEnabled(bIndirectDrawEnabled);
+            }
+
+            if (ForwardRenderer)
+            {
+                ForwardRenderer->SetIndirectDrawEnabled(bIndirectDrawEnabled);
             }
         }
 
@@ -1528,6 +1552,14 @@ void FApplication::RenderUI()
         //        ForwardRenderer->SetShadowBias(ShadowBias);
         //    }
         //}
+
+		ImGui::SameLine();
+		bool bModelPixEvents = bModelPixEventsEnabled;
+		if (ImGui::Checkbox("Model Pix Events", &bModelPixEvents))
+		{
+			bModelPixEventsEnabled = bModelPixEvents;
+			SetModelPixEventsEnabled(bModelPixEventsEnabled);
+		}
 
         ImGui::Separator();
         bool bTonemap = bTonemapEnabled;

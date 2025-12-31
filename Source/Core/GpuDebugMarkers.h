@@ -9,14 +9,18 @@
 #define WITH_PIX_EVENTS 0
 #endif
 
+inline bool GPixEventsEnabled = true;
+inline bool GModelPixEventsEnabled = true;
+
 class FScopedPixEvent
 {
 public:
-    FScopedPixEvent(ID3D12GraphicsCommandList* InCommandList, const wchar_t* EventName)
+    FScopedPixEvent(ID3D12GraphicsCommandList* InCommandList, const wchar_t* EventName, bool bEnabled = true)
         : CommandList(InCommandList)
     {
 #if WITH_PIX_EVENTS
-        if (CommandList)
+        bActive = CommandList && bEnabled && GPixEventsEnabled;
+        if (bActive)
         {
             PIXBeginEvent(CommandList, PIX_COLOR_DEFAULT, EventName);
         }
@@ -26,7 +30,7 @@ public:
     ~FScopedPixEvent()
     {
 #if WITH_PIX_EVENTS
-        if (CommandList)
+        if (bActive)
         {
             PIXEndEvent(CommandList);
         }
@@ -38,18 +42,20 @@ public:
 
 private:
     ID3D12GraphicsCommandList* CommandList;
+    bool bActive = false;
 };
 
-inline void PixSetMarker(ID3D12GraphicsCommandList* CommandList, const wchar_t* EventName)
+inline void SetPixEventsEnabled(bool bEnabled)
 {
-#if WITH_PIX_EVENTS
-    if (CommandList)
-    {
-        PIXSetMarker(CommandList, PIX_COLOR_DEFAULT, EventName);
-    }
-#else
-    (void)CommandList;
-    (void)EventName;
-#endif
+    GPixEventsEnabled = bEnabled;
 }
 
+inline void SetModelPixEventsEnabled(bool bEnabled)
+{
+    GModelPixEventsEnabled = bEnabled;
+}
+
+inline bool AreModelPixEventsEnabled()
+{
+    return GModelPixEventsEnabled;
+}

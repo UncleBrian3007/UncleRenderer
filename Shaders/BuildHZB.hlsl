@@ -44,7 +44,7 @@ void BuildHZB(
     uint3 groupThreadId : SV_GroupThreadID,
     uint3 groupId : SV_GroupID)
 {
-    float maxDepth = 0.0f;
+    float minDepth = 1.0f;
     if (dispatchThreadId.x < DestWidth && dispatchThreadId.y < DestHeight)
     {
         const uint2 baseCoord = dispatchThreadId.xy * 2;
@@ -54,11 +54,11 @@ void BuildHZB(
         const float d2 = SampleDepth(baseCoord + uint2(0, 1));
         const float d3 = SampleDepth(baseCoord + uint2(1, 1));
 
-        maxDepth = max(max(d0, d1), max(d2, d3));
-        DestTexture0[dispatchThreadId.xy] = maxDepth;
+        minDepth = min(min(d0, d1), min(d2, d3));
+        DestTexture0[dispatchThreadId.xy] = minDepth;
     }
 
-    SharedDepth[groupThreadId.y][groupThreadId.x] = maxDepth;
+    SharedDepth[groupThreadId.y][groupThreadId.x] = minDepth;
     GroupMemoryBarrierWithGroupSync();
 
 #if HZB_MIPS_PER_DISPATCH >= 2
@@ -72,9 +72,9 @@ void BuildHZB(
             const float s1 = SharedDepth[base.y][base.x + 1];
             const float s2 = SharedDepth[base.y + 1][base.x];
             const float s3 = SharedDepth[base.y + 1][base.x + 1];
-            const float maxDepth1 = max(max(s0, s1), max(s2, s3));
-            DestTexture1[destCoord1] = maxDepth1;
-            SharedDepth1[groupThreadId.y][groupThreadId.x] = maxDepth1;
+            const float minDepth1 = min(min(s0, s1), min(s2, s3));
+            DestTexture1[destCoord1] = minDepth1;
+            SharedDepth1[groupThreadId.y][groupThreadId.x] = minDepth1;
         }
         else
         {
@@ -95,9 +95,9 @@ void BuildHZB(
             const float s1 = SharedDepth1[base.y][base.x + 1];
             const float s2 = SharedDepth1[base.y + 1][base.x];
             const float s3 = SharedDepth1[base.y + 1][base.x + 1];
-            const float maxDepth2 = max(max(s0, s1), max(s2, s3));
-            DestTexture2[destCoord2] = maxDepth2;
-            SharedDepth2[groupThreadId.y][groupThreadId.x] = maxDepth2;
+            const float minDepth2 = min(min(s0, s1), min(s2, s3));
+            DestTexture2[destCoord2] = minDepth2;
+            SharedDepth2[groupThreadId.y][groupThreadId.x] = minDepth2;
         }
         else
         {
@@ -117,7 +117,7 @@ void BuildHZB(
             const float s1 = SharedDepth2[0][1];
             const float s2 = SharedDepth2[1][0];
             const float s3 = SharedDepth2[1][1];
-            DestTexture3[destCoord3] = max(max(s0, s1), max(s2, s3));
+            DestTexture3[destCoord3] = min(min(s0, s1), min(s2, s3));
         }
     }
 #endif

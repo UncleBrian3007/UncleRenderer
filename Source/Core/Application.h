@@ -85,6 +85,8 @@ private:
     bool bHZBEnabled = true;
     bool bGpuTimingEnabled = false;
     bool bTonemapEnabled = true;
+    bool bIndirectDrawEnabled = true;
+    bool bModelPixEventsEnabled = true;
     float TonemapExposure = 0.5f;
     float TonemapWhitePoint = 4.0f;
     float TonemapGamma = 1.0f;

@@ -70,7 +70,7 @@
       <AdditionalDependencies>d3d12.lib;dxgi.lib;dxcompiler.lib;dxguid.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
-      <Command>if exist "$(SolutionDir)packages\WinPixEventRuntime.1.0.240308001\bin\WinPixEventRuntime.dll" copy /Y "$(SolutionDir)packages\WinPixEventRuntime.1.0.240308001\bin\WinPixEventRuntime.dll" "$(OutDir)"</Command>
+      <Command>if exist "$(SolutionDir)packages\WinPixEventRuntime.1.0.240308001\bin\WinPixEventRuntime.dll" copy /Y "$(SolutionDir)packages\WinPixEventRuntime.1.0.240308001\bin\WinPixEventRuntime.dll" "$(OutDir)"&#x0D;&#x0A;if exist "$(SolutionDir)packages\Microsoft.Direct3D.DXC.1.8.2505.32\bin\x64\dxcompiler.dll" copy /Y "$(SolutionDir)packages\Microsoft.Direct3D.DXC.1.8.2505.32\bin\x64\dxcompiler.dll" "$(OutDir)"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -91,7 +91,7 @@
       <AdditionalDependencies>d3d12.lib;dxgi.lib;dxcompiler.lib;dxguid.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
-      <Command>if exist "$(SolutionDir)packages\WinPixEventRuntime.1.0.240308001\bin\WinPixEventRuntime.dll" copy /Y "$(SolutionDir)packages\WinPixEventRuntime.1.0.240308001\bin\WinPixEventRuntime.dll" "$(OutDir)"</Command>
+      <Command>if exist "$(SolutionDir)packages\WinPixEventRuntime.1.0.240308001\bin\WinPixEventRuntime.dll" copy /Y "$(SolutionDir)packages\WinPixEventRuntime.1.0.240308001\bin\WinPixEventRuntime.dll" "$(OutDir)"&#x0D;&#x0A;if exist "$(SolutionDir)packages\Microsoft.Direct3D.DXC.1.8.2505.32\bin\x64\dxcompiler.dll" copy /Y "$(SolutionDir)packages\Microsoft.Direct3D.DXC.1.8.2505.32\bin\x64\dxcompiler.dll" "$(OutDir)"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -112,6 +112,7 @@
     <ClCompile Include="Source\RHI\DX12SwapChain.cpp" />
     <ClCompile Include="Source\Core\RendererConfig.cpp" />
     <ClCompile Include="Source\Render\DeferredRenderer.cpp" />
+    <ClCompile Include="Source\Render\Renderer.cpp" />
     <ClCompile Include="Source\Render\RendererUtils.cpp" />
     <ClCompile Include="Source\Render\TextureLoader.cpp" />
     <ClCompile Include="Source\Render\ForwardRenderer.cpp" />

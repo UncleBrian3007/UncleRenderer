@@ -22,32 +22,6 @@ using Microsoft::WRL::ComPtr;
 
 FDeferredRenderer::FDeferredRenderer() = default;
 
-bool FDeferredRenderer::GetSceneModelStats(size_t& OutTotal, size_t& OutCulled) const
-{
-    return RendererUtils::ComputeSceneModelStats(SceneModels, SceneModelVisibility, OutTotal, OutCulled);
-}
-
-void FDeferredRenderer::RequestObjectIdReadback(uint32_t X, uint32_t Y)
-{
-    RendererUtils::RequestObjectIdReadback(
-        X,
-        Y,
-        bObjectIdReadbackRequested,
-        bObjectIdReadbackRecorded,
-        ObjectIdReadbackX,
-        ObjectIdReadbackY);
-}
-
-bool FDeferredRenderer::ConsumeObjectIdReadback(uint32_t& OutObjectId)
-{
-    return RendererUtils::ConsumeObjectIdReadback(
-        ObjectIdReadback,
-        ObjectIdRowPitch,
-        bObjectIdReadbackRequested,
-        bObjectIdReadbackRecorded,
-        OutObjectId);
-}
-
 namespace
 {
     uint32_t BuildPipelineKey(const FSceneModelResource& Model)
@@ -83,46 +57,14 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
 
     this->BackBufferFormat = BackBufferFormat;
 
-    bDepthPrepassEnabled = Options.bUseDepthPrepass;
-    bShadowsEnabled = Options.bEnableShadows;
-    ShadowBias = Options.ShadowBias;
     bTonemapEnabled = Options.bEnableTonemap;
     TonemapExposure = Options.TonemapExposure;
     TonemapWhitePoint = Options.TonemapWhitePoint;
     TonemapGamma = Options.TonemapGamma;
-    bLogResourceBarriers = Options.bLogResourceBarriers;
-    bEnableGraphDump = Options.bEnableGraphDump;
-    bEnableGpuTiming = Options.bEnableGpuTiming;
     bHZBEnabled = Options.bEnableHZB;
-    bEnableIndirectDraw = Options.bEnableIndirectDraw;
+    bHZBReady = false;
 
-    Viewport.TopLeftX = 0.0f;
-    Viewport.TopLeftY = 0.0f;
-    Viewport.Width = static_cast<float>(Width);
-    Viewport.Height = static_cast<float>(Height);
-    Viewport.MinDepth = 0.0f;
-    Viewport.MaxDepth = 1.0f;
-
-    ScissorRect.left = 0;
-    ScissorRect.top = 0;
-    ScissorRect.right = static_cast<LONG>(Width);
-    ScissorRect.bottom = static_cast<LONG>(Height);
-
-    constexpr uint32_t DefaultShadowMapSize = 2048;
-    ShadowMapWidth = DefaultShadowMapSize;
-    ShadowMapHeight = DefaultShadowMapSize;
-
-    ShadowViewport.TopLeftX = 0.0f;
-    ShadowViewport.TopLeftY = 0.0f;
-    ShadowViewport.Width = static_cast<float>(ShadowMapWidth);
-    ShadowViewport.Height = static_cast<float>(ShadowMapHeight);
-    ShadowViewport.MinDepth = 0.0f;
-    ShadowViewport.MaxDepth = 1.0f;
-
-    ShadowScissor.left = 0;
-    ShadowScissor.top = 0;
-    ShadowScissor.right = static_cast<LONG>(ShadowMapWidth);
-    ShadowScissor.bottom = static_cast<LONG>(ShadowMapHeight);
+    InitializeCommonSettings(Width, Height, Options);
 
     LogInfo("Creating deferred renderer base pass root signature...");
     if (!CreateBasePassRootSignature(Device))
@@ -354,13 +296,14 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 {
     ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
 
-    if (!bEnableIndirectDraw)
-    {
-        UpdateCullingVisibility(Camera);
-    }
+    UpdateCullingVisibility(Camera);
 
     const bool bRenderShadows = bShadowsEnabled && ShadowPipeline && ShadowMap;
     const bool bDoDepthPrepass = bDepthPrepassEnabled && DepthPrepassPipeline;
+    if (!bDoDepthPrepass)
+    {
+        bHZBReady = false;
+    }
 
     FRenderGraph Graph;
     Graph.SetDevice(Device);
@@ -412,13 +355,24 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         const FCamera* Camera = nullptr;
     };
 
-    Graph.AddPass<FGpuCullingPassData>("GPU Culling", [this, &Camera, DepthHandle](FGpuCullingPassData& Data, FRGPassBuilder& Builder)
+    if (!bHZBEnabled)
+    {
+        bHZBReady = false;
+    }
+
+    const bool bUseHZBOcclusion = bHZBEnabled && bHZBReady && HZBSrvHandle.ptr != 0;
+    ConfigureHZBOcclusion(bUseHZBOcclusion, DescriptorHeap.Get(), HZBSrvHandle, HZBWidth, HZBHeight, HZBMipCount);
+
+    Graph.AddPass<FGpuCullingPassData>("GPU Culling", [this, &Camera, DepthHandle, HZBHandle, bUseHZBOcclusion](FGpuCullingPassData& Data, FRGPassBuilder& Builder)
     {
         Data.bEnabled = bEnableIndirectDraw && CullingPipeline && CullingRootSignature && IndirectCommandBuffer && ModelBoundsBuffer;
         Data.Camera = &Camera;
         if (Data.bEnabled)
         {
-            Builder.ReadTexture(DepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            if (bUseHZBOcclusion)
+            {
+                Builder.ReadTexture(HZBHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            }
             Builder.KeepAlive();
         }
     }, [this](const FGpuCullingPassData& Data, FDX12CommandContext& Cmd)
@@ -434,12 +388,14 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
     struct FShadowPassData
     {
         bool bEnabled = false;
+        bool bUseIndirect = false;
         const FCamera* Camera = nullptr;
     };
 
     Graph.AddPass<FShadowPassData>("ShadowMap", [&, bRenderShadows](FShadowPassData& Data, FRGPassBuilder& Builder)
     {
         Data.bEnabled = bRenderShadows;
+        Data.bUseIndirect = bEnableIndirectDraw && IndirectCommandSignature && IndirectCommandBuffer && IndirectCommandCount > 0;
         Data.Camera = &Camera;
 
         if (bRenderShadows)
@@ -455,7 +411,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
 
-        PixSetMarker(LocalCommandList, L"ShadowMap");
+        FScopedPixEvent ShadowEvent(LocalCommandList, L"ShadowMap");
         Cmd.ClearDepth(ShadowDSVHandle, 1.0f);
 
         ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
@@ -470,6 +426,26 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
         for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
         {
+            const FSceneModelResource& Model = SceneModels[ModelIndex];
+            const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
+            UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset);
+        }
+
+        if (Data.bUseIndirect)
+        {
+            LocalCommandList->SetGraphicsRootDescriptorTable(1, DescriptorHeap->GetGPUDescriptorHandleForHeapStart());
+            LocalCommandList->ExecuteIndirect(
+                IndirectCommandSignature.Get(),
+                IndirectCommandCount,
+                IndirectCommandBuffer.Get(),
+                0,
+                nullptr,
+                0);
+            return;
+        }
+
+        for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+        {
             if (!SceneModelVisibility.empty() && !SceneModelVisibility[ModelIndex])
             {
                 continue;
@@ -477,8 +453,6 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
             const FSceneModelResource& Model = SceneModels[ModelIndex];
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
-
-            UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset);
 
             LocalCommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
             LocalCommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
@@ -488,7 +462,18 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
                 ConstantBuffer->GetGPUVirtualAddress() + ConstantBufferOffset);
             LocalCommandList->SetGraphicsRootDescriptorTable(1, DescriptorHeap->GetGPUDescriptorHandleForHeapStart());
 
-            LocalCommandList->DrawIndexedInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0, 0);
+            if (AreModelPixEventsEnabled())
+            {
+                const std::wstring ModelLabel = Model.Name.empty()
+                    ? L"Model"
+                    : std::wstring(Model.Name.begin(), Model.Name.end());
+                FScopedPixEvent ModelEvent(LocalCommandList, ModelLabel.c_str());
+                LocalCommandList->DrawIndexedInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0, 0);
+            }
+            else
+            {
+                LocalCommandList->DrawIndexedInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0, 0);
+            }
         }
 
     });
@@ -517,7 +502,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
 
-        PixSetMarker(LocalCommandList, L"DepthPrepass");
+        FScopedPixEvent DepthEvent(LocalCommandList, L"DepthPrepass");
 
         Cmd.ClearDepth(DepthStencilHandle);
 
@@ -557,7 +542,18 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
                 ConstantBuffer->GetGPUVirtualAddress() + ConstantBufferOffset);
             LocalCommandList->SetGraphicsRootDescriptorTable(1, DescriptorHeap->GetGPUDescriptorHandleForHeapStart());
 
-            LocalCommandList->DrawIndexedInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0, 0);
+            if (AreModelPixEventsEnabled())
+            {
+                const std::wstring ModelLabel = Model.Name.empty()
+                    ? L"Model"
+                    : std::wstring(Model.Name.begin(), Model.Name.end());
+                FScopedPixEvent ModelEvent(LocalCommandList, ModelLabel.c_str());
+                LocalCommandList->DrawIndexedInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0, 0);
+            }
+            else
+            {
+                LocalCommandList->DrawIndexedInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0, 0);
+            }
         }
     });
 
@@ -583,7 +579,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
     {
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
 
-        PixSetMarker(LocalCommandList, L"GBuffer");
+        FScopedPixEvent GBufferEvent(LocalCommandList, L"GBuffer");
 
         D3D12_CPU_DESCRIPTOR_HANDLE BasePassRTVs[4] =
         {
@@ -670,7 +666,16 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
                 LocalCommandList->SetGraphicsRootDescriptorTable(1, Range.TextureHandle);
 
                 const uint64_t Offset = static_cast<uint64_t>(Range.Start) * sizeof(FIndirectDrawCommand);
-                LocalCommandList->ExecuteIndirect(IndirectCommandSignature.Get(), Range.Count, IndirectCommandBuffer.Get(), Offset, nullptr, 0);
+                if (AreModelPixEventsEnabled())
+                {
+                    const wchar_t* Label = Range.Name.empty() ? L"IndirectDrawRange" : Range.Name.c_str();
+                    FScopedPixEvent ModelEvent(LocalCommandList, Label);
+                    LocalCommandList->ExecuteIndirect(IndirectCommandSignature.Get(), Range.Count, IndirectCommandBuffer.Get(), Offset, nullptr, 0);
+                }
+                else
+                {
+                    LocalCommandList->ExecuteIndirect(IndirectCommandSignature.Get(), Range.Count, IndirectCommandBuffer.Get(), Offset, nullptr, 0);
+                }
             }
         }
         else
@@ -726,7 +731,18 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
                 LocalCommandList->SetPipelineState(SelectPipeline(bUseNormalMap, bUseMetallicRoughnessMap, bUseBaseColorMap, bUseEmissiveMap));
 
-                LocalCommandList->DrawIndexedInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0, 0);
+                if (AreModelPixEventsEnabled())
+                {
+                    const std::wstring ModelLabel = Model.Name.empty()
+                        ? L"Model"
+                        : std::wstring(Model.Name.begin(), Model.Name.end());
+                    FScopedPixEvent ModelEvent(LocalCommandList, ModelLabel.c_str());
+                    LocalCommandList->DrawIndexedInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0, 0);
+                }
+                else
+                {
+                    LocalCommandList->DrawIndexedInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0, 0);
+                }
             }
         }
 
@@ -756,7 +772,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
 
-        PixSetMarker(LocalCommandList, L"ObjectIdPass");
+        FScopedPixEvent ObjectIdEvent(LocalCommandList, L"ObjectIdPass");
 
         LocalCommandList->SetPipelineState(ObjectIdPipeline.Get());
         LocalCommandList->SetGraphicsRootSignature(BasePassRootSignature.Get());
@@ -792,7 +808,18 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
                 0,
                 ConstantBuffer->GetGPUVirtualAddress() + ConstantBufferOffset);
 
-            LocalCommandList->DrawIndexedInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0, 0);
+            if (AreModelPixEventsEnabled())
+            {
+                const std::wstring ModelLabel = Model.Name.empty()
+                    ? L"Model"
+                    : std::wstring(Model.Name.begin(), Model.Name.end());
+                FScopedPixEvent ModelEvent(LocalCommandList, ModelLabel.c_str());
+                LocalCommandList->DrawIndexedInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0, 0);
+            }
+            else
+            {
+                LocalCommandList->DrawIndexedInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0, 0);
+            }
         }
 
         const uint32_t Width = static_cast<uint32_t>(Viewport.Width);
@@ -848,7 +875,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         D3D12_GPU_DESCRIPTOR_HANDLE HZBNullUav{};
     };
 
-    if (bHZBEnabled)
+    if (bHZBEnabled && bDoDepthPrepass)
     {
         Graph.AddPass<FHZBPassData>("Build HZB", [&](FHZBPassData& Data, FRGPassBuilder& Builder)
         {
@@ -875,7 +902,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
             ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
 
-            PixSetMarker(LocalCommandList, L"BuildHZB");
+            FScopedPixEvent HZBEvent(LocalCommandList, L"BuildHZB");
 
             ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
             LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
@@ -949,10 +976,13 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
                         ToSrvBarrier.Transition.StateBefore = MipStates[SourceMipIndex];
                         ToSrvBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
                         ToSrvBarrier.Transition.Subresource = D3D12CalcSubresource(SourceMipIndex, 0, 0, Data.MipCount, 1);
-                        //LogInfo("HZB Barrier: Mip " + std::to_string(SourceMipIndex) + " "
-                        //    + RendererUtils::ResourceStateToString(ToSrvBarrier.Transition.StateBefore) + " -> "
-                        //    + RendererUtils::ResourceStateToString(ToSrvBarrier.Transition.StateAfter));
-                        //LocalCommandList->ResourceBarrier(1, &ToSrvBarrier);
+                        if (bLogResourceBarriers)
+                        {
+							LogInfo("HZB Barrier: Mip " + std::to_string(SourceMipIndex) + " "
+								+ RendererUtils::ResourceStateToString(ToSrvBarrier.Transition.StateBefore) + " -> "
+								+ RendererUtils::ResourceStateToString(ToSrvBarrier.Transition.StateAfter));
+                        }
+                        LocalCommandList->ResourceBarrier(1, &ToSrvBarrier);
                         MipStates[SourceMipIndex] = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
                     }
                 }
@@ -1017,7 +1047,10 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
                 D3D12_RESOURCE_BARRIER UavBarrier = {};
                 UavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
                 UavBarrier.UAV.pResource = HierarchicalZBuffer.Get();
-//                LogInfo("HZB Barrier: UAV sync");
+				if (bLogResourceBarriers)
+				{
+                    LogInfo("HZB Barrier: UAV sync");
+                }
                 Barriers.push_back(UavBarrier);
 
                 for (uint32_t LocalMip = 0; LocalMip < MipsThisDispatch; ++LocalMip)
@@ -1035,9 +1068,12 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
                     Barrier.Transition.StateBefore = MipStates[TargetMip];
                     Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
                     Barrier.Transition.Subresource = D3D12CalcSubresource(TargetMip, 0, 0, Data.MipCount, 1);
-                    //LogInfo("HZB Barrier: Mip " + std::to_string(TargetMip) + " "
-                    //    + RendererUtils::ResourceStateToString(Barrier.Transition.StateBefore) + " -> "
-                    //    + RendererUtils::ResourceStateToString(Barrier.Transition.StateAfter));
+                    if (bLogResourceBarriers)
+                    {
+						LogInfo("HZB Barrier: Mip " + std::to_string(TargetMip) + " "
+							+ RendererUtils::ResourceStateToString(Barrier.Transition.StateBefore) + " -> "
+							+ RendererUtils::ResourceStateToString(Barrier.Transition.StateAfter));
+                    }
                     Barriers.push_back(Barrier);
                     MipStates[TargetMip] = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
                 }
@@ -1050,33 +1086,8 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
                 MipIndex += MipsThisDispatch;
             }
 
-            if (Data.MipCount > 1)
-            {
-                std::vector<D3D12_RESOURCE_BARRIER> RestoreBarriers;
-                RestoreBarriers.reserve(Data.MipCount);
-
-                for (uint32_t MipIndex = 0; MipIndex < Data.MipCount; ++MipIndex)
-                {
-                    D3D12_RESOURCE_BARRIER Barrier = {};
-                    Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                    Barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-                    Barrier.Transition.pResource = HierarchicalZBuffer.Get();
-                    Barrier.Transition.StateBefore = MipStates[MipIndex];
-                    Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-                    Barrier.Transition.Subresource = D3D12CalcSubresource(MipIndex, 0, 0, Data.MipCount, 1);
-                    LogInfo("HZB Barrier: Mip " + std::to_string(MipIndex) + " "
-                        + RendererUtils::ResourceStateToString(Barrier.Transition.StateBefore) + " -> "
-                        + RendererUtils::ResourceStateToString(Barrier.Transition.StateAfter));
-
-                    RestoreBarriers.push_back(Barrier);
-                    MipStates[MipIndex] = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-                }
-
-                if (!RestoreBarriers.empty())
-                {
-                    LocalCommandList->ResourceBarrier(static_cast<UINT>(RestoreBarriers.size()), RestoreBarriers.data());
-                }
-            }
+            HZBState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+            bHZBReady = true;
         });
     }
 
@@ -1103,11 +1114,10 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
     {
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
 
-        PixSetMarker(LocalCommandList, L"Lighting");
+        FScopedPixEvent LightingEvent(LocalCommandList, L"Lighting");
 
         ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
-        LocalCommandList->SetGraphicsRootDescriptorTable(1, DescriptorHeap->GetGPUDescriptorHandleForHeapStart());
         Cmd.SetRenderTarget(LightingRTVHandle, nullptr);
 
         LocalCommandList->SetPipelineState(LightingPipeline.Get());
@@ -1149,7 +1159,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
 
-        PixSetMarker(LocalCommandList, L"SkyAtmosphere");
+        FScopedPixEvent SkyEvent(LocalCommandList, L"SkyAtmosphere");
         LocalCommandList->SetPipelineState(SkyPipelineState.Get());
         LocalCommandList->SetGraphicsRootSignature(SkyRootSignature.Get());
         LocalCommandList->RSSetViewports(1, &Viewport);
@@ -1181,7 +1191,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
     {
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
 
-        PixSetMarker(LocalCommandList, L"Tonemap");
+        FScopedPixEvent TonemapEvent(LocalCommandList, L"Tonemap");
         Cmd.SetRenderTarget(Data.OutputHandle, nullptr);
 
         struct FTonemapConstants
@@ -2614,7 +2624,7 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     Commands.reserve(SceneModels.size());
 
     std::vector<DirectX::XMFLOAT4> Bounds;
-    Bounds.reserve(SceneModels.size());
+    Bounds.reserve(SceneModels.size() * 2);
 
     const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferBase = ConstantBuffer->GetGPUVirtualAddress();
     auto AppendIndirectDrawData = [&](uint32_t SortedIndex)
@@ -2631,6 +2641,10 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
             Range.Count = 0;
             Range.PipelineKey = PipelineKey;
             Range.TextureHandle = Model.TextureHandle;
+            if (!Model.Name.empty())
+            {
+                Range.Name.assign(Model.Name.begin(), Model.Name.end());
+            }
             IndirectDrawRanges.push_back(Range);
         }
 
@@ -2644,7 +2658,8 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
         Command.DrawArguments.BaseVertexLocation = 0;
         Command.DrawArguments.StartInstanceLocation = SortedIndex;
         Commands.push_back(Command);
-        Bounds.emplace_back(Model.Center.x, Model.Center.y, Model.Center.z, Model.Radius);
+        Bounds.emplace_back(Model.BoundsMin.x, Model.BoundsMin.y, Model.BoundsMin.z, 0.0f);
+        Bounds.emplace_back(Model.BoundsMax.x, Model.BoundsMax.y, Model.BoundsMax.z, 0.0f);
         IndirectDrawRanges.back().Count += 1;
     };
 
@@ -2759,11 +2774,11 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
 
     IndirectCommandState = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
 
-    D3D12_ROOT_PARAMETER RootParams[3] = {};
+    D3D12_ROOT_PARAMETER RootParams[4] = {};
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[0].Constants.ShaderRegister = 0;
     RootParams[0].Constants.RegisterSpace = 0;
-    RootParams[0].Constants.Num32BitValues = 25;
+    RootParams[0].Constants.Num32BitValues = 45;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
@@ -2775,6 +2790,18 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     RootParams[2].Descriptor.ShaderRegister = 0;
     RootParams[2].Descriptor.RegisterSpace = 0;
     RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    D3D12_DESCRIPTOR_RANGE HZBRange = {};
+    HZBRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    HZBRange.NumDescriptors = 1;
+    HZBRange.BaseShaderRegister = 1;
+    HZBRange.RegisterSpace = 0;
+    HZBRange.OffsetInDescriptorsFromTableStart = 0;
+
+    RootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    RootParams[3].DescriptorTable.NumDescriptorRanges = 1;
+    RootParams[3].DescriptorTable.pDescriptorRanges = &HZBRange;
+    RootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     D3D12_ROOT_SIGNATURE_DESC RootDesc = {};
     RootDesc.NumParameters = _countof(RootParams);
@@ -2814,58 +2841,6 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     HR_CHECK(Device->GetDevice()->CreateCommandSignature(&CommandDesc, BasePassRootSignature.Get(), IID_PPV_ARGS(IndirectCommandSignature.GetAddressOf())));
 
     return true;
-}
-
-void FDeferredRenderer::DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamera& Camera)
-{
-    if (!CullingPipeline || !CullingRootSignature || !IndirectCommandBuffer || !ModelBoundsBuffer || IndirectCommandCount == 0)
-    {
-        return;
-    }
-
-    DirectX::XMVECTOR Planes[6] = {};
-    RendererUtils::BuildCameraFrustumPlanes(Camera, Planes);
-
-    std::array<uint32_t, 25> Constants = {};
-    for (uint32_t PlaneIndex = 0; PlaneIndex < 6; ++PlaneIndex)
-    {
-        DirectX::XMFLOAT4 Plane;
-        DirectX::XMStoreFloat4(&Plane, Planes[PlaneIndex]);
-        std::memcpy(Constants.data() + PlaneIndex * 4, &Plane, sizeof(DirectX::XMFLOAT4));
-    }
-    Constants[24] = IndirectCommandCount;
-
-    ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
-
-    if (IndirectCommandState != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
-    {
-        D3D12_RESOURCE_BARRIER Barrier = {};
-        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        Barrier.Transition.pResource = IndirectCommandBuffer.Get();
-        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        Barrier.Transition.StateBefore = IndirectCommandState;
-        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-        CommandList->ResourceBarrier(1, &Barrier);
-        IndirectCommandState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    }
-
-    CommandList->SetPipelineState(CullingPipeline.Get());
-    CommandList->SetComputeRootSignature(CullingRootSignature.Get());
-    CommandList->SetComputeRoot32BitConstants(0, static_cast<UINT>(Constants.size()), Constants.data(), 0);
-    CommandList->SetComputeRootShaderResourceView(1, ModelBoundsBuffer->GetGPUVirtualAddress());
-    CommandList->SetComputeRootUnorderedAccessView(2, IndirectCommandBuffer->GetGPUVirtualAddress());
-
-    const uint32_t DispatchCount = (IndirectCommandCount + 63) / 64;
-    CommandList->Dispatch(DispatchCount, 1, 1);
-
-    D3D12_RESOURCE_BARRIER Barrier = {};
-    Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    Barrier.Transition.pResource = IndirectCommandBuffer.Get();
-    Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    Barrier.Transition.StateBefore = IndirectCommandState;
-    Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
-    CommandList->ResourceBarrier(1, &Barrier);
-    IndirectCommandState = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
 }
 
 void FDeferredRenderer::UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, uint64_t ConstantBufferOffset)
