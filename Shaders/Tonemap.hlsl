@@ -22,12 +22,17 @@ VSOutput VSMain(uint VertexId : SV_VertexID)
 cbuffer TonemapParams : register(b0)
 {
     uint EnableTonemap;
+    uint EnableAutoExposure;
     float Exposure;
     float WhitePoint;
     float Gamma;
+    float AutoExposureKey;
+    float AutoExposureMin;
+    float AutoExposureMax;
 };
 
 Texture2D HDRScene : register(t0);
+Texture2D LogAverageLuminance : register(t1);
 SamplerState SceneSampler : register(s0);
 
 float LpmCurve(float luminance, float hdrMax)
@@ -47,10 +52,17 @@ float4 PSMain(VSOutput Input) : SV_Target
 {
     float3 hdrColor = HDRScene.Sample(SceneSampler, Input.UV).rgb;
     float3 mappedColor = max(hdrColor, 0.0f);
+    float exposure = Exposure;
+
+    if (EnableAutoExposure != 0)
+    {
+        float exposureEv = LogAverageLuminance.Load(int3(0, 0, 0)).r;
+        exposure *= exp2(exposureEv);
+    }
 
     if (EnableTonemap != 0)
     {
-        mappedColor *= Exposure;
+        mappedColor *= exposure;
 
         const float3 LuminanceWeights = float3(0.2126f, 0.7152f, 0.0722f);
         float luminance = dot(mappedColor, LuminanceWeights);

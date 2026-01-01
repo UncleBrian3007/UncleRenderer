@@ -21,6 +21,12 @@ struct FRendererOptions
     float TonemapExposure = 0.5f;
     float TonemapWhitePoint = 4.0f;
     float TonemapGamma = 1.0f;
+    bool bEnableAutoExposure = false;
+    float AutoExposureKey = 0.18f;
+    float AutoExposureMin = 0.1f;
+    float AutoExposureMax = 5.0f;
+    float AutoExposureSpeedUp = 3.0f;
+    float AutoExposureSpeedDown = 1.0f;
     bool bLogResourceBarriers = false;
     bool bEnableGraphDump = false;
     bool bEnableGpuTiming = false;
@@ -68,6 +74,15 @@ public:
 
 protected:
     void InitializeCommonSettings(uint32_t Width, uint32_t Height, const FRendererOptions& Options);
+    bool CreateShadowPipeline(FDX12Device* Device, ID3D12RootSignature* RootSignature, Microsoft::WRL::ComPtr<ID3D12PipelineState>& OutPipelineState);
+    bool CreateShadowResources(
+        FDX12Device* Device,
+        uint32_t& InOutWidth,
+        uint32_t& InOutHeight,
+        Microsoft::WRL::ComPtr<ID3D12Resource>& OutShadowMap,
+        Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>& OutShadowDsvHeap,
+        D3D12_CPU_DESCRIPTOR_HANDLE& OutShadowDsvHandle,
+        D3D12_RESOURCE_STATES& OutShadowState);
     void DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamera& Camera);
     void ConfigureHZBOcclusion(bool bEnabled, ID3D12DescriptorHeap* DescriptorHeap, D3D12_GPU_DESCRIPTOR_HANDLE Handle, uint32_t Width, uint32_t Height, uint32_t MipCount);
 

@@ -155,6 +155,12 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     TonemapExposure = RendererConfig.TonemapExposure;
     TonemapWhitePoint = RendererConfig.TonemapWhitePoint;
     TonemapGamma = RendererConfig.TonemapGamma;
+    bAutoExposureEnabled = RendererConfig.bEnableAutoExposure;
+    AutoExposureKey = RendererConfig.AutoExposureKey;
+    AutoExposureMin = RendererConfig.AutoExposureMin;
+    AutoExposureMax = RendererConfig.AutoExposureMax;
+    AutoExposureSpeedUp = RendererConfig.AutoExposureSpeedUp;
+    AutoExposureSpeedDown = RendererConfig.AutoExposureSpeedDown;
 
     if (bTaskSystemEnabled)
     {
@@ -189,6 +195,12 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     RendererOptions.TonemapExposure = TonemapExposure;
     RendererOptions.TonemapWhitePoint = TonemapWhitePoint;
     RendererOptions.TonemapGamma = TonemapGamma;
+    RendererOptions.bEnableAutoExposure = bAutoExposureEnabled;
+    RendererOptions.AutoExposureKey = AutoExposureKey;
+    RendererOptions.AutoExposureMin = AutoExposureMin;
+    RendererOptions.AutoExposureMax = AutoExposureMax;
+    RendererOptions.AutoExposureSpeedUp = AutoExposureSpeedUp;
+    RendererOptions.AutoExposureSpeedDown = AutoExposureSpeedDown;
     RendererOptions.bEnableHZB = bHZBEnabled;
     RendererOptions.bLogResourceBarriers = RendererConfig.bLogResourceBarriers;
     RendererOptions.bEnableGraphDump = RendererConfig.bEnableGraphDump;
@@ -1573,6 +1585,17 @@ void FApplication::RenderUI()
             }
         }
 
+        bool bAutoExposure = bAutoExposureEnabled;
+        if (ImGui::Checkbox("Auto Exposure", &bAutoExposure))
+        {
+            bAutoExposureEnabled = bAutoExposure;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetAutoExposureEnabled(bAutoExposureEnabled);
+            }
+        }
+
         float TonemapExposureValue = TonemapExposure;
         if (ImGui::SliderFloat("Tonemap Exposure", &TonemapExposureValue, 0.1f, 5.0f, "%.2f"))
         {
@@ -1603,6 +1626,63 @@ void FApplication::RenderUI()
             if (DeferredRenderer)
             {
                 DeferredRenderer->SetTonemapGamma(TonemapGamma);
+            }
+        }
+
+        float AutoExposureKeyValue = AutoExposureKey;
+        if (ImGui::SliderFloat("Auto Exposure Key", &AutoExposureKeyValue, 0.05f, 1.0f, "%.2f"))
+        {
+            AutoExposureKey = AutoExposureKeyValue;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetAutoExposureKey(AutoExposureKey);
+            }
+        }
+
+        float AutoExposureMinValue = AutoExposureMin;
+        if (ImGui::SliderFloat("Auto Exposure Min", &AutoExposureMinValue, 0.01f, 2.0f, "%.2f"))
+        {
+            AutoExposureMin = AutoExposureMinValue;
+            AutoExposureMax = (std::max)(AutoExposureMax, AutoExposureMin + 0.01f);
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetAutoExposureMin(AutoExposureMin);
+                DeferredRenderer->SetAutoExposureMax(AutoExposureMax);
+            }
+        }
+
+        float AutoExposureMaxValue = AutoExposureMax;
+        if (ImGui::SliderFloat("Auto Exposure Max", &AutoExposureMaxValue, 0.1f, 10.0f, "%.2f"))
+        {
+            AutoExposureMax = (std::max)(AutoExposureMaxValue, AutoExposureMin + 0.01f);
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetAutoExposureMax(AutoExposureMax);
+            }
+        }
+
+        float AutoExposureSpeedUpValue = AutoExposureSpeedUp;
+        if (ImGui::SliderFloat("Auto Exposure Speed Up", &AutoExposureSpeedUpValue, 0.1f, 10.0f, "%.2f"))
+        {
+            AutoExposureSpeedUp = AutoExposureSpeedUpValue;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetAutoExposureSpeedUp(AutoExposureSpeedUp);
+            }
+        }
+
+        float AutoExposureSpeedDownValue = AutoExposureSpeedDown;
+        if (ImGui::SliderFloat("Auto Exposure Speed Down", &AutoExposureSpeedDownValue, 0.1f, 10.0f, "%.2f"))
+        {
+            AutoExposureSpeedDown = AutoExposureSpeedDownValue;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetAutoExposureSpeedDown(AutoExposureSpeedDown);
             }
         }
 

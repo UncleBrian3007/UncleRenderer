@@ -33,8 +33,6 @@ public:
 private:
     bool CreateRootSignature(FDX12Device* Device);
     bool CreatePipelineState(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
-    bool CreateShadowPipeline(FDX12Device* Device);
-    bool CreateShadowResources(FDX12Device* Device);
     bool CreateObjectIdResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateObjectIdPipeline(FDX12Device* Device);
     bool CreateSceneTextures(FDX12Device* Device, const std::vector<FSceneModelResource>& Models);

@@ -331,5 +331,8 @@
     <None Include="Assets\Scenes\sponza.json">
       <Filter>Assets</Filter>
     </None>
+    <None Include="Shaders\AutoExposure.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
   </ItemGroup>
 </Project>

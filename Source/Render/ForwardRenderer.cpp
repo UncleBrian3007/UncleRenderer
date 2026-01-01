@@ -67,7 +67,7 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
     }
 
     LogInfo("Creating forward renderer shadow pipeline...");
-    if (!CreateShadowPipeline(Device))
+    if (!CreateShadowPipeline(Device, RootSignature.Get(), ShadowPipeline))
     {
         LogError("Forward renderer initialization failed: shadow pipeline creation failed");
         return false;
@@ -91,11 +91,19 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
         LogError("Forward renderer initialization failed: environment cube texture loading failed");
         return false;
     }
+    if (EnvironmentCubeTexture)
+    {
+        EnvironmentCubeTexture->SetName(L"EnvironmentCube");
+    }
 
     if (!TextureLoader->LoadOrDefault(L"Assets/Textures/PreintegratedGF.dds", BrdfLutTexture))
     {
         LogError("Forward renderer initialization failed: BRDF LUT texture loading failed");
         return false;
+    }
+    if (BrdfLutTexture)
+    {
+        BrdfLutTexture->SetName(L"BrdfLut");
     }
 
     if (EnvironmentCubeTexture)
@@ -114,14 +122,34 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
     DSVHeap = DepthResources.DSVHeap;
     DepthStencilHandle = DepthResources.DepthStencilHandle;
     DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    if (DepthBuffer)
+    {
+        DepthBuffer->SetName(L"DepthBuffer");
+    }
+    if (DSVHeap)
+    {
+        DSVHeap->SetName(L"DepthDSVHeap");
+    }
 
     if (!CreateObjectIdResources(Device, Width, Height))
     {
         LogError("Forward renderer initialization failed: object ID resources creation failed");
         return false;
     }
+    if (ObjectIdTexture)
+    {
+        ObjectIdTexture->SetName(L"ObjectIdTexture");
+    }
+    if (ObjectIdRtvHeap)
+    {
+        ObjectIdRtvHeap->SetName(L"ObjectIdRtvHeap");
+    }
+    if (ObjectIdReadback)
+    {
+        ObjectIdReadback->SetName(L"ObjectIdReadback");
+    }
 
-    if (!CreateShadowResources(Device))
+    if (!CreateShadowResources(Device, ShadowMapWidth, ShadowMapHeight, ShadowMap, ShadowDSVHeap, ShadowDSVHandle, ShadowMapState))
     {
         LogError("Forward renderer initialization failed: shadow resources creation failed");
         return false;
@@ -176,12 +204,20 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
     }
     ConstantBuffer = ConstantBufferResource.Resource;
     ConstantBufferMapped = ConstantBufferResource.MappedData;
+    if (ConstantBuffer)
+    {
+        ConstantBuffer->SetName(L"SceneConstantBuffer");
+    }
 
     SkySphereRadius = (std::max)(SceneRadius * 5.0f, 100.0f);
     if (!RendererUtils::CreateSkyAtmosphereResources(Device, SkySphereRadius, SkyGeometry, SkyConstantBuffer, SkyConstantBufferMapped))
     {
         LogError("Forward renderer initialization failed: sky resource creation failed");
         return false;
+    }
+    if (SkyConstantBuffer)
+    {
+        SkyConstantBuffer->SetName(L"SkyConstantBuffer");
     }
 
     FSkyPipelineConfig SkyPipelineConfig = {};
@@ -385,6 +421,10 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
         if (bDoDepthPrepass)
         {
             Builder.WriteTexture(DepthHandle, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+            if (ShadowMap)
+            {
+                Builder.ReadTexture(ShadowHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            }
         }
     }, [this](const FDepthPrepassData& Data, FDX12CommandContext& Cmd)
     {
@@ -1155,123 +1195,6 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
     return true;
 }
 
-bool FForwardRenderer::CreateShadowPipeline(FDX12Device* Device)
-{
-    FShaderCompiler Compiler;
-    std::vector<uint8_t> VSByteCode;
-
-    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
-    const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
-
-    if (!Compiler.CompileFromFile(L"Shaders/ShadowMap.hlsl", L"VSMain", VSTarget, VSByteCode))
-    {
-        return false;
-    }
-
-    D3D12_INPUT_ELEMENT_DESC InputLayout[] =
-    {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,   D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-    };
-
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
-    PsoDesc.pRootSignature = RootSignature.Get();
-    PsoDesc.InputLayout = { InputLayout, _countof(InputLayout) };
-    PsoDesc.VS = { VSByteCode.data(), VSByteCode.size() };
-    PsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    PsoDesc.SampleDesc.Count = 1;
-    PsoDesc.SampleMask = UINT_MAX;
-
-    PsoDesc.RasterizerState = {};
-    PsoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    PsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_FRONT;
-    PsoDesc.RasterizerState.FrontCounterClockwise = TRUE;
-    PsoDesc.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
-    PsoDesc.RasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
-    PsoDesc.RasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
-    PsoDesc.RasterizerState.DepthClipEnable = TRUE;
-    PsoDesc.RasterizerState.MultisampleEnable = FALSE;
-    PsoDesc.RasterizerState.AntialiasedLineEnable = FALSE;
-    PsoDesc.RasterizerState.ForcedSampleCount = 0;
-    PsoDesc.RasterizerState.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
-
-    PsoDesc.BlendState = {};
-    PsoDesc.BlendState.AlphaToCoverageEnable = FALSE;
-    PsoDesc.BlendState.IndependentBlendEnable = FALSE;
-    PsoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;
-
-    PsoDesc.DepthStencilState = {};
-    PsoDesc.DepthStencilState.DepthEnable = TRUE;
-    PsoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-    PsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-    PsoDesc.DepthStencilState.StencilEnable = FALSE;
-    PsoDesc.NumRenderTargets = 0;
-    PsoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-    PsoDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
-
-    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(ShadowPipeline.GetAddressOf())));
-    return true;
-}
-
-bool FForwardRenderer::CreateShadowResources(FDX12Device* Device)
-{
-    if (ShadowMapWidth == 0 || ShadowMapHeight == 0)
-    {
-        ShadowMapWidth = 2048;
-        ShadowMapHeight = 2048;
-    }
-
-    D3D12_RESOURCE_DESC Desc = {};
-    Desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    Desc.Alignment = 0;
-    Desc.Width = ShadowMapWidth;
-    Desc.Height = ShadowMapHeight;
-    Desc.DepthOrArraySize = 1;
-    Desc.MipLevels = 1;
-    Desc.Format = DXGI_FORMAT_R32_TYPELESS;
-    Desc.SampleDesc.Count = 1;
-    Desc.SampleDesc.Quality = 0;
-    Desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    Desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
-
-    D3D12_CLEAR_VALUE ClearValue = {};
-    ClearValue.Format = DXGI_FORMAT_D32_FLOAT;
-    ClearValue.DepthStencil.Depth = 1.0f;
-    ClearValue.DepthStencil.Stencil = 0;
-
-    D3D12_HEAP_PROPERTIES HeapProps = {};
-    HeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
-    HeapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-    HeapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-    HeapProps.CreationNodeMask = 1;
-    HeapProps.VisibleNodeMask = 1;
-
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &HeapProps,
-        D3D12_HEAP_FLAG_NONE,
-        &Desc,
-        D3D12_RESOURCE_STATE_DEPTH_WRITE,
-        &ClearValue,
-        IID_PPV_ARGS(ShadowMap.GetAddressOf())));
-
-    D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
-    HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-    HeapDesc.NumDescriptors = 1;
-    HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-    HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(ShadowDSVHeap.GetAddressOf())));
-
-    ShadowMapState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
-
-    D3D12_CPU_DESCRIPTOR_HANDLE DsvHandle = ShadowDSVHeap->GetCPUDescriptorHandleForHeapStart();
-    D3D12_DEPTH_STENCIL_VIEW_DESC DsvDesc = {};
-    DsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
-    DsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
-    DsvDesc.Flags = D3D12_DSV_FLAG_NONE;
-    Device->GetDevice()->CreateDepthStencilView(ShadowMap.Get(), &DsvDesc, DsvHandle);
-    ShadowDSVHandle = DsvHandle;
-
-    return true;
-}
-
 bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vector<FSceneModelResource>& Models)
 {
     if (!TextureLoader)
@@ -1368,6 +1291,10 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
     HeapDesc.NumDescriptors = static_cast<UINT>(Models.size() * 7);
     HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(TextureDescriptorHeap.GetAddressOf())));
+    if (TextureDescriptorHeap)
+    {
+        TextureDescriptorHeap->SetName(L"TextureDescriptorHeap");
+    }
 
     const UINT DescriptorSize = Device->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle = TextureDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
@@ -1421,6 +1348,11 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
     for (size_t Index = 0; Index < Models.size(); ++Index)
     {
         SceneTextures.push_back(LoadResults[Index].BaseColor);
+        if (LoadResults[Index].BaseColor)
+        {
+            const std::wstring Name = L"BaseColorTexture_" + std::to_wstring(Index);
+            LoadResults[Index].BaseColor->SetName(Name.c_str());
+        }
         CreateSceneTextureSrv(LoadResults[Index].BaseColor.Get());
         SceneModels[Index].TextureHandle = GpuHandle;
 
@@ -1428,18 +1360,33 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
         GpuHandle.ptr += DescriptorSize;
 
         SceneTextures.push_back(LoadResults[Index].MetallicRoughness);
+        if (LoadResults[Index].MetallicRoughness)
+        {
+            const std::wstring Name = L"MetallicRoughnessTexture_" + std::to_wstring(Index);
+            LoadResults[Index].MetallicRoughness->SetName(Name.c_str());
+        }
         CreateSceneTextureSrv(LoadResults[Index].MetallicRoughness.Get());
 
         CpuHandle.ptr += DescriptorSize;
         GpuHandle.ptr += DescriptorSize;
 
         SceneTextures.push_back(LoadResults[Index].Normal);
+        if (LoadResults[Index].Normal)
+        {
+            const std::wstring Name = L"NormalTexture_" + std::to_wstring(Index);
+            LoadResults[Index].Normal->SetName(Name.c_str());
+        }
         CreateSceneTextureSrv(LoadResults[Index].Normal.Get());
 
         CpuHandle.ptr += DescriptorSize;
         GpuHandle.ptr += DescriptorSize;
 
         SceneTextures.push_back(LoadResults[Index].Emissive);
+        if (LoadResults[Index].Emissive)
+        {
+            const std::wstring Name = L"EmissiveTexture_" + std::to_wstring(Index);
+            LoadResults[Index].Emissive->SetName(Name.c_str());
+        }
         CreateSceneTextureSrv(LoadResults[Index].Emissive.Get());
 
         CpuHandle.ptr += DescriptorSize;
@@ -1576,6 +1523,10 @@ bool FForwardRenderer::CreateGpuDrivenResources(FDX12Device* Device)
         D3D12_RESOURCE_STATE_COPY_DEST,
         nullptr,
         IID_PPV_ARGS(IndirectCommandBuffer.GetAddressOf())));
+    if (IndirectCommandBuffer)
+    {
+        IndirectCommandBuffer->SetName(L"IndirectCommandBuffer");
+    }
 
     HR_CHECK(Device->GetDevice()->CreateCommittedResource(
         &UploadHeap,
@@ -1584,6 +1535,10 @@ bool FForwardRenderer::CreateGpuDrivenResources(FDX12Device* Device)
         D3D12_RESOURCE_STATE_GENERIC_READ,
         nullptr,
         IID_PPV_ARGS(IndirectCommandUpload.GetAddressOf())));
+    if (IndirectCommandUpload)
+    {
+        IndirectCommandUpload->SetName(L"IndirectCommandUpload");
+    }
 
     const D3D12_RANGE EmptyRange = { 0, 0 };
     void* UploadData = nullptr;
@@ -1605,6 +1560,10 @@ bool FForwardRenderer::CreateGpuDrivenResources(FDX12Device* Device)
         D3D12_RESOURCE_STATE_COPY_DEST,
         nullptr,
         IID_PPV_ARGS(ModelBoundsBuffer.GetAddressOf())));
+    if (ModelBoundsBuffer)
+    {
+        ModelBoundsBuffer->SetName(L"ModelBoundsBuffer");
+    }
 
     HR_CHECK(Device->GetDevice()->CreateCommittedResource(
         &UploadHeap,
@@ -1613,6 +1572,10 @@ bool FForwardRenderer::CreateGpuDrivenResources(FDX12Device* Device)
         D3D12_RESOURCE_STATE_GENERIC_READ,
         nullptr,
         IID_PPV_ARGS(ModelBoundsUpload.GetAddressOf())));
+    if (ModelBoundsUpload)
+    {
+        ModelBoundsUpload->SetName(L"ModelBoundsUpload");
+    }
 
     UploadData = nullptr;
     HR_CHECK(ModelBoundsUpload->Map(0, &EmptyRange, &UploadData));

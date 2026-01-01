@@ -176,6 +176,71 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
         }
     }
 
+    if (LowerKey == "enableautoexposure" || LowerKey == "autoexposure")
+    {
+        OutConfig.bEnableAutoExposure = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+
+    if (LowerKey == "autoexposurekey")
+    {
+        try
+        {
+            OutConfig.AutoExposureKey = std::stof(Value);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid auto exposure key value in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "autoexposuremin")
+    {
+        try
+        {
+            OutConfig.AutoExposureMin = std::stof(Value);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid auto exposure min value in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "autoexposuremax")
+    {
+        try
+        {
+            OutConfig.AutoExposureMax = std::stof(Value);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid auto exposure max value in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "autoexposurespeedup")
+    {
+        try
+        {
+            OutConfig.AutoExposureSpeedUp = std::stof(Value);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid auto exposure speed up value in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "autoexposurespeeddown")
+    {
+        try
+        {
+            OutConfig.AutoExposureSpeedDown = std::stof(Value);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid auto exposure speed down value in renderer config: " + Value);
+        }
+    }
+
     if (LowerKey == "usetasksystem" || LowerKey == "enabletasksystem" || LowerKey == "tasksystem")
     {
         OutConfig.bEnableTaskSystem = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");

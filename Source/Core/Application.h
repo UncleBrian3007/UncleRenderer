@@ -90,6 +90,12 @@ private:
     float TonemapExposure = 0.5f;
     float TonemapWhitePoint = 4.0f;
     float TonemapGamma = 1.0f;
+    bool bAutoExposureEnabled = false;
+    float AutoExposureKey = 0.18f;
+    float AutoExposureMin = 0.1f;
+    float AutoExposureMax = 5.0f;
+    float AutoExposureSpeedUp = 3.0f;
+    float AutoExposureSpeedDown = 1.0f;
     bool bFreezeCamera = false;
     FCamera FrozenCamera;
     int32_t SelectedModelIndex = -1;

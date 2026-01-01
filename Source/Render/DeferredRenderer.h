@@ -47,6 +47,24 @@ public:
     void SetTonemapGamma(float Gamma) { TonemapGamma = Gamma; }
     float GetTonemapGamma() const { return TonemapGamma; }
 
+    void SetAutoExposureEnabled(bool bEnabled) { bAutoExposureEnabled = bEnabled; }
+    bool IsAutoExposureEnabled() const { return bAutoExposureEnabled; }
+
+    void SetAutoExposureKey(float Key) { AutoExposureKey = Key; }
+    float GetAutoExposureKey() const { return AutoExposureKey; }
+
+    void SetAutoExposureMin(float MinExposure) { AutoExposureMin = MinExposure; }
+    float GetAutoExposureMin() const { return AutoExposureMin; }
+
+    void SetAutoExposureMax(float MaxExposure) { AutoExposureMax = MaxExposure; }
+    float GetAutoExposureMax() const { return AutoExposureMax; }
+
+    void SetAutoExposureSpeedUp(float Speed) { AutoExposureSpeedUp = Speed; }
+    float GetAutoExposureSpeedUp() const { return AutoExposureSpeedUp; }
+
+    void SetAutoExposureSpeedDown(float Speed) { AutoExposureSpeedDown = Speed; }
+    float GetAutoExposureSpeedDown() const { return AutoExposureSpeedDown; }
+
     void SetShadowBias(float Bias) { ShadowBias = Bias; }
     float GetShadowBias() const { return ShadowBias; }
 
@@ -58,15 +76,16 @@ private:
     bool CreateLightingRootSignature(FDX12Device* Device);
     bool CreateBasePassPipeline(FDX12Device* Device, DXGI_FORMAT LightingFormat);
     bool CreateDepthPrepassPipeline(FDX12Device* Device);
-    bool CreateShadowPipeline(FDX12Device* Device);
     bool CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateHZBRootSignature(FDX12Device* Device);
     bool CreateHZBPipeline(FDX12Device* Device);
+    bool CreateAutoExposureRootSignature(FDX12Device* Device);
+    bool CreateAutoExposurePipeline(FDX12Device* Device);
     bool CreateTonemapRootSignature(FDX12Device* Device);
     bool CreateTonemapPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateGBufferResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateHZBResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
-    bool CreateShadowResources(FDX12Device* Device);
+    bool CreateLuminanceResources(FDX12Device* Device);
     bool CreateObjectIdResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateObjectIdPipeline(FDX12Device* Device);
     bool CreateDescriptorHeap(FDX12Device* Device);
@@ -100,14 +119,17 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ShadowPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> LightingPipeline;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> HZBPipelines;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> AutoExposurePipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> TonemapPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> SkyPipelineState;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ObjectIdPipeline;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> SkyRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> AutoExposureRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> TonemapRootSignature;
     std::vector<FModelTextureSet> SceneTextures;
     Microsoft::WRL::ComPtr<ID3D12Resource> SceneTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> LightingBuffer;
+    std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 2> LuminanceTextures;
     Microsoft::WRL::ComPtr<ID3D12Resource> HierarchicalZBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> HZBNullUavResource;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> DescriptorHeap;
@@ -123,6 +145,8 @@ private:
     D3D12_CPU_DESCRIPTOR_HANDLE LightingRTVHandle{};
     D3D12_GPU_DESCRIPTOR_HANDLE GBufferGpuHandles[3]{};
     D3D12_GPU_DESCRIPTOR_HANDLE LightingBufferHandle{};
+    std::array<D3D12_GPU_DESCRIPTOR_HANDLE, 2> LuminanceSrvHandles{};
+    std::array<D3D12_GPU_DESCRIPTOR_HANDLE, 2> LuminanceUavHandles{};
     D3D12_GPU_DESCRIPTOR_HANDLE DepthBufferHandle{};
     D3D12_GPU_DESCRIPTOR_HANDLE HZBSrvHandle{};
     std::vector<D3D12_GPU_DESCRIPTOR_HANDLE> HZBSrvMipHandles;
@@ -139,6 +163,7 @@ private:
     };
     D3D12_RESOURCE_STATES HZBState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES LightingBufferState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    std::array<D3D12_RESOURCE_STATES, 2> LuminanceStates = { D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
     FMeshGeometryBuffers SkyGeometry;
 
     DirectX::XMFLOAT4X4 SceneWorldMatrix{};
@@ -147,6 +172,14 @@ private:
     float TonemapExposure = 0.9f;
     float TonemapWhitePoint = 6.0f;
     float TonemapGamma = 2.2f;
+    bool bAutoExposureEnabled = false;
+    float AutoExposureKey = 0.18f;
+    float AutoExposureMin = 0.1f;
+    float AutoExposureMax = 5.0f;
+    float AutoExposureSpeedUp = 3.0f;
+    float AutoExposureSpeedDown = 1.0f;
+    uint32_t LuminanceWriteIndex = 0;
+    bool bLuminanceHistoryValid = false;
     bool bHZBEnabled = true;
     bool bHZBReady = false;
 
