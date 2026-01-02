@@ -23,6 +23,9 @@ struct VSOutput
 #ifndef USE_NORMAL_MAP
 #define USE_NORMAL_MAP 1
 #endif
+#ifndef USE_ALPHA_MASK
+#define USE_ALPHA_MASK 0
+#endif
 
 
 Texture2D AlbedoTexture : register(t0);
@@ -80,10 +83,12 @@ float4 PSMain(VSOutput Input) : SV_Target
     albedo *= albedoSample.rgb;
     alpha *= albedoSample.a;
 #endif
-    if (AlphaMode == 1 && alpha < AlphaCutoff)
+#if USE_ALPHA_MASK
+    if (alpha < AlphaCutoff)
     {
         clip(alpha - AlphaCutoff);
     }
+#endif
     float3 emissive = EmissiveFactor;
 #if USE_EMISSIVE_MAP
     emissive *= EmissiveTexture.Sample(AlbedoSampler, emissiveUV).rgb;

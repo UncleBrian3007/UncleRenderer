@@ -1423,7 +1423,7 @@ void FApplication::RenderUI()
         const std::vector<FRenderGraph::FGpuPassTimingStats>& TimingStats = FRenderGraph::GetGpuTimingStats();
         const uint32 MaxDisplay = FRenderGraph::GetGpuTimingDisplayCount();
         const uint32 DisplayCount = (std::min)(MaxDisplay, static_cast<uint32>(TimingStats.size()));
-        for (uint32 Index = 0; Index < DisplayCount; ++Index)
+        for (uint32 Index = 1; Index < DisplayCount+1; ++Index)
         {
             const FRenderGraph::FGpuPassTimingStats& Stats = TimingStats[Index];
             ImGui::Text("%s: %.3f / %.3f / %.3f (n=%u)",
@@ -1594,6 +1594,7 @@ void FApplication::RenderUI()
             }
         }
 
+		ImGui::SameLine();
         bool bAutoExposure = bAutoExposureEnabled;
         if (ImGui::Checkbox("Auto Exposure", &bAutoExposure))
         {
@@ -1638,19 +1639,19 @@ void FApplication::RenderUI()
             }
         }
 
-        float AutoExposureKeyValue = AutoExposureKey;
-        if (ImGui::SliderFloat("Auto Exposure Key", &AutoExposureKeyValue, 0.05f, 1.0f, "%.2f"))
-        {
-            AutoExposureKey = AutoExposureKeyValue;
+        //float AutoExposureKeyValue = AutoExposureKey;
+        //if (ImGui::SliderFloat("Auto Exposure Key", &AutoExposureKeyValue, 0.05f, 1.0f, "%.2f"))
+        //{
+        //    AutoExposureKey = AutoExposureKeyValue;
 
-            if (DeferredRenderer)
-            {
-                DeferredRenderer->SetAutoExposureKey(AutoExposureKey);
-            }
-        }
+        //    if (DeferredRenderer)
+        //    {
+        //        DeferredRenderer->SetAutoExposureKey(AutoExposureKey);
+        //    }
+        //}
 
         float AutoExposureMinValue = AutoExposureMin;
-        if (ImGui::SliderFloat("Auto Exposure Min", &AutoExposureMinValue, 0.01f, 2.0f, "%.2f"))
+        if (ImGui::SliderFloat("Exposure Min", &AutoExposureMinValue, 0.01f, 2.0f, "%.2f"))
         {
             AutoExposureMin = AutoExposureMinValue;
             AutoExposureMax = (std::max)(AutoExposureMax, AutoExposureMin + 0.01f);
@@ -1663,7 +1664,7 @@ void FApplication::RenderUI()
         }
 
         float AutoExposureMaxValue = AutoExposureMax;
-        if (ImGui::SliderFloat("Auto Exposure Max", &AutoExposureMaxValue, 0.1f, 10.0f, "%.2f"))
+        if (ImGui::SliderFloat("Exposure Max", &AutoExposureMaxValue, 0.1f, 10.0f, "%.2f"))
         {
             AutoExposureMax = (std::max)(AutoExposureMaxValue, AutoExposureMin + 0.01f);
 
@@ -1674,7 +1675,7 @@ void FApplication::RenderUI()
         }
 
         float AutoExposureSpeedUpValue = AutoExposureSpeedUp;
-        if (ImGui::SliderFloat("Auto Exposure Speed Up", &AutoExposureSpeedUpValue, 0.1f, 10.0f, "%.2f"))
+        if (ImGui::SliderFloat("Exposure Speed Up", &AutoExposureSpeedUpValue, 0.1f, 10.0f, "%.2f"))
         {
             AutoExposureSpeedUp = AutoExposureSpeedUpValue;
 
@@ -1685,7 +1686,7 @@ void FApplication::RenderUI()
         }
 
         float AutoExposureSpeedDownValue = AutoExposureSpeedDown;
-        if (ImGui::SliderFloat("Auto Exposure Speed Down", &AutoExposureSpeedDownValue, 0.1f, 10.0f, "%.2f"))
+        if (ImGui::SliderFloat("Exposure Speed Down", &AutoExposureSpeedDownValue, 0.1f, 10.0f, "%.2f"))
         {
             AutoExposureSpeedDown = AutoExposureSpeedDownValue;
 

@@ -27,7 +27,8 @@ namespace
         const uint32_t UseMr = !Model.MetallicRoughnessTexturePath.empty() ? 1u : 0u;
         const uint32_t UseBase = !Model.BaseColorTexturePath.empty() ? 1u : 0u;
         const uint32_t UseEmissive = !Model.EmissiveTexturePath.empty() ? 1u : 0u;
-        return (UseNormal) | (UseMr << 1) | (UseBase << 2) | (UseEmissive << 3);
+        const uint32_t UseAlphaMask = (Model.AlphaMode == 1u) ? 1u : 0u;
+        return (UseNormal) | (UseMr << 1) | (UseBase << 2) | (UseEmissive << 3) | (UseAlphaMask << 4);
     }
 }
 
@@ -466,6 +467,10 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
             }
 
             const FSceneModelResource& Model = SceneModels[ModelIndex];
+            if (Model.AlphaMode == 1u)
+            {
+                continue;
+            }
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
 
             UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset, Data.LightViewProjection);
@@ -602,43 +607,65 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
                 const bool UseMr = (Key & 2u) != 0;
                 const bool UseBaseColor = (Key & 4u) != 0;
                 const bool UseEmissive = (Key & 8u) != 0;
+                const bool UseAlphaMask = (Key & 16u) != 0;
 
-                if (UseNormal)
+                auto SelectPipeline = [&](bool bUseAlphaMask)
                 {
+                    if (UseNormal)
+                    {
+                        if (UseEmissive)
+                        {
+                            if (UseBaseColor)
+                            {
+                                return bUseAlphaMask
+                                    ? (UseMr ? PipelineStateAlphaMask.Get() : PipelineStateNoMrAlphaMask.Get())
+                                    : (UseMr ? PipelineState.Get() : PipelineStateNoMr.Get());
+                            }
+
+                            return bUseAlphaMask
+                                ? (UseMr ? PipelineStateNoBaseColorAlphaMask.Get() : PipelineStateNoMrNoBaseColorAlphaMask.Get())
+                                : (UseMr ? PipelineStateNoBaseColor.Get() : PipelineStateNoMrNoBaseColor.Get());
+                        }
+
+                        if (UseBaseColor)
+                        {
+                            return bUseAlphaMask
+                                ? (UseMr ? PipelineStateNoEmissiveAlphaMask.Get() : PipelineStateNoMrNoEmissiveAlphaMask.Get())
+                                : (UseMr ? PipelineStateNoEmissive.Get() : PipelineStateNoMrNoEmissive.Get());
+                        }
+
+                        return bUseAlphaMask
+                            ? (UseMr ? PipelineStateNoBaseColorNoEmissiveAlphaMask.Get() : PipelineStateNoMrNoBaseColorNoEmissiveAlphaMask.Get())
+                            : (UseMr ? PipelineStateNoBaseColorNoEmissive.Get() : PipelineStateNoMrNoBaseColorNoEmissive.Get());
+                    }
+
                     if (UseEmissive)
                     {
                         if (UseBaseColor)
                         {
-                            return UseMr ? PipelineState.Get() : PipelineStateNoMr.Get();
+                            return bUseAlphaMask
+                                ? (UseMr ? PipelineStateNoNormalAlphaMask.Get() : PipelineStateNoMrNoNormalAlphaMask.Get())
+                                : (UseMr ? PipelineStateNoNormal.Get() : PipelineStateNoMrNoNormal.Get());
                         }
 
-                        return UseMr ? PipelineStateNoBaseColor.Get() : PipelineStateNoMrNoBaseColor.Get();
+                        return bUseAlphaMask
+                            ? (UseMr ? PipelineStateNoBaseColorNoNormalAlphaMask.Get() : PipelineStateNoMrNoBaseColorNoNormalAlphaMask.Get())
+                            : (UseMr ? PipelineStateNoBaseColorNoNormal.Get() : PipelineStateNoMrNoBaseColorNoNormal.Get());
                     }
 
                     if (UseBaseColor)
                     {
-                        return UseMr ? PipelineStateNoEmissive.Get() : PipelineStateNoMrNoEmissive.Get();
+                        return bUseAlphaMask
+                            ? (UseMr ? PipelineStateNoEmissiveNoNormalAlphaMask.Get() : PipelineStateNoMrNoEmissiveNoNormalAlphaMask.Get())
+                            : (UseMr ? PipelineStateNoEmissiveNoNormal.Get() : PipelineStateNoMrNoEmissiveNoNormal.Get());
                     }
 
-                    return UseMr ? PipelineStateNoBaseColorNoEmissive.Get() : PipelineStateNoMrNoBaseColorNoEmissive.Get();
-                }
+                    return bUseAlphaMask
+                        ? (UseMr ? PipelineStateNoBaseColorNoEmissiveNoNormalAlphaMask.Get() : PipelineStateNoMrNoBaseColorNoEmissiveNoNormalAlphaMask.Get())
+                        : (UseMr ? PipelineStateNoBaseColorNoEmissiveNoNormal.Get() : PipelineStateNoMrNoBaseColorNoEmissiveNoNormal.Get());
+                };
 
-                if (UseEmissive)
-                {
-                    if (UseBaseColor)
-                    {
-                        return UseMr ? PipelineStateNoNormal.Get() : PipelineStateNoMrNoNormal.Get();
-                    }
-
-                    return UseMr ? PipelineStateNoBaseColorNoNormal.Get() : PipelineStateNoMrNoBaseColorNoNormal.Get();
-                }
-
-                if (UseBaseColor)
-                {
-                    return UseMr ? PipelineStateNoEmissiveNoNormal.Get() : PipelineStateNoMrNoEmissiveNoNormal.Get();
-                }
-
-                return UseMr ? PipelineStateNoBaseColorNoEmissiveNoNormal.Get() : PipelineStateNoMrNoBaseColorNoEmissiveNoNormal.Get();
+                return SelectPipeline(UseAlphaMask);
             };
 
             for (const FIndirectDrawRange& Range : IndirectDrawRanges)
@@ -680,8 +707,9 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
                 const bool bUseMetallicRoughnessMap = !Model.MetallicRoughnessTexturePath.empty();
                 const bool bUseEmissiveMap = !Model.EmissiveTexturePath.empty();
                 const bool bUseNormalMap = Model.bHasNormalMap;
+                const bool bUseAlphaMask = Model.AlphaMode == 1u;
 
-                auto SelectPipeline = [&](bool UseNormal, bool UseMr, bool UseBaseColor, bool UseEmissive)
+                auto SelectPipeline = [&](bool UseNormal, bool UseMr, bool UseBaseColor, bool UseEmissive, bool UseAlphaMask)
                 {
                     if (UseNormal)
                     {
@@ -689,39 +717,55 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
                         {
                             if (UseBaseColor)
                             {
-                                return UseMr ? PipelineState.Get() : PipelineStateNoMr.Get();
+                                return UseAlphaMask
+                                    ? (UseMr ? PipelineStateAlphaMask.Get() : PipelineStateNoMrAlphaMask.Get())
+                                    : (UseMr ? PipelineState.Get() : PipelineStateNoMr.Get());
                             }
 
-                            return UseMr ? PipelineStateNoBaseColor.Get() : PipelineStateNoMrNoBaseColor.Get();
+                            return UseAlphaMask
+                                ? (UseMr ? PipelineStateNoBaseColorAlphaMask.Get() : PipelineStateNoMrNoBaseColorAlphaMask.Get())
+                                : (UseMr ? PipelineStateNoBaseColor.Get() : PipelineStateNoMrNoBaseColor.Get());
                         }
 
                         if (UseBaseColor)
                         {
-                            return UseMr ? PipelineStateNoEmissive.Get() : PipelineStateNoMrNoEmissive.Get();
+                            return UseAlphaMask
+                                ? (UseMr ? PipelineStateNoEmissiveAlphaMask.Get() : PipelineStateNoMrNoEmissiveAlphaMask.Get())
+                                : (UseMr ? PipelineStateNoEmissive.Get() : PipelineStateNoMrNoEmissive.Get());
                         }
 
-                        return UseMr ? PipelineStateNoBaseColorNoEmissive.Get() : PipelineStateNoMrNoBaseColorNoEmissive.Get();
+                        return UseAlphaMask
+                            ? (UseMr ? PipelineStateNoBaseColorNoEmissiveAlphaMask.Get() : PipelineStateNoMrNoBaseColorNoEmissiveAlphaMask.Get())
+                            : (UseMr ? PipelineStateNoBaseColorNoEmissive.Get() : PipelineStateNoMrNoBaseColorNoEmissive.Get());
                     }
 
                     if (UseEmissive)
                     {
                         if (UseBaseColor)
                         {
-                            return UseMr ? PipelineStateNoNormal.Get() : PipelineStateNoMrNoNormal.Get();
+                            return UseAlphaMask
+                                ? (UseMr ? PipelineStateNoNormalAlphaMask.Get() : PipelineStateNoMrNoNormalAlphaMask.Get())
+                                : (UseMr ? PipelineStateNoNormal.Get() : PipelineStateNoMrNoNormal.Get());
                         }
 
-                        return UseMr ? PipelineStateNoBaseColorNoNormal.Get() : PipelineStateNoMrNoBaseColorNoNormal.Get();
+                        return UseAlphaMask
+                            ? (UseMr ? PipelineStateNoBaseColorNoNormalAlphaMask.Get() : PipelineStateNoMrNoBaseColorNoNormalAlphaMask.Get())
+                            : (UseMr ? PipelineStateNoBaseColorNoNormal.Get() : PipelineStateNoMrNoBaseColorNoNormal.Get());
                     }
 
                     if (UseBaseColor)
                     {
-                        return UseMr ? PipelineStateNoEmissiveNoNormal.Get() : PipelineStateNoMrNoEmissiveNoNormal.Get();
+                        return UseAlphaMask
+                            ? (UseMr ? PipelineStateNoEmissiveNoNormalAlphaMask.Get() : PipelineStateNoMrNoEmissiveNoNormalAlphaMask.Get())
+                            : (UseMr ? PipelineStateNoEmissiveNoNormal.Get() : PipelineStateNoMrNoEmissiveNoNormal.Get());
                     }
 
-                    return UseMr ? PipelineStateNoBaseColorNoEmissiveNoNormal.Get() : PipelineStateNoMrNoBaseColorNoEmissiveNoNormal.Get();
+                    return UseAlphaMask
+                        ? (UseMr ? PipelineStateNoBaseColorNoEmissiveNoNormalAlphaMask.Get() : PipelineStateNoMrNoBaseColorNoEmissiveNoNormalAlphaMask.Get())
+                        : (UseMr ? PipelineStateNoBaseColorNoEmissiveNoNormal.Get() : PipelineStateNoMrNoBaseColorNoEmissiveNoNormal.Get());
                 };
 
-                LocalCommandList->SetPipelineState(SelectPipeline(bUseNormalMap, bUseMetallicRoughnessMap, bUseBaseColorMap, bUseEmissiveMap));
+                LocalCommandList->SetPipelineState(SelectPipeline(bUseNormalMap, bUseMetallicRoughnessMap, bUseBaseColorMap, bUseEmissiveMap, bUseAlphaMask));
 
                 LocalCommandList->SetGraphicsRootConstantBufferView(
                     0,
@@ -1002,6 +1046,22 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
     std::vector<uint8_t> PSByteCodeNoBaseColorNoEmissiveNoNormal;
     std::vector<uint8_t> PSByteCodeNoMrNoEmissiveNoNormal;
     std::vector<uint8_t> PSByteCodeNoMrNoBaseColorNoEmissiveNoNormal;
+    std::vector<uint8_t> PSByteCodeAlphaMask;
+    std::vector<uint8_t> PSByteCodeNoBaseColorAlphaMask;
+    std::vector<uint8_t> PSByteCodeNoMrAlphaMask;
+    std::vector<uint8_t> PSByteCodeNoMrNoBaseColorAlphaMask;
+    std::vector<uint8_t> PSByteCodeNoEmissiveAlphaMask;
+    std::vector<uint8_t> PSByteCodeNoBaseColorNoEmissiveAlphaMask;
+    std::vector<uint8_t> PSByteCodeNoMrNoEmissiveAlphaMask;
+    std::vector<uint8_t> PSByteCodeNoMrNoBaseColorNoEmissiveAlphaMask;
+    std::vector<uint8_t> PSByteCodeNoNormalAlphaMask;
+    std::vector<uint8_t> PSByteCodeNoBaseColorNoNormalAlphaMask;
+    std::vector<uint8_t> PSByteCodeNoMrNoNormalAlphaMask;
+    std::vector<uint8_t> PSByteCodeNoMrNoBaseColorNoNormalAlphaMask;
+    std::vector<uint8_t> PSByteCodeNoEmissiveNoNormalAlphaMask;
+    std::vector<uint8_t> PSByteCodeNoBaseColorNoEmissiveNoNormalAlphaMask;
+    std::vector<uint8_t> PSByteCodeNoMrNoEmissiveNoNormalAlphaMask;
+    std::vector<uint8_t> PSByteCodeNoMrNoBaseColorNoEmissiveNoNormalAlphaMask;
 
     const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
     const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
@@ -1012,8 +1072,19 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
         return false;
     }
 
+    const auto MakeAlphaDefines = [](const std::vector<std::wstring>& Defines)
+    {
+        std::vector<std::wstring> Result = Defines;
+        Result.push_back(L"USE_ALPHA_MASK=1");
+        return Result;
+    };
+
     const std::vector<std::wstring> DefaultDefines = { L"USE_BASE_COLOR_MAP=1", L"USE_METALLIC_ROUGHNESS_MAP=1", L"USE_EMISSIVE_MAP=1", L"USE_NORMAL_MAP=1" };
     if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCode, DefaultDefines))
+    {
+        return false;
+    }
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeAlphaMask, MakeAlphaDefines(DefaultDefines)))
     {
         return false;
     }
@@ -1023,9 +1094,17 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
     {
         return false;
     }
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoBaseColorAlphaMask, MakeAlphaDefines(NoBaseColorDefines)))
+    {
+        return false;
+    }
 
     const std::vector<std::wstring> NoMrDefines = { L"USE_BASE_COLOR_MAP=1", L"USE_METALLIC_ROUGHNESS_MAP=0", L"USE_EMISSIVE_MAP=1", L"USE_NORMAL_MAP=1" };
     if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoMr, NoMrDefines))
+    {
+        return false;
+    }
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoMrAlphaMask, MakeAlphaDefines(NoMrDefines)))
     {
         return false;
     }
@@ -1035,9 +1114,17 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
     {
         return false;
     }
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoMrNoBaseColorAlphaMask, MakeAlphaDefines(NoMrNoBaseColorDefines)))
+    {
+        return false;
+    }
 
     const std::vector<std::wstring> NoEmissiveDefines = { L"USE_BASE_COLOR_MAP=1", L"USE_METALLIC_ROUGHNESS_MAP=1", L"USE_EMISSIVE_MAP=0", L"USE_NORMAL_MAP=1" };
     if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoEmissive, NoEmissiveDefines))
+    {
+        return false;
+    }
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoEmissiveAlphaMask, MakeAlphaDefines(NoEmissiveDefines)))
     {
         return false;
     }
@@ -1047,9 +1134,17 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
     {
         return false;
     }
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoBaseColorNoEmissiveAlphaMask, MakeAlphaDefines(NoBaseColorNoEmissiveDefines)))
+    {
+        return false;
+    }
 
     const std::vector<std::wstring> NoMrNoEmissiveDefines = { L"USE_BASE_COLOR_MAP=1", L"USE_METALLIC_ROUGHNESS_MAP=0", L"USE_EMISSIVE_MAP=0", L"USE_NORMAL_MAP=1" };
     if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoMrNoEmissive, NoMrNoEmissiveDefines))
+    {
+        return false;
+    }
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoMrNoEmissiveAlphaMask, MakeAlphaDefines(NoMrNoEmissiveDefines)))
     {
         return false;
     }
@@ -1059,9 +1154,17 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
     {
         return false;
     }
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoMrNoBaseColorNoEmissiveAlphaMask, MakeAlphaDefines(NoMrNoBaseColorNoEmissiveDefines)))
+    {
+        return false;
+    }
 
     const std::vector<std::wstring> NoNormalDefines = { L"USE_BASE_COLOR_MAP=1", L"USE_METALLIC_ROUGHNESS_MAP=1", L"USE_EMISSIVE_MAP=1", L"USE_NORMAL_MAP=0" };
     if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoNormal, NoNormalDefines))
+    {
+        return false;
+    }
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoNormalAlphaMask, MakeAlphaDefines(NoNormalDefines)))
     {
         return false;
     }
@@ -1071,9 +1174,17 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
     {
         return false;
     }
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoBaseColorNoNormalAlphaMask, MakeAlphaDefines(NoBaseColorNoNormalDefines)))
+    {
+        return false;
+    }
 
     const std::vector<std::wstring> NoMrNoNormalDefines = { L"USE_BASE_COLOR_MAP=1", L"USE_METALLIC_ROUGHNESS_MAP=0", L"USE_EMISSIVE_MAP=1", L"USE_NORMAL_MAP=0" };
     if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoMrNoNormal, NoMrNoNormalDefines))
+    {
+        return false;
+    }
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoMrNoNormalAlphaMask, MakeAlphaDefines(NoMrNoNormalDefines)))
     {
         return false;
     }
@@ -1083,9 +1194,17 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
     {
         return false;
     }
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoMrNoBaseColorNoNormalAlphaMask, MakeAlphaDefines(NoMrNoBaseColorNoNormalDefines)))
+    {
+        return false;
+    }
 
     const std::vector<std::wstring> NoEmissiveNoNormalDefines = { L"USE_BASE_COLOR_MAP=1", L"USE_METALLIC_ROUGHNESS_MAP=1", L"USE_EMISSIVE_MAP=0", L"USE_NORMAL_MAP=0" };
     if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoEmissiveNoNormal, NoEmissiveNoNormalDefines))
+    {
+        return false;
+    }
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoEmissiveNoNormalAlphaMask, MakeAlphaDefines(NoEmissiveNoNormalDefines)))
     {
         return false;
     }
@@ -1095,15 +1214,27 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
     {
         return false;
     }
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoBaseColorNoEmissiveNoNormalAlphaMask, MakeAlphaDefines(NoBaseColorNoEmissiveNoNormalDefines)))
+    {
+        return false;
+    }
 
     const std::vector<std::wstring> NoMrNoEmissiveNoNormalDefines = { L"USE_BASE_COLOR_MAP=1", L"USE_METALLIC_ROUGHNESS_MAP=0", L"USE_EMISSIVE_MAP=0", L"USE_NORMAL_MAP=0" };
     if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoMrNoEmissiveNoNormal, NoMrNoEmissiveNoNormalDefines))
     {
         return false;
     }
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoMrNoEmissiveNoNormalAlphaMask, MakeAlphaDefines(NoMrNoEmissiveNoNormalDefines)))
+    {
+        return false;
+    }
 
     const std::vector<std::wstring> NoMrNoBaseColorNoEmissiveNoNormalDefines = { L"USE_BASE_COLOR_MAP=0", L"USE_METALLIC_ROUGHNESS_MAP=0", L"USE_EMISSIVE_MAP=0", L"USE_NORMAL_MAP=0" };
     if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoMrNoBaseColorNoEmissiveNoNormal, NoMrNoBaseColorNoEmissiveNoNormalDefines))
+    {
+        return false;
+    }
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodeNoMrNoBaseColorNoEmissiveNoNormalAlphaMask, MakeAlphaDefines(NoMrNoBaseColorNoEmissiveNoNormalDefines)))
     {
         return false;
     }
@@ -1218,6 +1349,54 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
 
     PsoDesc.PS = { PSByteCodeNoMrNoBaseColorNoEmissiveNoNormal.data(), PSByteCodeNoMrNoBaseColorNoEmissiveNoNormal.size() };
     HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateNoMrNoBaseColorNoEmissiveNoNormal.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeAlphaMask.data(), PSByteCodeAlphaMask.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateAlphaMask.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeNoBaseColorAlphaMask.data(), PSByteCodeNoBaseColorAlphaMask.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateNoBaseColorAlphaMask.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeNoMrAlphaMask.data(), PSByteCodeNoMrAlphaMask.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateNoMrAlphaMask.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeNoMrNoBaseColorAlphaMask.data(), PSByteCodeNoMrNoBaseColorAlphaMask.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateNoMrNoBaseColorAlphaMask.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeNoEmissiveAlphaMask.data(), PSByteCodeNoEmissiveAlphaMask.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateNoEmissiveAlphaMask.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeNoBaseColorNoEmissiveAlphaMask.data(), PSByteCodeNoBaseColorNoEmissiveAlphaMask.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateNoBaseColorNoEmissiveAlphaMask.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeNoMrNoEmissiveAlphaMask.data(), PSByteCodeNoMrNoEmissiveAlphaMask.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateNoMrNoEmissiveAlphaMask.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeNoMrNoBaseColorNoEmissiveAlphaMask.data(), PSByteCodeNoMrNoBaseColorNoEmissiveAlphaMask.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateNoMrNoBaseColorNoEmissiveAlphaMask.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeNoNormalAlphaMask.data(), PSByteCodeNoNormalAlphaMask.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateNoNormalAlphaMask.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeNoBaseColorNoNormalAlphaMask.data(), PSByteCodeNoBaseColorNoNormalAlphaMask.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateNoBaseColorNoNormalAlphaMask.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeNoMrNoNormalAlphaMask.data(), PSByteCodeNoMrNoNormalAlphaMask.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateNoMrNoNormalAlphaMask.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeNoMrNoBaseColorNoNormalAlphaMask.data(), PSByteCodeNoMrNoBaseColorNoNormalAlphaMask.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateNoMrNoBaseColorNoNormalAlphaMask.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeNoEmissiveNoNormalAlphaMask.data(), PSByteCodeNoEmissiveNoNormalAlphaMask.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateNoEmissiveNoNormalAlphaMask.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeNoBaseColorNoEmissiveNoNormalAlphaMask.data(), PSByteCodeNoBaseColorNoEmissiveNoNormalAlphaMask.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateNoBaseColorNoEmissiveNoNormalAlphaMask.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeNoMrNoEmissiveNoNormalAlphaMask.data(), PSByteCodeNoMrNoEmissiveNoNormalAlphaMask.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateNoMrNoEmissiveNoNormalAlphaMask.GetAddressOf())));
+
+    PsoDesc.PS = { PSByteCodeNoMrNoBaseColorNoEmissiveNoNormalAlphaMask.data(), PSByteCodeNoMrNoBaseColorNoEmissiveNoNormalAlphaMask.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(PipelineStateNoMrNoBaseColorNoEmissiveNoNormalAlphaMask.GetAddressOf())));
 
     if (bDepthPrepassEnabled)
     {

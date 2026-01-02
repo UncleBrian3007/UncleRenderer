@@ -31,6 +31,9 @@ struct VSOutput
 #ifndef USE_EMISSIVE_MAP
 #define USE_EMISSIVE_MAP 1
 #endif
+#ifndef USE_ALPHA_MASK
+#define USE_ALPHA_MASK 0
+#endif
 
 
 Texture2D AlbedoTexture : register(t0);
@@ -114,10 +117,12 @@ PSOutput PSMain(VSOutput Input)
     albedo *= albedoSample.rgb;
     alpha *= albedoSample.a;
 #endif
-    if (AlphaMode == 1 && alpha < AlphaCutoff)
+#if USE_ALPHA_MASK
+    if (alpha < AlphaCutoff)
     {
         clip(alpha - AlphaCutoff);
     }
+#endif
 
     float viewDepth = -mul(float4(Input.WorldPos, 1.0), View).z;
     Output.GBufferA = float4(viewNormal, viewDepth);

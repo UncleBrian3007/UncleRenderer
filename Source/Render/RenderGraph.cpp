@@ -14,7 +14,7 @@ std::unordered_map<uint32, FRenderGraph::FGpuTimingResources> FRenderGraph::GpuT
 std::unordered_map<std::string, std::deque<FRenderGraph::FGpuTimingSample>> FRenderGraph::GpuTimingSamples;
 std::vector<FRenderGraph::FGpuPassTimingStats> FRenderGraph::CachedGpuTimingStats;
 double FRenderGraph::GpuTimingWindowSeconds = 1.0;
-uint32 FRenderGraph::GpuTimingDisplayCount = 5;
+uint32 FRenderGraph::GpuTimingDisplayCount = 3;
 
 FRenderGraph::FRenderGraph()
 {

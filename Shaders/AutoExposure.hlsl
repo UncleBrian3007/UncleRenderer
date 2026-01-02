@@ -23,8 +23,9 @@ void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID, uint3 GroupThreadId : 
     float2 groupCoord = float2(GroupThreadId.xy) + 0.5f;
     float2 samplePos = groupCoord * (InputSize / 16.0f);
     float2 uv = samplePos / max(InputSize, 1.0f);
+    float mipLevel = max(0.0f, log2(max(InputSize.x, InputSize.y)) - 4.0f);
 
-    float3 color = HDRScene.SampleLevel(SceneSampler, uv, 0.0f).rgb;
+    float3 color = HDRScene.SampleLevel(SceneSampler, uv, mipLevel).rgb;
     const float3 LuminanceWeights = float3(0.2126f, 0.7152f, 0.0722f);
     float luminance = dot(max(color, 0.0f), LuminanceWeights);
 
