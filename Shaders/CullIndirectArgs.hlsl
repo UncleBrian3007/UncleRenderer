@@ -7,11 +7,16 @@ cbuffer CullingConstants : register(b0)
     uint HZBMipCount;
     uint HZBWidth;
     uint HZBHeight;
+    uint DebugPrintEnabled;
 };
 
 StructuredBuffer<float4> ModelBounds : register(t0);
 Texture2D<float> HZBTexture : register(t1);
 RWByteAddressBuffer IndirectArgs : register(u0);
+RWByteAddressBuffer DebugPrintBuffer : register(u1);
+RWByteAddressBuffer DebugPrintStats : register(u2);
+
+#include "DebugPrintCommon.hlsl"
 
 static const uint kCommandStride = 64;
 static const uint kInstanceCountOffset = 44;
@@ -62,7 +67,6 @@ bool IsOccluded(float3 boundsMin, float3 boundsMax)
     float2 minUv = float2(1.0f, 1.0f);
     float2 maxUv = float2(0.0f, 0.0f);
     float maxDepth = 0.0f;
-    bool hasValidCorner = false;
 
     bool anyBehind = false;
 
@@ -86,7 +90,7 @@ bool IsOccluded(float3 boundsMin, float3 boundsMax)
         maxDepth = max(maxDepth, ndc.z);
     }
 
-    if (anyBehind || !hasValidCorner)
+    if (anyBehind)
     {
         return false;
     }
@@ -137,12 +141,27 @@ void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     uint boundsIndex = index * 2;
     float3 boundsMin = ModelBounds[boundsIndex].xyz;
     float3 boundsMax = ModelBounds[boundsIndex + 1].xyz;
-    bool visible = IsAabbVisible(boundsMin, boundsMax);
+    bool frustumVisible = IsAabbVisible(boundsMin, boundsMax);
+    bool visible = frustumVisible;
+    bool occluded = false;
     if (visible && HZBEnabled != 0)
     {
-        visible = !IsOccluded(boundsMin, boundsMax);
+        occluded = IsOccluded(boundsMin, boundsMax);
+        visible = !occluded;
     }
 
     uint baseOffset = index * kCommandStride + kInstanceCountOffset;
     IndirectArgs.Store(baseOffset, visible ? 1u : 0u);
+
+    if (DebugPrintEnabled != 0 && !visible)
+    {
+        if (!frustumVisible)
+        {
+            DebugPrintStats.InterlockedAdd(0, 1);
+        }
+        else if (occluded)
+        {
+            DebugPrintStats.InterlockedAdd(4, 1);
+        }
+    }
 }

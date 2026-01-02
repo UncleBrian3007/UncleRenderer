@@ -261,6 +261,11 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
         OutConfig.bEnableGpuTiming = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
 
+    if (LowerKey == "gpudebugprint" || LowerKey == "enablegpudebugprint")
+    {
+        OutConfig.bEnableGpuDebugPrint = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+
     if (LowerKey == "indirectdraw" || LowerKey == "enableindirectdraw")
     {
         OutConfig.bEnableIndirectDraw = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");

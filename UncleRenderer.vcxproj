@@ -114,6 +114,7 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.DXC.1.8.2505.32\bin\x64\dxco
     <ClCompile Include="Source\RHI\DX12SwapChain.cpp" />
     <ClCompile Include="Source\Core\RendererConfig.cpp" />
     <ClCompile Include="Source\Render\DeferredRenderer.cpp" />
+    <ClCompile Include="Source\Render\DebugPrintFont.cpp" />
     <ClCompile Include="Source\Render\Renderer.cpp" />
     <ClCompile Include="Source\Render\RendererUtils.cpp" />
     <ClCompile Include="Source\Render\TextureLoader.cpp" />
@@ -151,6 +152,7 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.DXC.1.8.2505.32\bin\x64\dxco
     <ClInclude Include="Source\RHI\DX12Resource.h" />
     <ClInclude Include="Source\RHI\DX12SwapChain.h" />
     <ClInclude Include="Source\Render\DeferredRenderer.h" />
+    <ClInclude Include="Source\Render\DebugPrintFont.h" />
     <ClInclude Include="Source\Render\RendererUtils.h" />
     <ClInclude Include="Source\Render\TextureLoader.h" />
     <ClInclude Include="Source\Render\Renderer.h" />
@@ -215,6 +217,15 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.DXC.1.8.2505.32\bin\x64\dxco
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\CullIndirectArgs.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\DebugPrintCommon.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\GpuDebugPrint.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\GpuDebugPrintStats.hlsl">
       <FileType>Document</FileType>
     </None>
   </ItemGroup>

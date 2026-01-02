@@ -32,6 +32,7 @@ struct FRendererOptions
     bool bEnableGpuTiming = false;
     bool bEnableHZB = true;
     bool bEnableIndirectDraw = false;
+    bool bEnableGpuDebugPrint = false;
 };
 
 class FDX12Device;
@@ -41,6 +42,19 @@ class FCamera;
 class FRenderer
 {
 public:
+    struct FGpuDebugPrintEntry
+    {
+        uint32_t X = 0;
+        uint32_t Y = 0;
+        uint32_t Code = 0;
+        uint32_t Color = 0;
+    };
+
+    static constexpr uint32_t GpuDebugPrintMaxEntries = 4096;
+    static constexpr uint32_t GpuDebugPrintHeaderSize = sizeof(uint32_t);
+    static constexpr uint32_t GpuDebugPrintEntryStride = sizeof(FGpuDebugPrintEntry);
+    static constexpr uint64_t GpuDebugPrintBufferSize = GpuDebugPrintHeaderSize + static_cast<uint64_t>(GpuDebugPrintMaxEntries) * GpuDebugPrintEntryStride;
+
     virtual ~FRenderer();
 
     virtual bool Initialize(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT BackBufferFormat, const FRendererOptions& Options) = 0;
@@ -85,6 +99,12 @@ protected:
         D3D12_RESOURCE_STATES& OutShadowState);
     void DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamera& Camera);
     void ConfigureHZBOcclusion(bool bEnabled, ID3D12DescriptorHeap* DescriptorHeap, D3D12_GPU_DESCRIPTOR_HANDLE Handle, uint32_t Width, uint32_t Height, uint32_t MipCount);
+    void PrepareGpuDebugPrint(FDX12CommandContext& CmdContext);
+    void DispatchGpuDebugPrintStats(FDX12CommandContext& CmdContext);
+    bool CreateGpuDebugPrintResources(FDX12Device* Device);
+    bool CreateGpuDebugPrintPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
+    bool CreateGpuDebugPrintStatsPipeline(FDX12Device* Device);
+    void RenderGpuDebugPrint(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& OutputHandle);
 
     D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilHandle{};
     D3D12_CPU_DESCRIPTOR_HANDLE ShadowDSVHandle{};
@@ -118,6 +138,10 @@ protected:
     Microsoft::WRL::ComPtr<ID3D12Resource> IndirectCommandUpload;
     Microsoft::WRL::ComPtr<ID3D12Resource> ModelBoundsBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> ModelBoundsUpload;
+    Microsoft::WRL::ComPtr<ID3D12Resource> GpuDebugPrintBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> GpuDebugPrintUpload;
+    Microsoft::WRL::ComPtr<ID3D12Resource> GpuDebugPrintStatsBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> GpuDebugPrintStatsUpload;
     Microsoft::WRL::ComPtr<ID3D12Resource> ObjectIdTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> ObjectIdReadback;
     Microsoft::WRL::ComPtr<ID3D12Resource> NullTexture;
@@ -130,6 +154,22 @@ protected:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> CullingRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> CullingPipeline;
     Microsoft::WRL::ComPtr<ID3D12CommandSignature> IndirectCommandSignature;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> GpuDebugPrintRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> GpuDebugPrintPipeline;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> GpuDebugPrintStatsRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> GpuDebugPrintStatsPipeline;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> GpuDebugPrintDescriptorHeap;
+    Microsoft::WRL::ComPtr<ID3D12Resource> GpuDebugPrintFontTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> GpuDebugPrintGlyphBuffer;
+    D3D12_GPU_DESCRIPTOR_HANDLE GpuDebugPrintGlyphHandle{};
+    D3D12_GPU_DESCRIPTOR_HANDLE GpuDebugPrintFontHandle{};
+    D3D12_GPU_DESCRIPTOR_HANDLE GpuDebugPrintBufferHandle{};
+    D3D12_GPU_DESCRIPTOR_HANDLE GpuDebugPrintStatsHandle{};
+    uint32_t GpuDebugPrintAtlasWidth = 0;
+    uint32_t GpuDebugPrintAtlasHeight = 0;
+    uint32_t GpuDebugPrintFirstChar = 32;
+    uint32_t GpuDebugPrintCharCount = 96;
+    float GpuDebugPrintFontSize = 16.0f;
 
     D3D12_VIEWPORT Viewport{};
     D3D12_RECT ScissorRect{};
@@ -140,6 +180,8 @@ protected:
     D3D12_RESOURCE_STATES ShadowMapState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
     D3D12_RESOURCE_STATES ObjectIdState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES IndirectCommandState = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+    D3D12_RESOURCE_STATES GpuDebugPrintState = D3D12_RESOURCE_STATE_COMMON;
+    D3D12_RESOURCE_STATES GpuDebugPrintStatsState = D3D12_RESOURCE_STATE_COMMON;
 
     uint8_t* ConstantBufferMapped = nullptr;
     uint8_t* SkyConstantBufferMapped = nullptr;
@@ -153,6 +195,7 @@ protected:
     bool bEnableGraphDump = false;
     bool bEnableGpuTiming = false;
     bool bEnableIndirectDraw = false;
+    bool bEnableGpuDebugPrint = false;
     float EnvironmentMipCount = 1.0f;
     bool bObjectIdReadbackRequested = false;
     bool bObjectIdReadbackRecorded = false;

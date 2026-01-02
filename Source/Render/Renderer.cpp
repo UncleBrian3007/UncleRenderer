@@ -3,10 +3,12 @@
 #include "ShaderCompiler.h"
 #include "RendererUtils.h"
 #include "TextureLoader.h"
+#include "DebugPrintFont.h"
 #include "../Scene/Camera.h"
 #include "../RHI/DX12CommandContext.h"
 #include "../RHI/DX12Device.h"
 #include "../Core/GpuDebugMarkers.h"
+#include "../Core/Logger.h"
 #include <array>
 #include <cstring>
 
@@ -47,6 +49,7 @@ void FRenderer::InitializeCommonSettings(uint32_t Width, uint32_t Height, const 
     bEnableGraphDump = Options.bEnableGraphDump;
     bEnableGpuTiming = Options.bEnableGpuTiming;
     bEnableIndirectDraw = Options.bEnableIndirectDraw;
+    bEnableGpuDebugPrint = Options.bEnableGpuDebugPrint;
 
     Viewport.TopLeftX = 0.0f;
     Viewport.TopLeftY = 0.0f;
@@ -247,7 +250,7 @@ void FRenderer::DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamer
     DirectX::XMVECTOR Planes[6] = {};
     RendererUtils::BuildCameraFrustumPlanes(*CullingCamera, Planes);
 
-    std::array<uint32_t, 45> Constants = {};
+    std::array<uint32_t, 46> Constants = {};
     for (uint32_t PlaneIndex = 0; PlaneIndex < 6; ++PlaneIndex)
     {
         DirectX::XMFLOAT4 Plane;
@@ -265,6 +268,7 @@ void FRenderer::DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamer
     Constants[42] = HZBCullingMipCount;
     Constants[43] = HZBCullingWidth;
     Constants[44] = HZBCullingHeight;
+    Constants[45] = bEnableGpuDebugPrint ? 1u : 0u;
 
     ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
     FScopedPixEvent CullingEvent(CommandList, L"GpuCulling");
@@ -286,11 +290,13 @@ void FRenderer::DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamer
     CommandList->SetComputeRoot32BitConstants(0, static_cast<UINT>(Constants.size()), Constants.data(), 0);
     CommandList->SetComputeRootShaderResourceView(1, ModelBoundsBuffer->GetGPUVirtualAddress());
     CommandList->SetComputeRootUnorderedAccessView(2, IndirectCommandBuffer->GetGPUVirtualAddress());
+    CommandList->SetComputeRootUnorderedAccessView(3, GpuDebugPrintBuffer->GetGPUVirtualAddress());
+    CommandList->SetComputeRootUnorderedAccessView(4, GpuDebugPrintStatsBuffer->GetGPUVirtualAddress());
     if (CullingDescriptorHeap)
     {
         ID3D12DescriptorHeap* Heaps[] = { CullingDescriptorHeap.Get() };
         CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
-        CommandList->SetComputeRootDescriptorTable(3, HZBCullingHandle);
+        CommandList->SetComputeRootDescriptorTable(5, HZBCullingHandle);
     }
 
     const uint32_t DispatchCount = (IndirectCommandCount + 63) / 64;
@@ -304,4 +310,416 @@ void FRenderer::DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamer
     Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
     CommandList->ResourceBarrier(1, &Barrier);
     IndirectCommandState = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+}
+
+void FRenderer::PrepareGpuDebugPrint(FDX12CommandContext& CmdContext)
+{
+    if (!bEnableGpuDebugPrint || !GpuDebugPrintBuffer || !GpuDebugPrintUpload || !GpuDebugPrintStatsBuffer || !GpuDebugPrintStatsUpload)
+    {
+        return;
+    }
+
+    ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
+    if (GpuDebugPrintState != D3D12_RESOURCE_STATE_COPY_DEST)
+    {
+        D3D12_RESOURCE_BARRIER Barrier = {};
+        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        Barrier.Transition.pResource = GpuDebugPrintBuffer.Get();
+        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        Barrier.Transition.StateBefore = GpuDebugPrintState;
+        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+        CommandList->ResourceBarrier(1, &Barrier);
+        GpuDebugPrintState = D3D12_RESOURCE_STATE_COPY_DEST;
+    }
+
+    CommandList->CopyBufferRegion(GpuDebugPrintBuffer.Get(), 0, GpuDebugPrintUpload.Get(), 0, sizeof(uint32_t));
+
+    D3D12_RESOURCE_BARRIER Barrier = {};
+    Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    Barrier.Transition.pResource = GpuDebugPrintBuffer.Get();
+    Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    Barrier.Transition.StateBefore = GpuDebugPrintState;
+    Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    CommandList->ResourceBarrier(1, &Barrier);
+    GpuDebugPrintState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+
+    if (GpuDebugPrintStatsState != D3D12_RESOURCE_STATE_COPY_DEST)
+    {
+        D3D12_RESOURCE_BARRIER StatsBarrier = {};
+        StatsBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        StatsBarrier.Transition.pResource = GpuDebugPrintStatsBuffer.Get();
+        StatsBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        StatsBarrier.Transition.StateBefore = GpuDebugPrintStatsState;
+        StatsBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+        CommandList->ResourceBarrier(1, &StatsBarrier);
+        GpuDebugPrintStatsState = D3D12_RESOURCE_STATE_COPY_DEST;
+    }
+
+    CommandList->CopyBufferRegion(GpuDebugPrintStatsBuffer.Get(), 0, GpuDebugPrintStatsUpload.Get(), 0, sizeof(uint32_t) * 2);
+
+    D3D12_RESOURCE_BARRIER StatsBarrier = {};
+    StatsBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    StatsBarrier.Transition.pResource = GpuDebugPrintStatsBuffer.Get();
+    StatsBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    StatsBarrier.Transition.StateBefore = GpuDebugPrintStatsState;
+    StatsBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    CommandList->ResourceBarrier(1, &StatsBarrier);
+    GpuDebugPrintStatsState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+}
+
+bool FRenderer::CreateGpuDebugPrintResources(FDX12Device* Device)
+{
+    if (!Device)
+    {
+        return false;
+    }
+
+    if (!GpuDebugPrintBuffer)
+    {
+        LogError("GPU debug print buffer is missing.");
+        return false;
+    }
+
+    const std::wstring FontPath = L"Assets/Fonts/Roboto-Medium.ttf";
+    const float FontSize = 16.0f;
+    const uint32_t AtlasWidth = 512;
+    const uint32_t AtlasHeight = 512;
+
+    FDebugPrintFontResources FontResources;
+    if (!CreateDebugPrintFontResources(Device, FontPath, FontSize, AtlasWidth, AtlasHeight, FontResources))
+    {
+        LogError("Failed to create GPU debug print font resources.");
+        return false;
+    }
+
+    GpuDebugPrintFontTexture = FontResources.FontTexture;
+    GpuDebugPrintGlyphBuffer = FontResources.GlyphBuffer;
+    GpuDebugPrintAtlasWidth = FontResources.AtlasWidth;
+    GpuDebugPrintAtlasHeight = FontResources.AtlasHeight;
+    GpuDebugPrintFirstChar = FontResources.FirstChar;
+    GpuDebugPrintCharCount = FontResources.CharCount;
+    GpuDebugPrintFontSize = FontResources.FontSize;
+
+    D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
+    HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    HeapDesc.NumDescriptors = 4;
+    HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(GpuDebugPrintDescriptorHeap.ReleaseAndGetAddressOf())));
+
+    const UINT DescriptorSize = Device->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle = GpuDebugPrintDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
+    D3D12_GPU_DESCRIPTOR_HANDLE GpuHandle = GpuDebugPrintDescriptorHeap->GetGPUDescriptorHandleForHeapStart();
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC GlyphSrvDesc = {};
+    GlyphSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    GlyphSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    GlyphSrvDesc.Format = DXGI_FORMAT_UNKNOWN;
+    GlyphSrvDesc.Buffer.FirstElement = 0;
+    GlyphSrvDesc.Buffer.NumElements = 128;
+    GlyphSrvDesc.Buffer.StructureByteStride = sizeof(FDebugPrintGlyph);
+    GlyphSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+    Device->GetDevice()->CreateShaderResourceView(GpuDebugPrintGlyphBuffer.Get(), &GlyphSrvDesc, CpuHandle);
+    GpuDebugPrintGlyphHandle = GpuHandle;
+
+    CpuHandle.ptr += DescriptorSize;
+    GpuHandle.ptr += DescriptorSize;
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC FontSrvDesc = {};
+    FontSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    FontSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    FontSrvDesc.Format = DXGI_FORMAT_R8_UNORM;
+    FontSrvDesc.Texture2D.MostDetailedMip = 0;
+    FontSrvDesc.Texture2D.MipLevels = 1;
+    Device->GetDevice()->CreateShaderResourceView(GpuDebugPrintFontTexture.Get(), &FontSrvDesc, CpuHandle);
+    GpuDebugPrintFontHandle = GpuHandle;
+
+    CpuHandle.ptr += DescriptorSize;
+    GpuHandle.ptr += DescriptorSize;
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC BufferSrvDesc = {};
+    BufferSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    BufferSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    BufferSrvDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+    BufferSrvDesc.Buffer.FirstElement = 0;
+    BufferSrvDesc.Buffer.NumElements = static_cast<UINT>(GpuDebugPrintBufferSize / 4);
+    BufferSrvDesc.Buffer.StructureByteStride = 0;
+    BufferSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+    Device->GetDevice()->CreateShaderResourceView(GpuDebugPrintBuffer.Get(), &BufferSrvDesc, CpuHandle);
+    GpuDebugPrintBufferHandle = GpuHandle;
+
+    CpuHandle.ptr += DescriptorSize;
+    GpuHandle.ptr += DescriptorSize;
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC StatsSrvDesc = {};
+    StatsSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    StatsSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    StatsSrvDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+    StatsSrvDesc.Buffer.FirstElement = 0;
+    StatsSrvDesc.Buffer.NumElements = 2;
+    StatsSrvDesc.Buffer.StructureByteStride = 0;
+    StatsSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+    Device->GetDevice()->CreateShaderResourceView(GpuDebugPrintStatsBuffer.Get(), &StatsSrvDesc, CpuHandle);
+    GpuDebugPrintStatsHandle = GpuHandle;
+
+    return true;
+}
+
+bool FRenderer::CreateGpuDebugPrintPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat)
+{
+    if (!Device)
+    {
+        return false;
+    }
+
+    D3D12_DESCRIPTOR_RANGE Range = {};
+    Range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    Range.NumDescriptors = 4;
+    Range.BaseShaderRegister = 0;
+    Range.RegisterSpace = 0;
+    Range.OffsetInDescriptorsFromTableStart = 0;
+
+    D3D12_ROOT_PARAMETER Params[2] = {};
+    // Params[0]: Debug print draw constants (screen size, font range)
+    Params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    Params[0].Constants.ShaderRegister = 0;
+    Params[0].Constants.RegisterSpace = 0;
+    Params[0].Constants.Num32BitValues = 4;
+    Params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    // Params[1]: Debug print SRV table (glyph buffer, font atlas, print buffer, stats buffer)
+    Params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    Params[1].DescriptorTable.NumDescriptorRanges = 1;
+    Params[1].DescriptorTable.pDescriptorRanges = &Range;
+    Params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    D3D12_STATIC_SAMPLER_DESC Sampler = {};
+    Sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    Sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    Sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    Sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    Sampler.ShaderRegister = 0;
+    Sampler.RegisterSpace = 0;
+    Sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_ROOT_SIGNATURE_DESC RootDesc = {};
+    RootDesc.NumParameters = _countof(Params);
+    RootDesc.pParameters = Params;
+    RootDesc.NumStaticSamplers = 1;
+    RootDesc.pStaticSamplers = &Sampler;
+    RootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    ComPtr<ID3DBlob> SerializedSig;
+    ComPtr<ID3DBlob> ErrorBlob;
+    HR_CHECK(D3D12SerializeRootSignature(&RootDesc, D3D_ROOT_SIGNATURE_VERSION_1, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
+    HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(GpuDebugPrintRootSignature.GetAddressOf())));
+
+    FShaderCompiler Compiler;
+    std::vector<uint8_t> VSByteCode;
+    std::vector<uint8_t> PSByteCode;
+
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
+    const std::wstring PSTarget = RendererUtils::BuildShaderTarget(L"ps", ShaderModel);
+
+    if (!Compiler.CompileFromFile(L"Shaders/GpuDebugPrint.hlsl", L"VSMain", VSTarget, VSByteCode))
+    {
+        return false;
+    }
+
+    if (!Compiler.CompileFromFile(L"Shaders/GpuDebugPrint.hlsl", L"PSMain", PSTarget, PSByteCode))
+    {
+        return false;
+    }
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
+    PsoDesc.pRootSignature = GpuDebugPrintRootSignature.Get();
+    PsoDesc.VS = { VSByteCode.data(), VSByteCode.size() };
+    PsoDesc.PS = { PSByteCode.data(), PSByteCode.size() };
+    PsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    PsoDesc.SampleDesc.Count = 1;
+    PsoDesc.SampleMask = UINT_MAX;
+    PsoDesc.NumRenderTargets = 1;
+    PsoDesc.RTVFormats[0] = BackBufferFormat;
+
+    PsoDesc.BlendState = {};
+    PsoDesc.BlendState.RenderTarget[0].BlendEnable = TRUE;
+    PsoDesc.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
+    PsoDesc.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+    PsoDesc.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+    PsoDesc.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+    PsoDesc.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ZERO;
+    PsoDesc.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    PsoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    PsoDesc.RasterizerState = {};
+    PsoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    PsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    PsoDesc.RasterizerState.DepthClipEnable = TRUE;
+
+    PsoDesc.DepthStencilState = {};
+    PsoDesc.DepthStencilState.DepthEnable = FALSE;
+    PsoDesc.DepthStencilState.StencilEnable = FALSE;
+
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(GpuDebugPrintPipeline.GetAddressOf())));
+    return true;
+}
+
+bool FRenderer::CreateGpuDebugPrintStatsPipeline(FDX12Device* Device)
+{
+    if (!Device)
+    {
+        return false;
+    }
+
+    D3D12_DESCRIPTOR_RANGE Range = {};
+    Range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    Range.NumDescriptors = 1;
+    Range.BaseShaderRegister = 0;
+    Range.RegisterSpace = 0;
+    Range.OffsetInDescriptorsFromTableStart = 0;
+
+    D3D12_ROOT_PARAMETER Params[2] = {};
+    // Params[0]: Stats buffer SRV table (t0)
+    Params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    Params[0].DescriptorTable.NumDescriptorRanges = 1;
+    Params[0].DescriptorTable.pDescriptorRanges = &Range;
+    Params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    // Params[1]: Debug print buffer UAV (u0)
+    Params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+    Params[1].Descriptor.ShaderRegister = 0;
+    Params[1].Descriptor.RegisterSpace = 0;
+    Params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    D3D12_ROOT_SIGNATURE_DESC RootDesc = {};
+    RootDesc.NumParameters = _countof(Params);
+    RootDesc.pParameters = Params;
+    RootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+
+    ComPtr<ID3DBlob> SerializedSig;
+    ComPtr<ID3DBlob> ErrorBlob;
+    HR_CHECK(D3D12SerializeRootSignature(&RootDesc, D3D_ROOT_SIGNATURE_VERSION_1, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
+    HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(GpuDebugPrintStatsRootSignature.GetAddressOf())));
+
+    FShaderCompiler Compiler;
+    std::vector<uint8_t> CsByteCode;
+
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring CSTarget = RendererUtils::BuildShaderTarget(L"cs", ShaderModel);
+
+    if (!Compiler.CompileFromFile(L"Shaders/GpuDebugPrintStats.hlsl", L"CSMain", CSTarget, CsByteCode))
+    {
+        return false;
+    }
+
+    D3D12_COMPUTE_PIPELINE_STATE_DESC CsDesc = {};
+    CsDesc.pRootSignature = GpuDebugPrintStatsRootSignature.Get();
+    CsDesc.CS = { CsByteCode.data(), CsByteCode.size() };
+    HR_CHECK(Device->GetDevice()->CreateComputePipelineState(&CsDesc, IID_PPV_ARGS(GpuDebugPrintStatsPipeline.GetAddressOf())));
+    return true;
+}
+
+void FRenderer::DispatchGpuDebugPrintStats(FDX12CommandContext& CmdContext)
+{
+    if (!bEnableGpuDebugPrint || !GpuDebugPrintStatsPipeline || !GpuDebugPrintStatsRootSignature || !GpuDebugPrintDescriptorHeap)
+    {
+        return;
+    }
+
+    ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
+    FScopedPixEvent DebugStatsEvent(CommandList, L"GpuDebugPrintStats");
+
+    if (GpuDebugPrintStatsState != D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
+    {
+        D3D12_RESOURCE_BARRIER Barrier = {};
+        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        Barrier.Transition.pResource = GpuDebugPrintStatsBuffer.Get();
+        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        Barrier.Transition.StateBefore = GpuDebugPrintStatsState;
+        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        CommandList->ResourceBarrier(1, &Barrier);
+        GpuDebugPrintStatsState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    }
+
+    if (GpuDebugPrintState != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+    {
+        D3D12_RESOURCE_BARRIER Barrier = {};
+        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        Barrier.Transition.pResource = GpuDebugPrintBuffer.Get();
+        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        Barrier.Transition.StateBefore = GpuDebugPrintState;
+        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        CommandList->ResourceBarrier(1, &Barrier);
+        GpuDebugPrintState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    }
+
+    ID3D12DescriptorHeap* Heaps[] = { GpuDebugPrintDescriptorHeap.Get() };
+    CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+    CommandList->SetPipelineState(GpuDebugPrintStatsPipeline.Get());
+    CommandList->SetComputeRootSignature(GpuDebugPrintStatsRootSignature.Get());
+    CommandList->SetComputeRootDescriptorTable(0, GpuDebugPrintStatsHandle);
+    CommandList->SetComputeRootUnorderedAccessView(1, GpuDebugPrintBuffer->GetGPUVirtualAddress());
+    CommandList->Dispatch(1, 1, 1);
+}
+
+void FRenderer::RenderGpuDebugPrint(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& OutputHandle)
+{
+    if (!bEnableGpuDebugPrint || !GpuDebugPrintPipeline || !GpuDebugPrintRootSignature || !GpuDebugPrintDescriptorHeap)
+    {
+        return;
+    }
+
+    ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
+    FScopedPixEvent DebugEvent(CommandList, L"GpuDebugPrint");
+
+    if (GpuDebugPrintState != D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
+    {
+        D3D12_RESOURCE_BARRIER Barrier = {};
+        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        Barrier.Transition.pResource = GpuDebugPrintBuffer.Get();
+        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        Barrier.Transition.StateBefore = GpuDebugPrintState;
+        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        CommandList->ResourceBarrier(1, &Barrier);
+        GpuDebugPrintState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    }
+
+    CmdContext.SetRenderTarget(OutputHandle, nullptr);
+
+    struct FDebugPrintConstants
+    {
+        DirectX::XMFLOAT2 ScreenSize;
+        uint32_t FirstChar;
+        uint32_t CharCount;
+    };
+
+    const FDebugPrintConstants Constants =
+    {
+        DirectX::XMFLOAT2(Viewport.Width, Viewport.Height),
+        GpuDebugPrintFirstChar,
+        GpuDebugPrintCharCount
+    };
+
+    ID3D12DescriptorHeap* Heaps[] = { GpuDebugPrintDescriptorHeap.Get() };
+    CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+    CommandList->SetPipelineState(GpuDebugPrintPipeline.Get());
+    CommandList->SetGraphicsRootSignature(GpuDebugPrintRootSignature.Get());
+    CommandList->RSSetViewports(1, &Viewport);
+    CommandList->RSSetScissorRects(1, &ScissorRect);
+    CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    CommandList->SetGraphicsRoot32BitConstants(0, sizeof(Constants) / sizeof(uint32_t), &Constants, 0);
+    CommandList->SetGraphicsRootDescriptorTable(1, GpuDebugPrintGlyphHandle);
+    CommandList->DrawInstanced(6 * GpuDebugPrintMaxEntries, 1, 0, 0);
+
+    if (GpuDebugPrintState != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+    {
+        D3D12_RESOURCE_BARRIER Barrier = {};
+        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        Barrier.Transition.pResource = GpuDebugPrintBuffer.Get();
+        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        Barrier.Transition.StateBefore = GpuDebugPrintState;
+        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        CommandList->ResourceBarrier(1, &Barrier);
+        GpuDebugPrintState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    }
 }

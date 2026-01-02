@@ -84,6 +84,7 @@ private:
     bool bShadowsEnabled = true;
     bool bHZBEnabled = true;
     bool bGpuTimingEnabled = false;
+    bool bGpuDebugPrintEnabled = false;
     bool bTonemapEnabled = true;
     bool bIndirectDrawEnabled = true;
     bool bModelPixEventsEnabled = true;

@@ -150,6 +150,7 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     bDepthPrepassEnabled = RendererConfig.bUseDepthPrepass;
     bShadowsEnabled = RendererConfig.bEnableShadows;
     bGpuTimingEnabled = RendererConfig.bEnableGpuTiming;
+    bGpuDebugPrintEnabled = RendererConfig.bEnableGpuDebugPrint;
     ShadowBias = RendererConfig.ShadowBias;
     bTonemapEnabled = RendererConfig.bEnableTonemap;
     TonemapExposure = RendererConfig.TonemapExposure;
@@ -205,6 +206,7 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     RendererOptions.bLogResourceBarriers = RendererConfig.bLogResourceBarriers;
     RendererOptions.bEnableGraphDump = RendererConfig.bEnableGraphDump;
     RendererOptions.bEnableGpuTiming = RendererConfig.bEnableGpuTiming;
+    RendererOptions.bEnableGpuDebugPrint = bGpuDebugPrintEnabled;
     RendererOptions.bEnableIndirectDraw = bIndirectDrawEnabled;
 
     const std::wstring SceneFilePath = RendererOptions.SceneFilePath.empty() ? L"Assets/Scenes/Scene.json" : RendererOptions.SceneFilePath;
@@ -507,29 +509,34 @@ bool FApplication::RenderFrame()
     }
     CommandContext->CloseAndExecute();
 
-    if (bPendingObjectIdReadback && ActiveRenderer && Device && Device->GetGraphicsQueue())
+    const bool bNeedsReadback = bPendingObjectIdReadback;
+    if (bNeedsReadback && ActiveRenderer && Device && Device->GetGraphicsQueue())
     {
         Device->GetGraphicsQueue()->Flush();
-        uint32_t ObjectId = 0;
-        if (ActiveRenderer->ConsumeObjectIdReadback(ObjectId))
+        if (bPendingObjectIdReadback)
         {
-            const std::vector<FSceneModelResource>* Models = ActiveRenderer->GetSceneModels();
-            if (ObjectId > 0 && Models && ObjectId <= Models->size())
+            uint32_t ObjectId = 0;
+            if (ActiveRenderer->ConsumeObjectIdReadback(ObjectId))
             {
-                SelectedModelIndex = static_cast<int32_t>(ObjectId - 1);
-                SelectedModelName = (*Models)[SelectedModelIndex].Name;
-                if (SelectedModelName.empty())
+                const std::vector<FSceneModelResource>* Models = ActiveRenderer->GetSceneModels();
+                if (ObjectId > 0 && Models && ObjectId <= Models->size())
                 {
-                    SelectedModelName = "Unnamed";
+                    SelectedModelIndex = static_cast<int32_t>(ObjectId - 1);
+                    SelectedModelName = (*Models)[SelectedModelIndex].Name;
+                    if (SelectedModelName.empty())
+                    {
+                        SelectedModelName = "Unnamed";
+                    }
+                }
+                else
+                {
+                    SelectedModelIndex = -1;
+                    SelectedModelName.clear();
                 }
             }
-            else
-            {
-                SelectedModelIndex = -1;
-                SelectedModelName.clear();
-            }
+            bPendingObjectIdReadback = false;
         }
-        bPendingObjectIdReadback = false;
+
     }
 
     LogVerbose("Preparing frame end: " + std::to_string(FrameIndex));
@@ -914,6 +921,7 @@ bool FApplication::ReloadScene(const std::wstring& ScenePath)
     RendererOptions.ShadowBias = ShadowBias;
     RendererOptions.bEnableHZB = bHZBEnabled;
     RendererOptions.bEnableIndirectDraw = bIndirectDrawEnabled;
+    RendererOptions.bEnableGpuDebugPrint = bGpuDebugPrintEnabled;
 
     const uint32_t Width = static_cast<uint32_t>(MainWindow->GetWidth());
     const uint32_t Height = static_cast<uint32_t>(MainWindow->GetHeight());
@@ -1028,6 +1036,7 @@ void FApplication::StartAsyncSceneReload(const std::wstring& ScenePath)
     RendererOptions.TonemapWhitePoint = TonemapWhitePoint;
     RendererOptions.TonemapGamma = TonemapGamma;
     RendererOptions.bEnableGpuTiming = bGpuTimingEnabled;
+    RendererOptions.bEnableGpuDebugPrint = bGpuDebugPrintEnabled;
     RendererOptions.bEnableHZB = bHZBEnabled;
     RendererOptions.bEnableIndirectDraw = bIndirectDrawEnabled;
 

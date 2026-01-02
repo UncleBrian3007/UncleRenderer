@@ -95,6 +95,9 @@
     <ClCompile Include="Source\Render\DeferredRenderer.cpp">
       <Filter>Source Files\Render</Filter>
     </ClCompile>
+    <ClCompile Include="Source\Render\DebugPrintFont.cpp">
+      <Filter>Source Files\Render</Filter>
+    </ClCompile>
     <ClCompile Include="Source\Render\Renderer.cpp">
       <Filter>Source Files\Render</Filter>
     </ClCompile>
@@ -203,6 +206,9 @@
       <Filter>Header Files\RHI</Filter>
     </ClInclude>
     <ClInclude Include="Source\Render\DeferredRenderer.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Render\DebugPrintFont.h">
       <Filter>Header Files\Render</Filter>
     </ClInclude>
     <ClInclude Include="Source\Render\RendererUtils.h">
@@ -326,6 +332,15 @@
       <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\CullIndirectArgs.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\DebugPrintCommon.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\GpuDebugPrint.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\GpuDebugPrintStats.hlsl">
       <Filter>Shaders</Filter>
     </None>
     <None Include="Assets\Scenes\sponza.json">

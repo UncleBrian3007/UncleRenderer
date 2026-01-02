@@ -335,6 +335,15 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
         return false;
     }
 
+    if (bEnableGpuDebugPrint)
+    {
+        if (!CreateGpuDebugPrintResources(Device) || !CreateGpuDebugPrintPipeline(Device, BackBufferFormat) || !CreateGpuDebugPrintStatsPipeline(Device))
+        {
+            LogError("Deferred renderer initialization failed: GPU debug print setup failed");
+            return false;
+        }
+    }
+
     LogInfo("Deferred renderer initialization completed");
     return true;
 }
@@ -342,6 +351,8 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
 void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle, const FCamera& Camera, float DeltaTime)
 {
     ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
+
+    PrepareGpuDebugPrint(CmdContext);
 
     UpdateCullingVisibility(Camera);
 
@@ -1376,6 +1387,31 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         LightingBufferState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     });
 
+    struct FDebugPrintPassData
+    {
+        bool bEnabled = false;
+        D3D12_CPU_DESCRIPTOR_HANDLE OutputHandle{};
+    };
+
+    Graph.AddPass<FDebugPrintPassData>("GpuDebugPrint", [this, RtvHandle](FDebugPrintPassData& Data, FRGPassBuilder& Builder)
+    {
+        Data.bEnabled = bEnableGpuDebugPrint && GpuDebugPrintPipeline && GpuDebugPrintRootSignature && GpuDebugPrintDescriptorHeap;
+        Data.OutputHandle = RtvHandle;
+        if (Data.bEnabled)
+        {
+            Builder.KeepAlive();
+        }
+    }, [this](const FDebugPrintPassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        DispatchGpuDebugPrintStats(Cmd);
+        RenderGpuDebugPrint(Cmd, Data.OutputHandle);
+    });
+
     Graph.Execute(CmdContext);
 
     if (bAutoExposureEnabled)
@@ -1400,12 +1436,14 @@ bool FDeferredRenderer::CreateBasePassRootSignature(FDX12Device* Device)
     DescriptorRange.OffsetInDescriptorsFromTableStart = 0;
 
     D3D12_ROOT_PARAMETER1 RootParams[2] = {};
+    // RootParams[0]: Scene constant buffer (b0)
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[0].Descriptor.ShaderRegister = 0;
     RootParams[0].Descriptor.RegisterSpace = 0;
     RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
 
+    // RootParams[1]: Base pass material texture SRV table (t0..t3)
     RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     RootParams[1].DescriptorTable.NumDescriptorRanges = 1;
@@ -1459,12 +1497,14 @@ bool FDeferredRenderer::CreateLightingRootSignature(FDX12Device* Device)
     }
 
     D3D12_ROOT_PARAMETER1 RootParams[2] = {};
+    // RootParams[0]: Lighting constants (b0)
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[0].Descriptor.ShaderRegister = 0;
     RootParams[0].Descriptor.RegisterSpace = 0;
     RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
 
+    // RootParams[1]: GBuffer/IBL/shadow SRV table (t0..t5)
     RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     RootParams[1].DescriptorTable.NumDescriptorRanges = _countof(DescriptorRanges);
@@ -1946,32 +1986,38 @@ bool FDeferredRenderer::CreateHZBRootSignature(FDX12Device* Device)
 
     D3D12_ROOT_PARAMETER1 RootParams[6] = {};
 
+    // RootParams[0]: HZB constants (mip counts, dimensions, source mip)
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[0].Constants.Num32BitValues = 11;
     RootParams[0].Constants.RegisterSpace = 0;
     RootParams[0].Constants.ShaderRegister = 0;
 
+    // RootParams[1]: HZB source texture SRV (t0)
     RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[1].DescriptorTable.NumDescriptorRanges = 1;
     RootParams[1].DescriptorTable.pDescriptorRanges = &DescriptorRanges[0];
 
+    // RootParams[2]: HZB output UAV 0 (u0)
     RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[2].DescriptorTable.NumDescriptorRanges = 1;
     RootParams[2].DescriptorTable.pDescriptorRanges = &DescriptorRanges[1];
 
+    // RootParams[3]: HZB output UAV 1 (u1)
     RootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[3].DescriptorTable.NumDescriptorRanges = 1;
     RootParams[3].DescriptorTable.pDescriptorRanges = &DescriptorRanges[2];
 
+    // RootParams[4]: HZB output UAV 2 (u2)
     RootParams[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[4].DescriptorTable.NumDescriptorRanges = 1;
     RootParams[4].DescriptorTable.pDescriptorRanges = &DescriptorRanges[3];
 
+    // RootParams[5]: HZB output UAV 3 (u3)
     RootParams[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[5].DescriptorTable.NumDescriptorRanges = 1;
@@ -2051,22 +2097,26 @@ bool FDeferredRenderer::CreateAutoExposureRootSignature(FDX12Device* Device)
     UavRange.OffsetInDescriptorsFromTableStart = 0;
 
     D3D12_ROOT_PARAMETER1 RootParams[4] = {};
+    // RootParams[0]: Auto exposure constants (input size, delta time, adaptation)
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[0].Constants.Num32BitValues = 9;
     RootParams[0].Constants.RegisterSpace = 0;
     RootParams[0].Constants.ShaderRegister = 0;
 
+    // RootParams[1]: Scene color SRV (t0)
     RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[1].DescriptorTable.NumDescriptorRanges = 1;
     RootParams[1].DescriptorTable.pDescriptorRanges = &SceneSrvRange;
 
+    // RootParams[2]: Luminance history SRV (t1)
     RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[2].DescriptorTable.NumDescriptorRanges = 1;
     RootParams[2].DescriptorTable.pDescriptorRanges = &HistorySrvRange;
 
+    // RootParams[3]: Luminance output UAV (u0)
     RootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[3].DescriptorTable.NumDescriptorRanges = 1;
@@ -2145,17 +2195,20 @@ bool FDeferredRenderer::CreateTonemapRootSignature(FDX12Device* Device)
 
     D3D12_ROOT_PARAMETER1 RootParams[3] = {};
 
+    // RootParams[0]: Tonemap constants (exposure/gamma/auto-exposure)
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     RootParams[0].Constants.Num32BitValues = 8;
     RootParams[0].Constants.RegisterSpace = 0;
     RootParams[0].Constants.ShaderRegister = 0;
 
+    // RootParams[1]: Lighting buffer SRV (t0)
     RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     RootParams[1].DescriptorTable.NumDescriptorRanges = 1;
     RootParams[1].DescriptorTable.pDescriptorRanges = &LightingRange;
 
+    // RootParams[2]: Luminance SRV (t1)
     RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     RootParams[2].DescriptorTable.NumDescriptorRanges = 1;
@@ -2982,6 +3035,102 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     std::memcpy(UploadData, Bounds.data(), BoundsBufferSize);
     ModelBoundsUpload->Unmap(0, nullptr);
 
+    D3D12_RESOURCE_DESC DebugDesc = BufferDesc;
+    DebugDesc.Width = GpuDebugPrintBufferSize;
+    DebugDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &DefaultHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &DebugDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        nullptr,
+        IID_PPV_ARGS(GpuDebugPrintBuffer.GetAddressOf())));
+    if (GpuDebugPrintBuffer)
+    {
+        GpuDebugPrintBuffer->SetName(L"GpuDebugPrintBuffer");
+    }
+
+    D3D12_RESOURCE_DESC DebugUploadDesc = {};
+    DebugUploadDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    DebugUploadDesc.Width = sizeof(uint32_t);
+    DebugUploadDesc.Height = 1;
+    DebugUploadDesc.DepthOrArraySize = 1;
+    DebugUploadDesc.MipLevels = 1;
+    DebugUploadDesc.Format = DXGI_FORMAT_UNKNOWN;
+    DebugUploadDesc.SampleDesc.Count = 1;
+    DebugUploadDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    DebugUploadDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &UploadHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &DebugUploadDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(GpuDebugPrintUpload.GetAddressOf())));
+    if (GpuDebugPrintUpload)
+    {
+        GpuDebugPrintUpload->SetName(L"GpuDebugPrintUpload");
+        void* DebugUploadData = nullptr;
+        HR_CHECK(GpuDebugPrintUpload->Map(0, &EmptyRange, &DebugUploadData));
+        if (DebugUploadData)
+        {
+            std::memset(DebugUploadData, 0, sizeof(uint32_t));
+        }
+        GpuDebugPrintUpload->Unmap(0, nullptr);
+    }
+
+    D3D12_RESOURCE_DESC StatsDesc = {};
+    StatsDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    StatsDesc.Width = sizeof(uint32_t) * 2;
+    StatsDesc.Height = 1;
+    StatsDesc.DepthOrArraySize = 1;
+    StatsDesc.MipLevels = 1;
+    StatsDesc.Format = DXGI_FORMAT_UNKNOWN;
+    StatsDesc.SampleDesc.Count = 1;
+    StatsDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    StatsDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &DefaultHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &StatsDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        nullptr,
+        IID_PPV_ARGS(GpuDebugPrintStatsBuffer.GetAddressOf())));
+    if (GpuDebugPrintStatsBuffer)
+    {
+        GpuDebugPrintStatsBuffer->SetName(L"GpuDebugPrintStatsBuffer");
+    }
+
+    D3D12_RESOURCE_DESC StatsUploadDesc = StatsDesc;
+    StatsUploadDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &UploadHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &StatsUploadDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(GpuDebugPrintStatsUpload.GetAddressOf())));
+    if (GpuDebugPrintStatsUpload)
+    {
+        GpuDebugPrintStatsUpload->SetName(L"GpuDebugPrintStatsUpload");
+        void* StatsUploadData = nullptr;
+        HR_CHECK(GpuDebugPrintStatsUpload->Map(0, &EmptyRange, &StatsUploadData));
+        if (StatsUploadData)
+        {
+            std::memset(StatsUploadData, 0, sizeof(uint32_t) * 2);
+        }
+        GpuDebugPrintStatsUpload->Unmap(0, nullptr);
+    }
+
+    if (!GpuDebugPrintBuffer || !GpuDebugPrintUpload || !GpuDebugPrintStatsBuffer || !GpuDebugPrintStatsUpload)
+    {
+        LogError("Failed to create GPU debug print resources");
+        return false;
+    }
+
     ComPtr<ID3D12CommandAllocator> UploadAllocator;
     ComPtr<ID3D12GraphicsCommandList> UploadList;
     HR_CHECK(Device->GetDevice()->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(UploadAllocator.GetAddressOf())));
@@ -2989,8 +3138,16 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
 
     UploadList->CopyBufferRegion(IndirectCommandBuffer.Get(), 0, IndirectCommandUpload.Get(), 0, CommandBufferSize);
     UploadList->CopyBufferRegion(ModelBoundsBuffer.Get(), 0, ModelBoundsUpload.Get(), 0, BoundsBufferSize);
+    if (GpuDebugPrintBuffer && GpuDebugPrintUpload)
+    {
+        UploadList->CopyBufferRegion(GpuDebugPrintBuffer.Get(), 0, GpuDebugPrintUpload.Get(), 0, sizeof(uint32_t));
+    }
+    if (GpuDebugPrintStatsBuffer && GpuDebugPrintStatsUpload)
+    {
+        UploadList->CopyBufferRegion(GpuDebugPrintStatsBuffer.Get(), 0, GpuDebugPrintStatsUpload.Get(), 0, sizeof(uint32_t) * 2);
+    }
 
-    D3D12_RESOURCE_BARRIER Barriers[2] = {};
+    D3D12_RESOURCE_BARRIER Barriers[4] = {};
     Barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     Barriers[0].Transition.pResource = IndirectCommandBuffer.Get();
     Barriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
@@ -3001,7 +3158,17 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     Barriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     Barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
     Barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-    UploadList->ResourceBarrier(2, Barriers);
+    Barriers[2].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    Barriers[2].Transition.pResource = GpuDebugPrintBuffer.Get();
+    Barriers[2].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    Barriers[2].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    Barriers[2].Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    Barriers[3].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    Barriers[3].Transition.pResource = GpuDebugPrintStatsBuffer.Get();
+    Barriers[3].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    Barriers[3].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    Barriers[3].Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    UploadList->ResourceBarrier(4, Barriers);
 
     HR_CHECK(UploadList->Close());
     ID3D12CommandList* Lists[] = { UploadList.Get() };
@@ -3009,23 +3176,40 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     Device->GetGraphicsQueue()->Flush();
 
     IndirectCommandState = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+    GpuDebugPrintState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    GpuDebugPrintStatsState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 
-    D3D12_ROOT_PARAMETER RootParams[4] = {};
+    D3D12_ROOT_PARAMETER RootParams[6] = {};
+    // RootParams[0]: cbuffer CullingConstants (frustum planes, view-projection, HZB settings, debug toggle)
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[0].Constants.ShaderRegister = 0;
     RootParams[0].Constants.RegisterSpace = 0;
-    RootParams[0].Constants.Num32BitValues = 45;
+    RootParams[0].Constants.Num32BitValues = 46;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
+    // RootParams[1]: SRV ModelBounds buffer (t0)
     RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
     RootParams[1].Descriptor.ShaderRegister = 0;
     RootParams[1].Descriptor.RegisterSpace = 0;
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
+    // RootParams[2]: UAV IndirectArgs buffer (u0)
     RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
     RootParams[2].Descriptor.ShaderRegister = 0;
     RootParams[2].Descriptor.RegisterSpace = 0;
     RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    // RootParams[3]: UAV DebugPrintBuffer for text entries (u1)
+    RootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+    RootParams[3].Descriptor.ShaderRegister = 1;
+    RootParams[3].Descriptor.RegisterSpace = 0;
+    RootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    // RootParams[4]: UAV DebugPrintStatsBuffer for culling counters (u2)
+    RootParams[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+    RootParams[4].Descriptor.ShaderRegister = 2;
+    RootParams[4].Descriptor.RegisterSpace = 0;
+    RootParams[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     D3D12_DESCRIPTOR_RANGE HZBRange = {};
     HZBRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
@@ -3034,10 +3218,11 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     HZBRange.RegisterSpace = 0;
     HZBRange.OffsetInDescriptorsFromTableStart = 0;
 
-    RootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    RootParams[3].DescriptorTable.NumDescriptorRanges = 1;
-    RootParams[3].DescriptorTable.pDescriptorRanges = &HZBRange;
-    RootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    // RootParams[5]: HZB SRV table (t1)
+    RootParams[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    RootParams[5].DescriptorTable.NumDescriptorRanges = 1;
+    RootParams[5].DescriptorTable.pDescriptorRanges = &HZBRange;
+    RootParams[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     D3D12_ROOT_SIGNATURE_DESC RootDesc = {};
     RootDesc.NumParameters = _countof(RootParams);

@@ -34,6 +34,7 @@ struct FRendererConfig
     bool bEnableGraphDump = false;
     bool bEnableGpuTiming = false;
     bool bEnableIndirectDraw = true;
+    bool bEnableGpuDebugPrint = true;
     uint32_t WindowWidth = 1280;
     uint32_t WindowHeight = 720;
 };
