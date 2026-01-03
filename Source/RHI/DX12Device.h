@@ -22,7 +22,6 @@ public:
     bool                 QueryLocalVideoMemory(DXGI_QUERY_VIDEO_MEMORY_INFO& OutInfo) const;
 
 private:
-    bool LoadAgilitySDK();
     bool CreateFactory();
     bool PickAdapter();
     bool CreateDevice();

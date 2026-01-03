@@ -20,16 +20,6 @@ namespace
         return std::filesystem::path(Buffer.data(), Buffer.data() + Length).remove_filename();
     }
 
-    std::filesystem::path ResolveSDKDirectory()
-    {
-        std::filesystem::path SdkPath(D3D12SDKPath);
-        if (SdkPath.is_relative())
-        {
-            SdkPath = GetExecutableDirectory() / SdkPath;
-        }
-        return SdkPath.lexically_normal();
-    }
-
     void LogLoadedModulePath(const wchar_t* ModuleName, const char* Label)
     {
         HMODULE Module = GetModuleHandleW(ModuleName);
@@ -76,7 +66,6 @@ FDX12Device::~FDX12Device()
 bool FDX12Device::Initialize()
 {
     LogInfo("DX12 device initialization started");
-    LoadAgilitySDK();
     if (!CreateFactory()) { LogError("Failed to create DXGI factory"); return false; }
     if (!PickAdapter())   { LogError("No suitable adapter found"); return false; }
     if (!CreateDevice())  { LogError("Failed to create D3D12 device"); return false; }
@@ -84,35 +73,6 @@ bool FDX12Device::Initialize()
     if (!CreateCommandQueues()) { LogError("Failed to create command queues"); return false; }
 
     LogInfo("DX12 device initialization complete");
-    return true;
-}
-
-bool FDX12Device::LoadAgilitySDK()
-{
-    const std::filesystem::path ResolvedSdkPath = ResolveSDKDirectory();
-    const std::wstring ResolvedSdkPathW = ResolvedSdkPath.wstring();
-    const std::string ResolvedSdkPathUtf8 = ResolvedSdkPath.u8string();
-
-    if (D3D12SDKVersion > 0)
-    {
-        std::ostringstream Oss;
-        Oss << "Agility SDK Version: " << D3D12SDKVersion << ", Path: " << ResolvedSdkPathUtf8;
-        LogInfo(Oss.str());
-
-        if (!SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_USER_DIRS))
-        {
-            LogWarning("Failed to call SetDefaultDllDirectories");
-        }
-        else if (!AddDllDirectory(ResolvedSdkPathW.c_str()))
-        {
-            LogWarning("Failed to add Agility SDK DLL path. d3d12core.dll placement and permissions should be checked");
-        }
-    }
-    else if (!ResolvedSdkPath.empty())
-    {
-        LogWarning("SDK version is set to 0. Using the default D3D12 runtime.");
-    }
-
     return true;
 }
 
@@ -132,10 +92,6 @@ bool FDX12Device::CreateFactory()
     HR_CHECK(CreateDXGIFactory2(Flags, IID_PPV_ARGS(Factory.GetAddressOf())));
     CheckTearingSupport();
 
-    std::ostringstream Oss;
-    const std::filesystem::path ResolvedSdkPath = ResolveSDKDirectory();
-    Oss << "D3D12SDKVersion: " << D3D12SDKVersion << ", Path: " << ResolvedSdkPath.u8string();
-    LogInfo(Oss.str());
     return true;
 }
 

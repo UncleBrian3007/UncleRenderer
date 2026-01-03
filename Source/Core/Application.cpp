@@ -31,6 +31,12 @@
 #include <chrono>
 #include <cwchar>
 
+extern "C"
+{
+    __declspec(dllexport) extern const UINT D3D12SDKVersion = D3D12_SDK_VERSION;
+    __declspec(dllexport) extern const char* D3D12SDKPath = ".\\D3D12\\";
+}
+
 namespace
 {
     std::string PathToUtf8String(const std::wstring& Path)

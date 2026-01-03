@@ -1,18 +1,6 @@
 #pragma once
 #include <Windows.h>
 #include <d3d12.h>
-
-#ifndef D3D12_SDK_PATH_W
-#define D3D12_SDK_PATH_W L".\\D3D12\\"
-#endif
-
-#ifndef D3D12SDKVersion
-#define D3D12SDKVersion D3D12_SDK_VERSION
-#endif
-#ifndef D3D12SDKPath
-#define D3D12SDKPath D3D12_SDK_PATH_W
-#endif
-
 #include <dxgi1_6.h>
 #include <wrl.h>
 #include <vector>
