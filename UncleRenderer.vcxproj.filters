@@ -349,5 +349,8 @@
     <None Include="Shaders\AutoExposure.hlsl">
       <Filter>Shaders</Filter>
     </None>
+    <None Include="Assets\Scenes\pica_pica.json">
+      <Filter>Assets</Filter>
+    </None>
   </ItemGroup>
 </Project>

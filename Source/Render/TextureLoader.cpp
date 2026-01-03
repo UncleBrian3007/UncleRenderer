@@ -28,6 +28,39 @@ using Microsoft::WRL::ComPtr;
 namespace
 {
     const std::wstring GDefaultGridCacheKey = L"__default_grid_texture__";
+
+    std::wstring BuildCacheKey(const std::wstring& BaseKey, bool bUseSRGB)
+    {
+        if (!bUseSRGB)
+        {
+            return BaseKey;
+        }
+
+        return BaseKey + L"|srgb";
+    }
+
+    DXGI_FORMAT MakeSRGBFormat(DXGI_FORMAT Format)
+    {
+        switch (Format)
+        {
+        case DXGI_FORMAT_R8G8B8A8_UNORM:
+            return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+        case DXGI_FORMAT_B8G8R8A8_UNORM:
+            return DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+        case DXGI_FORMAT_B8G8R8X8_UNORM:
+            return DXGI_FORMAT_B8G8R8X8_UNORM_SRGB;
+        case DXGI_FORMAT_BC1_UNORM:
+            return DXGI_FORMAT_BC1_UNORM_SRGB;
+        case DXGI_FORMAT_BC2_UNORM:
+            return DXGI_FORMAT_BC2_UNORM_SRGB;
+        case DXGI_FORMAT_BC3_UNORM:
+            return DXGI_FORMAT_BC3_UNORM_SRGB;
+        case DXGI_FORMAT_BC7_UNORM:
+            return DXGI_FORMAT_BC7_UNORM_SRGB;
+        default:
+            return Format;
+        }
+    }
 }
 
 std::unordered_map<std::wstring, ComPtr<ID3D12Resource>> FTextureLoader::GlobalTextureCache;
@@ -38,62 +71,65 @@ FTextureLoader::FTextureLoader(FDX12Device* InDevice)
 {
 }
 
-bool FTextureLoader::LoadOrDefault(const std::wstring& TexturePath, ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload)
+bool FTextureLoader::LoadOrDefault(const std::wstring& TexturePath, ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload, bool bUseSRGB)
 {
-    if (TryGetCachedTexture(TexturePath, OutTexture))
+    const std::wstring CacheKey = BuildCacheKey(TexturePath, bUseSRGB);
+    if (TryGetCachedTexture(CacheKey, OutTexture))
     {
         return true;
     }
 
-    if (!TexturePath.empty() && LoadTextureInternal(TexturePath, OutTexture, RecordedUpload))
+    if (!TexturePath.empty() && LoadTextureInternal(TexturePath, OutTexture, RecordedUpload, bUseSRGB))
     {
         std::lock_guard<std::mutex> Lock(GTextureCacheMutex);
-        GlobalTextureCache[TexturePath] = OutTexture;
+        GlobalTextureCache[CacheKey] = OutTexture;
         return true;
     }
 
-    if (TryGetCachedTexture(GDefaultGridCacheKey, OutTexture))
+    const std::wstring DefaultCacheKey = BuildCacheKey(GDefaultGridCacheKey, bUseSRGB);
+    if (TryGetCachedTexture(DefaultCacheKey, OutTexture))
     {
         return true;
     }
 
-    if (CreateDefaultGridTexture(OutTexture, RecordedUpload))
+    if (CreateDefaultGridTexture(OutTexture, RecordedUpload, bUseSRGB))
     {
         std::lock_guard<std::mutex> Lock(GTextureCacheMutex);
-        GlobalTextureCache[GDefaultGridCacheKey] = OutTexture;
+        GlobalTextureCache[DefaultCacheKey] = OutTexture;
         return true;
     }
 
     return false;
 }
 
-bool FTextureLoader::LoadOrSolidColor(const std::wstring& TexturePath, uint32_t Color, ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload)
+bool FTextureLoader::LoadOrSolidColor(const std::wstring& TexturePath, uint32_t Color, ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload, bool bUseSRGB)
 {
-    if (TryGetCachedTexture(TexturePath, OutTexture))
-    {
-        return true;
-    }
-
-    if (!TexturePath.empty() && LoadTextureInternal(TexturePath, OutTexture, RecordedUpload))
-    {
-        std::lock_guard<std::mutex> Lock(GTextureCacheMutex);
-        GlobalTextureCache[TexturePath] = OutTexture;
-        return true;
-    }
-
-    const std::wstring CacheKey = L"__solid_color_" + std::to_wstring(static_cast<uint64_t>(Color));
+    const std::wstring CacheKey = BuildCacheKey(TexturePath, bUseSRGB);
     if (TryGetCachedTexture(CacheKey, OutTexture))
     {
         return true;
     }
 
-    if (!CreateSolidColorTexture(Color, OutTexture, RecordedUpload))
+    if (!TexturePath.empty() && LoadTextureInternal(TexturePath, OutTexture, RecordedUpload, bUseSRGB))
+    {
+        std::lock_guard<std::mutex> Lock(GTextureCacheMutex);
+        GlobalTextureCache[CacheKey] = OutTexture;
+        return true;
+    }
+
+    const std::wstring SolidColorKey = BuildCacheKey(L"__solid_color_" + std::to_wstring(static_cast<uint64_t>(Color)), bUseSRGB);
+    if (TryGetCachedTexture(SolidColorKey, OutTexture))
+    {
+        return true;
+    }
+
+    if (!CreateSolidColorTexture(Color, OutTexture, RecordedUpload, bUseSRGB))
     {
         return false;
     }
 
     std::lock_guard<std::mutex> Lock(GTextureCacheMutex);
-    GlobalTextureCache[CacheKey] = OutTexture;
+    GlobalTextureCache[SolidColorKey] = OutTexture;
     return true;
 }
 
@@ -121,7 +157,7 @@ bool FTextureLoader::TryGetCachedTexture(const std::wstring& TexturePath, ComPtr
     return false;
 }
 
-bool FTextureLoader::LoadTextureInternal(const std::wstring& FilePath, ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload)
+bool FTextureLoader::LoadTextureInternal(const std::wstring& FilePath, ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload, bool bUseSRGB)
 {
     if (Device == nullptr || FilePath.empty())
     {
@@ -172,7 +208,8 @@ bool FTextureLoader::LoadTextureInternal(const std::wstring& FilePath, ComPtr<ID
         const uint32_t SliceCount = bIsCubemap ? ArraySize * 6u : ArraySize;
         const uint32_t Depth = Descriptor.type == ddspp::Texture3D ? std::max(1u, Descriptor.depth) : 1u;
         const UINT SubresourceCount = Descriptor.numMips * SliceCount;
-        const DXGI_FORMAT Format = static_cast<DXGI_FORMAT>(Descriptor.format);
+        const DXGI_FORMAT BaseFormat = static_cast<DXGI_FORMAT>(Descriptor.format);
+        const DXGI_FORMAT Format = bUseSRGB ? MakeSRGBFormat(BaseFormat) : BaseFormat;
 
         D3D12_RESOURCE_DESC TextureDesc = {};
         TextureDesc.Dimension = Descriptor.type == ddspp::Texture3D ? D3D12_RESOURCE_DIMENSION_TEXTURE3D : D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -349,7 +386,7 @@ bool FTextureLoader::LoadTextureInternal(const std::wstring& FilePath, ComPtr<ID
     TextureDesc.Height = static_cast<UINT>(Height);
     TextureDesc.DepthOrArraySize = 1;
     TextureDesc.MipLevels = 1;
-    TextureDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    TextureDesc.Format = bUseSRGB ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM;
     TextureDesc.SampleDesc.Count = 1;
     TextureDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
 
@@ -457,7 +494,7 @@ bool FTextureLoader::LoadTextureInternal(const std::wstring& FilePath, ComPtr<ID
     return true;
 }
 
-bool FTextureLoader::CreateDefaultGridTexture(ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload)
+bool FTextureLoader::CreateDefaultGridTexture(ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload, bool bUseSRGB)
 {
     if (Device == nullptr)
     {
@@ -489,7 +526,7 @@ bool FTextureLoader::CreateDefaultGridTexture(ComPtr<ID3D12Resource>& OutTexture
     TextureDesc.Height = Height;
     TextureDesc.DepthOrArraySize = 1;
     TextureDesc.MipLevels = 1;
-    TextureDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    TextureDesc.Format = bUseSRGB ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM;
     TextureDesc.SampleDesc.Count = 1;
     TextureDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
 
@@ -591,7 +628,7 @@ bool FTextureLoader::CreateDefaultGridTexture(ComPtr<ID3D12Resource>& OutTexture
     return true;
 }
 
-bool FTextureLoader::CreateSolidColorTexture(uint32_t Color, ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload)
+bool FTextureLoader::CreateSolidColorTexture(uint32_t Color, ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload, bool bUseSRGB)
 {
     if (Device == nullptr)
     {
@@ -608,7 +645,7 @@ bool FTextureLoader::CreateSolidColorTexture(uint32_t Color, ComPtr<ID3D12Resour
     TextureDesc.Height = Height;
     TextureDesc.DepthOrArraySize = 1;
     TextureDesc.MipLevels = 1;
-    TextureDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    TextureDesc.Format = bUseSRGB ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM;
     TextureDesc.SampleDesc.Count = 1;
     TextureDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
 
@@ -723,11 +760,11 @@ bool FTextureLoader::LoadTexturesParallel(std::vector<FTextureLoadRequest>& Requ
         {
             if (Request.bUseSolidColor)
             {
-                Request.bSuccess = LoadOrSolidColor(Request.Path, Request.SolidColor, *Request.OutTexture);
+                Request.bSuccess = LoadOrSolidColor(Request.Path, Request.SolidColor, *Request.OutTexture, nullptr, Request.bUseSRGB);
             }
             else
             {
-                Request.bSuccess = LoadOrDefault(Request.Path, *Request.OutTexture);
+                Request.bSuccess = LoadOrDefault(Request.Path, *Request.OutTexture, nullptr, Request.bUseSRGB);
             }
         }
 
@@ -751,11 +788,11 @@ bool FTextureLoader::LoadTexturesParallel(std::vector<FTextureLoadRequest>& Requ
             {
                 if (Request.bUseSolidColor)
                 {
-                    Request.bSuccess = LoadOrSolidColor(Request.Path, Request.SolidColor, *Request.OutTexture, Work);
+                    Request.bSuccess = LoadOrSolidColor(Request.Path, Request.SolidColor, *Request.OutTexture, Work, Request.bUseSRGB);
                 }
                 else
                 {
-                    Request.bSuccess = LoadOrDefault(Request.Path, *Request.OutTexture, Work);
+                    Request.bSuccess = LoadOrDefault(Request.Path, *Request.OutTexture, Work, Request.bUseSRGB);
                 }
             });
         }

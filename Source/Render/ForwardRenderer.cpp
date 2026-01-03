@@ -967,12 +967,12 @@ bool FForwardRenderer::CreateRootSignature(FDX12Device* Device)
     RootParams[1].DescriptorTable.pDescriptorRanges = &DescriptorRange;
 
     D3D12_STATIC_SAMPLER_DESC Samplers[3] = {};
-    Samplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    Samplers[0].Filter = D3D12_FILTER_ANISOTROPIC;
     Samplers[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
     Samplers[0].AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
     Samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
     Samplers[0].MipLODBias = 0.0f;
-    Samplers[0].MaxAnisotropy = 1;
+    Samplers[0].MaxAnisotropy = 4;
     Samplers[0].ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
     Samplers[0].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
     Samplers[0].MinLOD = 0.0f;
@@ -1462,6 +1462,7 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
             FTextureLoadRequest BaseColorRequest;
             BaseColorRequest.Path = Models[Index].BaseColorTexturePath;
             BaseColorRequest.bUseSolidColor = false;
+            BaseColorRequest.bUseSRGB = true;
             BaseColorRequest.OutTexture = &LoadResults[Index].BaseColor;
             Requests.push_back(BaseColorRequest);
         }
@@ -1489,6 +1490,7 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
             FTextureLoadRequest EmissiveRequest;
             EmissiveRequest.Path = Models[Index].EmissiveTexturePath;
             EmissiveRequest.bUseSolidColor = false;
+            EmissiveRequest.bUseSRGB = true;
             EmissiveRequest.OutTexture = &LoadResults[Index].Emissive;
             Requests.push_back(EmissiveRequest);
         }

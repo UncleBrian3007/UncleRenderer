@@ -1645,16 +1645,16 @@ void FApplication::RenderUI()
             }
         }
 
-        //float AutoExposureKeyValue = AutoExposureKey;
-        //if (ImGui::SliderFloat("Auto Exposure Key", &AutoExposureKeyValue, 0.05f, 1.0f, "%.2f"))
-        //{
-        //    AutoExposureKey = AutoExposureKeyValue;
+        float AutoExposureKeyValue = AutoExposureKey;
+        if (ImGui::SliderFloat("Exposure Key", &AutoExposureKeyValue, 0.05f, 1.0f, "%.2f"))
+        {
+            AutoExposureKey = AutoExposureKeyValue;
 
-        //    if (DeferredRenderer)
-        //    {
-        //        DeferredRenderer->SetAutoExposureKey(AutoExposureKey);
-        //    }
-        //}
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetAutoExposureKey(AutoExposureKey);
+            }
+        }
 
         float AutoExposureMinValue = AutoExposureMin;
         if (ImGui::SliderFloat("Exposure Min", &AutoExposureMinValue, 0.01f, 2.0f, "%.2f"))

@@ -15,7 +15,11 @@ Texture2D PrevLogAverageLuminance : register(t1);
 RWTexture2D<float> LogAverageLuminance : register(u0);
 SamplerState SceneSampler : register(s0);
 
+#if (__SHADER_TARGET_MAJOR__ >= 6)
+groupshared float WaveSums[8];
+#else
 groupshared float SharedLog[256];
+#endif
 
 [numthreads(16, 16, 1)]
 void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID, uint3 GroupThreadId : SV_GroupThreadID)
@@ -30,6 +34,26 @@ void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID, uint3 GroupThreadId : 
     float luminance = dot(max(color, 0.0f), LuminanceWeights);
 
     uint index = GroupThreadId.x + GroupThreadId.y * 16;
+#if (__SHADER_TARGET_MAJOR__ >= 6)
+    float logValue = log2(max(luminance, 1e-4f));
+    float waveSum = WaveActiveSum(logValue);
+
+    if (WaveIsFirstLane())
+    {
+        uint laneCount = WaveGetLaneCount();
+        uint waveIndex = index / laneCount;
+        WaveSums[waveIndex] = waveSum;
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    uint laneCount = WaveGetLaneCount();
+    uint waveCount = (256 + laneCount - 1) / laneCount;
+    float groupSum = (index < waveCount) ? WaveSums[index] : 0.0f;
+    groupSum = WaveActiveSum(groupSum);
+
+    if (index == 0)
+#else
     SharedLog[index] = log2(max(luminance, 1e-4f));
 
     GroupMemoryBarrierWithGroupSync();
@@ -44,8 +68,13 @@ void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID, uint3 GroupThreadId : 
     }
 
     if (index == 0)
+#endif
     {
+#if (__SHADER_TARGET_MAJOR__ >= 6)
+        float logAverageEv = groupSum / 256.0f;
+#else
         float logAverageEv = SharedLog[0] / 256.0f;
+#endif
         float keyEv = log2(max(AutoExposureKey, 1e-4f));
         float targetExposureEv = keyEv - logAverageEv;
         float minEv = log2(max(AutoExposureMin, 1e-4f));

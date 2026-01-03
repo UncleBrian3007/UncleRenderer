@@ -188,6 +188,7 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <ClInclude Include="ThirdParty\imgui\imstb_truetype.h" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imstb_truetype.h')" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="Assets\Scenes\pica_pica.json" />
     <None Include="Assets\Scenes\sponza.json" />
     <None Include="bin\RendererConfig.ini" />
     <None Include="packages.config" />

@@ -14,6 +14,7 @@ struct FTextureLoadRequest
     std::wstring Path;
     uint32_t SolidColor = 0;
     bool bUseSolidColor = false;
+    bool bUseSRGB = false;
     Microsoft::WRL::ComPtr<ID3D12Resource>* OutTexture = nullptr;
     bool bSuccess = false;
 };
@@ -30,8 +31,8 @@ class FTextureLoader
 public:
     explicit FTextureLoader(FDX12Device* InDevice);
 
-    bool LoadOrDefault(const std::wstring& TexturePath, Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload = nullptr);
-    bool LoadOrSolidColor(const std::wstring& TexturePath, uint32_t Color, Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload = nullptr);
+    bool LoadOrDefault(const std::wstring& TexturePath, Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload = nullptr, bool bUseSRGB = false);
+    bool LoadOrSolidColor(const std::wstring& TexturePath, uint32_t Color, Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload = nullptr, bool bUseSRGB = false);
     void ClearCache();
 
     /**
@@ -43,9 +44,9 @@ public:
 
 private:
     bool TryGetCachedTexture(const std::wstring& TexturePath, Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture) const;
-    bool LoadTextureInternal(const std::wstring& TexturePath, Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload);
-    bool CreateDefaultGridTexture(Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload);
-    bool CreateSolidColorTexture(uint32_t Color, Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload);
+    bool LoadTextureInternal(const std::wstring& TexturePath, Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload, bool bUseSRGB);
+    bool CreateDefaultGridTexture(Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload, bool bUseSRGB);
+    bool CreateSolidColorTexture(uint32_t Color, Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload, bool bUseSRGB);
 
 private:
     FDX12Device* Device = nullptr;
