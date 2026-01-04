@@ -200,6 +200,9 @@ namespace RendererUtils
     void BuildCameraFrustumPlanes(
         const FCamera& Camera,
         DirectX::XMVECTOR OutPlanes[6]);
+    void BuildFrustumPlanesFromMatrix(
+        const DirectX::XMMATRIX& ViewProjection,
+        DirectX::XMVECTOR OutPlanes[6]);
     void UpdateCullingVisibility(
         const FCamera& Camera,
         const std::vector<FSceneModelResource>& Models,
@@ -224,6 +227,7 @@ namespace RendererUtils
         const DirectX::XMVECTOR& LightDirection,
         const DirectX::XMFLOAT3& LightColor,
         const DirectX::XMMATRIX& LightViewProjection,
+        const DirectX::XMMATRIX& Projection,
         float ShadowStrength,
         float ShadowBias,
         float ShadowMapWidth,
@@ -234,6 +238,7 @@ namespace RendererUtils
     void UpdateSkyConstants(
         const FCamera& Camera,
         const DirectX::XMMATRIX& WorldMatrix,
+        const DirectX::XMMATRIX& Projection,
         const DirectX::XMVECTOR& LightDirection,
         const DirectX::XMFLOAT3& LightColor,
         uint8_t* ConstantBufferMapped);

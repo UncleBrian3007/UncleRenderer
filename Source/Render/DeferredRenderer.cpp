@@ -8,6 +8,7 @@
 #include "../Scene/Mesh.h"
 #include "../RHI/DX12Device.h"
 #include "../RHI/DX12CommandContext.h"
+#include "../RHI/DX12CommandQueue.h"
 #include "../Core/GpuDebugMarkers.h"
 #include "../Core/Logger.h"
 #include <d3dx12.h>
@@ -42,6 +43,28 @@ namespace
     };
 
     constexpr DXGI_FORMAT LightingBufferFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+
+    float HaltonSequence(uint32_t Index, uint32_t Base)
+    {
+        float Result = 0.0f;
+        float Fraction = 1.0f / static_cast<float>(Base);
+        uint32_t Current = Index;
+        while (Current > 0)
+        {
+            Result += static_cast<float>(Current % Base) * Fraction;
+            Current /= Base;
+            Fraction /= static_cast<float>(Base);
+        }
+        return Result;
+    }
+
+    DirectX::XMFLOAT2 BuildTaaJitter(uint32_t SampleIndex)
+    {
+        const uint32_t Index = SampleIndex + 1;
+        const float JitterX = HaltonSequence(Index, 2) - 0.5f;
+        const float JitterY = HaltonSequence(Index, 3) - 0.5f;
+        return DirectX::XMFLOAT2(JitterX, JitterY);
+    }
 }
 
 bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT BackBufferFormat, const FRendererOptions& Options)
@@ -68,6 +91,14 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     AutoExposureMax = Options.AutoExposureMax;
     AutoExposureSpeedUp = Options.AutoExposureSpeedUp;
     AutoExposureSpeedDown = Options.AutoExposureSpeedDown;
+    bTaaEnabled = Options.bEnableTAA;
+    TaaHistoryWeight = Options.TaaHistoryWeight;
+    TaaFrameCount = Options.FramesInFlight;
+    TaaHistoryValid.clear();
+    TaaHistoryValid.resize(TaaFrameCount, false);
+    TaaHistoryFenceValues.clear();
+    TaaHistoryFenceValues.resize(TaaFrameCount, 0);
+    TaaSampleIndex = 0;
     bHZBEnabled = Options.bEnableHZB;
     bHZBReady = false;
 
@@ -133,6 +164,13 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     if (!CreateAutoExposureRootSignature(Device) || !CreateAutoExposurePipeline(Device))
     {
         LogError("Deferred renderer initialization failed: auto exposure pipeline creation failed");
+        return false;
+    }
+
+    LogInfo("Creating deferred renderer TAA root signature and pipeline...");
+    if (!CreateTaaRootSignature(Device) || !CreateTaaPipeline(Device))
+    {
+        LogError("Deferred renderer initialization failed: TAA pipeline creation failed");
         return false;
     }
 
@@ -208,6 +246,12 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     if (!CreateLuminanceResources(Device))
     {
         LogError("Deferred renderer initialization failed: luminance resource creation failed");
+        return false;
+    }
+
+    if (!CreateTaaResources(Device, Width, Height, Options.FramesInFlight))
+    {
+        LogError("Deferred renderer initialization failed: TAA resource creation failed");
         return false;
     }
 
@@ -357,6 +401,47 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
     UpdateCullingVisibility(Camera);
 
+    const bool bTaaActive = bTaaEnabled && TaaPipeline && TaaRootSignature && !TaaHistoryTextures.empty();
+    const uint32_t TaaFrameIndex = CmdContext.GetCurrentFrameIndex();
+    const uint32_t TaaReadIndex = TaaFrameCount > 0 ? (TaaFrameIndex + TaaFrameCount - 1u) % TaaFrameCount : 0u;
+    const uint32_t TaaWriteIndex = TaaFrameCount > 0 ? TaaFrameIndex % TaaFrameCount : 0u;
+    bool bTaaHistoryReady = false;
+    if (bTaaActive && TaaReadIndex < TaaHistoryValid.size() && TaaReadIndex < TaaHistoryFenceValues.size())
+    {
+        if (TaaHistoryValid[TaaReadIndex] && TaaHistoryFenceValues[TaaReadIndex] > 0)
+        {
+            if (FDX12CommandQueue* Queue = CmdContext.GetQueue())
+            {
+                const uint64_t FenceValue = TaaHistoryFenceValues[TaaReadIndex];
+                if (Queue->GetCompletedFenceValue() < FenceValue)
+                {
+                    Queue->Wait(FenceValue);
+                }
+                bTaaHistoryReady = true;
+            }
+        }
+    }
+    bUseTaaJitter = bTaaActive && bTaaHistoryReady;
+    if (bUseTaaJitter)
+    {
+        TaaJitter = BuildTaaJitter(TaaSampleIndex);
+    }
+    else
+    {
+        TaaJitter = DirectX::XMFLOAT2(0.0f, 0.0f);
+    }
+
+    DirectX::XMFLOAT4X4 ProjectionMatrix = {};
+    DirectX::XMStoreFloat4x4(&ProjectionMatrix, Camera.GetProjectionMatrix());
+    if (bUseTaaJitter && Viewport.Width > 0.0f && Viewport.Height > 0.0f)
+    {
+        const float JitterX = (2.0f * TaaJitter.x) / Viewport.Width;
+        const float JitterY = (2.0f * TaaJitter.y) / Viewport.Height;
+        ProjectionMatrix._31 += JitterX;
+        ProjectionMatrix._32 += JitterY;
+    }
+    TaaProjection = DirectX::XMLoadFloat4x4(&ProjectionMatrix);
+
     const bool bRenderShadows = bShadowsEnabled && ShadowPipeline && ShadowMap;
     const bool bDoDepthPrepass = bDepthPrepassEnabled && DepthPrepassPipeline;
     if (!bDoDepthPrepass)
@@ -416,6 +501,18 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
             { 1u, 1u, DXGI_FORMAT_R32_FLOAT })
     };
 
+    std::vector<FRGResourceHandle> TaaHandles;
+    TaaHandles.reserve(TaaHistoryTextures.size());
+    for (size_t Index = 0; Index < TaaHistoryTextures.size(); ++Index)
+    {
+        const std::string HandleName = "TaaHistory_" + std::to_string(Index);
+        TaaHandles.push_back(Graph.ImportTexture(
+            HandleName,
+            TaaHistoryTextures[Index].Get(),
+            &TaaStates[Index],
+            { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), LightingBufferFormat }));
+    }
+
     FRGResourceHandle HZBHandle = Graph.ImportTexture(
         "HZB",
         HierarchicalZBuffer.Get(),
@@ -461,15 +558,15 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
     struct FShadowPassData
     {
         bool bEnabled = false;
-        bool bUseIndirect = false;
         const FCamera* Camera = nullptr;
+        DirectX::XMMATRIX LightViewProjection = DirectX::XMMatrixIdentity();
     };
 
     Graph.AddPass<FShadowPassData>("ShadowMap", [&, bRenderShadows](FShadowPassData& Data, FRGPassBuilder& Builder)
     {
         Data.bEnabled = bRenderShadows;
-        Data.bUseIndirect = bEnableIndirectDraw && IndirectCommandSignature && IndirectCommandBuffer && IndirectCommandCount > 0;
         Data.Camera = &Camera;
+        Data.LightViewProjection = RendererUtils::BuildDirectionalLightViewProjection(SceneCenter, SceneRadius, LightDirection);
 
         if (bRenderShadows)
         {
@@ -497,6 +594,16 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         LocalCommandList->OMSetRenderTargets(0, nullptr, FALSE, &ShadowDSVHandle);
 
+        std::vector<bool> ShadowVisibility;
+        ShadowVisibility.resize(SceneModels.size(), true);
+        DirectX::XMVECTOR ShadowPlanes[6] = {};
+        RendererUtils::BuildFrustumPlanesFromMatrix(Data.LightViewProjection, ShadowPlanes);
+        for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+        {
+            const FSceneModelResource& Model = SceneModels[ModelIndex];
+            ShadowVisibility[ModelIndex] = RendererUtils::IsAabbInCameraFrustum(ShadowPlanes, Model.BoundsMin, Model.BoundsMax);
+        }
+
         for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
         {
             const FSceneModelResource& Model = SceneModels[ModelIndex];
@@ -504,22 +611,9 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
             UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset);
         }
 
-        if (Data.bUseIndirect)
-        {
-            LocalCommandList->SetGraphicsRootDescriptorTable(1, DescriptorHeap->GetGPUDescriptorHandleForHeapStart());
-            LocalCommandList->ExecuteIndirect(
-                IndirectCommandSignature.Get(),
-                IndirectCommandCount,
-                IndirectCommandBuffer.Get(),
-                0,
-                nullptr,
-                0);
-            return;
-        }
-
         for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
         {
-            if (!SceneModelVisibility.empty() && !SceneModelVisibility[ModelIndex])
+            if (!ShadowVisibility.empty() && !ShadowVisibility[ModelIndex])
             {
                 continue;
             }
@@ -1204,6 +1298,71 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         LocalCommandList->DrawIndexedInstanced(SkyGeometry.IndexCount, 1, 0, 0, 0);
     });
 
+    struct FTemporalAAPassData
+    {
+        bool bEnabled = false;
+        DirectX::XMFLOAT2 OutputSize{};
+        float HistoryWeight = 0.9f;
+        uint32_t UseHistory = 0;
+        uint32_t ReadIndex = 0;
+        uint32_t WriteIndex = 0;
+    };
+
+    Graph.AddPass<FTemporalAAPassData>("TemporalAA", [&](FTemporalAAPassData& Data, FRGPassBuilder& Builder)
+    {
+        Data.bEnabled = bTaaActive;
+        if (Data.bEnabled)
+        {
+            Data.ReadIndex = TaaReadIndex;
+            Data.WriteIndex = TaaWriteIndex;
+            Data.OutputSize = DirectX::XMFLOAT2(Viewport.Width, Viewport.Height);
+            Data.HistoryWeight = TaaHistoryWeight;
+            Data.UseHistory = bTaaHistoryReady ? 1u : 0u;
+            Builder.ReadTexture(LightingHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            Builder.ReadTexture(TaaHandles[Data.ReadIndex], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            Builder.WriteTexture(TaaHandles[Data.WriteIndex], D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        }
+    }, [this](const FTemporalAAPassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
+
+        FScopedPixEvent TaaEvent(LocalCommandList, L"TemporalAA");
+
+        struct FTemporalAAConstants
+        {
+            uint32_t OutputWidth;
+            uint32_t OutputHeight;
+            float HistoryWeight;
+            uint32_t UseHistory;
+        };
+
+        const FTemporalAAConstants Constants =
+        {
+            static_cast<uint32_t>(Data.OutputSize.x),
+            static_cast<uint32_t>(Data.OutputSize.y),
+            Data.HistoryWeight,
+            Data.UseHistory
+        };
+
+        ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
+        LocalCommandList->SetPipelineState(TaaPipeline.Get());
+        LocalCommandList->SetComputeRootSignature(TaaRootSignature.Get());
+        LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(Constants) / sizeof(uint32_t), &Constants, 0);
+        LocalCommandList->SetComputeRootDescriptorTable(1, LightingBufferHandle);
+        LocalCommandList->SetComputeRootDescriptorTable(2, TaaSrvHandles[Data.ReadIndex]);
+        LocalCommandList->SetComputeRootDescriptorTable(3, TaaUavHandles[Data.WriteIndex]);
+
+        const uint32_t GroupX = (static_cast<uint32_t>(Data.OutputSize.x) + 7u) / 8u;
+        const uint32_t GroupY = (static_cast<uint32_t>(Data.OutputSize.y) + 7u) / 8u;
+        LocalCommandList->Dispatch(GroupX, GroupY, 1);
+    });
+
     struct FAutoExposurePassData
     {
         bool bEnabled = false;
@@ -1281,7 +1440,9 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
     struct FTonemapPassData
     {
         D3D12_CPU_DESCRIPTOR_HANDLE OutputHandle{};
+        D3D12_GPU_DESCRIPTOR_HANDLE InputHandle{};
         bool bUseAutoExposure = false;
+        bool bUseTaa = false;
         uint32_t LuminanceIndex = 0;
     };
 
@@ -1289,8 +1450,17 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
     {
         Data.OutputHandle = RtvHandle;
         Data.bUseAutoExposure = bAutoExposureEnabled;
+        Data.bUseTaa = bTaaActive;
         Data.LuminanceIndex = LuminanceWriteIndex;
-        Builder.ReadTexture(LightingHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Data.InputHandle = Data.bUseTaa ? TaaSrvHandles[TaaWriteIndex] : LightingBufferHandle;
+        if (Data.bUseTaa)
+        {
+            Builder.ReadTexture(TaaHandles[TaaWriteIndex], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        }
+        else
+        {
+            Builder.ReadTexture(LightingHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        }
         Builder.ReadTexture(LuminanceHandles[Data.LuminanceIndex], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         for (int i = 0; i < 3; ++i)
         {
@@ -1337,7 +1507,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
         LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         LocalCommandList->SetGraphicsRoot32BitConstants(0, sizeof(TonemapConstants) / sizeof(uint32_t), &TonemapConstants, 0);
-        LocalCommandList->SetGraphicsRootDescriptorTable(1, LightingBufferHandle);
+        LocalCommandList->SetGraphicsRootDescriptorTable(1, Data.InputHandle);
         LocalCommandList->SetGraphicsRootDescriptorTable(2, LuminanceSrvHandles[Data.LuminanceIndex]);
         LocalCommandList->DrawInstanced(3, 1, 0, 0);
 
@@ -1371,6 +1541,17 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
     });
 
     Graph.Execute(CmdContext);
+
+    if (bTaaActive)
+    {
+        TaaSampleIndex = (TaaSampleIndex + 1u) % 8u;
+    }
+    else
+    {
+        std::fill(TaaHistoryValid.begin(), TaaHistoryValid.end(), false);
+        std::fill(TaaHistoryFenceValues.begin(), TaaHistoryFenceValues.end(), 0);
+        TaaSampleIndex = 0;
+    }
 
     if (bAutoExposureEnabled)
     {
@@ -2008,6 +2189,99 @@ bool FDeferredRenderer::CreateAutoExposurePipeline(FDX12Device* Device)
     return true;
 }
 
+bool FDeferredRenderer::CreateTaaRootSignature(FDX12Device* Device)
+{
+    D3D12_DESCRIPTOR_RANGE1 CurrentRange = {};
+    CurrentRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    CurrentRange.NumDescriptors = 1;
+    CurrentRange.BaseShaderRegister = 0;
+    CurrentRange.RegisterSpace = 0;
+    CurrentRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
+    CurrentRange.OffsetInDescriptorsFromTableStart = 0;
+
+    D3D12_DESCRIPTOR_RANGE1 HistoryRange = {};
+    HistoryRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    HistoryRange.NumDescriptors = 1;
+    HistoryRange.BaseShaderRegister = 1;
+    HistoryRange.RegisterSpace = 0;
+    HistoryRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
+    HistoryRange.OffsetInDescriptorsFromTableStart = 0;
+
+    D3D12_DESCRIPTOR_RANGE1 OutputRange = {};
+    OutputRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+    OutputRange.NumDescriptors = 1;
+    OutputRange.BaseShaderRegister = 0;
+    OutputRange.RegisterSpace = 0;
+    OutputRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
+    OutputRange.OffsetInDescriptorsFromTableStart = 0;
+
+    D3D12_ROOT_PARAMETER1 RootParams[4] = {};
+
+    // RootParams[0]: TAA constants (output size, history weight, history toggle)
+    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[0].Constants.Num32BitValues = 4;
+    RootParams[0].Constants.RegisterSpace = 0;
+    RootParams[0].Constants.ShaderRegister = 0;
+
+    // RootParams[1]: Current lighting SRV (t0)
+    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[1].DescriptorTable.NumDescriptorRanges = 1;
+    RootParams[1].DescriptorTable.pDescriptorRanges = &CurrentRange;
+
+    // RootParams[2]: History SRV (t1)
+    RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[2].DescriptorTable.NumDescriptorRanges = 1;
+    RootParams[2].DescriptorTable.pDescriptorRanges = &HistoryRange;
+
+    // RootParams[3]: Output UAV (u0)
+    RootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    RootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[3].DescriptorTable.NumDescriptorRanges = 1;
+    RootParams[3].DescriptorTable.pDescriptorRanges = &OutputRange;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
+    RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    RootSigDesc.Desc_1_1.NumParameters = _countof(RootParams);
+    RootSigDesc.Desc_1_1.pParameters = RootParams;
+    RootSigDesc.Desc_1_1.NumStaticSamplers = 0;
+    RootSigDesc.Desc_1_1.pStaticSamplers = nullptr;
+    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+
+    ComPtr<ID3DBlob> SerializedSig;
+    ComPtr<ID3DBlob> ErrorBlob;
+    HR_CHECK(D3D12SerializeVersionedRootSignature(&RootSigDesc, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
+
+    if (ErrorBlob)
+    {
+        OutputDebugStringA(static_cast<const char*>(ErrorBlob->GetBufferPointer()));
+    }
+
+    HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(TaaRootSignature.GetAddressOf())));
+    return true;
+}
+
+bool FDeferredRenderer::CreateTaaPipeline(FDX12Device* Device)
+{
+    FShaderCompiler Compiler;
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring CSTarget = RendererUtils::BuildShaderTarget(L"cs", ShaderModel);
+
+    std::vector<uint8_t> CSByteCode;
+    if (!Compiler.CompileFromFile(L"Shaders/TemporalAA.hlsl", L"CSMain", CSTarget, CSByteCode))
+    {
+        return false;
+    }
+
+    D3D12_COMPUTE_PIPELINE_STATE_DESC PsoDesc = {};
+    PsoDesc.pRootSignature = TaaRootSignature.Get();
+    PsoDesc.CS = { CSByteCode.data(), CSByteCode.size() };
+    HR_CHECK(Device->GetDevice()->CreateComputePipelineState(&PsoDesc, IID_PPV_ARGS(TaaPipeline.GetAddressOf())));
+    return true;
+}
+
 bool FDeferredRenderer::CreateTonemapRootSignature(FDX12Device* Device)
 {
     D3D12_DESCRIPTOR_RANGE1 LightingRange = {};
@@ -2274,6 +2548,74 @@ bool FDeferredRenderer::CreateLuminanceResources(FDX12Device* Device)
     return true;
 }
 
+bool FDeferredRenderer::CreateTaaResources(FDX12Device* Device, uint32_t Width, uint32_t Height, uint32_t FrameCount)
+{
+    if (Device == nullptr)
+    {
+        return false;
+    }
+
+    const uint32_t EffectiveFrameCount = (std::max)(1u, FrameCount);
+
+    D3D12_HEAP_PROPERTIES HeapProps = {};
+    HeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    D3D12_RESOURCE_DESC Desc = {};
+    Desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    Desc.Width = Width;
+    Desc.Height = Height;
+    Desc.DepthOrArraySize = 1;
+    Desc.MipLevels = 1;
+    Desc.Format = LightingBufferFormat;
+    Desc.SampleDesc.Count = 1;
+    Desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+    TaaHistoryTextures.clear();
+    TaaHistoryTextures.resize(EffectiveFrameCount);
+    for (uint32_t Index = 0; Index < EffectiveFrameCount; ++Index)
+    {
+        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+            &HeapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &Desc,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            nullptr,
+            IID_PPV_ARGS(TaaHistoryTextures[Index].GetAddressOf())));
+
+        if (TaaHistoryTextures[Index])
+        {
+            const std::wstring ResourceName = L"TaaHistory_" + std::to_wstring(Index);
+            TaaHistoryTextures[Index]->SetName(ResourceName.c_str());
+        }
+    }
+
+    TaaFrameCount = EffectiveFrameCount;
+    TaaStates.assign(EffectiveFrameCount, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    TaaHistoryValid.assign(EffectiveFrameCount, false);
+    TaaHistoryFenceValues.assign(EffectiveFrameCount, 0);
+    return true;
+}
+
+void FDeferredRenderer::OnFrameFenceSignaled(uint32_t FrameIndex, uint64_t FenceValue)
+{
+    if (!bTaaEnabled || TaaFrameCount == 0)
+    {
+        return;
+    }
+
+    if (TaaHistoryFenceValues.empty())
+    {
+        return;
+    }
+
+    const uint32_t WriteIndex = FrameIndex % static_cast<uint32_t>(TaaHistoryFenceValues.size());
+    TaaHistoryFenceValues[WriteIndex] = FenceValue;
+    if (WriteIndex < TaaHistoryValid.size())
+    {
+        TaaHistoryValid[WriteIndex] = true;
+    }
+}
+
 bool FDeferredRenderer::CreateHZBResources(FDX12Device* Device, uint32_t Width, uint32_t Height)
 {
     if (Device == nullptr)
@@ -2358,9 +2700,10 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
     const UINT TextureCount = static_cast<UINT>(SceneTextures.size());
     const UINT MipCount = HZBMipCount == 0 ? 1u : static_cast<UINT>(HZBMipCount);
     const UINT HZBDescriptorCount = 3 + (MipCount * 2);
+    const UINT TaaDescriptorCount = static_cast<UINT>(TaaHistoryTextures.size()) * 2;
 
     D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
-    HeapDesc.NumDescriptors = TextureCount * 4 + 11 + HZBDescriptorCount;
+    HeapDesc.NumDescriptors = TextureCount * 4 + 11 + HZBDescriptorCount + TaaDescriptorCount;
     HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(DescriptorHeap.GetAddressOf())));
@@ -2506,6 +2849,36 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         LuminanceUavDesc.Texture2D.PlaneSlice = 0;
         Device->GetDevice()->CreateUnorderedAccessView(LuminanceTextures[Index].Get(), nullptr, &LuminanceUavDesc, CpuHandle);
         LuminanceUavHandles[Index] = GpuHandle;
+
+        CpuHandle.ptr += DescriptorSize;
+        GpuHandle.ptr += DescriptorSize;
+    }
+
+    TaaSrvHandles.clear();
+    TaaUavHandles.clear();
+    TaaSrvHandles.resize(TaaHistoryTextures.size());
+    TaaUavHandles.resize(TaaHistoryTextures.size());
+
+    for (uint32_t Index = 0; Index < TaaHistoryTextures.size(); ++Index)
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC TaaSrvDesc = {};
+        TaaSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        TaaSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        TaaSrvDesc.Format = LightingBufferFormat;
+        TaaSrvDesc.Texture2D.MipLevels = 1;
+        Device->GetDevice()->CreateShaderResourceView(TaaHistoryTextures[Index].Get(), &TaaSrvDesc, CpuHandle);
+        TaaSrvHandles[Index] = GpuHandle;
+
+        CpuHandle.ptr += DescriptorSize;
+        GpuHandle.ptr += DescriptorSize;
+
+        D3D12_UNORDERED_ACCESS_VIEW_DESC TaaUavDesc = {};
+        TaaUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        TaaUavDesc.Format = LightingBufferFormat;
+        TaaUavDesc.Texture2D.MipSlice = 0;
+        TaaUavDesc.Texture2D.PlaneSlice = 0;
+        Device->GetDevice()->CreateUnorderedAccessView(TaaHistoryTextures[Index].Get(), nullptr, &TaaUavDesc, CpuHandle);
+        TaaUavHandles[Index] = GpuHandle;
 
         CpuHandle.ptr += DescriptorSize;
         GpuHandle.ptr += DescriptorSize;
@@ -2824,7 +3197,7 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
         &DefaultHeap,
         D3D12_HEAP_FLAG_NONE,
         &BufferDesc,
-        D3D12_RESOURCE_STATE_COPY_DEST,
+        D3D12_RESOURCE_STATE_COMMON,
         nullptr,
         IID_PPV_ARGS(IndirectCommandBuffer.GetAddressOf())));
 
@@ -2853,7 +3226,7 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
         &DefaultHeap,
         D3D12_HEAP_FLAG_NONE,
         &BoundsDesc,
-        D3D12_RESOURCE_STATE_COPY_DEST,
+        D3D12_RESOURCE_STATE_COMMON,
         nullptr,
         IID_PPV_ARGS(ModelBoundsBuffer.GetAddressOf())));
 
@@ -2878,7 +3251,7 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
         &DefaultHeap,
         D3D12_HEAP_FLAG_NONE,
         &DebugDesc,
-        D3D12_RESOURCE_STATE_COPY_DEST,
+        D3D12_RESOURCE_STATE_COMMON,
         nullptr,
         IID_PPV_ARGS(GpuDebugPrintBuffer.GetAddressOf())));
     if (GpuDebugPrintBuffer)
@@ -2931,7 +3304,7 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
         &DefaultHeap,
         D3D12_HEAP_FLAG_NONE,
         &StatsDesc,
-        D3D12_RESOURCE_STATE_COPY_DEST,
+        D3D12_RESOURCE_STATE_COMMON,
         nullptr,
         IID_PPV_ARGS(GpuDebugPrintStatsBuffer.GetAddressOf())));
     if (GpuDebugPrintStatsBuffer)
@@ -2970,6 +3343,29 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     ComPtr<ID3D12GraphicsCommandList> UploadList;
     HR_CHECK(Device->GetDevice()->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(UploadAllocator.GetAddressOf())));
     HR_CHECK(Device->GetDevice()->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, UploadAllocator.Get(), nullptr, IID_PPV_ARGS(UploadList.GetAddressOf())));
+
+    D3D12_RESOURCE_BARRIER PreCopyBarriers[4] = {};
+    PreCopyBarriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    PreCopyBarriers[0].Transition.pResource = IndirectCommandBuffer.Get();
+    PreCopyBarriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    PreCopyBarriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    PreCopyBarriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    PreCopyBarriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    PreCopyBarriers[1].Transition.pResource = ModelBoundsBuffer.Get();
+    PreCopyBarriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    PreCopyBarriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    PreCopyBarriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    PreCopyBarriers[2].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    PreCopyBarriers[2].Transition.pResource = GpuDebugPrintBuffer.Get();
+    PreCopyBarriers[2].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    PreCopyBarriers[2].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    PreCopyBarriers[2].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    PreCopyBarriers[3].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    PreCopyBarriers[3].Transition.pResource = GpuDebugPrintStatsBuffer.Get();
+    PreCopyBarriers[3].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    PreCopyBarriers[3].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    PreCopyBarriers[3].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    UploadList->ResourceBarrier(_countof(PreCopyBarriers), PreCopyBarriers);
 
     UploadList->CopyBufferRegion(IndirectCommandBuffer.Get(), 0, IndirectCommandUpload.Get(), 0, CommandBufferSize);
     UploadList->CopyBufferRegion(ModelBoundsBuffer.Get(), 0, ModelBoundsUpload.Get(), 0, BoundsBufferSize);
@@ -3104,6 +3500,7 @@ void FDeferredRenderer::UpdateSceneConstants(const FCamera& Camera, const FScene
     const DirectX::XMVECTOR LightDir = DirectX::XMLoadFloat3(&LightDirection);
     const DirectX::XMMATRIX LightVP = RendererUtils::BuildDirectionalLightViewProjection(SceneCenter, SceneRadius, LightDirection);
     DirectX::XMStoreFloat4x4(&LightViewProjection, LightVP);
+    const DirectX::XMMATRIX Projection = bUseTaaJitter ? TaaProjection : Camera.GetProjectionMatrix();
 
     RendererUtils::UpdateSceneConstants(
         Camera,
@@ -3112,6 +3509,7 @@ void FDeferredRenderer::UpdateSceneConstants(const FCamera& Camera, const FScene
         LightDir,
         LightColor,
         LightVP,
+        Projection,
         bShadowsEnabled ? ShadowStrength : 0.0f,
         ShadowBias,
         static_cast<float>(ShadowMapWidth),
@@ -3131,7 +3529,8 @@ void FDeferredRenderer::UpdateSkyConstants(const FCamera& Camera)
     const XMMATRIX World = Scale * Translation;
 
     const XMVECTOR LightDir = XMLoadFloat3(&LightDirection);
-    RendererUtils::UpdateSkyConstants(Camera, World, LightDir, LightColor, SkyConstantBufferMapped);
+    const DirectX::XMMATRIX Projection = bUseTaaJitter ? TaaProjection : Camera.GetProjectionMatrix();
+    RendererUtils::UpdateSkyConstants(Camera, World, Projection, LightDir, LightColor, SkyConstantBufferMapped);
 }
 
 void FDeferredRenderer::UpdateCullingVisibility(const FCamera& Camera)

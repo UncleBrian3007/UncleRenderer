@@ -112,7 +112,7 @@ bool CreateDebugPrintFontResources(
         &DefaultHeap,
         D3D12_HEAP_FLAG_NONE,
         &TextureDesc,
-        D3D12_RESOURCE_STATE_COPY_DEST,
+        D3D12_RESOURCE_STATE_COMMON,
         nullptr,
         IID_PPV_ARGS(FontTexture.GetAddressOf())));
 
@@ -172,7 +172,7 @@ bool CreateDebugPrintFontResources(
         &DefaultHeap,
         D3D12_HEAP_FLAG_NONE,
         &GlyphDesc,
-        D3D12_RESOURCE_STATE_COPY_DEST,
+        D3D12_RESOURCE_STATE_COMMON,
         nullptr,
         IID_PPV_ARGS(GlyphBuffer.GetAddressOf())));
 
@@ -195,6 +195,19 @@ bool CreateDebugPrintFontResources(
     ComPtr<ID3D12GraphicsCommandList> UploadList;
     HR_CHECK(Device->GetDevice()->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(UploadAllocator.GetAddressOf())));
     HR_CHECK(Device->GetDevice()->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, UploadAllocator.Get(), nullptr, IID_PPV_ARGS(UploadList.GetAddressOf())));
+
+    D3D12_RESOURCE_BARRIER PreCopyBarriers[2] = {};
+    PreCopyBarriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    PreCopyBarriers[0].Transition.pResource = FontTexture.Get();
+    PreCopyBarriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    PreCopyBarriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    PreCopyBarriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    PreCopyBarriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    PreCopyBarriers[1].Transition.pResource = GlyphBuffer.Get();
+    PreCopyBarriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    PreCopyBarriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    PreCopyBarriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    UploadList->ResourceBarrier(_countof(PreCopyBarriers), PreCopyBarriers);
 
     D3D12_TEXTURE_COPY_LOCATION DstLocation = {};
     DstLocation.pResource = FontTexture.Get();

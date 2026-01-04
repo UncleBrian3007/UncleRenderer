@@ -330,7 +330,6 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
     struct FShadowPassData
     {
         bool bEnabled = false;
-        bool bUseIndirect = false;
         const FCamera* Camera = nullptr;
         DirectX::XMMATRIX LightViewProjection = DirectX::XMMatrixIdentity();
     };
@@ -338,7 +337,6 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
     Graph.AddPass<FShadowPassData>("ShadowMap", [&, bRenderShadows](FShadowPassData& Data, FRGPassBuilder& Builder)
     {
         Data.bEnabled = bRenderShadows;
-        Data.bUseIndirect = bEnableIndirectDraw && IndirectCommandSignature && IndirectCommandBuffer && IndirectCommandCount > 0;
         Data.Camera = &Camera;
         Data.LightViewProjection = LightViewProjection;
 
@@ -365,6 +363,16 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
         LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         LocalCommandList->OMSetRenderTargets(0, nullptr, FALSE, &ShadowDSVHandle);
 
+        std::vector<bool> ShadowVisibility;
+        ShadowVisibility.resize(SceneModels.size(), true);
+        DirectX::XMVECTOR ShadowPlanes[6] = {};
+        RendererUtils::BuildFrustumPlanesFromMatrix(Data.LightViewProjection, ShadowPlanes);
+        for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+        {
+            const FSceneModelResource& Model = SceneModels[ModelIndex];
+            ShadowVisibility[ModelIndex] = RendererUtils::IsAabbInCameraFrustum(ShadowPlanes, Model.BoundsMin, Model.BoundsMax);
+        }
+
         for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
         {
             const FSceneModelResource& Model = SceneModels[ModelIndex];
@@ -372,21 +380,9 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
             UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset, Data.LightViewProjection);
         }
 
-        if (Data.bUseIndirect)
-        {
-            LocalCommandList->ExecuteIndirect(
-                IndirectCommandSignature.Get(),
-                IndirectCommandCount,
-                IndirectCommandBuffer.Get(),
-                0,
-                nullptr,
-                0);
-            return;
-        }
-
         for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
         {
-            if (!SceneModelVisibility.empty() && !SceneModelVisibility[ModelIndex])
+            if (!ShadowVisibility.empty() && !ShadowVisibility[ModelIndex])
             {
                 continue;
             }
@@ -1739,7 +1735,7 @@ bool FForwardRenderer::CreateGpuDrivenResources(FDX12Device* Device)
         &DefaultHeap,
         D3D12_HEAP_FLAG_NONE,
         &BufferDesc,
-        D3D12_RESOURCE_STATE_COPY_DEST,
+        D3D12_RESOURCE_STATE_COMMON,
         nullptr,
         IID_PPV_ARGS(IndirectCommandBuffer.GetAddressOf())));
     if (IndirectCommandBuffer)
@@ -1776,7 +1772,7 @@ bool FForwardRenderer::CreateGpuDrivenResources(FDX12Device* Device)
         &DefaultHeap,
         D3D12_HEAP_FLAG_NONE,
         &BoundsDesc,
-        D3D12_RESOURCE_STATE_COPY_DEST,
+        D3D12_RESOURCE_STATE_COMMON,
         nullptr,
         IID_PPV_ARGS(ModelBoundsBuffer.GetAddressOf())));
     if (ModelBoundsBuffer)
@@ -1809,7 +1805,7 @@ bool FForwardRenderer::CreateGpuDrivenResources(FDX12Device* Device)
         &DefaultHeap,
         D3D12_HEAP_FLAG_NONE,
         &DebugDesc,
-        D3D12_RESOURCE_STATE_COPY_DEST,
+        D3D12_RESOURCE_STATE_COMMON,
         nullptr,
         IID_PPV_ARGS(GpuDebugPrintBuffer.GetAddressOf())));
     if (GpuDebugPrintBuffer)
@@ -1862,7 +1858,7 @@ bool FForwardRenderer::CreateGpuDrivenResources(FDX12Device* Device)
         &DefaultHeap,
         D3D12_HEAP_FLAG_NONE,
         &StatsDesc,
-        D3D12_RESOURCE_STATE_COPY_DEST,
+        D3D12_RESOURCE_STATE_COMMON,
         nullptr,
         IID_PPV_ARGS(GpuDebugPrintStatsBuffer.GetAddressOf())));
     if (GpuDebugPrintStatsBuffer)
@@ -1901,6 +1897,29 @@ bool FForwardRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     ComPtr<ID3D12GraphicsCommandList> UploadList;
     HR_CHECK(Device->GetDevice()->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(UploadAllocator.GetAddressOf())));
     HR_CHECK(Device->GetDevice()->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, UploadAllocator.Get(), nullptr, IID_PPV_ARGS(UploadList.GetAddressOf())));
+
+    D3D12_RESOURCE_BARRIER PreCopyBarriers[4] = {};
+    PreCopyBarriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    PreCopyBarriers[0].Transition.pResource = IndirectCommandBuffer.Get();
+    PreCopyBarriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    PreCopyBarriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    PreCopyBarriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    PreCopyBarriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    PreCopyBarriers[1].Transition.pResource = ModelBoundsBuffer.Get();
+    PreCopyBarriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    PreCopyBarriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    PreCopyBarriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    PreCopyBarriers[2].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    PreCopyBarriers[2].Transition.pResource = GpuDebugPrintBuffer.Get();
+    PreCopyBarriers[2].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    PreCopyBarriers[2].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    PreCopyBarriers[2].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    PreCopyBarriers[3].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    PreCopyBarriers[3].Transition.pResource = GpuDebugPrintStatsBuffer.Get();
+    PreCopyBarriers[3].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    PreCopyBarriers[3].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    PreCopyBarriers[3].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    UploadList->ResourceBarrier(_countof(PreCopyBarriers), PreCopyBarriers);
 
     UploadList->CopyBufferRegion(IndirectCommandBuffer.Get(), 0, IndirectCommandUpload.Get(), 0, CommandBufferSize);
     UploadList->CopyBufferRegion(ModelBoundsBuffer.Get(), 0, ModelBoundsUpload.Get(), 0, BoundsBufferSize);
@@ -2104,6 +2123,7 @@ void FForwardRenderer::UpdateSceneConstants(const FCamera& Camera, const FSceneM
         LightDir,
         LightColor,
         LightViewProjection,
+        Camera.GetProjectionMatrix(),
         bShadowsEnabled ? ShadowStrength : 0.0f,
         ShadowBias,
         static_cast<float>(ShadowMapWidth),
@@ -2123,5 +2143,5 @@ void FForwardRenderer::UpdateSkyConstants(const FCamera& Camera)
     const XMMATRIX World = Scale * Translation;
 
     const XMVECTOR LightDir = XMLoadFloat3(&LightDirection);
-    RendererUtils::UpdateSkyConstants(Camera, World, LightDir, LightColor, SkyConstantBufferMapped);
+    RendererUtils::UpdateSkyConstants(Camera, World, Camera.GetProjectionMatrix(), LightDir, LightColor, SkyConstantBufferMapped);
 }

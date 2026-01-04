@@ -97,6 +97,8 @@ private:
     float AutoExposureMax = 5.0f;
     float AutoExposureSpeedUp = 3.0f;
     float AutoExposureSpeedDown = 1.0f;
+    bool bTaaEnabled = false;
+    float TaaHistoryWeight = 0.9f;
     bool bFreezeCamera = false;
     FCamera FrozenCamera;
     int32_t SelectedModelIndex = -1;

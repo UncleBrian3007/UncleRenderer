@@ -1033,6 +1033,7 @@ void RendererUtils::UpdateSceneConstants(
     const DirectX::XMVECTOR& LightDirection,
     const DirectX::XMFLOAT3& LightColor,
     const DirectX::XMMATRIX& LightViewProjection,
+    const DirectX::XMMATRIX& Projection,
     float ShadowStrength,
     float ShadowBias,
     float ShadowMapWidth,
@@ -1050,7 +1051,6 @@ void RendererUtils::UpdateSceneConstants(
 
     const XMMATRIX View = Camera.GetViewMatrix();
     const XMMATRIX ViewInverse = XMMatrixInverse(nullptr, View);
-    const XMMATRIX Projection = Camera.GetProjectionMatrix();
     const XMMATRIX WorldMatrix = XMLoadFloat4x4(&Model.WorldMatrix);
 
     const bool bHasEmissiveTexture = !Model.EmissiveTexturePath.empty();
@@ -1090,6 +1090,7 @@ void RendererUtils::UpdateSceneConstants(
 void RendererUtils::UpdateSkyConstants(
     const FCamera& Camera,
     const DirectX::XMMATRIX& WorldMatrix,
+    const DirectX::XMMATRIX& Projection,
     const DirectX::XMVECTOR& LightDirection,
     const DirectX::XMFLOAT3& LightColor,
     uint8_t* ConstantBufferMapped)
@@ -1102,8 +1103,6 @@ void RendererUtils::UpdateSkyConstants(
     using namespace DirectX;
 
     const XMMATRIX View = Camera.GetViewMatrix();
-    const XMMATRIX Projection = Camera.GetProjectionMatrix();
-
     FSkyAtmosphereConstants Constants = {};
     XMStoreFloat4x4(&Constants.World, WorldMatrix);
     XMStoreFloat4x4(&Constants.View, View);
@@ -1146,6 +1145,14 @@ void RendererUtils::BuildCameraFrustumPlanes(
     const XMMATRIX View = Camera.GetViewMatrix();
     const XMMATRIX Projection = Camera.GetProjectionMatrix();
     const XMMATRIX ViewProjection = XMMatrixMultiply(View, Projection);
+    BuildFrustumPlanesFromMatrix(ViewProjection, OutPlanes);
+}
+
+void RendererUtils::BuildFrustumPlanesFromMatrix(
+    const DirectX::XMMATRIX& ViewProjection,
+    DirectX::XMVECTOR OutPlanes[6])
+{
+    using namespace DirectX;
 
     XMFLOAT4X4 ViewProjectionMatrix;
     XMStoreFloat4x4(&ViewProjectionMatrix, ViewProjection);

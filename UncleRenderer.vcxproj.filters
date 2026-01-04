@@ -319,6 +319,9 @@
     <None Include="Shaders\Tonemap.hlsl">
       <Filter>Shaders</Filter>
     </None>
+    <None Include="Shaders\TemporalAA.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
     <None Include="Shaders\BuildHZB.hlsl">
       <Filter>Shaders</Filter>
     </None>

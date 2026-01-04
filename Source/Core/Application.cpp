@@ -168,6 +168,8 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     AutoExposureMax = RendererConfig.AutoExposureMax;
     AutoExposureSpeedUp = RendererConfig.AutoExposureSpeedUp;
     AutoExposureSpeedDown = RendererConfig.AutoExposureSpeedDown;
+    bTaaEnabled = RendererConfig.bEnableTAA;
+    TaaHistoryWeight = RendererConfig.TaaHistoryWeight;
 
     if (bTaskSystemEnabled)
     {
@@ -208,6 +210,8 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     RendererOptions.AutoExposureMax = AutoExposureMax;
     RendererOptions.AutoExposureSpeedUp = AutoExposureSpeedUp;
     RendererOptions.AutoExposureSpeedDown = AutoExposureSpeedDown;
+    RendererOptions.bEnableTAA = bTaaEnabled;
+    RendererOptions.TaaHistoryWeight = TaaHistoryWeight;
     RendererOptions.bEnableHZB = bHZBEnabled;
     RendererOptions.bLogResourceBarriers = RendererConfig.bLogResourceBarriers;
     RendererOptions.bEnableGraphDump = RendererConfig.bEnableGraphDump;
@@ -264,6 +268,8 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
         LogError("Failed to initialize command context");
         return false;
     }
+
+    RendererOptions.FramesInFlight = SwapChain->GetBackBufferCount();
 
     Camera->SetPerspective(DirectX::XM_PIDIV4, static_cast<float>(WindowWidth) / static_cast<float>(WindowHeight), 0.1f, 1000.0f);
 
@@ -559,6 +565,10 @@ bool FApplication::RenderFrame()
         Device->GetGraphicsQueue()->Wait(FenceValue);
     }
     CommandContext->SetFrameFenceValue(BackBufferIndex, FenceValue);
+    if (ActiveRenderer)
+    {
+        ActiveRenderer->OnFrameFenceSignaled(BackBufferIndex, FenceValue);
+    }
     if (BackBufferIndex < FrameTimingFenceValues.size())
     {
         FrameTimingFenceValues[BackBufferIndex] = FenceValue;
@@ -928,6 +938,9 @@ bool FApplication::ReloadScene(const std::wstring& ScenePath)
     RendererOptions.bEnableHZB = bHZBEnabled;
     RendererOptions.bEnableIndirectDraw = bIndirectDrawEnabled;
     RendererOptions.bEnableGpuDebugPrint = bGpuDebugPrintEnabled;
+    RendererOptions.bEnableTAA = bTaaEnabled;
+    RendererOptions.TaaHistoryWeight = TaaHistoryWeight;
+    RendererOptions.FramesInFlight = SwapChain ? SwapChain->GetBackBufferCount() : 2u;
 
     const uint32_t Width = static_cast<uint32_t>(MainWindow->GetWidth());
     const uint32_t Height = static_cast<uint32_t>(MainWindow->GetHeight());
@@ -1041,10 +1054,13 @@ void FApplication::StartAsyncSceneReload(const std::wstring& ScenePath)
     RendererOptions.TonemapExposure = TonemapExposure;
     RendererOptions.TonemapWhitePoint = TonemapWhitePoint;
     RendererOptions.TonemapGamma = TonemapGamma;
+    RendererOptions.bEnableTAA = bTaaEnabled;
+    RendererOptions.TaaHistoryWeight = TaaHistoryWeight;
     RendererOptions.bEnableGpuTiming = bGpuTimingEnabled;
     RendererOptions.bEnableGpuDebugPrint = bGpuDebugPrintEnabled;
     RendererOptions.bEnableHZB = bHZBEnabled;
     RendererOptions.bEnableIndirectDraw = bIndirectDrawEnabled;
+    RendererOptions.FramesInFlight = SwapChain ? SwapChain->GetBackBufferCount() : 2u;
 
     const bool bPreferDeferred = ActiveRenderer == DeferredRenderer.get() || RendererConfig.RendererType == ERendererType::Deferred;
 
@@ -1429,7 +1445,7 @@ void FApplication::RenderUI()
         const std::vector<FRenderGraph::FGpuPassTimingStats>& TimingStats = FRenderGraph::GetGpuTimingStats();
         const uint32 MaxDisplay = FRenderGraph::GetGpuTimingDisplayCount();
         const uint32 DisplayCount = (std::min)(MaxDisplay, static_cast<uint32>(TimingStats.size()));
-        for (uint32 Index = 1; Index < DisplayCount+1; ++Index)
+        for (uint32 Index = 1; Index < DisplayCount; ++Index)
         {
             const FRenderGraph::FGpuPassTimingStats& Stats = TimingStats[Index];
             ImGui::Text("%s: %.3f / %.3f / %.3f (n=%u)",
@@ -1612,6 +1628,18 @@ void FApplication::RenderUI()
             }
         }
 
+        ImGui::SameLine();
+        bool bTaa = bTaaEnabled;
+        if (ImGui::Checkbox("TAA", &bTaa))
+        {
+            bTaaEnabled = bTaa;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetTaaEnabled(bTaaEnabled);
+            }
+        }
+
         float TonemapExposureValue = TonemapExposure;
         if (ImGui::SliderFloat("Tonemap Exposure", &TonemapExposureValue, 0.1f, 5.0f, "%.2f"))
         {
@@ -1699,6 +1727,17 @@ void FApplication::RenderUI()
             if (DeferredRenderer)
             {
                 DeferredRenderer->SetAutoExposureSpeedDown(AutoExposureSpeedDown);
+            }
+        }
+
+        float TaaHistoryValue = TaaHistoryWeight;
+        if (ImGui::SliderFloat("TAA History Weight", &TaaHistoryValue, 0.0f, 0.98f, "%.2f"))
+        {
+            TaaHistoryWeight = TaaHistoryValue;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetTaaHistoryWeight(TaaHistoryWeight);
             }
         }
 

@@ -241,6 +241,23 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
         }
     }
 
+    if (LowerKey == "enabletaa" || LowerKey == "taa" || LowerKey == "temporalaa")
+    {
+        OutConfig.bEnableTAA = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+
+    if (LowerKey == "taahistoryweight" || LowerKey == "taaweight")
+    {
+        try
+        {
+            OutConfig.TaaHistoryWeight = std::stof(Value);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid TAA history weight value in renderer config: " + Value);
+        }
+    }
+
     if (LowerKey == "usetasksystem" || LowerKey == "enabletasksystem" || LowerKey == "tasksystem")
     {
         OutConfig.bEnableTaskSystem = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");

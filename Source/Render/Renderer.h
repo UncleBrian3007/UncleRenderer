@@ -27,6 +27,9 @@ struct FRendererOptions
     float AutoExposureMax = 5.0f;
     float AutoExposureSpeedUp = 3.0f;
     float AutoExposureSpeedDown = 1.0f;
+    bool bEnableTAA = false;
+    float TaaHistoryWeight = 0.9f;
+    uint32_t FramesInFlight = 2;
     bool bLogResourceBarriers = false;
     bool bEnableGraphDump = false;
     bool bEnableGpuTiming = false;
@@ -59,6 +62,7 @@ public:
 
     virtual bool Initialize(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT BackBufferFormat, const FRendererOptions& Options) = 0;
     virtual void RenderFrame(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle, const FCamera& Camera, float DeltaTime) = 0;
+    virtual void OnFrameFenceSignaled(uint32_t FrameIndex, uint64_t FenceValue) {}
 
     virtual void SetDepthPrepassEnabled(bool bEnabled) { bDepthPrepassEnabled = bEnabled; }
     virtual bool IsDepthPrepassEnabled() const { return bDepthPrepassEnabled; }
