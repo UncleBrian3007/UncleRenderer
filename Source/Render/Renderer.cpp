@@ -10,6 +10,7 @@
 #include "../Core/GpuDebugMarkers.h"
 #include "../Core/Logger.h"
 #include <array>
+#include <algorithm>
 #include <cstring>
 
 FRenderer::~FRenderer() = default;
@@ -50,6 +51,8 @@ void FRenderer::InitializeCommonSettings(uint32_t Width, uint32_t Height, const 
     bEnableGpuTiming = Options.bEnableGpuTiming;
     bEnableIndirectDraw = Options.bEnableIndirectDraw;
     bEnableGpuDebugPrint = Options.bEnableGpuDebugPrint;
+    FramesInFlight = (std::max)(1u, Options.FramesInFlight);
+    CurrentFrameIndex = 0;
 
     Viewport.TopLeftX = 0.0f;
     Viewport.TopLeftY = 0.0f;
@@ -78,6 +81,160 @@ void FRenderer::InitializeCommonSettings(uint32_t Width, uint32_t Height, const 
     ShadowScissor.top = 0;
     ShadowScissor.right = static_cast<LONG>(ShadowMapWidth);
     ShadowScissor.bottom = static_cast<LONG>(ShadowMapHeight);
+}
+
+void FRenderer::SetFrameIndex(uint32_t FrameIndex)
+{
+    if (DepthResourcesPerFrame.empty())
+    {
+        CurrentFrameIndex = 0;
+        return;
+    }
+
+    CurrentFrameIndex = FrameIndex % static_cast<uint32_t>(DepthResourcesPerFrame.size());
+    DepthStencilHandle = DepthResourcesPerFrame[CurrentFrameIndex].DepthStencilHandle;
+}
+
+const D3D12_CPU_DESCRIPTOR_HANDLE& FRenderer::GetDSVHandle() const
+{
+    return DepthStencilHandle;
+}
+
+ID3D12Resource* FRenderer::GetDepthBuffer() const
+{
+    if (DepthResourcesPerFrame.empty())
+    {
+        return nullptr;
+    }
+
+    return DepthResourcesPerFrame[CurrentFrameIndex].DepthBuffer.Get();
+}
+
+D3D12_RESOURCE_STATES& FRenderer::GetDepthBufferState()
+{
+    if (DepthBufferStates.empty())
+    {
+        static D3D12_RESOURCE_STATES FallbackState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+        return FallbackState;
+    }
+
+    return DepthBufferStates[CurrentFrameIndex];
+}
+
+ID3D12Resource* FRenderer::GetIndirectCommandBuffer() const
+{
+    if (IndirectCommandBuffers.empty())
+    {
+        return nullptr;
+    }
+
+    return IndirectCommandBuffers[CurrentFrameIndex].Get();
+}
+
+D3D12_RESOURCE_STATES& FRenderer::GetIndirectCommandState()
+{
+    if (IndirectCommandStates.empty())
+    {
+        static D3D12_RESOURCE_STATES FallbackState = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+        return FallbackState;
+    }
+
+    return IndirectCommandStates[CurrentFrameIndex];
+}
+
+ID3D12Resource* FRenderer::GetSceneConstantBuffer() const
+{
+    if (SceneConstantBuffers.empty())
+    {
+        return nullptr;
+    }
+
+    return SceneConstantBuffers[CurrentFrameIndex].Get();
+}
+
+D3D12_GPU_VIRTUAL_ADDRESS FRenderer::GetSceneConstantBufferAddress() const
+{
+    ID3D12Resource* Buffer = GetSceneConstantBuffer();
+    return Buffer ? Buffer->GetGPUVirtualAddress() : 0;
+}
+
+uint8_t* FRenderer::GetSceneConstantBufferMapped() const
+{
+    if (SceneConstantBufferMapped.empty())
+    {
+        return nullptr;
+    }
+
+    return SceneConstantBufferMapped[CurrentFrameIndex];
+}
+
+bool FRenderer::CreateDepthResourcesPerFrame(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT Format)
+{
+    if (!Device)
+    {
+        return false;
+    }
+
+    DepthResourcesPerFrame.clear();
+    DepthBufferStates.clear();
+
+    DepthResourcesPerFrame.resize(FramesInFlight);
+    DepthBufferStates.resize(FramesInFlight, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+
+    for (uint32_t Index = 0; Index < FramesInFlight; ++Index)
+    {
+        if (!RendererUtils::CreateDepthResources(Device, Width, Height, Format, DepthResourcesPerFrame[Index]))
+        {
+            return false;
+        }
+
+        if (DepthResourcesPerFrame[Index].DepthBuffer)
+        {
+            const std::wstring Name = L"DepthBuffer_Frame" + std::to_wstring(Index);
+            DepthResourcesPerFrame[Index].DepthBuffer->SetName(Name.c_str());
+        }
+        if (DepthResourcesPerFrame[Index].DSVHeap)
+        {
+            const std::wstring Name = L"DepthDSVHeap_Frame" + std::to_wstring(Index);
+            DepthResourcesPerFrame[Index].DSVHeap->SetName(Name.c_str());
+        }
+    }
+
+    SetFrameIndex(CurrentFrameIndex);
+    return true;
+}
+
+bool FRenderer::CreateSceneConstantBuffersPerFrame(FDX12Device* Device, uint64_t BufferSize)
+{
+    if (!Device)
+    {
+        return false;
+    }
+
+    SceneConstantBuffers.clear();
+    SceneConstantBufferMapped.clear();
+    SceneConstantBuffers.resize(FramesInFlight);
+    SceneConstantBufferMapped.resize(FramesInFlight, nullptr);
+
+    for (uint32_t Index = 0; Index < FramesInFlight; ++Index)
+    {
+        FMappedConstantBuffer ConstantBufferResource = {};
+        if (!RendererUtils::CreateMappedConstantBuffer(Device, BufferSize, ConstantBufferResource))
+        {
+            return false;
+        }
+
+        SceneConstantBuffers[Index] = ConstantBufferResource.Resource;
+        SceneConstantBufferMapped[Index] = ConstantBufferResource.MappedData;
+
+        if (SceneConstantBuffers[Index])
+        {
+            const std::wstring Name = L"SceneConstantBuffer_Frame" + std::to_wstring(Index);
+            SceneConstantBuffers[Index]->SetName(Name.c_str());
+        }
+    }
+
+    return true;
 }
 
 bool FRenderer::CreateShadowPipeline(FDX12Device* Device, ID3D12RootSignature* RootSignature, Microsoft::WRL::ComPtr<ID3D12PipelineState>& OutPipelineState)
@@ -236,7 +393,8 @@ void FRenderer::ConfigureHZBOcclusion(bool bEnabled, ID3D12DescriptorHeap* Descr
 
 void FRenderer::DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamera& Camera)
 {
-    if (!CullingPipeline || !CullingRootSignature || !IndirectCommandBuffer || !ModelBoundsBuffer || IndirectCommandCount == 0)
+    ID3D12Resource* IndirectBuffer = GetIndirectCommandBuffer();
+    if (!CullingPipeline || !CullingRootSignature || !IndirectBuffer || !ModelBoundsBuffer || IndirectCommandCount == 0)
     {
         return;
     }
@@ -273,23 +431,24 @@ void FRenderer::DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamer
     ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
     FScopedPixEvent CullingEvent(CommandList, L"GpuCulling");
 
-    if (IndirectCommandState != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+    D3D12_RESOURCE_STATES& IndirectState = GetIndirectCommandState();
+    if (IndirectState != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
     {
         D3D12_RESOURCE_BARRIER Barrier = {};
         Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        Barrier.Transition.pResource = IndirectCommandBuffer.Get();
+        Barrier.Transition.pResource = IndirectBuffer;
         Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        Barrier.Transition.StateBefore = IndirectCommandState;
+        Barrier.Transition.StateBefore = IndirectState;
         Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
         CommandList->ResourceBarrier(1, &Barrier);
-        IndirectCommandState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        IndirectState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     }
 
     CommandList->SetPipelineState(CullingPipeline.Get());
     CommandList->SetComputeRootSignature(CullingRootSignature.Get());
     CommandList->SetComputeRoot32BitConstants(0, static_cast<UINT>(Constants.size()), Constants.data(), 0);
     CommandList->SetComputeRootShaderResourceView(1, ModelBoundsBuffer->GetGPUVirtualAddress());
-    CommandList->SetComputeRootUnorderedAccessView(2, IndirectCommandBuffer->GetGPUVirtualAddress());
+    CommandList->SetComputeRootUnorderedAccessView(2, IndirectBuffer->GetGPUVirtualAddress());
     CommandList->SetComputeRootUnorderedAccessView(3, GpuDebugPrintBuffer->GetGPUVirtualAddress());
     CommandList->SetComputeRootUnorderedAccessView(4, GpuDebugPrintStatsBuffer->GetGPUVirtualAddress());
     if (CullingDescriptorHeap)
@@ -304,12 +463,12 @@ void FRenderer::DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamer
 
     D3D12_RESOURCE_BARRIER Barrier = {};
     Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    Barrier.Transition.pResource = IndirectCommandBuffer.Get();
+    Barrier.Transition.pResource = IndirectBuffer;
     Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    Barrier.Transition.StateBefore = IndirectCommandState;
+    Barrier.Transition.StateBefore = IndirectState;
     Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
     CommandList->ResourceBarrier(1, &Barrier);
-    IndirectCommandState = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+    IndirectState = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
 }
 
 void FRenderer::PrepareGpuDebugPrint(FDX12CommandContext& CmdContext)

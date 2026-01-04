@@ -29,7 +29,7 @@ struct FRendererConfig
     float AutoExposureMax = 5.0f;
     float AutoExposureSpeedUp = 3.0f;
     float AutoExposureSpeedDown = 1.0f;
-    bool bEnableTAA = false;
+    bool bEnableTAA = true;
     float TaaHistoryWeight = 0.9f;
     bool bEnableTaskSystem = true;
     bool bLogResourceBarriers = false;

@@ -96,8 +96,6 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     TaaFrameCount = Options.FramesInFlight;
     TaaHistoryValid.clear();
     TaaHistoryValid.resize(TaaFrameCount, false);
-    TaaHistoryFenceValues.clear();
-    TaaHistoryFenceValues.resize(TaaFrameCount, 0);
     TaaSampleIndex = 0;
     bHZBEnabled = Options.bEnableHZB;
     bHZBReady = false;
@@ -194,23 +192,10 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
         NullTexture->SetName(L"NullTexture");
     }
 
-    FDepthResources DepthResources = {};
-    if (!RendererUtils::CreateDepthResources(Device, Width, Height, DXGI_FORMAT_D24_UNORM_S8_UINT, DepthResources))
+    if (!CreateDepthResourcesPerFrame(Device, Width, Height, DXGI_FORMAT_D24_UNORM_S8_UINT))
     {
         LogError("Deferred renderer initialization failed: depth resources creation failed");
         return false;
-    }
-    DepthBuffer = DepthResources.DepthBuffer;
-    DSVHeap = DepthResources.DSVHeap;
-    DepthStencilHandle = DepthResources.DepthStencilHandle;
-    DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
-    if (DepthBuffer)
-    {
-        DepthBuffer->SetName(L"DepthBuffer");
-    }
-    if (DSVHeap)
-    {
-        DSVHeap->SetName(L"DepthDSVHeap");
     }
 
     if (!CreateObjectIdResources(Device, Width, Height))
@@ -303,15 +288,11 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     SceneConstantBufferStride = (sizeof(FSceneConstants) + 255ULL) & ~255ULL;
     const uint64_t ConstantBufferSize = SceneConstantBufferStride * (std::max<uint64_t>(1, SceneModels.size()));
 
-    FMappedConstantBuffer ConstantBufferResource = {};
-    if (!RendererUtils::CreateMappedConstantBuffer(Device, ConstantBufferSize, ConstantBufferResource))
+    if (!CreateSceneConstantBuffersPerFrame(Device, ConstantBufferSize))
     {
         LogError("Deferred renderer initialization failed: constant buffer creation failed");
         return false;
     }
-    ConstantBuffer = ConstantBufferResource.Resource;
-    ConstantBufferMapped = ConstantBufferResource.MappedData;
-    ConstantBuffer->SetName(L"SceneConstantBuffer");
 
     if (!TextureLoader->LoadOrDefault(L"Assets/Textures/output_pmrem.dds", EnvironmentCubeTexture))
     {
@@ -406,20 +387,9 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
     const uint32_t TaaReadIndex = TaaFrameCount > 0 ? (TaaFrameIndex + TaaFrameCount - 1u) % TaaFrameCount : 0u;
     const uint32_t TaaWriteIndex = TaaFrameCount > 0 ? TaaFrameIndex % TaaFrameCount : 0u;
     bool bTaaHistoryReady = false;
-    if (bTaaActive && TaaReadIndex < TaaHistoryValid.size() && TaaReadIndex < TaaHistoryFenceValues.size())
+    if (bTaaActive && TaaReadIndex < TaaHistoryValid.size())
     {
-        if (TaaHistoryValid[TaaReadIndex] && TaaHistoryFenceValues[TaaReadIndex] > 0)
-        {
-            if (FDX12CommandQueue* Queue = CmdContext.GetQueue())
-            {
-                const uint64_t FenceValue = TaaHistoryFenceValues[TaaReadIndex];
-                if (Queue->GetCompletedFenceValue() < FenceValue)
-                {
-                    Queue->Wait(FenceValue);
-                }
-                bTaaHistoryReady = true;
-            }
-        }
+        bTaaHistoryReady = TaaHistoryValid[TaaReadIndex];
     }
     bUseTaaJitter = bTaaActive && bTaaHistoryReady;
     if (bUseTaaJitter)
@@ -468,7 +438,8 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         DXGI_FORMAT_R24G8_TYPELESS
     };
 
-    FRGResourceHandle DepthHandle = Graph.ImportTexture("Depth", DepthBuffer.Get(), &DepthBufferState, DepthDesc);
+    D3D12_RESOURCE_STATES& DepthState = GetDepthBufferState();
+    FRGResourceHandle DepthHandle = Graph.ImportTexture("Depth", GetDepthBuffer(), &DepthState, DepthDesc);
     FRGResourceHandle ObjectIdHandle = Graph.ImportTexture(
         "ObjectId",
         ObjectIdTexture.Get(),
@@ -535,7 +506,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
     Graph.AddPass<FGpuCullingPassData>("GPU Culling", [this, &Camera, DepthHandle, HZBHandle, bUseHZBOcclusion](FGpuCullingPassData& Data, FRGPassBuilder& Builder)
     {
-        Data.bEnabled = bEnableIndirectDraw && CullingPipeline && CullingRootSignature && IndirectCommandBuffer && ModelBoundsBuffer;
+        Data.bEnabled = bEnableIndirectDraw && CullingPipeline && CullingRootSignature && GetIndirectCommandBuffer() && ModelBoundsBuffer;
         Data.Camera = &Camera;
         if (Data.bEnabled)
         {
@@ -624,9 +595,10 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
             LocalCommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
             LocalCommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
 
+            const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
             LocalCommandList->SetGraphicsRootConstantBufferView(
                 0,
-                ConstantBuffer->GetGPUVirtualAddress() + ConstantBufferOffset);
+                ConstantBufferAddress + ConstantBufferOffset);
             LocalCommandList->SetGraphicsRootDescriptorTable(1, DescriptorHeap->GetGPUDescriptorHandleForHeapStart());
 
             if (AreModelPixEventsEnabled())
@@ -671,7 +643,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
         FScopedPixEvent DepthEvent(LocalCommandList, L"DepthPrepass");
 
-        Cmd.ClearDepth(DepthStencilHandle);
+        Cmd.ClearDepth(GetDSVHandle());
 
         ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
         LocalCommandList->SetPipelineState(DepthPrepassPipeline.Get());
@@ -682,7 +654,8 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         LocalCommandList->RSSetScissorRects(1, &ScissorRect);
 
         LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        LocalCommandList->OMSetRenderTargets(0, nullptr, FALSE, &DepthStencilHandle);
+        const D3D12_CPU_DESCRIPTOR_HANDLE& DepthHandle = GetDSVHandle();
+        LocalCommandList->OMSetRenderTargets(0, nullptr, FALSE, &DepthHandle);
 
         for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
         {
@@ -708,9 +681,10 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
             LocalCommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
             LocalCommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
 
+            const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
             LocalCommandList->SetGraphicsRootConstantBufferView(
                 0,
-                ConstantBuffer->GetGPUVirtualAddress() + ConstantBufferOffset);
+                ConstantBufferAddress + ConstantBufferOffset);
             LocalCommandList->SetGraphicsRootDescriptorTable(1, DescriptorHeap->GetGPUDescriptorHandleForHeapStart());
 
             if (AreModelPixEventsEnabled())
@@ -762,7 +736,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
         if (!Data.bDoDepthPrepass)
         {
-            Cmd.ClearDepth(DepthStencilHandle);
+            Cmd.ClearDepth(GetDSVHandle());
         }
 
         for (const D3D12_CPU_DESCRIPTOR_HANDLE& Handle : GBufferRTVHandles)
@@ -784,7 +758,8 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         LocalCommandList->RSSetScissorRects(1, &ScissorRect);
 
         LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        LocalCommandList->OMSetRenderTargets(_countof(BasePassRTVs), BasePassRTVs, FALSE, &DepthStencilHandle);
+        const D3D12_CPU_DESCRIPTOR_HANDLE& DepthHandle = GetDSVHandle();
+        LocalCommandList->OMSetRenderTargets(_countof(BasePassRTVs), BasePassRTVs, FALSE, &DepthHandle);
 
         for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
         {
@@ -793,7 +768,8 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
             UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset);
         }
 
-        if (bEnableIndirectDraw && IndirectCommandSignature && IndirectCommandBuffer && !IndirectDrawRanges.empty())
+        ID3D12Resource* IndirectBuffer = GetIndirectCommandBuffer();
+        if (bEnableIndirectDraw && IndirectCommandSignature && IndirectBuffer && !IndirectDrawRanges.empty())
         {
             LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
@@ -813,11 +789,11 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
                 {
                     const wchar_t* Label = Range.Name.empty() ? L"IndirectDrawRange" : Range.Name.c_str();
                     FScopedPixEvent ModelEvent(LocalCommandList, Label);
-                    LocalCommandList->ExecuteIndirect(IndirectCommandSignature.Get(), Range.Count, IndirectCommandBuffer.Get(), Offset, nullptr, 0);
+                    LocalCommandList->ExecuteIndirect(IndirectCommandSignature.Get(), Range.Count, IndirectBuffer, Offset, nullptr, 0);
                 }
                 else
                 {
-                    LocalCommandList->ExecuteIndirect(IndirectCommandSignature.Get(), Range.Count, IndirectCommandBuffer.Get(), Offset, nullptr, 0);
+                    LocalCommandList->ExecuteIndirect(IndirectCommandSignature.Get(), Range.Count, IndirectBuffer, Offset, nullptr, 0);
                 }
             }
         }
@@ -836,7 +812,8 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
                 LocalCommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
                 LocalCommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
 
-                LocalCommandList->SetGraphicsRootConstantBufferView(0, ConstantBuffer->GetGPUVirtualAddress() + ConstantBufferOffset);
+                const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
+                LocalCommandList->SetGraphicsRootConstantBufferView(0, ConstantBufferAddress + ConstantBufferOffset);
                 LocalCommandList->SetGraphicsRootDescriptorTable(1, Model.TextureHandle);
 
                 const bool bUseNormalMap = Model.bHasNormalMap;
@@ -903,7 +880,8 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         LocalCommandList->RSSetViewports(1, &Viewport);
         LocalCommandList->RSSetScissorRects(1, &ScissorRect);
         LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        LocalCommandList->OMSetRenderTargets(1, &ObjectIdRtvHandle, FALSE, &DepthStencilHandle);
+        const D3D12_CPU_DESCRIPTOR_HANDLE& DepthHandle = GetDSVHandle();
+        LocalCommandList->OMSetRenderTargets(1, &ObjectIdRtvHandle, FALSE, &DepthHandle);
 
         const UINT ClearValue[4] = { 0, 0, 0, 0 };
         LocalCommandList->ClearRenderTargetView(ObjectIdRtvHandle, reinterpret_cast<const float*>(ClearValue), 0, nullptr);
@@ -928,9 +906,10 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
             LocalCommandList->IASetVertexBuffers(0, 1, &Model.Geometry.VertexBufferView);
             LocalCommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
 
+            const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
             LocalCommandList->SetGraphicsRootConstantBufferView(
                 0,
-                ConstantBuffer->GetGPUVirtualAddress() + ConstantBufferOffset);
+                ConstantBufferAddress + ConstantBufferOffset);
 
             if (AreModelPixEventsEnabled())
             {
@@ -1006,10 +985,12 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
             Data.Width = HZBWidth;
             Data.Height = HZBHeight;
             Data.MipCount = HZBMipCount;
-            const D3D12_RESOURCE_DESC DepthDesc = DepthBuffer->GetDesc();
+            ID3D12Resource* DepthBuffer = GetDepthBuffer();
+            const D3D12_RESOURCE_DESC DepthDesc = DepthBuffer ? DepthBuffer->GetDesc() : D3D12_RESOURCE_DESC{};
             Data.SourceWidth = static_cast<uint32_t>(DepthDesc.Width);
             Data.SourceHeight = DepthDesc.Height;
-            Data.DepthSrv = DepthBufferHandle;
+            const uint32_t DepthIndex = GetFrameIndex() % static_cast<uint32_t>(DepthBufferHandles.size());
+            Data.DepthSrv = DepthBufferHandles.empty() ? D3D12_GPU_DESCRIPTOR_HANDLE{} : DepthBufferHandles[DepthIndex];
             Data.HZBSrv = HZBSrvHandle;
             Data.HZBSrvMips = HZBSrvMipHandles;
             Data.HZBUavs = HZBUavHandles;
@@ -1252,7 +1233,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         LocalCommandList->RSSetScissorRects(1, &ScissorRect);
 
         LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        LocalCommandList->SetGraphicsRootConstantBufferView(0, ConstantBuffer->GetGPUVirtualAddress());
+        LocalCommandList->SetGraphicsRootConstantBufferView(0, GetSceneConstantBufferAddress());
         LocalCommandList->SetGraphicsRootDescriptorTable(1, GBufferGpuHandles[0]);
 
         LocalCommandList->DrawInstanced(3, 1, 0, 0);
@@ -1291,7 +1272,8 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         LocalCommandList->IASetVertexBuffers(0, 1, &SkyGeometry.VertexBufferView);
         LocalCommandList->IASetIndexBuffer(&SkyGeometry.IndexBufferView);
-        LocalCommandList->OMSetRenderTargets(1, &LightingRTVHandle, FALSE, &DepthStencilHandle);
+        const D3D12_CPU_DESCRIPTOR_HANDLE& DepthHandle = GetDSVHandle();
+        LocalCommandList->OMSetRenderTargets(1, &LightingRTVHandle, FALSE, &DepthHandle);
 
         UpdateSkyConstants(*Data.Camera);
         LocalCommandList->SetGraphicsRootConstantBufferView(0, SkyConstantBuffer->GetGPUVirtualAddress());
@@ -1549,7 +1531,6 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
     else
     {
         std::fill(TaaHistoryValid.begin(), TaaHistoryValid.end(), false);
-        std::fill(TaaHistoryFenceValues.begin(), TaaHistoryFenceValues.end(), 0);
         TaaSampleIndex = 0;
     }
 
@@ -2592,7 +2573,6 @@ bool FDeferredRenderer::CreateTaaResources(FDX12Device* Device, uint32_t Width, 
     TaaFrameCount = EffectiveFrameCount;
     TaaStates.assign(EffectiveFrameCount, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     TaaHistoryValid.assign(EffectiveFrameCount, false);
-    TaaHistoryFenceValues.assign(EffectiveFrameCount, 0);
     return true;
 }
 
@@ -2603,13 +2583,7 @@ void FDeferredRenderer::OnFrameFenceSignaled(uint32_t FrameIndex, uint64_t Fence
         return;
     }
 
-    if (TaaHistoryFenceValues.empty())
-    {
-        return;
-    }
-
-    const uint32_t WriteIndex = FrameIndex % static_cast<uint32_t>(TaaHistoryFenceValues.size());
-    TaaHistoryFenceValues[WriteIndex] = FenceValue;
+    const uint32_t WriteIndex = FrameIndex % static_cast<uint32_t>(TaaHistoryValid.size());
     if (WriteIndex < TaaHistoryValid.size())
     {
         TaaHistoryValid[WriteIndex] = true;
@@ -2701,9 +2675,10 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
     const UINT MipCount = HZBMipCount == 0 ? 1u : static_cast<UINT>(HZBMipCount);
     const UINT HZBDescriptorCount = 3 + (MipCount * 2);
     const UINT TaaDescriptorCount = static_cast<UINT>(TaaHistoryTextures.size()) * 2;
+    const UINT DepthDescriptorCount = GetFramesInFlight();
 
     D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
-    HeapDesc.NumDescriptors = TextureCount * 4 + 11 + HZBDescriptorCount + TaaDescriptorCount;
+    HeapDesc.NumDescriptors = TextureCount * 4 + 11 + HZBDescriptorCount + TaaDescriptorCount + DepthDescriptorCount;
     HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(DescriptorHeap.GetAddressOf())));
@@ -2884,6 +2859,9 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         GpuHandle.ptr += DescriptorSize;
     }
 
+    DepthBufferHandles.clear();
+    DepthBufferHandles.resize(GetFramesInFlight());
+    for (uint32_t Index = 0; Index < DepthBufferHandles.size(); ++Index)
     {
         D3D12_SHADER_RESOURCE_VIEW_DESC DepthSrvDesc = {};
         DepthSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
@@ -2892,8 +2870,9 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         DepthSrvDesc.Texture2D.MipLevels = 1;
         DepthSrvDesc.Texture2D.MostDetailedMip = 0;
         DepthSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
-        Device->GetDevice()->CreateShaderResourceView(DepthBuffer.Get(), &DepthSrvDesc, CpuHandle);
-        DepthBufferHandle = GpuHandle;
+        ID3D12Resource* DepthBuffer = DepthResourcesPerFrame.empty() ? nullptr : DepthResourcesPerFrame[Index].DepthBuffer.Get();
+        Device->GetDevice()->CreateShaderResourceView(DepthBuffer, &DepthSrvDesc, CpuHandle);
+        DepthBufferHandles[Index] = GpuHandle;
 
         CpuHandle.ptr += DescriptorSize;
         GpuHandle.ptr += DescriptorSize;
@@ -3091,7 +3070,7 @@ bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, const std::vect
 
 bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
 {
-    if (!Device || SceneModels.empty() || !ConstantBuffer)
+    if (!Device || SceneModels.empty() || !GetSceneConstantBuffer())
     {
         return false;
     }
@@ -3123,7 +3102,7 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     std::vector<DirectX::XMFLOAT4> Bounds;
     Bounds.reserve(SceneModels.size() * 2);
 
-    const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferBase = ConstantBuffer->GetGPUVirtualAddress();
+    const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferBase = GetSceneConstantBufferAddress();
     auto AppendIndirectDrawData = [&](uint32_t SortedIndex)
     {
         const FSceneModelResource& Model = SceneModels[SortedIndex];
@@ -3193,27 +3172,55 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     D3D12_RESOURCE_DESC UploadDesc = BufferDesc;
     UploadDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &DefaultHeap,
-        D3D12_HEAP_FLAG_NONE,
-        &BufferDesc,
-        D3D12_RESOURCE_STATE_COMMON,
-        nullptr,
-        IID_PPV_ARGS(IndirectCommandBuffer.GetAddressOf())));
-
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &UploadHeap,
-        D3D12_HEAP_FLAG_NONE,
-        &UploadDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        nullptr,
-        IID_PPV_ARGS(IndirectCommandUpload.GetAddressOf())));
-
     const D3D12_RANGE EmptyRange = { 0, 0 };
-    void* UploadData = nullptr;
-    HR_CHECK(IndirectCommandUpload->Map(0, &EmptyRange, &UploadData));
-    std::memcpy(UploadData, Commands.data(), CommandBufferSize);
-    IndirectCommandUpload->Unmap(0, nullptr);
+    IndirectCommandBuffers.clear();
+    IndirectCommandStates.clear();
+    IndirectCommandBuffers.resize(GetFramesInFlight());
+    IndirectCommandStates.resize(GetFramesInFlight(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> IndirectCommandUploads;
+    IndirectCommandUploads.resize(GetFramesInFlight());
+
+    for (uint32_t FrameIndex = 0; FrameIndex < GetFramesInFlight(); ++FrameIndex)
+    {
+        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+            &DefaultHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &BufferDesc,
+            D3D12_RESOURCE_STATE_COMMON,
+            nullptr,
+            IID_PPV_ARGS(IndirectCommandBuffers[FrameIndex].GetAddressOf())));
+        if (IndirectCommandBuffers[FrameIndex])
+        {
+            const std::wstring Name = L"IndirectCommandBuffer_Frame" + std::to_wstring(FrameIndex);
+            IndirectCommandBuffers[FrameIndex]->SetName(Name.c_str());
+        }
+
+        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+            &UploadHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &UploadDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(IndirectCommandUploads[FrameIndex].GetAddressOf())));
+
+        if (IndirectCommandUploads[FrameIndex])
+        {
+            void* UploadData = nullptr;
+            HR_CHECK(IndirectCommandUploads[FrameIndex]->Map(0, &EmptyRange, &UploadData));
+            std::vector<FIndirectDrawCommand> FrameCommands = Commands;
+            const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferBase = SceneConstantBuffers[FrameIndex]
+                ? SceneConstantBuffers[FrameIndex]->GetGPUVirtualAddress()
+                : 0;
+            for (uint32_t CommandIndex = 0; CommandIndex < FrameCommands.size(); ++CommandIndex)
+            {
+                const uint32_t InstanceIndex = FrameCommands[CommandIndex].DrawArguments.StartInstanceLocation;
+                FrameCommands[CommandIndex].ConstantBufferAddress =
+                    ConstantBufferBase + SceneConstantBufferStride * InstanceIndex;
+            }
+            std::memcpy(UploadData, FrameCommands.data(), CommandBufferSize);
+            IndirectCommandUploads[FrameIndex]->Unmap(0, nullptr);
+        }
+    }
 
     const uint64_t BoundsBufferSize = sizeof(DirectX::XMFLOAT4) * Bounds.size();
     D3D12_RESOURCE_DESC BoundsDesc = BufferDesc;
@@ -3238,7 +3245,7 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
         nullptr,
         IID_PPV_ARGS(ModelBoundsUpload.GetAddressOf())));
 
-    UploadData = nullptr;
+    void* UploadData = nullptr;
     HR_CHECK(ModelBoundsUpload->Map(0, &EmptyRange, &UploadData));
     std::memcpy(UploadData, Bounds.data(), BoundsBufferSize);
     ModelBoundsUpload->Unmap(0, nullptr);
@@ -3344,30 +3351,53 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     HR_CHECK(Device->GetDevice()->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(UploadAllocator.GetAddressOf())));
     HR_CHECK(Device->GetDevice()->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, UploadAllocator.Get(), nullptr, IID_PPV_ARGS(UploadList.GetAddressOf())));
 
-    D3D12_RESOURCE_BARRIER PreCopyBarriers[4] = {};
-    PreCopyBarriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    PreCopyBarriers[0].Transition.pResource = IndirectCommandBuffer.Get();
-    PreCopyBarriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    PreCopyBarriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
-    PreCopyBarriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-    PreCopyBarriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    PreCopyBarriers[1].Transition.pResource = ModelBoundsBuffer.Get();
-    PreCopyBarriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    PreCopyBarriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
-    PreCopyBarriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-    PreCopyBarriers[2].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    PreCopyBarriers[2].Transition.pResource = GpuDebugPrintBuffer.Get();
-    PreCopyBarriers[2].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    PreCopyBarriers[2].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
-    PreCopyBarriers[2].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-    PreCopyBarriers[3].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    PreCopyBarriers[3].Transition.pResource = GpuDebugPrintStatsBuffer.Get();
-    PreCopyBarriers[3].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    PreCopyBarriers[3].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
-    PreCopyBarriers[3].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-    UploadList->ResourceBarrier(_countof(PreCopyBarriers), PreCopyBarriers);
+    std::vector<D3D12_RESOURCE_BARRIER> PreCopyBarriers;
+    PreCopyBarriers.reserve(GetFramesInFlight() + 3);
+    for (uint32_t FrameIndex = 0; FrameIndex < GetFramesInFlight(); ++FrameIndex)
+    {
+        D3D12_RESOURCE_BARRIER Barrier = {};
+        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        Barrier.Transition.pResource = IndirectCommandBuffers[FrameIndex].Get();
+        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+        PreCopyBarriers.push_back(Barrier);
+    }
+    D3D12_RESOURCE_BARRIER BoundsBarrier = {};
+    BoundsBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    BoundsBarrier.Transition.pResource = ModelBoundsBuffer.Get();
+    BoundsBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    BoundsBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    BoundsBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    PreCopyBarriers.push_back(BoundsBarrier);
 
-    UploadList->CopyBufferRegion(IndirectCommandBuffer.Get(), 0, IndirectCommandUpload.Get(), 0, CommandBufferSize);
+    D3D12_RESOURCE_BARRIER DebugBarrier = {};
+    DebugBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    DebugBarrier.Transition.pResource = GpuDebugPrintBuffer.Get();
+    DebugBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    DebugBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    DebugBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    PreCopyBarriers.push_back(DebugBarrier);
+
+    D3D12_RESOURCE_BARRIER StatsBarrier = {};
+    StatsBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    StatsBarrier.Transition.pResource = GpuDebugPrintStatsBuffer.Get();
+    StatsBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    StatsBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    StatsBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    PreCopyBarriers.push_back(StatsBarrier);
+
+    UploadList->ResourceBarrier(static_cast<UINT>(PreCopyBarriers.size()), PreCopyBarriers.data());
+
+    for (uint32_t FrameIndex = 0; FrameIndex < GetFramesInFlight(); ++FrameIndex)
+    {
+        UploadList->CopyBufferRegion(
+            IndirectCommandBuffers[FrameIndex].Get(),
+            0,
+            IndirectCommandUploads[FrameIndex].Get(),
+            0,
+            CommandBufferSize);
+    }
     UploadList->CopyBufferRegion(ModelBoundsBuffer.Get(), 0, ModelBoundsUpload.Get(), 0, BoundsBufferSize);
     if (GpuDebugPrintBuffer && GpuDebugPrintUpload)
     {
@@ -3378,35 +3408,51 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
         UploadList->CopyBufferRegion(GpuDebugPrintStatsBuffer.Get(), 0, GpuDebugPrintStatsUpload.Get(), 0, sizeof(uint32_t) * 2);
     }
 
-    D3D12_RESOURCE_BARRIER Barriers[4] = {};
-    Barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    Barriers[0].Transition.pResource = IndirectCommandBuffer.Get();
-    Barriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    Barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    Barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
-    Barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    Barriers[1].Transition.pResource = ModelBoundsBuffer.Get();
-    Barriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    Barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    Barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-    Barriers[2].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    Barriers[2].Transition.pResource = GpuDebugPrintBuffer.Get();
-    Barriers[2].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    Barriers[2].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    Barriers[2].Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    Barriers[3].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    Barriers[3].Transition.pResource = GpuDebugPrintStatsBuffer.Get();
-    Barriers[3].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    Barriers[3].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    Barriers[3].Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    UploadList->ResourceBarrier(4, Barriers);
+    std::vector<D3D12_RESOURCE_BARRIER> PostCopyBarriers;
+    PostCopyBarriers.reserve(GetFramesInFlight() + 3);
+    for (uint32_t FrameIndex = 0; FrameIndex < GetFramesInFlight(); ++FrameIndex)
+    {
+        D3D12_RESOURCE_BARRIER Barrier = {};
+        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        Barrier.Transition.pResource = IndirectCommandBuffers[FrameIndex].Get();
+        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+        PostCopyBarriers.push_back(Barrier);
+    }
+
+    D3D12_RESOURCE_BARRIER PostBoundsBarrier = {};
+    PostBoundsBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    PostBoundsBarrier.Transition.pResource = ModelBoundsBuffer.Get();
+    PostBoundsBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    PostBoundsBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    PostBoundsBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    PostCopyBarriers.push_back(PostBoundsBarrier);
+
+    D3D12_RESOURCE_BARRIER PostDebugBarrier = {};
+    PostDebugBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    PostDebugBarrier.Transition.pResource = GpuDebugPrintBuffer.Get();
+    PostDebugBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    PostDebugBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    PostDebugBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    PostCopyBarriers.push_back(PostDebugBarrier);
+
+    D3D12_RESOURCE_BARRIER PostStatsBarrier = {};
+    PostStatsBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    PostStatsBarrier.Transition.pResource = GpuDebugPrintStatsBuffer.Get();
+    PostStatsBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    PostStatsBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    PostStatsBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    PostCopyBarriers.push_back(PostStatsBarrier);
+
+    UploadList->ResourceBarrier(static_cast<UINT>(PostCopyBarriers.size()), PostCopyBarriers.data());
 
     HR_CHECK(UploadList->Close());
     ID3D12CommandList* Lists[] = { UploadList.Get() };
     Device->GetGraphicsQueue()->ExecuteCommandLists(1, Lists);
     Device->GetGraphicsQueue()->Flush();
 
-    IndirectCommandState = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+    IndirectCommandStates.assign(GetFramesInFlight(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
     GpuDebugPrintState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     GpuDebugPrintStatsState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 
@@ -3515,7 +3561,7 @@ void FDeferredRenderer::UpdateSceneConstants(const FCamera& Camera, const FScene
         static_cast<float>(ShadowMapWidth),
         static_cast<float>(ShadowMapHeight),
         EnvironmentMipCount,
-        ConstantBufferMapped,
+        GetSceneConstantBufferMapped(),
         ConstantBufferOffset);
 }
 

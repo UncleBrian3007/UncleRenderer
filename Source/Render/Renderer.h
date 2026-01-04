@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+#include "RendererUtils.h"
+
 struct FSceneModelResource;
 class FTextureLoader;
 
@@ -67,7 +69,18 @@ public:
     virtual void SetDepthPrepassEnabled(bool bEnabled) { bDepthPrepassEnabled = bEnabled; }
     virtual bool IsDepthPrepassEnabled() const { return bDepthPrepassEnabled; }
 
-    const D3D12_CPU_DESCRIPTOR_HANDLE& GetDSVHandle() const { return DepthStencilHandle; }
+    void SetFrameIndex(uint32_t FrameIndex);
+    uint32_t GetFrameIndex() const { return CurrentFrameIndex; }
+
+    const D3D12_CPU_DESCRIPTOR_HANDLE& GetDSVHandle() const;
+    ID3D12Resource* GetDepthBuffer() const;
+    D3D12_RESOURCE_STATES& GetDepthBufferState();
+    ID3D12Resource* GetSceneConstantBuffer() const;
+    D3D12_GPU_VIRTUAL_ADDRESS GetSceneConstantBufferAddress() const;
+    uint8_t* GetSceneConstantBufferMapped() const;
+    ID3D12Resource* GetIndirectCommandBuffer() const;
+    D3D12_RESOURCE_STATES& GetIndirectCommandState();
+    uint32_t GetFramesInFlight() const { return FramesInFlight; }
 
     DirectX::XMFLOAT3 GetSceneCenter() const { return SceneCenter; }
     float GetSceneRadius() const { return SceneRadius; }
@@ -109,7 +122,13 @@ protected:
     bool CreateGpuDebugPrintPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateGpuDebugPrintStatsPipeline(FDX12Device* Device);
     void RenderGpuDebugPrint(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& OutputHandle);
+    bool CreateDepthResourcesPerFrame(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT Format);
+    bool CreateSceneConstantBuffersPerFrame(FDX12Device* Device, uint64_t BufferSize);
 
+    std::vector<FDepthResources> DepthResourcesPerFrame;
+    std::vector<D3D12_RESOURCE_STATES> DepthBufferStates;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SceneConstantBuffers;
+    std::vector<uint8_t*> SceneConstantBufferMapped;
     D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilHandle{};
     D3D12_CPU_DESCRIPTOR_HANDLE ShadowDSVHandle{};
     D3D12_CPU_DESCRIPTOR_HANDLE ObjectIdRtvHandle{};
@@ -134,12 +153,9 @@ protected:
         std::wstring Name;
     };
 
-    Microsoft::WRL::ComPtr<ID3D12Resource> ConstantBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> SkyConstantBuffer;
-    Microsoft::WRL::ComPtr<ID3D12Resource> DepthBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> ShadowMap;
-    Microsoft::WRL::ComPtr<ID3D12Resource> IndirectCommandBuffer;
-    Microsoft::WRL::ComPtr<ID3D12Resource> IndirectCommandUpload;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> IndirectCommandBuffers;
     Microsoft::WRL::ComPtr<ID3D12Resource> ModelBoundsBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> ModelBoundsUpload;
     Microsoft::WRL::ComPtr<ID3D12Resource> GpuDebugPrintBuffer;
@@ -151,7 +167,6 @@ protected:
     Microsoft::WRL::ComPtr<ID3D12Resource> NullTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> EnvironmentCubeTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> BrdfLutTexture;
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> DSVHeap;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> ShadowDSVHeap;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> ObjectIdRtvHeap;
     std::unique_ptr<FTextureLoader> TextureLoader;
@@ -180,14 +195,12 @@ protected:
     D3D12_VIEWPORT ShadowViewport{};
     D3D12_RECT ShadowScissor{};
 
-    D3D12_RESOURCE_STATES DepthBufferState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
     D3D12_RESOURCE_STATES ShadowMapState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
     D3D12_RESOURCE_STATES ObjectIdState = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    D3D12_RESOURCE_STATES IndirectCommandState = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+    std::vector<D3D12_RESOURCE_STATES> IndirectCommandStates;
     D3D12_RESOURCE_STATES GpuDebugPrintState = D3D12_RESOURCE_STATE_COMMON;
     D3D12_RESOURCE_STATES GpuDebugPrintStatsState = D3D12_RESOURCE_STATE_COMMON;
 
-    uint8_t* ConstantBufferMapped = nullptr;
     uint8_t* SkyConstantBufferMapped = nullptr;
     uint64_t SceneConstantBufferStride = 0;
     float ShadowBias = 0.0f;
@@ -217,4 +230,6 @@ protected:
     bool bHZBOcclusionEnabled = false;
 
     FDX12Device* Device = nullptr;
+    uint32_t FramesInFlight = 1;
+    uint32_t CurrentFrameIndex = 0;
 };

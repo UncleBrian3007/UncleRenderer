@@ -470,6 +470,10 @@ bool FApplication::RenderFrame()
             PreviousState,
             D3D12_RESOURCE_STATE_RENDER_TARGET);
 
+        if (ActiveRenderer)
+        {
+            ActiveRenderer->SetFrameIndex(BackBufferIndex);
+        }
         const D3D12_CPU_DESCRIPTOR_HANDLE* DsvHandle = ActiveRenderer ? &ActiveRenderer->GetDSVHandle() : nullptr;
 
         CommandContext->SetRenderTarget(RtvHandle, DsvHandle);
@@ -1445,8 +1449,12 @@ void FApplication::RenderUI()
         const std::vector<FRenderGraph::FGpuPassTimingStats>& TimingStats = FRenderGraph::GetGpuTimingStats();
         const uint32 MaxDisplay = FRenderGraph::GetGpuTimingDisplayCount();
         const uint32 DisplayCount = (std::min)(MaxDisplay, static_cast<uint32>(TimingStats.size()));
-        for (uint32 Index = 1; Index < DisplayCount; ++Index)
+        for (uint32 Index = 1; Index < DisplayCount + 1; ++Index)
         {
+            if (TimingStats.size() <= Index)
+            {
+                break;
+			}
             const FRenderGraph::FGpuPassTimingStats& Stats = TimingStats[Index];
             ImGui::Text("%s: %.3f / %.3f / %.3f (n=%u)",
                 Stats.Name.c_str(),

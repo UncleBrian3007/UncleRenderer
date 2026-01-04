@@ -70,7 +70,6 @@ public:
     {
         bTaaEnabled = bEnabled;
         std::fill(TaaHistoryValid.begin(), TaaHistoryValid.end(), false);
-        std::fill(TaaHistoryFenceValues.begin(), TaaHistoryFenceValues.end(), 0);
         TaaSampleIndex = 0;
     }
     bool IsTaaEnabled() const { return bTaaEnabled; }
@@ -137,7 +136,6 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> LightingBuffer;
     std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 2> LuminanceTextures;
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> TaaHistoryTextures;
-    std::vector<uint64_t> TaaHistoryFenceValues;
     Microsoft::WRL::ComPtr<ID3D12Resource> HierarchicalZBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> HZBNullUavResource;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> DescriptorHeap;
@@ -157,7 +155,7 @@ private:
     std::array<D3D12_GPU_DESCRIPTOR_HANDLE, 2> LuminanceUavHandles{};
     std::vector<D3D12_GPU_DESCRIPTOR_HANDLE> TaaSrvHandles;
     std::vector<D3D12_GPU_DESCRIPTOR_HANDLE> TaaUavHandles;
-    D3D12_GPU_DESCRIPTOR_HANDLE DepthBufferHandle{};
+    std::vector<D3D12_GPU_DESCRIPTOR_HANDLE> DepthBufferHandles;
     D3D12_GPU_DESCRIPTOR_HANDLE HZBSrvHandle{};
     std::vector<D3D12_GPU_DESCRIPTOR_HANDLE> HZBSrvMipHandles;
     std::vector<D3D12_GPU_DESCRIPTOR_HANDLE> HZBUavHandles;
