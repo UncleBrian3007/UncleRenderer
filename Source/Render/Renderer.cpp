@@ -315,8 +315,8 @@ bool FRenderer::CreateShadowResources(
 
     if (InOutWidth == 0 || InOutHeight == 0)
     {
-        InOutWidth = 2048;
-        InOutHeight = 2048;
+        InOutWidth = 4096;
+        InOutHeight = 4096;
     }
 
     D3D12_RESOURCE_DESC Desc = {};

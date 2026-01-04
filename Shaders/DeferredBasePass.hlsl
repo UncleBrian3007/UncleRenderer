@@ -85,7 +85,9 @@ float3 ComputeViewNormal(VSOutput Input, float2 normalUV)
     float3 tangent = normalize(Input.Tangent.xyz - vertexNormal * dot(vertexNormal, Input.Tangent.xyz));
     float3 bitangent = normalize(cross(vertexNormal, tangent)) * Input.Tangent.w;
 
-    float3 tangentNormal = NormalTexture.Sample(AlbedoSampler, normalUV).rgb * 2.0f - 1.0f;
+    float2 tangentNormalRG = NormalTexture.Sample(AlbedoSampler, normalUV).rg * 2.0f - 1.0f;
+    float tangentNormalZ = sqrt(saturate(1.0f - dot(tangentNormalRG, tangentNormalRG)));
+    float3 tangentNormal = float3(tangentNormalRG, tangentNormalZ);
     const float tangentEpsilon = 1e-5f;
     float tangentNormalLength = length(tangentNormal);
     tangentNormal = tangentNormalLength < tangentEpsilon ? float3(0.0f, 0.0f, 1.0f) : tangentNormal;

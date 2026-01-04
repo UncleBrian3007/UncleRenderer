@@ -395,7 +395,7 @@ bool RendererUtils::CreateSceneModelsFromJson(
             const FFloat3 MeshMax = MeshMaxs[MeshIndex];
 
             const std::array<float, 3> ScaleComponents = { Model.Scale.x, Model.Scale.y, Model.Scale.z };
-            float MaxScale = 1.0f;
+            float MaxScale = 0.0f;
             for (float ScaleValue : ScaleComponents)
             {
                 MaxScale = (std::max)(MaxScale, std::fabs(ScaleValue));

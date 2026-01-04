@@ -1,22 +1,20 @@
 {
   "meta": {"name": "sample_multi_asset_scene", "version": 1},
-  "camera": {"position": [1272.12, 613.30, 118.69], "rotation": [10.25, -88.81, 0.0], "fov_y": 45},
-  "environment": {"background": [0.05, 0.05, 0.07]},
+  "camera": {"position": [14.327, 0.762, 0.571], "rotation": [-12.6, 261.8, 0.0], "fov_y": 60},
   "models": [
     {
       "id": "sponza",
       "path": "sponza/untitled.gltf",
-      "translate": [ 0.0, 0.0, 0.0 ],
+      "translate": [ 5.0, 0.0, 0.0 ],
       "rotate_euler": [ 0.0, 0.0, 0.0 ],
-      "scale": [ 1.0, 1.0, 1.0 ]
+      "scale": [ 0.01, 0.01, 0.01 ]
     }
   ],
   "lights": [
     {
       "type": "directional",
-      "direction": [-0.5, -1.0, -0.3],
-      "intensity": 3.0,
-      "color": [1.0, 0.95, 0.9]
+      "rotation": [-75.0, 0.0, 0.0],
+      "intensity": 1.0
     }
   ]
 }

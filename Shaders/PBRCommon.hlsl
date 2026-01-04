@@ -42,7 +42,7 @@ float3 EvaluatePBR(float3 albedo, float metallic, float roughness, float3 F0, fl
 
     float3 specular = (D * G * F) / max(4.0f * NdotL * NdotV, 1e-4f);
     float3 kd = (1.0f - F) * (1.0f - metallic);
-    float3 diffuse = kd * albedo / PI;
+    float3 diffuse = kd * albedo;// / PI;
 
     return (diffuse + specular) * NdotL;
 }
