@@ -126,16 +126,16 @@
    ],
    "images" : [
       {
-         "uri" : "SciFiHelmet_BaseColor.png"
+         "uri" : "SciFiHelmet_BaseColor.dds"
       },
       {
-         "uri" : "SciFiHelmet_MetallicRoughness.png"
+         "uri" : "SciFiHelmet_MetallicRoughness.dds"
       },
       {
-         "uri" : "SciFiHelmet_Normal.png"
+         "uri" : "SciFiHelmet_Normal.dds"
       },
       {
-         "uri" : "SciFiHelmet_AmbientOcclusion.png"
+         "uri" : "SciFiHelmet_AmbientOcclusion.dds"
       }
    ],
    "materials" : [
@@ -177,20 +177,6 @@
    ],
    "nodes" : [
       {
-         "name" : "Camera",
-         "rotation" : [
-            0.483536,
-            0.336872,
-            -0.208704,
-            0.780483
-         ],
-         "translation" : [
-            7.481132,
-            5.343665,
-            6.507640
-         ]
-      },
-      {
          "mesh" : 0,
          "name" : "SciFiHelmet"
       }
@@ -202,8 +188,7 @@
    "scenes" : [
       {
          "nodes" : [
-            0,
-            1
+            0
          ]
       }
    ],
