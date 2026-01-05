@@ -21,8 +21,9 @@ struct FRendererConfig
     float ShadowBias = 0.0f;
     bool bEnableTonemap = true;
     float TonemapExposure = 1.0f;
-    float TonemapWhitePoint = 1.0f;
     float TonemapGamma = 2.2f;
+    bool bEnableCas = true;
+    float CasSharpness = 0.5f;
     bool bEnableAutoExposure = true;
     float AutoExposureKey = 0.3f;
     float AutoExposureMin = 0.1f;

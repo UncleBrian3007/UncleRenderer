@@ -85,6 +85,8 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     TonemapExposure = Options.TonemapExposure;
     TonemapWhitePoint = Options.TonemapWhitePoint;
     TonemapGamma = Options.TonemapGamma;
+    bCasEnabled = Options.bEnableCas;
+    CasSharpness = Options.CasSharpness;
     bAutoExposureEnabled = Options.bEnableAutoExposure;
     AutoExposureKey = Options.AutoExposureKey;
     AutoExposureMin = Options.AutoExposureMin;
@@ -176,6 +178,13 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     if (!CreateTonemapRootSignature(Device) || !CreateTonemapPipeline(Device, BackBufferFormat))
     {
         LogError("Deferred renderer initialization failed: tonemap pipeline creation failed");
+        return false;
+    }
+
+    LogInfo("Creating deferred renderer CAS root signature and pipeline...");
+    if (!CreateCasRootSignature(Device) || !CreateCasPipeline(Device, BackBufferFormat))
+    {
+        LogError("Deferred renderer initialization failed: CAS pipeline creation failed");
         return false;
     }
 
@@ -457,6 +466,12 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         LightingBuffer.Get(),
         &LightingBufferState,
         { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), LightingBufferFormat });
+
+    FRGResourceHandle TonemapOutputResource = Graph.ImportTexture(
+        "TonemapOutput",
+        TonemapOutput.Get(),
+        &TonemapOutputState,
+        { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), BackBufferFormat });
 
     FRGResourceHandle LuminanceHandles[2] =
     {
@@ -1419,10 +1434,13 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         LocalCommandList->Dispatch(1, 1, 1);
     });
 
+    const bool bCasActive = bCasEnabled && CasPipeline && CasRootSignature;
+
     struct FTonemapPassData
     {
         D3D12_CPU_DESCRIPTOR_HANDLE OutputHandle{};
         D3D12_GPU_DESCRIPTOR_HANDLE InputHandle{};
+        bool bUseCas = false;
         bool bUseAutoExposure = false;
         bool bUseTaa = false;
         uint32_t LuminanceIndex = 0;
@@ -1430,7 +1448,8 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
     Graph.AddPass<FTonemapPassData>("Tonemap", [&](FTonemapPassData& Data, FRGPassBuilder& Builder)
     {
-        Data.OutputHandle = RtvHandle;
+        Data.bUseCas = bCasActive;
+        Data.OutputHandle = Data.bUseCas ? TonemapOutputRtvHandle : RtvHandle;
         Data.bUseAutoExposure = bAutoExposureEnabled;
         Data.bUseTaa = bTaaActive;
         Data.LuminanceIndex = LuminanceWriteIndex;
@@ -1442,6 +1461,10 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         else
         {
             Builder.ReadTexture(LightingHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        }
+        if (Data.bUseCas)
+        {
+            Builder.WriteTexture(TonemapOutputResource, D3D12_RESOURCE_STATE_RENDER_TARGET);
         }
         Builder.ReadTexture(LuminanceHandles[Data.LuminanceIndex], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         for (int i = 0; i < 3; ++i)
@@ -1460,11 +1483,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
             uint32_t Enabled;
             uint32_t AutoExposureEnabled;
             float Exposure;
-            float WhitePoint;
             float Gamma;
-            float AutoExposureKey;
-            float AutoExposureMin;
-            float AutoExposureMax;
         };
 
         const FTonemapConstants TonemapConstants =
@@ -1472,11 +1491,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
             bTonemapEnabled ? 1u : 0u,
             bAutoExposureEnabled ? 1u : 0u,
             TonemapExposure,
-            TonemapWhitePoint,
-            TonemapGamma,
-            AutoExposureKey,
-            AutoExposureMin,
-            AutoExposureMax
+            TonemapGamma
         };
 
         ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
@@ -1495,6 +1510,66 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
         Cmd.TransitionResource(LightingBuffer.Get(), LightingBufferState, D3D12_RESOURCE_STATE_RENDER_TARGET);
         LightingBufferState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    });
+
+    struct FCasPassData
+    {
+        bool bEnabled = false;
+        D3D12_CPU_DESCRIPTOR_HANDLE OutputHandle{};
+        D3D12_GPU_DESCRIPTOR_HANDLE InputHandle{};
+        DirectX::XMFLOAT2 TexelDelta{};
+        float Sharpness = 0.0f;
+    };
+
+    Graph.AddPass<FCasPassData>("CAS", [&](FCasPassData& Data, FRGPassBuilder& Builder)
+    {
+        Data.bEnabled = bCasActive;
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+        Data.OutputHandle = RtvHandle;
+        Data.InputHandle = TonemapOutputHandle;
+        Data.TexelDelta = DirectX::XMFLOAT2(1.0f / Viewport.Width, 1.0f / Viewport.Height);
+        Data.Sharpness = CasSharpness;
+        Builder.ReadTexture(TonemapOutputResource, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    }, [this](const FCasPassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+        ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
+
+        FScopedPixEvent CasEvent(LocalCommandList, L"CAS");
+        Cmd.SetRenderTarget(Data.OutputHandle, nullptr);
+
+        struct FCasConstants
+        {
+            DirectX::XMFLOAT2 TexelDelta;
+            float Sharpness;
+            float Padding;
+        };
+
+        const FCasConstants CasConstants =
+        {
+            Data.TexelDelta,
+            Data.Sharpness,
+            0.0f
+        };
+
+        ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
+        LocalCommandList->SetPipelineState(CasPipeline.Get());
+        LocalCommandList->SetGraphicsRootSignature(CasRootSignature.Get());
+        LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+
+        LocalCommandList->RSSetViewports(1, &Viewport);
+        LocalCommandList->RSSetScissorRects(1, &ScissorRect);
+
+        LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        LocalCommandList->SetGraphicsRoot32BitConstants(0, sizeof(CasConstants) / sizeof(uint32_t), &CasConstants, 0);
+        LocalCommandList->SetGraphicsRootDescriptorTable(1, Data.InputHandle);
+        LocalCommandList->DrawInstanced(3, 1, 0, 0);
     });
 
     struct FDebugPrintPassData
@@ -2286,7 +2361,7 @@ bool FDeferredRenderer::CreateTonemapRootSignature(FDX12Device* Device)
     // RootParams[0]: Tonemap constants (exposure/gamma/auto-exposure)
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    RootParams[0].Constants.Num32BitValues = 8;
+    RootParams[0].Constants.Num32BitValues = 4;
     RootParams[0].Constants.RegisterSpace = 0;
     RootParams[0].Constants.ShaderRegister = 0;
 
@@ -2384,6 +2459,111 @@ bool FDeferredRenderer::CreateTonemapPipeline(FDX12Device* Device, DXGI_FORMAT B
     return true;
 }
 
+bool FDeferredRenderer::CreateCasRootSignature(FDX12Device* Device)
+{
+    D3D12_DESCRIPTOR_RANGE1 InputRange = {};
+    InputRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    InputRange.NumDescriptors = 1;
+    InputRange.BaseShaderRegister = 0;
+    InputRange.RegisterSpace = 0;
+    InputRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
+    InputRange.OffsetInDescriptorsFromTableStart = 0;
+
+    D3D12_ROOT_PARAMETER1 RootParams[2] = {};
+
+    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    RootParams[0].Constants.Num32BitValues = 4;
+    RootParams[0].Constants.RegisterSpace = 0;
+    RootParams[0].Constants.ShaderRegister = 0;
+
+    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    RootParams[1].DescriptorTable.NumDescriptorRanges = 1;
+    RootParams[1].DescriptorTable.pDescriptorRanges = &InputRange;
+
+    D3D12_STATIC_SAMPLER_DESC SamplerDesc = {};
+    SamplerDesc.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    SamplerDesc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    SamplerDesc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    SamplerDesc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    SamplerDesc.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    SamplerDesc.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+    SamplerDesc.MinLOD = 0.0f;
+    SamplerDesc.MaxLOD = D3D12_FLOAT32_MAX;
+    SamplerDesc.ShaderRegister = 0;
+    SamplerDesc.RegisterSpace = 0;
+    SamplerDesc.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
+    RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    RootSigDesc.Desc_1_1.NumParameters = _countof(RootParams);
+    RootSigDesc.Desc_1_1.pParameters = RootParams;
+    RootSigDesc.Desc_1_1.NumStaticSamplers = 1;
+    RootSigDesc.Desc_1_1.pStaticSamplers = &SamplerDesc;
+    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    ComPtr<ID3DBlob> SerializedSig;
+    ComPtr<ID3DBlob> ErrorBlob;
+    HR_CHECK(D3D12SerializeVersionedRootSignature(&RootSigDesc, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
+
+    if (ErrorBlob)
+    {
+        OutputDebugStringA(static_cast<const char*>(ErrorBlob->GetBufferPointer()));
+    }
+
+    HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(CasRootSignature.GetAddressOf())));
+    return true;
+}
+
+bool FDeferredRenderer::CreateCasPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat)
+{
+    FShaderCompiler Compiler;
+    std::vector<uint8_t> VSByteCode;
+    std::vector<uint8_t> PSByteCode;
+
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
+    const std::wstring PSTarget = RendererUtils::BuildShaderTarget(L"ps", ShaderModel);
+
+    if (!Compiler.CompileFromFile(L"Shaders/Cas.hlsl", L"VSMain", VSTarget, VSByteCode))
+    {
+        return false;
+    }
+
+    if (!Compiler.CompileFromFile(L"Shaders/Cas.hlsl", L"PSMain", PSTarget, PSByteCode))
+    {
+        return false;
+    }
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
+    PsoDesc.pRootSignature = CasRootSignature.Get();
+    PsoDesc.VS = { VSByteCode.data(), VSByteCode.size() };
+    PsoDesc.PS = { PSByteCode.data(), PSByteCode.size() };
+    PsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    PsoDesc.SampleDesc.Count = 1;
+    PsoDesc.SampleMask = UINT_MAX;
+
+    PsoDesc.RasterizerState = {};
+    PsoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    PsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    PsoDesc.RasterizerState.FrontCounterClockwise = TRUE;
+    PsoDesc.RasterizerState.DepthClipEnable = TRUE;
+
+    PsoDesc.BlendState = {};
+    PsoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    PsoDesc.DepthStencilState = {};
+    PsoDesc.DepthStencilState.DepthEnable = FALSE;
+    PsoDesc.DepthStencilState.StencilEnable = FALSE;
+    PsoDesc.NumRenderTargets = 1;
+    PsoDesc.RTVFormats[0] = BackBufferFormat;
+    PsoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
+
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(CasPipeline.GetAddressOf())));
+    return true;
+}
+
 bool FDeferredRenderer::CreateGBufferResources(FDX12Device* Device, uint32_t Width, uint32_t Height)
 {
     Microsoft::WRL::ComPtr<ID3D12Resource>* Targets[3] = { &GBufferA, &GBufferB, &GBufferC };
@@ -2407,7 +2587,7 @@ bool FDeferredRenderer::CreateGBufferResources(FDX12Device* Device, uint32_t Wid
     RtvHandle.ptr = 0;
 
     D3D12_DESCRIPTOR_HEAP_DESC RtvHeapDesc = {};
-    RtvHeapDesc.NumDescriptors = 4;
+    RtvHeapDesc.NumDescriptors = 5;
     RtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     RtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&RtvHeapDesc, IID_PPV_ARGS(GBufferRTVHeap.GetAddressOf())));
@@ -2477,6 +2657,34 @@ bool FDeferredRenderer::CreateGBufferResources(FDX12Device* Device, uint32_t Wid
     LightingRtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
     LightingRtvDesc.Format = LightingBufferFormat;
     Device->GetDevice()->CreateRenderTargetView(LightingBuffer.Get(), &LightingRtvDesc, RtvHandle);
+    RtvHandle.ptr += RtvDescriptorSize;
+
+    Desc.Width = Width;
+    Desc.Height = Height;
+    Desc.Format = BackBufferFormat;
+
+    D3D12_CLEAR_VALUE TonemapClear = {};
+    TonemapClear.Format = Desc.Format;
+    TonemapClear.Color[0] = 0.0f;
+    TonemapClear.Color[1] = 0.0f;
+    TonemapClear.Color[2] = 0.0f;
+    TonemapClear.Color[3] = 1.0f;
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &HeapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &Desc,
+        TonemapOutputState,
+        &TonemapClear,
+        IID_PPV_ARGS(TonemapOutput.GetAddressOf())));
+
+    TonemapOutput->SetName(L"TonemapOutput");
+
+    TonemapOutputRtvHandle = RtvHandle;
+    D3D12_RENDER_TARGET_VIEW_DESC TonemapRtvDesc = {};
+    TonemapRtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+    TonemapRtvDesc.Format = BackBufferFormat;
+    Device->GetDevice()->CreateRenderTargetView(TonemapOutput.Get(), &TonemapRtvDesc, RtvHandle);
 
     return true;
 }
@@ -2678,7 +2886,7 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
     const UINT DepthDescriptorCount = GetFramesInFlight();
 
     D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
-    HeapDesc.NumDescriptors = TextureCount * 4 + 11 + HZBDescriptorCount + TaaDescriptorCount + DepthDescriptorCount;
+    HeapDesc.NumDescriptors = TextureCount * 4 + 12 + HZBDescriptorCount + TaaDescriptorCount + DepthDescriptorCount;
     HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(DescriptorHeap.GetAddressOf())));
@@ -2799,6 +3007,19 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         LightingSrvDesc.Texture2D.MipLevels = 1;
         Device->GetDevice()->CreateShaderResourceView(LightingBuffer.Get(), &LightingSrvDesc, CpuHandle);
         LightingBufferHandle = GpuHandle;
+
+        CpuHandle.ptr += DescriptorSize;
+        GpuHandle.ptr += DescriptorSize;
+    }
+
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC TonemapSrvDesc = {};
+        TonemapSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        TonemapSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        TonemapSrvDesc.Format = BackBufferFormat;
+        TonemapSrvDesc.Texture2D.MipLevels = 1;
+        Device->GetDevice()->CreateShaderResourceView(TonemapOutput.Get(), &TonemapSrvDesc, CpuHandle);
+        TonemapOutputHandle = GpuHandle;
 
         CpuHandle.ptr += DescriptorSize;
         GpuHandle.ptr += DescriptorSize;

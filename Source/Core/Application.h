@@ -88,6 +88,8 @@ private:
     bool bTonemapEnabled = true;
     bool bIndirectDrawEnabled = true;
     bool bModelPixEventsEnabled = true;
+    bool bCasEnabled = true;
+    float CasSharpness = 0.2f;
     float TonemapExposure = 0.5f;
     float TonemapWhitePoint = 4.0f;
     float TonemapGamma = 1.0f;

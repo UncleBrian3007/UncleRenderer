@@ -15,7 +15,7 @@
     {
       "type": "directional",
       "rotation": [-45.000, -135.0000, 0.000],
-      "intensity": 3.0,
+      "intensity": 1.0,
       "color": [1.0, 0.95, 0.9]
     }
   ]

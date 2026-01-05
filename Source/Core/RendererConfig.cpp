@@ -152,18 +152,6 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
         }
     }
 
-    if (LowerKey == "tonemapwhitepoint")
-    {
-        try
-        {
-            OutConfig.TonemapWhitePoint = std::stof(Value);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid tonemap white point value in renderer config: " + Value);
-        }
-    }
-
     if (LowerKey == "tonemapgamma")
     {
         try
@@ -173,6 +161,23 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
         catch (...)
         {
             LogWarning("Invalid tonemap gamma value in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "enablecas" || LowerKey == "cas")
+    {
+        OutConfig.bEnableCas = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+
+    if (LowerKey == "cassharpness")
+    {
+        try
+        {
+            OutConfig.CasSharpness = std::stof(Value);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid CAS sharpness value in renderer config: " + Value);
         }
     }
 

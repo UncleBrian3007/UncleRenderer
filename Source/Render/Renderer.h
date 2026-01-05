@@ -23,6 +23,8 @@ struct FRendererOptions
     float TonemapExposure = 0.5f;
     float TonemapWhitePoint = 4.0f;
     float TonemapGamma = 1.0f;
+    bool bEnableCas = true;
+    float CasSharpness = 0.5f;
     bool bEnableAutoExposure = false;
     float AutoExposureKey = 0.18f;
     float AutoExposureMin = 0.1f;

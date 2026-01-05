@@ -355,5 +355,8 @@
     <None Include="Assets\Scenes\pica_pica.json">
       <Filter>Assets</Filter>
     </None>
+    <None Include="Shaders\Cas.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
   </ItemGroup>
 </Project>

@@ -24,59 +24,56 @@ cbuffer TonemapParams : register(b0)
     uint EnableTonemap;
     uint EnableAutoExposure;
     float Exposure;
-    float WhitePoint;
     float Gamma;
-    float AutoExposureKey;
-    float AutoExposureMin;
-    float AutoExposureMax;
 };
 
 Texture2D HDRScene : register(t0);
 Texture2D LogAverageLuminance : register(t1);
 SamplerState SceneSampler : register(s0);
 
-float LpmCurve(float luminance, float hdrMax)
+float3 PBRNeutralToneMapping(float3 color)
 {
-    const float a = 1.6f;
-    const float d = 0.977f;
-    const float midIn = 0.18f;
-    const float midOut = 0.22f;
-    const float b = pow(midIn, a) / midOut;
+    const float startCompression = 0.8f - 0.04f;
+    const float desaturation = 0.15f;
 
-    float lumaNorm = luminance / max(hdrMax, 1e-4f);
-    float mapped = pow(lumaNorm / (lumaNorm + b), d);
-    return mapped * hdrMax;
+    float x = min(color.r, min(color.g, color.b));
+    float offset = x < 0.08f ? x - 6.25f * x * x : 0.04f;
+    color -= offset;
+
+    float peak = max(color.r, max(color.g, color.b));
+    if (peak < startCompression)
+    {
+        return color;
+    }
+
+    const float d = 1.0f - startCompression;
+    float newPeak = 1.0f - d * d / (peak + d - startCompression);
+    color *= newPeak / max(peak, 1e-4f);
+
+    float g = 1.0f - 1.0f / (desaturation * (peak - newPeak) + 1.0f);
+    return lerp(color, newPeak * float3(1.0f, 1.0f, 1.0f), g);
 }
 
 float4 PSMain(VSOutput Input) : SV_Target
 {
     float3 hdrColor = HDRScene.Sample(SceneSampler, Input.UV).rgb;
-    float3 mappedColor = max(hdrColor, 0.0f);
-    float exposure = Exposure;
+    float finalExposure = Exposure;
 
     if (EnableAutoExposure != 0)
     {
         float exposureEv = LogAverageLuminance.Load(int3(0, 0, 0)).r;
-        exposure *= exp2(exposureEv);
-    }
+        finalExposure *= exp2(exposureEv);
+	}
 
+	float3 color = hdrColor * finalExposure;
+    
     if (EnableTonemap != 0)
     {
-        mappedColor *= exposure;
-
-        const float3 LuminanceWeights = float3(0.2126f, 0.7152f, 0.0722f);
-        float luminance = dot(mappedColor, LuminanceWeights);
-        float ldrLuminance = LpmCurve(luminance, WhitePoint);
-
-        float scale = ldrLuminance / max(luminance, 1e-4f);
-        mappedColor *= scale;
-        mappedColor = saturate(mappedColor);
-    }
-    else
-    {
-        mappedColor = saturate(mappedColor);
+        color = PBRNeutralToneMapping(color);
     }
 
-    mappedColor = pow(mappedColor, 1.0f / max(Gamma, 1e-3f));
-    return float4(mappedColor, 1.0f);
+	color = saturate(color);
+
+    color = pow(color, 1.0f / max(Gamma, 1e-3f));
+    return float4(color, 1.0f);
 }

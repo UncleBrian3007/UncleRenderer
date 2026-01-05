@@ -160,8 +160,9 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     ShadowBias = RendererConfig.ShadowBias;
     bTonemapEnabled = RendererConfig.bEnableTonemap;
     TonemapExposure = RendererConfig.TonemapExposure;
-    TonemapWhitePoint = RendererConfig.TonemapWhitePoint;
     TonemapGamma = RendererConfig.TonemapGamma;
+    bCasEnabled = RendererConfig.bEnableCas;
+    CasSharpness = RendererConfig.CasSharpness;
     bAutoExposureEnabled = RendererConfig.bEnableAutoExposure;
     AutoExposureKey = RendererConfig.AutoExposureKey;
     AutoExposureMin = RendererConfig.AutoExposureMin;
@@ -204,6 +205,8 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     RendererOptions.TonemapExposure = TonemapExposure;
     RendererOptions.TonemapWhitePoint = TonemapWhitePoint;
     RendererOptions.TonemapGamma = TonemapGamma;
+    RendererOptions.bEnableCas = bCasEnabled;
+    RendererOptions.CasSharpness = CasSharpness;
     RendererOptions.bEnableAutoExposure = bAutoExposureEnabled;
     RendererOptions.AutoExposureKey = AutoExposureKey;
     RendererOptions.AutoExposureMin = AutoExposureMin;
@@ -944,6 +947,8 @@ bool FApplication::ReloadScene(const std::wstring& ScenePath)
     RendererOptions.bEnableGpuDebugPrint = bGpuDebugPrintEnabled;
     RendererOptions.bEnableTAA = bTaaEnabled;
     RendererOptions.TaaHistoryWeight = TaaHistoryWeight;
+    RendererOptions.bEnableCas = bCasEnabled;
+    RendererOptions.CasSharpness = CasSharpness;
     RendererOptions.FramesInFlight = SwapChain ? SwapChain->GetBackBufferCount() : 2u;
 
     const uint32_t Width = static_cast<uint32_t>(MainWindow->GetWidth());
@@ -1058,6 +1063,8 @@ void FApplication::StartAsyncSceneReload(const std::wstring& ScenePath)
     RendererOptions.TonemapExposure = TonemapExposure;
     RendererOptions.TonemapWhitePoint = TonemapWhitePoint;
     RendererOptions.TonemapGamma = TonemapGamma;
+    RendererOptions.bEnableCas = bCasEnabled;
+    RendererOptions.CasSharpness = CasSharpness;
     RendererOptions.bEnableTAA = bTaaEnabled;
     RendererOptions.TaaHistoryWeight = TaaHistoryWeight;
     RendererOptions.bEnableGpuTiming = bGpuTimingEnabled;
@@ -1648,6 +1655,29 @@ void FApplication::RenderUI()
             }
         }
 
+        ImGui::SameLine();
+        bool bCas = bCasEnabled;
+        if (ImGui::Checkbox("CAS", &bCas))
+        {
+            bCasEnabled = bCas;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetCasEnabled(bCasEnabled);
+            }
+        }
+
+        float CasSharpnessValue = CasSharpness;
+        if (ImGui::SliderFloat("CAS Sharpness", &CasSharpnessValue, 0.0f, 1.0f, "%.2f"))
+        {
+            CasSharpness = CasSharpnessValue;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetCasSharpness(CasSharpness);
+            }
+        }
+
         float TonemapExposureValue = TonemapExposure;
         if (ImGui::SliderFloat("Tonemap Exposure", &TonemapExposureValue, 0.1f, 5.0f, "%.2f"))
         {
@@ -1656,17 +1686,6 @@ void FApplication::RenderUI()
             if (DeferredRenderer)
             {
                 DeferredRenderer->SetTonemapExposure(TonemapExposure);
-            }
-        }
-
-        float TonemapWhitePointValue = TonemapWhitePoint;
-        if (ImGui::SliderFloat("Tonemap White Point", &TonemapWhitePointValue, 0.5f, 16.0f, "%.2f"))
-        {
-            TonemapWhitePoint = TonemapWhitePointValue;
-
-            if (DeferredRenderer)
-            {
-                DeferredRenderer->SetTonemapWhitePoint(TonemapWhitePoint);
             }
         }
 

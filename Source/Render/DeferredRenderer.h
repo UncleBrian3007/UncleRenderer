@@ -48,6 +48,11 @@ public:
     void SetTonemapGamma(float Gamma) { TonemapGamma = Gamma; }
     float GetTonemapGamma() const { return TonemapGamma; }
 
+    void SetCasEnabled(bool bEnabled) { bCasEnabled = bEnabled; }
+    bool IsCasEnabled() const { return bCasEnabled; }
+    void SetCasSharpness(float Sharpness) { CasSharpness = Sharpness; }
+    float GetCasSharpness() const { return CasSharpness; }
+
     void SetAutoExposureEnabled(bool bEnabled) { bAutoExposureEnabled = bEnabled; }
     bool IsAutoExposureEnabled() const { return bAutoExposureEnabled; }
 
@@ -99,6 +104,8 @@ private:
     bool CreateTaaPipeline(FDX12Device* Device);
     bool CreateTonemapRootSignature(FDX12Device* Device);
     bool CreateTonemapPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
+    bool CreateCasRootSignature(FDX12Device* Device);
+    bool CreateCasPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateGBufferResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateHZBResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateLuminanceResources(FDX12Device* Device);
@@ -125,15 +132,18 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> AutoExposurePipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> TaaPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> TonemapPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> CasPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> SkyPipelineState;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ObjectIdPipeline;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> SkyRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> AutoExposureRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> TaaRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> TonemapRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> CasRootSignature;
     std::vector<FModelTextureSet> SceneTextures;
     Microsoft::WRL::ComPtr<ID3D12Resource> SceneTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> LightingBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> TonemapOutput;
     std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 2> LuminanceTextures;
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> TaaHistoryTextures;
     Microsoft::WRL::ComPtr<ID3D12Resource> HierarchicalZBuffer;
@@ -149,8 +159,10 @@ private:
 
     D3D12_CPU_DESCRIPTOR_HANDLE GBufferRTVHandles[3]{};
     D3D12_CPU_DESCRIPTOR_HANDLE LightingRTVHandle{};
+    D3D12_CPU_DESCRIPTOR_HANDLE TonemapOutputRtvHandle{};
     D3D12_GPU_DESCRIPTOR_HANDLE GBufferGpuHandles[3]{};
     D3D12_GPU_DESCRIPTOR_HANDLE LightingBufferHandle{};
+    D3D12_GPU_DESCRIPTOR_HANDLE TonemapOutputHandle{};
     std::array<D3D12_GPU_DESCRIPTOR_HANDLE, 2> LuminanceSrvHandles{};
     std::array<D3D12_GPU_DESCRIPTOR_HANDLE, 2> LuminanceUavHandles{};
     std::vector<D3D12_GPU_DESCRIPTOR_HANDLE> TaaSrvHandles;
@@ -171,6 +183,7 @@ private:
     };
     D3D12_RESOURCE_STATES HZBState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES LightingBufferState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    D3D12_RESOURCE_STATES TonemapOutputState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     std::array<D3D12_RESOURCE_STATES, 2> LuminanceStates = { D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
     std::vector<D3D12_RESOURCE_STATES> TaaStates;
     FMeshGeometryBuffers SkyGeometry;
@@ -181,6 +194,8 @@ private:
     float TonemapExposure = 0.9f;
     float TonemapWhitePoint = 6.0f;
     float TonemapGamma = 2.2f;
+    bool bCasEnabled = true;
+    float CasSharpness = 0.2f;
     bool bAutoExposureEnabled = false;
     float AutoExposureKey = 0.18f;
     float AutoExposureMin = 0.1f;
