@@ -11,11 +11,11 @@
 #include "Renderer.h"
 #include "RendererUtils.h"
 #include "TextureLoader.h"
+#include "RenderGraph.h"
 
 class FDX12Device;
 class FDX12CommandContext;
 class FCamera;
-
 class FForwardRenderer : public FRenderer
 {
 public:
@@ -31,6 +31,20 @@ public:
     float GetShadowBias() const { return ShadowBias; }
 
 private:
+    struct FForwardFrameState
+    {
+        DirectX::XMMATRIX LightViewProjection = DirectX::XMMatrixIdentity();
+        bool bRenderShadows = false;
+        bool bDoDepthPrepass = false;
+    };
+
+    struct FForwardFrameResources
+    {
+        FRGResourceHandle ShadowHandle{};
+        FRGResourceHandle DepthHandle{};
+        FRGResourceHandle ObjectIdHandle{};
+    };
+
     bool CreateRootSignature(FDX12Device* Device);
     bool CreatePipelineState(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateObjectIdResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
@@ -40,6 +54,16 @@ private:
     void UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, uint64_t ConstantBufferOffset, const DirectX::XMMATRIX& LightViewProjection);
     void UpdateSkyConstants(const FCamera& Camera);
     void UpdateCullingVisibility(const FCamera& Camera);
+    void PrepareFrameState(const FCamera& Camera, FForwardFrameState& OutState);
+    void ConfigureFrameGraph(FRenderGraph& Graph) const;
+    void ImportFrameResources(FRenderGraph& Graph, FForwardFrameResources& OutResources);
+    void AddGpuCullingPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle DepthHandle);
+    void AddShadowPass(FRenderGraph& Graph, const FCamera& Camera, const FForwardFrameState& FrameState, FRGResourceHandle ShadowHandle);
+    void AddDepthPrepass(FRenderGraph& Graph, const FCamera& Camera, const FForwardFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle ShadowHandle);
+    void AddSkyPass(FRenderGraph& Graph, const FCamera& Camera, const FForwardFrameState& FrameState, FRGResourceHandle DepthHandle, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle);
+    void AddForwardPass(FRenderGraph& Graph, const FCamera& Camera, const FForwardFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle ShadowHandle, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle);
+    void AddObjectIdPass(FRenderGraph& Graph, const FCamera& Camera, const FForwardFrameState& FrameState, FRGResourceHandle ObjectIdHandle, FRGResourceHandle DepthHandle);
+    void AddDebugPrintPass(FRenderGraph& Graph, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle);
 
 private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSignature;

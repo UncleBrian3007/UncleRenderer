@@ -386,22 +386,51 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
 
 void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle, const FCamera& Camera, float DeltaTime)
 {
-    ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
-
     PrepareGpuDebugPrint(CmdContext);
 
+    FDeferredFrameState FrameState = {};
+    PrepareFrameState(Camera, FrameState);
+
+    FRenderGraph Graph;
+    ConfigureFrameGraph(Graph);
+
+    FDeferredFrameResources Resources = {};
+    ImportFrameResources(Graph, Resources);
+
+    ConfigureHZBOcclusion(FrameState.bUseHZBOcclusion, DescriptorHeap.Get(), HZBSrvHandle, HZBWidth, HZBHeight, HZBMipCount);
+
+    AddGpuCullingPass(Graph, Camera, FrameState, Resources.HZBHandle);
+    AddShadowPass(Graph, Camera, FrameState, Resources.ShadowHandle);
+    AddDepthPrepass(Graph, Camera, FrameState, Resources.DepthHandle);
+    AddBasePass(Graph, Camera, FrameState, Resources.GBufferHandles, Resources.DepthHandle, Resources.LightingHandle);
+    AddObjectIdPass(Graph, Camera, Resources.ObjectIdHandle, Resources.DepthHandle);
+    AddHZBPass(Graph, FrameState, Resources.DepthHandle, Resources.HZBHandle);
+    AddLightingPass(Graph, FrameState, Resources.GBufferHandles, Resources.ShadowHandle, Resources.LightingHandle);
+    AddSkyPass(Graph, Camera, Resources.DepthHandle, Resources.LightingHandle);
+    AddTemporalAAPass(Graph, FrameState, Resources.LightingHandle, Resources.TaaHandles);
+    AddAutoExposurePass(Graph, FrameState, Resources.LightingHandle, Resources.LuminanceHandles, DeltaTime);
+    AddTonemapPass(Graph, FrameState, Resources.GBufferHandles, Resources.LightingHandle, Resources.TonemapOutputResource, Resources.LuminanceHandles, Resources.TaaHandles, RtvHandle);
+    AddCasPass(Graph, FrameState, Resources.TonemapOutputResource, RtvHandle);
+    AddDebugPrintPass(Graph, RtvHandle);
+
+    Graph.Execute(CmdContext);
+
+    FinalizeFrameState(FrameState);
+}
+
+void FDeferredRenderer::PrepareFrameState(const FCamera& Camera, FDeferredFrameState& OutState)
+{
     UpdateCullingVisibility(Camera);
 
-    const bool bTaaActive = bTaaEnabled && TaaPipeline && TaaRootSignature && !TaaHistoryTextures.empty();
-    const uint32_t TaaFrameIndex = CmdContext.GetCurrentFrameIndex();
-    const uint32_t TaaReadIndex = TaaFrameCount > 0 ? (TaaFrameIndex + TaaFrameCount - 1u) % TaaFrameCount : 0u;
-    const uint32_t TaaWriteIndex = TaaFrameCount > 0 ? TaaFrameIndex % TaaFrameCount : 0u;
-    bool bTaaHistoryReady = false;
-    if (bTaaActive && TaaReadIndex < TaaHistoryValid.size())
-    {
-        bTaaHistoryReady = TaaHistoryValid[TaaReadIndex];
-    }
-    bUseTaaJitter = bTaaActive && bTaaHistoryReady;
+    OutState.bTaaActive = bTaaEnabled && TaaPipeline && TaaRootSignature && !TaaHistoryTextures.empty();
+    OutState.TaaFrameIndex = GetFrameIndex();
+    OutState.TaaReadIndex = TaaFrameCount > 0 ? (OutState.TaaFrameIndex + TaaFrameCount - 1u) % TaaFrameCount : 0u;
+    OutState.TaaWriteIndex = TaaFrameCount > 0 ? OutState.TaaFrameIndex % TaaFrameCount : 0u;
+    OutState.bTaaHistoryReady = OutState.bTaaActive && OutState.TaaReadIndex < TaaHistoryValid.size()
+        ? TaaHistoryValid[OutState.TaaReadIndex]
+        : false;
+
+    bUseTaaJitter = OutState.bTaaActive && OutState.bTaaHistoryReady;
     if (bUseTaaJitter)
     {
         TaaJitter = BuildTaaJitter(TaaSampleIndex);
@@ -422,20 +451,34 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
     }
     TaaProjection = DirectX::XMLoadFloat4x4(&ProjectionMatrix);
 
-    const bool bRenderShadows = bShadowsEnabled && ShadowPipeline && ShadowMap;
-    const bool bDoDepthPrepass = bDepthPrepassEnabled && DepthPrepassPipeline;
-    if (!bDoDepthPrepass)
+    OutState.bRenderShadows = bShadowsEnabled && ShadowPipeline && ShadowMap;
+    OutState.bDoDepthPrepass = bDepthPrepassEnabled && DepthPrepassPipeline;
+    if (!OutState.bDoDepthPrepass)
     {
         bHZBReady = false;
     }
 
-    FRenderGraph Graph;
+    if (!bHZBEnabled)
+    {
+        bHZBReady = false;
+    }
+
+    OutState.bUseHZBOcclusion = bHZBEnabled && bHZBReady && HZBSrvHandle.ptr != 0;
+    OutState.bCasActive = bCasEnabled && CasPipeline && CasRootSignature;
+    OutState.LightViewProjection = RendererUtils::BuildDirectionalLightViewProjection(SceneCenter, SceneRadius, LightDirection);
+}
+
+void FDeferredRenderer::ConfigureFrameGraph(FRenderGraph& Graph) const
+{
     Graph.SetDevice(Device);
     Graph.SetBarrierLoggingEnabled(bLogResourceBarriers);
     Graph.SetGraphDumpEnabled(bEnableGraphDump);
     Graph.SetGpuTimingEnabled(bEnableGpuTiming);
+}
 
-    FRGResourceHandle ShadowHandle = Graph.ImportTexture(
+void FDeferredRenderer::ImportFrameResources(FRenderGraph& Graph, FDeferredFrameResources& OutResources)
+{
+    OutResources.ShadowHandle = Graph.ImportTexture(
         "ShadowMap",
         ShadowMap.Get(),
         &ShadowMapState,
@@ -449,32 +492,32 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
     };
 
     D3D12_RESOURCE_STATES& DepthState = GetDepthBufferState();
-    FRGResourceHandle DepthHandle = Graph.ImportTexture("Depth", GetDepthBuffer(), &DepthState, DepthDesc);
-    FRGResourceHandle ObjectIdHandle = Graph.ImportTexture(
+    OutResources.DepthHandle = Graph.ImportTexture("Depth", GetDepthBuffer(), &DepthState, DepthDesc);
+    OutResources.ObjectIdHandle = Graph.ImportTexture(
         "ObjectId",
         ObjectIdTexture.Get(),
         &ObjectIdState,
         { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), DXGI_FORMAT_R32_UINT });
-    FRGResourceHandle GBufferHandles[3] =
+    OutResources.GBufferHandles =
     {
         Graph.ImportTexture("GBufferA", GBufferA.Get(), &GBufferStates[0], { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), GBufferFormats[0] }),
         Graph.ImportTexture("GBufferB", GBufferB.Get(), &GBufferStates[1], { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), GBufferFormats[1] }),
         Graph.ImportTexture("GBufferC", GBufferC.Get(), &GBufferStates[2], { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), GBufferFormats[2] }),
     };
 
-    FRGResourceHandle LightingHandle = Graph.ImportTexture(
+    OutResources.LightingHandle = Graph.ImportTexture(
         "Lighting",
         LightingBuffer.Get(),
         &LightingBufferState,
         { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), LightingBufferFormat });
 
-    FRGResourceHandle TonemapOutputResource = Graph.ImportTexture(
+    OutResources.TonemapOutputResource = Graph.ImportTexture(
         "TonemapOutput",
         TonemapOutput.Get(),
         &TonemapOutputState,
         { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), BackBufferFormat });
 
-    FRGResourceHandle LuminanceHandles[2] =
+    OutResources.LuminanceHandles =
     {
         Graph.ImportTexture(
             "LuminanceA",
@@ -488,45 +531,39 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
             { 1u, 1u, DXGI_FORMAT_R32_FLOAT })
     };
 
-    std::vector<FRGResourceHandle> TaaHandles;
-    TaaHandles.reserve(TaaHistoryTextures.size());
+    OutResources.TaaHandles.reserve(TaaHistoryTextures.size());
     for (size_t Index = 0; Index < TaaHistoryTextures.size(); ++Index)
     {
         const std::string HandleName = "TaaHistory_" + std::to_string(Index);
-        TaaHandles.push_back(Graph.ImportTexture(
+        OutResources.TaaHandles.push_back(Graph.ImportTexture(
             HandleName,
             TaaHistoryTextures[Index].Get(),
             &TaaStates[Index],
             { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), LightingBufferFormat }));
     }
 
-    FRGResourceHandle HZBHandle = Graph.ImportTexture(
+    OutResources.HZBHandle = Graph.ImportTexture(
         "HZB",
         HierarchicalZBuffer.Get(),
         &HZBState,
         { HZBWidth, HZBHeight, DXGI_FORMAT_R32_FLOAT });
+}
 
+void FDeferredRenderer::AddGpuCullingPass(FRenderGraph& Graph, const FCamera& Camera, const FDeferredFrameState& FrameState, FRGResourceHandle HZBHandle)
+{
     struct FGpuCullingPassData
     {
         bool bEnabled = false;
         const FCamera* Camera = nullptr;
     };
 
-    if (!bHZBEnabled)
-    {
-        bHZBReady = false;
-    }
-
-    const bool bUseHZBOcclusion = bHZBEnabled && bHZBReady && HZBSrvHandle.ptr != 0;
-    ConfigureHZBOcclusion(bUseHZBOcclusion, DescriptorHeap.Get(), HZBSrvHandle, HZBWidth, HZBHeight, HZBMipCount);
-
-    Graph.AddPass<FGpuCullingPassData>("GPU Culling", [this, &Camera, DepthHandle, HZBHandle, bUseHZBOcclusion](FGpuCullingPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FGpuCullingPassData>("GPU Culling", [this, &Camera, HZBHandle, FrameState](FGpuCullingPassData& Data, FRGPassBuilder& Builder)
     {
         Data.bEnabled = bEnableIndirectDraw && CullingPipeline && CullingRootSignature && GetIndirectCommandBuffer() && ModelBoundsBuffer;
         Data.Camera = &Camera;
         if (Data.bEnabled)
         {
-            if (bUseHZBOcclusion)
+            if (FrameState.bUseHZBOcclusion)
             {
                 Builder.ReadTexture(HZBHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             }
@@ -541,7 +578,10 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
         DispatchGpuCulling(Cmd, *Data.Camera);
     });
+}
 
+void FDeferredRenderer::AddShadowPass(FRenderGraph& Graph, const FCamera& Camera, const FDeferredFrameState& FrameState, FRGResourceHandle ShadowHandle)
+{
     struct FShadowPassData
     {
         bool bEnabled = false;
@@ -549,13 +589,13 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         DirectX::XMMATRIX LightViewProjection = DirectX::XMMatrixIdentity();
     };
 
-    Graph.AddPass<FShadowPassData>("ShadowMap", [&, bRenderShadows](FShadowPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FShadowPassData>("ShadowMap", [&, FrameState, ShadowHandle](FShadowPassData& Data, FRGPassBuilder& Builder)
     {
-        Data.bEnabled = bRenderShadows;
+        Data.bEnabled = FrameState.bRenderShadows;
         Data.Camera = &Camera;
-        Data.LightViewProjection = RendererUtils::BuildDirectionalLightViewProjection(SceneCenter, SceneRadius, LightDirection);
+        Data.LightViewProjection = FrameState.LightViewProjection;
 
-        if (bRenderShadows)
+        if (FrameState.bRenderShadows)
         {
             Builder.WriteTexture(ShadowHandle, D3D12_RESOURCE_STATE_DEPTH_WRITE);
         }
@@ -632,19 +672,22 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         }
 
     });
+}
 
+void FDeferredRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Camera, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle)
+{
     struct FDepthPrepassData
     {
         bool bEnabled = false;
         const FCamera* Camera = nullptr;
     };
 
-    Graph.AddPass<FDepthPrepassData>("DepthPrepass", [&, bDoDepthPrepass](FDepthPrepassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FDepthPrepassData>("DepthPrepass", [&, FrameState, DepthHandle](FDepthPrepassData& Data, FRGPassBuilder& Builder)
     {
-        Data.bEnabled = bDoDepthPrepass;
+        Data.bEnabled = FrameState.bDoDepthPrepass;
         Data.Camera = &Camera;
 
-        if (bDoDepthPrepass)
+        if (FrameState.bDoDepthPrepass)
         {
             Builder.WriteTexture(DepthHandle, D3D12_RESOURCE_STATE_DEPTH_WRITE);
         }
@@ -717,7 +760,10 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
             }
         }
     });
+}
 
+void FDeferredRenderer::AddBasePass(FRenderGraph& Graph, const FCamera& Camera, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle LightingHandle)
+{
     struct FBasePassData
     {
         bool bDoDepthPrepass = false;
@@ -726,7 +772,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
     Graph.AddPass<FBasePassData>("GBuffer", [&](FBasePassData& Data, FRGPassBuilder& Builder)
     {
-        Data.bDoDepthPrepass = bDoDepthPrepass;
+        Data.bDoDepthPrepass = FrameState.bDoDepthPrepass;
         Data.Camera = &Camera;
 
         for (int i = 0; i < 3; ++i)
@@ -864,7 +910,10 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         }
 
     });
+}
 
+void FDeferredRenderer::AddObjectIdPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle ObjectIdHandle, FRGResourceHandle DepthHandle)
+{
     struct FObjectIdPassData
     {
         bool bEnabled = false;
@@ -979,7 +1028,10 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
         bObjectIdReadbackRecorded = true;
     });
+}
 
+void FDeferredRenderer::AddHZBPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle HZBHandle)
+{
     struct FHZBPassData
     {
         uint32_t Width = 0;
@@ -994,224 +1046,229 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         D3D12_GPU_DESCRIPTOR_HANDLE HZBNullUav{};
     };
 
-    if (bHZBEnabled && bDoDepthPrepass)
+    if (!bHZBEnabled || !FrameState.bDoDepthPrepass)
     {
-        Graph.AddPass<FHZBPassData>("Build HZB", [&](FHZBPassData& Data, FRGPassBuilder& Builder)
-        {
-            Data.Width = HZBWidth;
-            Data.Height = HZBHeight;
-            Data.MipCount = HZBMipCount;
-            ID3D12Resource* DepthBuffer = GetDepthBuffer();
-            const D3D12_RESOURCE_DESC DepthDesc = DepthBuffer ? DepthBuffer->GetDesc() : D3D12_RESOURCE_DESC{};
-            Data.SourceWidth = static_cast<uint32_t>(DepthDesc.Width);
-            Data.SourceHeight = DepthDesc.Height;
-            const uint32_t DepthIndex = GetFrameIndex() % static_cast<uint32_t>(DepthBufferHandles.size());
-            Data.DepthSrv = DepthBufferHandles.empty() ? D3D12_GPU_DESCRIPTOR_HANDLE{} : DepthBufferHandles[DepthIndex];
-            Data.HZBSrv = HZBSrvHandle;
-            Data.HZBSrvMips = HZBSrvMipHandles;
-            Data.HZBUavs = HZBUavHandles;
-            Data.HZBNullUav = HZBNullUavHandle;
-
-            Builder.ReadTexture(DepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            Builder.WriteTexture(HZBHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        }, [this](const FHZBPassData& Data, FDX12CommandContext& Cmd)
-        {
-            if (!HZBRootSignature || Data.MipCount == 0)
-            {
-                return;
-            }
-
-            ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
-
-            FScopedPixEvent HZBEvent(LocalCommandList, L"BuildHZB");
-
-            ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
-            LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
-            LocalCommandList->SetComputeRootSignature(HZBRootSignature.Get());
-
-            struct FHZBConstants
-            {
-                uint32_t SourceWidth;
-                uint32_t SourceHeight;
-                uint32_t DestWidth;
-                uint32_t DestHeight;
-                uint32_t DestWidth1;
-                uint32_t DestHeight1;
-                uint32_t DestWidth2;
-                uint32_t DestHeight2;
-                uint32_t DestWidth3;
-                uint32_t DestHeight3;
-                uint32_t SourceMip;
-            };
-
-            uint32_t CurrentWidth = Data.Width;
-            uint32_t CurrentHeight = Data.Height;
-            std::vector<D3D12_RESOURCE_STATES> MipStates(Data.MipCount, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-
-            uint32_t MipIndex = 0;
-            while (MipIndex < Data.MipCount)
-            {
-                const uint32_t RemainingMips = Data.MipCount - MipIndex;
-                const uint32_t MipsThisDispatch = (std::min)(4u, RemainingMips);
-                const bool bHasSecondMip = MipsThisDispatch > 1;
-                const bool bHasThirdMip = MipsThisDispatch > 2;
-                const bool bHasFourthMip = MipsThisDispatch > 3;
-
-                const uint32_t SourceWidth = (MipIndex == 0) ? Data.SourceWidth : (std::max)(1u, CurrentWidth);
-                const uint32_t SourceHeight = (MipIndex == 0) ? Data.SourceHeight : (std::max)(1u, CurrentHeight);
-
-                const uint32_t DestWidth = (MipIndex == 0) ? CurrentWidth : (std::max)(1u, CurrentWidth / 2);
-                const uint32_t DestHeight = (MipIndex == 0) ? CurrentHeight : (std::max)(1u, CurrentHeight / 2);
-                const uint32_t DestWidth1 = bHasSecondMip ? (std::max)(1u, DestWidth / 2) : 0u;
-                const uint32_t DestHeight1 = bHasSecondMip ? (std::max)(1u, DestHeight / 2) : 0u;
-                const uint32_t DestWidth2 = bHasThirdMip ? (std::max)(1u, DestWidth1 / 2) : 0u;
-                const uint32_t DestHeight2 = bHasThirdMip ? (std::max)(1u, DestHeight1 / 2) : 0u;
-                const uint32_t DestWidth3 = bHasFourthMip ? (std::max)(1u, DestWidth2 / 2) : 0u;
-                const uint32_t DestHeight3 = bHasFourthMip ? (std::max)(1u, DestHeight2 / 2) : 0u;
-
-                FHZBConstants Constants = {};
-                Constants.SourceWidth = SourceWidth;
-                Constants.SourceHeight = SourceHeight;
-                Constants.DestWidth = DestWidth;
-                Constants.DestHeight = DestHeight;
-                Constants.DestWidth1 = DestWidth1;
-                Constants.DestHeight1 = DestHeight1;
-                Constants.DestWidth2 = DestWidth2;
-                Constants.DestHeight2 = DestHeight2;
-                Constants.DestWidth3 = DestWidth3;
-                Constants.DestHeight3 = DestHeight3;
-                Constants.SourceMip = 0u;
-
-                D3D12_GPU_DESCRIPTOR_HANDLE SourceHandle = Data.DepthSrv;
-                if (MipIndex > 0)
-                {
-                    const uint32_t SourceMipIndex = MipIndex - 1;
-                    SourceHandle = (SourceMipIndex < Data.HZBSrvMips.size()) ? Data.HZBSrvMips[SourceMipIndex] : D3D12_GPU_DESCRIPTOR_HANDLE{};
-
-                    if (SourceMipIndex < MipStates.size() && MipStates[SourceMipIndex] != D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
-                    {
-                        D3D12_RESOURCE_BARRIER ToSrvBarrier = {};
-                        ToSrvBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                        ToSrvBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-                        ToSrvBarrier.Transition.pResource = HierarchicalZBuffer.Get();
-                        ToSrvBarrier.Transition.StateBefore = MipStates[SourceMipIndex];
-                        ToSrvBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-                        ToSrvBarrier.Transition.Subresource = D3D12CalcSubresource(SourceMipIndex, 0, 0, Data.MipCount, 1);
-                        if (bLogResourceBarriers)
-                        {
-							LogInfo("HZB Barrier: Mip " + std::to_string(SourceMipIndex) + " "
-								+ RendererUtils::ResourceStateToString(ToSrvBarrier.Transition.StateBefore) + " -> "
-								+ RendererUtils::ResourceStateToString(ToSrvBarrier.Transition.StateAfter));
-                        }
-                        LocalCommandList->ResourceBarrier(1, &ToSrvBarrier);
-                        MipStates[SourceMipIndex] = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-                    }
-                }
-                const D3D12_GPU_DESCRIPTOR_HANDLE DestHandle0 = (MipIndex < Data.HZBUavs.size()) ? Data.HZBUavs[MipIndex] : D3D12_GPU_DESCRIPTOR_HANDLE{};
-                const D3D12_GPU_DESCRIPTOR_HANDLE DestHandle1 = (bHasSecondMip && (MipIndex + 1) < Data.HZBUavs.size())
-                    ? Data.HZBUavs[MipIndex + 1]
-                    : Data.HZBNullUav;
-                const D3D12_GPU_DESCRIPTOR_HANDLE DestHandle2 = (bHasThirdMip && (MipIndex + 2) < Data.HZBUavs.size())
-                    ? Data.HZBUavs[MipIndex + 2]
-                    : Data.HZBNullUav;
-                const D3D12_GPU_DESCRIPTOR_HANDLE DestHandle3 = (bHasFourthMip && (MipIndex + 3) < Data.HZBUavs.size())
-                    ? Data.HZBUavs[MipIndex + 3]
-                    : Data.HZBNullUav;
-
-                if (SourceHandle.ptr == 0 || DestHandle0.ptr == 0 || DestHandle1.ptr == 0 || DestHandle2.ptr == 0 || DestHandle3.ptr == 0)
-                {
-                    break;
-                }
-
-                ID3D12PipelineState* SelectedPipeline = HZBPipelines[MipsThisDispatch - 1].Get();
-                if (!SelectedPipeline)
-                {
-                    break;
-                }
-
-                LocalCommandList->SetPipelineState(SelectedPipeline);
-                LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(Constants) / sizeof(uint32_t), &Constants, 0);
-                LocalCommandList->SetComputeRootDescriptorTable(1, SourceHandle);
-                LocalCommandList->SetComputeRootDescriptorTable(2, DestHandle0);
-                LocalCommandList->SetComputeRootDescriptorTable(3, DestHandle1);
-                LocalCommandList->SetComputeRootDescriptorTable(4, DestHandle2);
-                LocalCommandList->SetComputeRootDescriptorTable(5, DestHandle3);
-
-                const uint32_t GroupX = (Constants.DestWidth + 7) / 8;
-                const uint32_t GroupY = (Constants.DestHeight + 7) / 8;
-                LocalCommandList->Dispatch(GroupX, GroupY, 1);
-
-                if (bHasFourthMip)
-                {
-                    CurrentWidth = DestWidth3;
-                    CurrentHeight = DestHeight3;
-                }
-                else if (bHasThirdMip)
-                {
-                    CurrentWidth = DestWidth2;
-                    CurrentHeight = DestHeight2;
-                }
-                else if (bHasSecondMip)
-                {
-                    CurrentWidth = DestWidth1;
-                    CurrentHeight = DestHeight1;
-                }
-                else
-                {
-                    CurrentWidth = DestWidth;
-                    CurrentHeight = DestHeight;
-                }
-
-                std::vector<D3D12_RESOURCE_BARRIER> Barriers;
-                Barriers.reserve(MipsThisDispatch + 1);
-
-                D3D12_RESOURCE_BARRIER UavBarrier = {};
-                UavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-                UavBarrier.UAV.pResource = HierarchicalZBuffer.Get();
-				if (bLogResourceBarriers)
-				{
-                    LogInfo("HZB Barrier: UAV sync");
-                }
-                Barriers.push_back(UavBarrier);
-
-                for (uint32_t LocalMip = 0; LocalMip < MipsThisDispatch; ++LocalMip)
-                {
-                    const uint32_t TargetMip = MipIndex + LocalMip;
-                    if (TargetMip >= Data.MipCount)
-                    {
-                        break;
-                    }
-
-                    D3D12_RESOURCE_BARRIER Barrier = {};
-                    Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                    Barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-                    Barrier.Transition.pResource = HierarchicalZBuffer.Get();
-                    Barrier.Transition.StateBefore = MipStates[TargetMip];
-                    Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-                    Barrier.Transition.Subresource = D3D12CalcSubresource(TargetMip, 0, 0, Data.MipCount, 1);
-                    if (bLogResourceBarriers)
-                    {
-						LogInfo("HZB Barrier: Mip " + std::to_string(TargetMip) + " "
-							+ RendererUtils::ResourceStateToString(Barrier.Transition.StateBefore) + " -> "
-							+ RendererUtils::ResourceStateToString(Barrier.Transition.StateAfter));
-                    }
-                    Barriers.push_back(Barrier);
-                    MipStates[TargetMip] = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-                }
-
-                if (!Barriers.empty())
-                {
-                    LocalCommandList->ResourceBarrier(static_cast<UINT>(Barriers.size()), Barriers.data());
-                }
-
-                MipIndex += MipsThisDispatch;
-            }
-
-            HZBState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-            bHZBReady = true;
-        });
+        return;
     }
 
+    Graph.AddPass<FHZBPassData>("Build HZB", [&](FHZBPassData& Data, FRGPassBuilder& Builder)
+    {
+        Data.Width = HZBWidth;
+        Data.Height = HZBHeight;
+        Data.MipCount = HZBMipCount;
+        ID3D12Resource* DepthBuffer = GetDepthBuffer();
+        const D3D12_RESOURCE_DESC DepthDesc = DepthBuffer ? DepthBuffer->GetDesc() : D3D12_RESOURCE_DESC{};
+        Data.SourceWidth = static_cast<uint32>(DepthDesc.Width);
+        Data.SourceHeight = DepthDesc.Height;
+        const uint32_t DepthIndex = GetFrameIndex() % static_cast<uint32_t>(DepthBufferHandles.size());
+        Data.DepthSrv = DepthBufferHandles.empty() ? D3D12_GPU_DESCRIPTOR_HANDLE{} : DepthBufferHandles[DepthIndex];
+        Data.HZBSrv = HZBSrvHandle;
+        Data.HZBSrvMips = HZBSrvMipHandles;
+        Data.HZBUavs = HZBUavHandles;
+        Data.HZBNullUav = HZBNullUavHandle;
+
+        Builder.ReadTexture(DepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.WriteTexture(HZBHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    }, [this](const FHZBPassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!HZBRootSignature || Data.MipCount == 0)
+        {
+            return;
+        }
+
+        ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
+
+        FScopedPixEvent HZBEvent(LocalCommandList, L"BuildHZB");
+
+        ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
+        LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        LocalCommandList->SetComputeRootSignature(HZBRootSignature.Get());
+
+        struct FHZBConstants
+        {
+            uint32_t SourceWidth;
+            uint32_t SourceHeight;
+            uint32_t DestWidth;
+            uint32_t DestHeight;
+            uint32_t DestWidth1;
+            uint32_t DestHeight1;
+            uint32_t DestWidth2;
+            uint32_t DestHeight2;
+            uint32_t DestWidth3;
+            uint32_t DestHeight3;
+            uint32_t SourceMip;
+        };
+
+        uint32_t CurrentWidth = Data.Width;
+        uint32_t CurrentHeight = Data.Height;
+        std::vector<D3D12_RESOURCE_STATES> MipStates(Data.MipCount, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+        uint32_t MipIndex = 0;
+        while (MipIndex < Data.MipCount)
+        {
+            const uint32_t RemainingMips = Data.MipCount - MipIndex;
+            const uint32_t MipsThisDispatch = (std::min)(4u, RemainingMips);
+            const bool bHasSecondMip = MipsThisDispatch > 1;
+            const bool bHasThirdMip = MipsThisDispatch > 2;
+            const bool bHasFourthMip = MipsThisDispatch > 3;
+
+            const uint32_t SourceWidth = (MipIndex == 0) ? Data.SourceWidth : (std::max)(1u, CurrentWidth);
+            const uint32_t SourceHeight = (MipIndex == 0) ? Data.SourceHeight : (std::max)(1u, CurrentHeight);
+
+            const uint32_t DestWidth = (MipIndex == 0) ? CurrentWidth : (std::max)(1u, CurrentWidth / 2);
+            const uint32_t DestHeight = (MipIndex == 0) ? CurrentHeight : (std::max)(1u, CurrentHeight / 2);
+            const uint32_t DestWidth1 = bHasSecondMip ? (std::max)(1u, DestWidth / 2) : 0u;
+            const uint32_t DestHeight1 = bHasSecondMip ? (std::max)(1u, DestHeight / 2) : 0u;
+            const uint32_t DestWidth2 = bHasThirdMip ? (std::max)(1u, DestWidth1 / 2) : 0u;
+            const uint32_t DestHeight2 = bHasThirdMip ? (std::max)(1u, DestHeight1 / 2) : 0u;
+            const uint32_t DestWidth3 = bHasFourthMip ? (std::max)(1u, DestWidth2 / 2) : 0u;
+            const uint32_t DestHeight3 = bHasFourthMip ? (std::max)(1u, DestHeight2 / 2) : 0u;
+
+            FHZBConstants Constants = {};
+            Constants.SourceWidth = SourceWidth;
+            Constants.SourceHeight = SourceHeight;
+            Constants.DestWidth = DestWidth;
+            Constants.DestHeight = DestHeight;
+            Constants.DestWidth1 = DestWidth1;
+            Constants.DestHeight1 = DestHeight1;
+            Constants.DestWidth2 = DestWidth2;
+            Constants.DestHeight2 = DestHeight2;
+            Constants.DestWidth3 = DestWidth3;
+            Constants.DestHeight3 = DestHeight3;
+            Constants.SourceMip = 0u;
+
+            D3D12_GPU_DESCRIPTOR_HANDLE SourceHandle = Data.DepthSrv;
+            if (MipIndex > 0)
+            {
+                const uint32_t SourceMipIndex = MipIndex - 1;
+                SourceHandle = (SourceMipIndex < Data.HZBSrvMips.size()) ? Data.HZBSrvMips[SourceMipIndex] : D3D12_GPU_DESCRIPTOR_HANDLE{};
+
+                if (SourceMipIndex < MipStates.size() && MipStates[SourceMipIndex] != D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
+                {
+                    D3D12_RESOURCE_BARRIER ToSrvBarrier = {};
+                    ToSrvBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                    ToSrvBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+                    ToSrvBarrier.Transition.pResource = HierarchicalZBuffer.Get();
+                    ToSrvBarrier.Transition.StateBefore = MipStates[SourceMipIndex];
+                    ToSrvBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+                    ToSrvBarrier.Transition.Subresource = D3D12CalcSubresource(SourceMipIndex, 0, 0, Data.MipCount, 1);
+                    if (bLogResourceBarriers)
+                    {
+						LogInfo("HZB Barrier: Mip " + std::to_string(SourceMipIndex) + " "
+							+ RendererUtils::ResourceStateToString(ToSrvBarrier.Transition.StateBefore) + " -> "
+							+ RendererUtils::ResourceStateToString(ToSrvBarrier.Transition.StateAfter));
+                    }
+                    LocalCommandList->ResourceBarrier(1, &ToSrvBarrier);
+                    MipStates[SourceMipIndex] = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+                }
+            }
+            const D3D12_GPU_DESCRIPTOR_HANDLE DestHandle0 = (MipIndex < Data.HZBUavs.size()) ? Data.HZBUavs[MipIndex] : D3D12_GPU_DESCRIPTOR_HANDLE{};
+            const D3D12_GPU_DESCRIPTOR_HANDLE DestHandle1 = (bHasSecondMip && (MipIndex + 1) < Data.HZBUavs.size())
+                ? Data.HZBUavs[MipIndex + 1]
+                : Data.HZBNullUav;
+            const D3D12_GPU_DESCRIPTOR_HANDLE DestHandle2 = (bHasThirdMip && (MipIndex + 2) < Data.HZBUavs.size())
+                ? Data.HZBUavs[MipIndex + 2]
+                : Data.HZBNullUav;
+            const D3D12_GPU_DESCRIPTOR_HANDLE DestHandle3 = (bHasFourthMip && (MipIndex + 3) < Data.HZBUavs.size())
+                ? Data.HZBUavs[MipIndex + 3]
+                : Data.HZBNullUav;
+
+            if (SourceHandle.ptr == 0 || DestHandle0.ptr == 0 || DestHandle1.ptr == 0 || DestHandle2.ptr == 0 || DestHandle3.ptr == 0)
+            {
+                break;
+            }
+
+            ID3D12PipelineState* SelectedPipeline = HZBPipelines[MipsThisDispatch - 1].Get();
+            if (!SelectedPipeline)
+            {
+                break;
+            }
+
+            LocalCommandList->SetPipelineState(SelectedPipeline);
+            LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(Constants) / sizeof(uint32_t), &Constants, 0);
+            LocalCommandList->SetComputeRootDescriptorTable(1, SourceHandle);
+            LocalCommandList->SetComputeRootDescriptorTable(2, DestHandle0);
+            LocalCommandList->SetComputeRootDescriptorTable(3, DestHandle1);
+            LocalCommandList->SetComputeRootDescriptorTable(4, DestHandle2);
+            LocalCommandList->SetComputeRootDescriptorTable(5, DestHandle3);
+
+            const uint32_t GroupX = (Constants.DestWidth + 7) / 8;
+            const uint32_t GroupY = (Constants.DestHeight + 7) / 8;
+            LocalCommandList->Dispatch(GroupX, GroupY, 1);
+
+            if (bHasFourthMip)
+            {
+                CurrentWidth = DestWidth3;
+                CurrentHeight = DestHeight3;
+            }
+            else if (bHasThirdMip)
+            {
+                CurrentWidth = DestWidth2;
+                CurrentHeight = DestHeight2;
+            }
+            else if (bHasSecondMip)
+            {
+                CurrentWidth = DestWidth1;
+                CurrentHeight = DestHeight1;
+            }
+            else
+            {
+                CurrentWidth = DestWidth;
+                CurrentHeight = DestHeight;
+            }
+
+            std::vector<D3D12_RESOURCE_BARRIER> Barriers;
+            Barriers.reserve(MipsThisDispatch + 1);
+
+            D3D12_RESOURCE_BARRIER UavBarrier = {};
+            UavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+            UavBarrier.UAV.pResource = HierarchicalZBuffer.Get();
+			if (bLogResourceBarriers)
+			{
+                    LogInfo("HZB Barrier: UAV sync");
+            }
+            Barriers.push_back(UavBarrier);
+
+            for (uint32_t LocalMip = 0; LocalMip < MipsThisDispatch; ++LocalMip)
+            {
+                const uint32_t TargetMip = MipIndex + LocalMip;
+                if (TargetMip >= Data.MipCount)
+                {
+                    break;
+                }
+
+                D3D12_RESOURCE_BARRIER Barrier = {};
+                Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                Barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+                Barrier.Transition.pResource = HierarchicalZBuffer.Get();
+                Barrier.Transition.StateBefore = MipStates[TargetMip];
+                Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+                Barrier.Transition.Subresource = D3D12CalcSubresource(TargetMip, 0, 0, Data.MipCount, 1);
+                if (bLogResourceBarriers)
+                {
+					LogInfo("HZB Barrier: Mip " + std::to_string(TargetMip) + " "
+						+ RendererUtils::ResourceStateToString(Barrier.Transition.StateBefore) + " -> "
+						+ RendererUtils::ResourceStateToString(Barrier.Transition.StateAfter));
+                }
+                Barriers.push_back(Barrier);
+                MipStates[TargetMip] = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+            }
+
+            if (!Barriers.empty())
+            {
+                LocalCommandList->ResourceBarrier(static_cast<UINT>(Barriers.size()), Barriers.data());
+            }
+
+            MipIndex += MipsThisDispatch;
+        }
+
+        HZBState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        bHZBReady = true;
+    });
+}
+
+void FDeferredRenderer::AddLightingPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle ShadowHandle, FRGResourceHandle LightingHandle)
+{
     struct FLightingPassData
     {
         bool bUseShadows = false;
@@ -1219,7 +1276,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
     Graph.AddPass<FLightingPassData>("Lighting", [&](FLightingPassData& Data, FRGPassBuilder& Builder)
     {
-        Data.bUseShadows = bRenderShadows;
+        Data.bUseShadows = FrameState.bRenderShadows;
 
         Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(GBufferHandles[1], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -1254,7 +1311,10 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
         LocalCommandList->DrawInstanced(3, 1, 0, 0);
     });
+}
 
+void FDeferredRenderer::AddSkyPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle DepthHandle, FRGResourceHandle LightingHandle)
+{
     struct FSkyPassData
     {
         bool bEnabled = false;
@@ -1295,7 +1355,10 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         LocalCommandList->SetGraphicsRootConstantBufferView(0, SkyConstantBuffer->GetGPUVirtualAddress());
         LocalCommandList->DrawIndexedInstanced(SkyGeometry.IndexCount, 1, 0, 0, 0);
     });
+}
 
+void FDeferredRenderer::AddTemporalAAPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle LightingHandle, const std::vector<FRGResourceHandle>& TaaHandles)
+{
     struct FTemporalAAPassData
     {
         bool bEnabled = false;
@@ -1308,14 +1371,14 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
     Graph.AddPass<FTemporalAAPassData>("TemporalAA", [&](FTemporalAAPassData& Data, FRGPassBuilder& Builder)
     {
-        Data.bEnabled = bTaaActive;
+        Data.bEnabled = FrameState.bTaaActive;
         if (Data.bEnabled)
         {
-            Data.ReadIndex = TaaReadIndex;
-            Data.WriteIndex = TaaWriteIndex;
+            Data.ReadIndex = FrameState.TaaReadIndex;
+            Data.WriteIndex = FrameState.TaaWriteIndex;
             Data.OutputSize = DirectX::XMFLOAT2(Viewport.Width, Viewport.Height);
             Data.HistoryWeight = TaaHistoryWeight;
-            Data.UseHistory = bTaaHistoryReady ? 1u : 0u;
+            Data.UseHistory = FrameState.bTaaHistoryReady ? 1u : 0u;
             Builder.ReadTexture(LightingHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             Builder.ReadTexture(TaaHandles[Data.ReadIndex], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             Builder.WriteTexture(TaaHandles[Data.WriteIndex], D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -1360,7 +1423,10 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         const uint32_t GroupY = (static_cast<uint32_t>(Data.OutputSize.y) + 7u) / 8u;
         LocalCommandList->Dispatch(GroupX, GroupY, 1);
     });
+}
 
+void FDeferredRenderer::AddAutoExposurePass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle LightingHandle, const std::array<FRGResourceHandle, 2>& LuminanceHandles, float DeltaTime)
+{
     struct FAutoExposurePassData
     {
         bool bEnabled = false;
@@ -1434,9 +1500,10 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         LocalCommandList->SetComputeRootDescriptorTable(3, LuminanceUavHandles[Data.WriteIndex]);
         LocalCommandList->Dispatch(1, 1, 1);
     });
+}
 
-    const bool bCasActive = bCasEnabled && CasPipeline && CasRootSignature;
-
+void FDeferredRenderer::AddTonemapPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LightingHandle, FRGResourceHandle TonemapOutputResource, const std::array<FRGResourceHandle, 2>& LuminanceHandles, const std::vector<FRGResourceHandle>& TaaHandles, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle)
+{
     struct FTonemapPassData
     {
         D3D12_CPU_DESCRIPTOR_HANDLE OutputHandle{};
@@ -1449,15 +1516,15 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
     Graph.AddPass<FTonemapPassData>("Tonemap", [&](FTonemapPassData& Data, FRGPassBuilder& Builder)
     {
-        Data.bUseCas = bCasActive;
+        Data.bUseCas = FrameState.bCasActive;
         Data.OutputHandle = Data.bUseCas ? TonemapOutputRtvHandle : RtvHandle;
         Data.bUseAutoExposure = bAutoExposureEnabled;
-        Data.bUseTaa = bTaaActive;
+        Data.bUseTaa = FrameState.bTaaActive;
         Data.LuminanceIndex = LuminanceWriteIndex;
-        Data.InputHandle = Data.bUseTaa ? TaaSrvHandles[TaaWriteIndex] : LightingBufferHandle;
+        Data.InputHandle = Data.bUseTaa ? TaaSrvHandles[FrameState.TaaWriteIndex] : LightingBufferHandle;
         if (Data.bUseTaa)
         {
-            Builder.ReadTexture(TaaHandles[TaaWriteIndex], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            Builder.ReadTexture(TaaHandles[FrameState.TaaWriteIndex], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         }
         else
         {
@@ -1512,7 +1579,10 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         Cmd.TransitionResource(LightingBuffer.Get(), LightingBufferState, D3D12_RESOURCE_STATE_RENDER_TARGET);
         LightingBufferState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     });
+}
 
+void FDeferredRenderer::AddCasPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle TonemapOutputResource, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle)
+{
     struct FCasPassData
     {
         bool bEnabled = false;
@@ -1524,7 +1594,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
     Graph.AddPass<FCasPassData>("CAS", [&](FCasPassData& Data, FRGPassBuilder& Builder)
     {
-        Data.bEnabled = bCasActive;
+        Data.bEnabled = FrameState.bCasActive;
         if (!Data.bEnabled)
         {
             return;
@@ -1572,7 +1642,10 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         LocalCommandList->SetGraphicsRootDescriptorTable(1, Data.InputHandle);
         LocalCommandList->DrawInstanced(3, 1, 0, 0);
     });
+}
 
+void FDeferredRenderer::AddDebugPrintPass(FRenderGraph& Graph, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle)
+{
     struct FDebugPrintPassData
     {
         bool bEnabled = false;
@@ -1597,10 +1670,11 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         DispatchGpuDebugPrintStats(Cmd);
         RenderGpuDebugPrint(Cmd, Data.OutputHandle);
     });
+}
 
-    Graph.Execute(CmdContext);
-
-    if (bTaaActive)
+void FDeferredRenderer::FinalizeFrameState(const FDeferredFrameState& FrameState)
+{
+    if (FrameState.bTaaActive)
     {
         TaaSampleIndex = (TaaSampleIndex + 1u) % 8u;
     }

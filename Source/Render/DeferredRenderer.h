@@ -12,11 +12,11 @@
 #include "Renderer.h"
 #include "RendererUtils.h"
 #include "TextureLoader.h"
+#include "RenderGraph.h"
 
 class FDX12Device;
 class FDX12CommandContext;
 class FCamera;
-
 struct FModelTextureSet
 {
     Microsoft::WRL::ComPtr<ID3D12Resource> BaseColor;
@@ -91,6 +91,33 @@ public:
     void OnFrameFenceSignaled(uint32_t FrameIndex, uint64_t FenceValue) override;
 
 private:
+    struct FDeferredFrameState
+    {
+        bool bTaaActive = false;
+        bool bTaaHistoryReady = false;
+        uint32_t TaaFrameIndex = 0;
+        uint32_t TaaReadIndex = 0;
+        uint32_t TaaWriteIndex = 0;
+        bool bRenderShadows = false;
+        bool bDoDepthPrepass = false;
+        bool bUseHZBOcclusion = false;
+        bool bCasActive = false;
+        DirectX::XMMATRIX LightViewProjection = DirectX::XMMatrixIdentity();
+    };
+
+    struct FDeferredFrameResources
+    {
+        FRGResourceHandle ShadowHandle{};
+        FRGResourceHandle DepthHandle{};
+        FRGResourceHandle ObjectIdHandle{};
+        std::array<FRGResourceHandle, 3> GBufferHandles{};
+        FRGResourceHandle LightingHandle{};
+        FRGResourceHandle TonemapOutputResource{};
+        std::array<FRGResourceHandle, 2> LuminanceHandles{};
+        std::vector<FRGResourceHandle> TaaHandles{};
+        FRGResourceHandle HZBHandle{};
+    };
+
     bool CreateBasePassRootSignature(FDX12Device* Device);
     bool CreateLightingRootSignature(FDX12Device* Device);
     bool CreateBasePassPipeline(FDX12Device* Device, DXGI_FORMAT LightingFormat);
@@ -118,6 +145,23 @@ private:
     void UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, uint64_t ConstantBufferOffset);
     void UpdateSkyConstants(const FCamera& Camera);
     void UpdateCullingVisibility(const FCamera& Camera);
+    void PrepareFrameState(const FCamera& Camera, FDeferredFrameState& OutState);
+    void ConfigureFrameGraph(FRenderGraph& Graph) const;
+    void ImportFrameResources(FRenderGraph& Graph, FDeferredFrameResources& OutResources);
+    void AddGpuCullingPass(FRenderGraph& Graph, const FCamera& Camera, const FDeferredFrameState& FrameState, FRGResourceHandle HZBHandle);
+    void AddShadowPass(FRenderGraph& Graph, const FCamera& Camera, const FDeferredFrameState& FrameState, FRGResourceHandle ShadowHandle);
+    void AddDepthPrepass(FRenderGraph& Graph, const FCamera& Camera, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle);
+    void AddBasePass(FRenderGraph& Graph, const FCamera& Camera, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle LightingHandle);
+    void AddObjectIdPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle ObjectIdHandle, FRGResourceHandle DepthHandle);
+    void AddHZBPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle HZBHandle);
+    void AddLightingPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle ShadowHandle, FRGResourceHandle LightingHandle);
+    void AddSkyPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle DepthHandle, FRGResourceHandle LightingHandle);
+    void AddTemporalAAPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle LightingHandle, const std::vector<FRGResourceHandle>& TaaHandles);
+    void AddAutoExposurePass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle LightingHandle, const std::array<FRGResourceHandle, 2>& LuminanceHandles, float DeltaTime);
+    void AddTonemapPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LightingHandle, FRGResourceHandle TonemapOutputResource, const std::array<FRGResourceHandle, 2>& LuminanceHandles, const std::vector<FRGResourceHandle>& TaaHandles, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle);
+    void AddCasPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle TonemapOutputResource, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle);
+    void AddDebugPrintPass(FRenderGraph& Graph, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle);
+    void FinalizeFrameState(const FDeferredFrameState& FrameState);
 
 private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> BasePassRootSignature;

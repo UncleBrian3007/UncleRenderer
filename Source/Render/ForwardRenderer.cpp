@@ -242,27 +242,48 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
 {
     FScopedPixEvent RenderEvent(CmdContext.GetCommandList(), L"ForwardRenderer");
 
-    ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
-
     PrepareGpuDebugPrint(CmdContext);
+    ConfigureHZBOcclusion(false, TextureDescriptorHeap.Get(), SceneTextureGpuHandle, 0, 0, 0);
 
-    UpdateCullingVisibility(Camera);
-
-    const DirectX::XMMATRIX LightViewProjection = RendererUtils::BuildDirectionalLightViewProjection(
-        SceneCenter,
-        SceneRadius,
-        LightDirection);
-
-    const bool bRenderShadows = bShadowsEnabled && ShadowPipeline && ShadowMap;
-    const bool bDoDepthPrepass = bDepthPrepassEnabled && DepthPrepassPipeline;
+    FForwardFrameState FrameState = {};
+    PrepareFrameState(Camera, FrameState);
 
     FRenderGraph Graph;
+    ConfigureFrameGraph(Graph);
+
+    FForwardFrameResources Resources = {};
+    ImportFrameResources(Graph, Resources);
+
+    AddGpuCullingPass(Graph, Camera, Resources.DepthHandle);
+    AddShadowPass(Graph, Camera, FrameState, Resources.ShadowHandle);
+    AddDepthPrepass(Graph, Camera, FrameState, Resources.DepthHandle, Resources.ShadowHandle);
+    AddSkyPass(Graph, Camera, FrameState, Resources.DepthHandle, RtvHandle);
+    AddForwardPass(Graph, Camera, FrameState, Resources.DepthHandle, Resources.ShadowHandle, RtvHandle);
+    AddObjectIdPass(Graph, Camera, FrameState, Resources.ObjectIdHandle, Resources.DepthHandle);
+    AddDebugPrintPass(Graph, RtvHandle);
+
+    Graph.Execute(CmdContext);
+}
+
+void FForwardRenderer::PrepareFrameState(const FCamera& Camera, FForwardFrameState& OutState)
+{
+    UpdateCullingVisibility(Camera);
+    OutState.LightViewProjection = RendererUtils::BuildDirectionalLightViewProjection(SceneCenter, SceneRadius, LightDirection);
+    OutState.bRenderShadows = bShadowsEnabled && ShadowPipeline && ShadowMap;
+    OutState.bDoDepthPrepass = bDepthPrepassEnabled && DepthPrepassPipeline;
+}
+
+void FForwardRenderer::ConfigureFrameGraph(FRenderGraph& Graph) const
+{
     Graph.SetDevice(Device);
     Graph.SetBarrierLoggingEnabled(bLogResourceBarriers);
     Graph.SetGraphDumpEnabled(bEnableGraphDump);
     Graph.SetGpuTimingEnabled(bEnableGpuTiming);
+}
 
-    FRGResourceHandle ShadowHandle = Graph.ImportTexture(
+void FForwardRenderer::ImportFrameResources(FRenderGraph& Graph, FForwardFrameResources& OutResources)
+{
+    OutResources.ShadowHandle = Graph.ImportTexture(
         "ShadowMap",
         ShadowMap.Get(),
         &ShadowMapState,
@@ -276,20 +297,21 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
     };
 
     D3D12_RESOURCE_STATES& DepthState = GetDepthBufferState();
-    FRGResourceHandle DepthHandle = Graph.ImportTexture("Depth", GetDepthBuffer(), &DepthState, DepthDesc);
-    FRGResourceHandle ObjectIdHandle = Graph.ImportTexture(
+    OutResources.DepthHandle = Graph.ImportTexture("Depth", GetDepthBuffer(), &DepthState, DepthDesc);
+    OutResources.ObjectIdHandle = Graph.ImportTexture(
         "ObjectId",
         ObjectIdTexture.Get(),
         &ObjectIdState,
         { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), DXGI_FORMAT_R32_UINT });
+}
 
+void FForwardRenderer::AddGpuCullingPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle DepthHandle)
+{
     struct FGpuCullingPassData
     {
         bool bEnabled = false;
         const FCamera* Camera = nullptr;
     };
-
-    ConfigureHZBOcclusion(false, TextureDescriptorHeap.Get(), SceneTextureGpuHandle, 0, 0, 0);
 
     Graph.AddPass<FGpuCullingPassData>("GPU Culling", [this, &Camera, DepthHandle](FGpuCullingPassData& Data, FRGPassBuilder& Builder)
     {
@@ -308,7 +330,10 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
 
         DispatchGpuCulling(Cmd, *Data.Camera);
     });
+}
 
+void FForwardRenderer::AddShadowPass(FRenderGraph& Graph, const FCamera& Camera, const FForwardFrameState& FrameState, FRGResourceHandle ShadowHandle)
+{
     struct FShadowPassData
     {
         bool bEnabled = false;
@@ -316,13 +341,13 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
         DirectX::XMMATRIX LightViewProjection = DirectX::XMMatrixIdentity();
     };
 
-    Graph.AddPass<FShadowPassData>("ShadowMap", [&, bRenderShadows](FShadowPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FShadowPassData>("ShadowMap", [&, FrameState, ShadowHandle](FShadowPassData& Data, FRGPassBuilder& Builder)
     {
-        Data.bEnabled = bRenderShadows;
+        Data.bEnabled = FrameState.bRenderShadows;
         Data.Camera = &Camera;
-        Data.LightViewProjection = LightViewProjection;
+        Data.LightViewProjection = FrameState.LightViewProjection;
 
-        if (bRenderShadows)
+        if (FrameState.bRenderShadows)
         {
             Builder.WriteTexture(ShadowHandle, D3D12_RESOURCE_STATE_DEPTH_WRITE);
         }
@@ -395,7 +420,10 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
         }
 
     });
+}
 
+void FForwardRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Camera, const FForwardFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle ShadowHandle)
+{
     struct FDepthPrepassData
     {
         bool bEnabled = false;
@@ -403,13 +431,13 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
         DirectX::XMMATRIX LightViewProjection = DirectX::XMMatrixIdentity();
     };
 
-    Graph.AddPass<FDepthPrepassData>("DepthPrepass", [&, bDoDepthPrepass](FDepthPrepassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FDepthPrepassData>("DepthPrepass", [&, FrameState, DepthHandle, ShadowHandle](FDepthPrepassData& Data, FRGPassBuilder& Builder)
     {
-        Data.bEnabled = bDoDepthPrepass;
+        Data.bEnabled = FrameState.bDoDepthPrepass;
         Data.Camera = &Camera;
-        Data.LightViewProjection = LightViewProjection;
+        Data.LightViewProjection = FrameState.LightViewProjection;
 
-        if (bDoDepthPrepass)
+        if (FrameState.bDoDepthPrepass)
         {
             Builder.WriteTexture(DepthHandle, D3D12_RESOURCE_STATE_DEPTH_WRITE);
             if (ShadowMap)
@@ -478,7 +506,10 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
             }
         }
     });
+}
 
+void FForwardRenderer::AddSkyPass(FRenderGraph& Graph, const FCamera& Camera, const FForwardFrameState& FrameState, FRGResourceHandle DepthHandle, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle)
+{
     struct FSkyPassData
     {
         D3D12_CPU_DESCRIPTOR_HANDLE OutputHandle{};
@@ -492,7 +523,7 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
         Data.OutputHandle = RtvHandle;
         Data.Camera = &Camera;
         Data.bEnabled = SkyPipelineState && SkyRootSignature && SkyGeometry.IndexCount > 0;
-        Data.bClearDepth = !bDoDepthPrepass;
+        Data.bClearDepth = !FrameState.bDoDepthPrepass;
 
         if (Data.bEnabled)
         {
@@ -528,7 +559,10 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
         LocalCommandList->SetGraphicsRootConstantBufferView(0, SkyConstantBuffer->GetGPUVirtualAddress());
         LocalCommandList->DrawIndexedInstanced(SkyGeometry.IndexCount, 1, 0, 0, 0);
     });
+}
 
+void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera, const FForwardFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle ShadowHandle, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle)
+{
     struct FForwardPassData
     {
         D3D12_CPU_DESCRIPTOR_HANDLE OutputHandle{};
@@ -538,16 +572,16 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
         bool bClearDepth = false;
     };
 
-    Graph.AddPass<FForwardPassData>("Forward", [&, bRenderShadows](FForwardPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FForwardPassData>("Forward", [&, FrameState, DepthHandle, ShadowHandle](FForwardPassData& Data, FRGPassBuilder& Builder)
     {
         Data.OutputHandle = RtvHandle;
         Data.Camera = &Camera;
-        Data.bRenderShadows = bRenderShadows;
-        Data.LightViewProjection = LightViewProjection;
-        Data.bClearDepth = !bDoDepthPrepass && !(SkyPipelineState && SkyRootSignature && SkyGeometry.IndexCount > 0);
+        Data.bRenderShadows = FrameState.bRenderShadows;
+        Data.LightViewProjection = FrameState.LightViewProjection;
+        Data.bClearDepth = !FrameState.bDoDepthPrepass && !(SkyPipelineState && SkyRootSignature && SkyGeometry.IndexCount > 0);
 
         Builder.WriteTexture(DepthHandle, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-        if (bRenderShadows)
+        if (FrameState.bRenderShadows)
         {
             Builder.ReadTexture(ShadowHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         }
@@ -772,7 +806,10 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
             }
         }
     });
+}
 
+void FForwardRenderer::AddObjectIdPass(FRenderGraph& Graph, const FCamera& Camera, const FForwardFrameState& FrameState, FRGResourceHandle ObjectIdHandle, FRGResourceHandle DepthHandle)
+{
     struct FObjectIdPassData
     {
         bool bEnabled = false;
@@ -780,11 +817,11 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
         DirectX::XMMATRIX LightViewProjection = DirectX::XMMatrixIdentity();
     };
 
-    Graph.AddPass<FObjectIdPassData>("ObjectId", [this, &Camera, LightViewProjection, ObjectIdHandle, DepthHandle](FObjectIdPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FObjectIdPassData>("ObjectId", [this, &Camera, FrameState, ObjectIdHandle, DepthHandle](FObjectIdPassData& Data, FRGPassBuilder& Builder)
     {
         Data.bEnabled = bObjectIdReadbackRequested && ObjectIdPipeline && ObjectIdTexture;
         Data.Camera = &Camera;
-        Data.LightViewProjection = LightViewProjection;
+        Data.LightViewProjection = FrameState.LightViewProjection;
 
         if (Data.bEnabled)
         {
@@ -889,7 +926,10 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
 
         bObjectIdReadbackRecorded = true;
     });
+}
 
+void FForwardRenderer::AddDebugPrintPass(FRenderGraph& Graph, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle)
+{
     struct FDebugPrintPassData
     {
         bool bEnabled = false;
@@ -914,8 +954,6 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
         DispatchGpuDebugPrintStats(Cmd);
         RenderGpuDebugPrint(Cmd, Data.OutputHandle);
     });
-
-    Graph.Execute(CmdContext);
 }
 
 void FForwardRenderer::UpdateCullingVisibility(const FCamera& Camera)
