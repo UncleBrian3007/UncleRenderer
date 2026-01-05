@@ -63,6 +63,7 @@
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>$(ProjectDir)Source;$(ProjectDir)Source\Core;$(ProjectDir)Source\RHI;$(ProjectDir)Source\Render;$(ProjectDir)ThirdParty\imgui;$(ProjectDir)ThirdParty\imgui\backends;$(ProjectDir)ThirdParty\d3d12;$(ProjectDir)ThirdParty\WinPixEventRuntime;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -89,6 +90,7 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>$(ProjectDir)Source;$(ProjectDir)Source\Core;$(ProjectDir)Source\RHI;$(ProjectDir)Source\Render;$(ProjectDir)ThirdParty\imgui;$(ProjectDir)ThirdParty\imgui\backends;$(ProjectDir)ThirdParty\d3d12;$(ProjectDir)ThirdParty\WinPixEventRuntime;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp17</LanguageStandard>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -189,6 +191,7 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
   </ItemGroup>
   <ItemGroup>
     <None Include="Assets\Scenes\pica_pica.json" />
+    <None Include="Assets\Scenes\Scene.json" />
     <None Include="Assets\Scenes\sponza.json" />
     <None Include="bin\RendererConfig.ini" />
     <None Include="packages.config" />

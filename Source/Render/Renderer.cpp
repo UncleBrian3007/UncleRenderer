@@ -9,6 +9,7 @@
 #include "../RHI/DX12Device.h"
 #include "../Core/GpuDebugMarkers.h"
 #include "../Core/Logger.h"
+#include "../Core/RendererConfig.h"
 #include <array>
 #include <algorithm>
 #include <cstring>
@@ -41,17 +42,17 @@ bool FRenderer::ConsumeObjectIdReadback(uint32_t& OutObjectId)
         OutObjectId);
 }
 
-void FRenderer::InitializeCommonSettings(uint32_t Width, uint32_t Height, const FRendererOptions& Options)
+void FRenderer::InitializeCommonSettings(uint32_t Width, uint32_t Height, const FRendererConfig& Config)
 {
-    bDepthPrepassEnabled = Options.bUseDepthPrepass;
-    bShadowsEnabled = Options.bEnableShadows;
-    ShadowBias = Options.ShadowBias;
-    bLogResourceBarriers = Options.bLogResourceBarriers;
-    bEnableGraphDump = Options.bEnableGraphDump;
-    bEnableGpuTiming = Options.bEnableGpuTiming;
-    bEnableIndirectDraw = Options.bEnableIndirectDraw;
-    bEnableGpuDebugPrint = Options.bEnableGpuDebugPrint;
-    FramesInFlight = (std::max)(1u, Options.FramesInFlight);
+    bDepthPrepassEnabled = Config.bUseDepthPrepass;
+    bShadowsEnabled = Config.bEnableShadows;
+    ShadowBias = Config.ShadowBias;
+    bLogResourceBarriers = Config.bLogResourceBarriers;
+    bEnableGraphDump = Config.bEnableGraphDump;
+    bEnableGpuTiming = Config.bEnableGpuTiming;
+    bEnableIndirectDraw = Config.bEnableIndirectDraw;
+    bEnableGpuDebugPrint = Config.bEnableGpuDebugPrint;
+    FramesInFlight = (std::max)(1u, Config.FramesInFlight);
     CurrentFrameIndex = 0;
 
     Viewport.TopLeftX = 0.0f;

@@ -152,6 +152,18 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
         }
     }
 
+    if (LowerKey == "tonemapwhitepoint")
+    {
+        try
+        {
+            OutConfig.TonemapWhitePoint = std::stof(Value);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid tonemap white point value in renderer config: " + Value);
+        }
+    }
+
     if (LowerKey == "tonemapgamma")
     {
         try
@@ -281,6 +293,11 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     if (LowerKey == "gputiming" || LowerKey == "enablegputiming" || LowerKey == "recordgputiming")
     {
         OutConfig.bEnableGpuTiming = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+
+    if (LowerKey == "hzb" || LowerKey == "enablehzb")
+    {
+        OutConfig.bEnableHZB = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
 
     if (LowerKey == "gpudebugprint" || LowerKey == "enablegpudebugprint")

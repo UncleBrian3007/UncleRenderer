@@ -358,5 +358,8 @@
     <None Include="Shaders\Cas.hlsl">
       <Filter>Shaders</Filter>
     </None>
+    <None Include="Assets\Scenes\Scene.json">
+      <Filter>Assets</Filter>
+    </None>
   </ItemGroup>
 </Project>

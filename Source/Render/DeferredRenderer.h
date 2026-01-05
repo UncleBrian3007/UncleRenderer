@@ -30,7 +30,7 @@ class FDeferredRenderer : public FRenderer
 public:
     FDeferredRenderer();
 
-    bool Initialize(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT BackBufferFormat, const FRendererOptions& Options) override;
+    bool Initialize(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT BackBufferFormat, const FRendererConfig& Config) override;
     void RenderFrame(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle, const FCamera& Camera, float DeltaTime) override;
 
     void SetShadowsEnabled(bool bEnabled) { bShadowsEnabled = bEnabled; }

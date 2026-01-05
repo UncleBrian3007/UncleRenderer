@@ -21,6 +21,7 @@ struct FRendererConfig
     float ShadowBias = 0.0f;
     bool bEnableTonemap = true;
     float TonemapExposure = 1.0f;
+    float TonemapWhitePoint = 4.0f;
     float TonemapGamma = 2.2f;
     bool bEnableCas = true;
     float CasSharpness = 0.5f;
@@ -36,6 +37,7 @@ struct FRendererConfig
     bool bLogResourceBarriers = false;
     bool bEnableGraphDump = false;
     bool bEnableGpuTiming = false;
+    bool bEnableHZB = true;
     bool bEnableIndirectDraw = true;
     bool bEnableGpuDebugPrint = true;
     uint32_t WindowWidth = 1280;

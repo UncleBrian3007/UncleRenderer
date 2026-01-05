@@ -196,34 +196,7 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     bIndirectDrawEnabled = RendererConfig.bEnableIndirectDraw;
     SetModelPixEventsEnabled(bModelPixEventsEnabled);
 
-    FRendererOptions RendererOptions{};
-    RendererOptions.SceneFilePath = RendererConfig.SceneFile;
-    RendererOptions.bUseDepthPrepass = RendererConfig.bUseDepthPrepass;
-    RendererOptions.bEnableShadows = bShadowsEnabled;
-    RendererOptions.ShadowBias = ShadowBias;
-    RendererOptions.bEnableTonemap = bTonemapEnabled;
-    RendererOptions.TonemapExposure = TonemapExposure;
-    RendererOptions.TonemapWhitePoint = TonemapWhitePoint;
-    RendererOptions.TonemapGamma = TonemapGamma;
-    RendererOptions.bEnableCas = bCasEnabled;
-    RendererOptions.CasSharpness = CasSharpness;
-    RendererOptions.bEnableAutoExposure = bAutoExposureEnabled;
-    RendererOptions.AutoExposureKey = AutoExposureKey;
-    RendererOptions.AutoExposureMin = AutoExposureMin;
-    RendererOptions.AutoExposureMax = AutoExposureMax;
-    RendererOptions.AutoExposureSpeedUp = AutoExposureSpeedUp;
-    RendererOptions.AutoExposureSpeedDown = AutoExposureSpeedDown;
-    RendererOptions.bEnableTAA = bTaaEnabled;
-    RendererOptions.TaaHistoryWeight = TaaHistoryWeight;
-    RendererOptions.bEnableHZB = bHZBEnabled;
-    RendererOptions.bLogResourceBarriers = RendererConfig.bLogResourceBarriers;
-    RendererOptions.bEnableGraphDump = RendererConfig.bEnableGraphDump;
-    RendererOptions.bEnableGpuTiming = RendererConfig.bEnableGpuTiming;
-    RendererOptions.bEnableGpuDebugPrint = bGpuDebugPrintEnabled;
-    RendererOptions.bEnableIndirectDraw = bIndirectDrawEnabled;
-
-    const std::wstring SceneFilePath = RendererOptions.SceneFilePath.empty() ? L"Assets/Scenes/Scene.json" : RendererOptions.SceneFilePath;
-    RendererOptions.SceneFilePath = SceneFilePath;
+    const std::wstring SceneFilePath = RendererConfig.SceneFile.empty() ? L"Assets/Scenes/Scene.json" : RendererConfig.SceneFile;
     CurrentScenePath = SceneFilePath;
 
     FSceneLightDesc SceneLight;
@@ -272,7 +245,7 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
         return false;
     }
 
-    RendererOptions.FramesInFlight = SwapChain->GetBackBufferCount();
+    RendererConfig.FramesInFlight = SwapChain->GetBackBufferCount();
 
     Camera->SetPerspective(DirectX::XM_PIDIV4, static_cast<float>(WindowWidth) / static_cast<float>(WindowHeight), 0.1f, 1000.0f);
 
@@ -281,7 +254,7 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
         if (Type == ERendererType::Deferred)
         {
             LogInfo("Attempting to initialize deferred renderer...");
-            if (DeferredRenderer->Initialize(Device.get(), WindowWidth, WindowHeight, SwapChain->GetFormat(), RendererOptions))
+            if (DeferredRenderer->Initialize(Device.get(), WindowWidth, WindowHeight, SwapChain->GetFormat(), RendererConfig))
             {
                 LogInfo("Deferred renderer activated");
                 ActiveRenderer = DeferredRenderer.get();
@@ -293,7 +266,7 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
         }
 
         LogInfo("Attempting to initialize forward renderer...");
-        if (ForwardRenderer->Initialize(Device.get(), WindowWidth, WindowHeight, SwapChain->GetFormat(), RendererOptions))
+        if (ForwardRenderer->Initialize(Device.get(), WindowWidth, WindowHeight, SwapChain->GetFormat(), RendererConfig))
         {
             LogInfo("Forward renderer activated");
             ActiveRenderer = ForwardRenderer.get();
@@ -937,19 +910,20 @@ bool FApplication::ReloadScene(const std::wstring& ScenePath)
         Device->GetGraphicsQueue()->Flush();
     }
 
-    FRendererOptions RendererOptions{};
-    RendererOptions.SceneFilePath = ScenePath;
-    RendererOptions.bUseDepthPrepass = bDepthPrepassEnabled;
-    RendererOptions.bEnableShadows = bShadowsEnabled;
-    RendererOptions.ShadowBias = ShadowBias;
-    RendererOptions.bEnableHZB = bHZBEnabled;
-    RendererOptions.bEnableIndirectDraw = bIndirectDrawEnabled;
-    RendererOptions.bEnableGpuDebugPrint = bGpuDebugPrintEnabled;
-    RendererOptions.bEnableTAA = bTaaEnabled;
-    RendererOptions.TaaHistoryWeight = TaaHistoryWeight;
-    RendererOptions.bEnableCas = bCasEnabled;
-    RendererOptions.CasSharpness = CasSharpness;
-    RendererOptions.FramesInFlight = SwapChain ? SwapChain->GetBackBufferCount() : 2u;
+    // Create a temporary config for scene reloading
+    FRendererConfig ReloadConfig = RendererConfig;
+    ReloadConfig.SceneFile = ScenePath;
+    ReloadConfig.bUseDepthPrepass = bDepthPrepassEnabled;
+    ReloadConfig.bEnableShadows = bShadowsEnabled;
+    ReloadConfig.ShadowBias = ShadowBias;
+    ReloadConfig.bEnableHZB = bHZBEnabled;
+    ReloadConfig.bEnableIndirectDraw = bIndirectDrawEnabled;
+    ReloadConfig.bEnableGpuDebugPrint = bGpuDebugPrintEnabled;
+    ReloadConfig.bEnableTAA = bTaaEnabled;
+    ReloadConfig.TaaHistoryWeight = TaaHistoryWeight;
+    ReloadConfig.bEnableCas = bCasEnabled;
+    ReloadConfig.CasSharpness = CasSharpness;
+    ReloadConfig.FramesInFlight = SwapChain ? SwapChain->GetBackBufferCount() : 2u;
 
     const uint32_t Width = static_cast<uint32_t>(MainWindow->GetWidth());
     const uint32_t Height = static_cast<uint32_t>(MainWindow->GetHeight());
@@ -964,7 +938,7 @@ bool FApplication::ReloadScene(const std::wstring& ScenePath)
     {
         if (Type == ERendererType::Deferred)
         {
-            if (NewDeferredRenderer->Initialize(Device.get(), Width, Height, BackBufferFormat, RendererOptions))
+            if (NewDeferredRenderer->Initialize(Device.get(), Width, Height, BackBufferFormat, ReloadConfig))
             {
                 NewActiveRenderer = NewDeferredRenderer.get();
                 return true;
@@ -972,7 +946,7 @@ bool FApplication::ReloadScene(const std::wstring& ScenePath)
             return false;
         }
 
-        if (NewForwardRenderer->Initialize(Device.get(), Width, Height, BackBufferFormat, RendererOptions))
+        if (NewForwardRenderer->Initialize(Device.get(), Width, Height, BackBufferFormat, ReloadConfig))
         {
             NewActiveRenderer = NewForwardRenderer.get();
             return true;
@@ -1054,29 +1028,30 @@ void FApplication::StartAsyncSceneReload(const std::wstring& ScenePath)
     const uint32_t Height = static_cast<uint32_t>(MainWindow->GetHeight());
     const DXGI_FORMAT BackBufferFormat = SwapChain->GetFormat();
     
-    FRendererOptions RendererOptions{};
-    RendererOptions.SceneFilePath = ScenePath;
-    RendererOptions.bUseDepthPrepass = bDepthPrepassEnabled;
-    RendererOptions.bEnableShadows = bShadowsEnabled;
-    RendererOptions.ShadowBias = ShadowBias;
-    RendererOptions.bEnableTonemap = bTonemapEnabled;
-    RendererOptions.TonemapExposure = TonemapExposure;
-    RendererOptions.TonemapWhitePoint = TonemapWhitePoint;
-    RendererOptions.TonemapGamma = TonemapGamma;
-    RendererOptions.bEnableCas = bCasEnabled;
-    RendererOptions.CasSharpness = CasSharpness;
-    RendererOptions.bEnableTAA = bTaaEnabled;
-    RendererOptions.TaaHistoryWeight = TaaHistoryWeight;
-    RendererOptions.bEnableGpuTiming = bGpuTimingEnabled;
-    RendererOptions.bEnableGpuDebugPrint = bGpuDebugPrintEnabled;
-    RendererOptions.bEnableHZB = bHZBEnabled;
-    RendererOptions.bEnableIndirectDraw = bIndirectDrawEnabled;
-    RendererOptions.FramesInFlight = SwapChain ? SwapChain->GetBackBufferCount() : 2u;
+    // Create a temporary config for async scene loading
+    FRendererConfig AsyncConfig = RendererConfig;
+    AsyncConfig.SceneFile = ScenePath;
+    AsyncConfig.bUseDepthPrepass = bDepthPrepassEnabled;
+    AsyncConfig.bEnableShadows = bShadowsEnabled;
+    AsyncConfig.ShadowBias = ShadowBias;
+    AsyncConfig.bEnableTonemap = bTonemapEnabled;
+    AsyncConfig.TonemapExposure = TonemapExposure;
+    AsyncConfig.TonemapWhitePoint = TonemapWhitePoint;
+    AsyncConfig.TonemapGamma = TonemapGamma;
+    AsyncConfig.bEnableCas = bCasEnabled;
+    AsyncConfig.CasSharpness = CasSharpness;
+    AsyncConfig.bEnableTAA = bTaaEnabled;
+    AsyncConfig.TaaHistoryWeight = TaaHistoryWeight;
+    AsyncConfig.bEnableGpuTiming = bGpuTimingEnabled;
+    AsyncConfig.bEnableGpuDebugPrint = bGpuDebugPrintEnabled;
+    AsyncConfig.bEnableHZB = bHZBEnabled;
+    AsyncConfig.bEnableIndirectDraw = bIndirectDrawEnabled;
+    AsyncConfig.FramesInFlight = SwapChain ? SwapChain->GetBackBufferCount() : 2u;
 
     const bool bPreferDeferred = ActiveRenderer == DeferredRenderer.get() || RendererConfig.RendererType == ERendererType::Deferred;
 
     // Schedule async task
-    FTaskScheduler::Get().ScheduleTask([this, ScenePath, Width, Height, BackBufferFormat, RendererOptions, bPreferDeferred, StartTime]()
+    FTaskScheduler::Get().ScheduleTask([this, ScenePath, Width, Height, BackBufferFormat, AsyncConfig, bPreferDeferred, StartTime]()
     {
         AsyncForwardRenderer = std::make_unique<FForwardRenderer>();
         AsyncDeferredRenderer = std::make_unique<FDeferredRenderer>();
@@ -1086,7 +1061,7 @@ void FApplication::StartAsyncSceneReload(const std::wstring& ScenePath)
         {
             if (Type == ERendererType::Deferred)
             {
-                if (AsyncDeferredRenderer->Initialize(Device.get(), Width, Height, BackBufferFormat, RendererOptions))
+                if (AsyncDeferredRenderer->Initialize(Device.get(), Width, Height, BackBufferFormat, AsyncConfig))
                 {
                     AsyncActiveRenderer = AsyncDeferredRenderer.get();
                     return true;
@@ -1094,7 +1069,7 @@ void FApplication::StartAsyncSceneReload(const std::wstring& ScenePath)
                 return false;
             }
 
-            if (AsyncForwardRenderer->Initialize(Device.get(), Width, Height, BackBufferFormat, RendererOptions))
+            if (AsyncForwardRenderer->Initialize(Device.get(), Width, Height, BackBufferFormat, AsyncConfig))
             {
                 AsyncActiveRenderer = AsyncForwardRenderer.get();
                 return true;

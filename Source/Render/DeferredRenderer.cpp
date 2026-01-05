@@ -11,6 +11,7 @@
 #include "../RHI/DX12CommandQueue.h"
 #include "../Core/GpuDebugMarkers.h"
 #include "../Core/Logger.h"
+#include "../Core/RendererConfig.h"
 #include <d3dx12.h>
 #include <cstring>
 #include <string>
@@ -67,7 +68,7 @@ namespace
     }
 }
 
-bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT BackBufferFormat, const FRendererOptions& Options)
+bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT BackBufferFormat, const FRendererConfig& Config)
 {
     if (Device == nullptr)
     {
@@ -81,28 +82,28 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
 
     this->BackBufferFormat = BackBufferFormat;
 
-    bTonemapEnabled = Options.bEnableTonemap;
-    TonemapExposure = Options.TonemapExposure;
-    TonemapWhitePoint = Options.TonemapWhitePoint;
-    TonemapGamma = Options.TonemapGamma;
-    bCasEnabled = Options.bEnableCas;
-    CasSharpness = Options.CasSharpness;
-    bAutoExposureEnabled = Options.bEnableAutoExposure;
-    AutoExposureKey = Options.AutoExposureKey;
-    AutoExposureMin = Options.AutoExposureMin;
-    AutoExposureMax = Options.AutoExposureMax;
-    AutoExposureSpeedUp = Options.AutoExposureSpeedUp;
-    AutoExposureSpeedDown = Options.AutoExposureSpeedDown;
-    bTaaEnabled = Options.bEnableTAA;
-    TaaHistoryWeight = Options.TaaHistoryWeight;
-    TaaFrameCount = Options.FramesInFlight;
+    bTonemapEnabled = Config.bEnableTonemap;
+    TonemapExposure = Config.TonemapExposure;
+    TonemapWhitePoint = Config.TonemapWhitePoint;
+    TonemapGamma = Config.TonemapGamma;
+    bCasEnabled = Config.bEnableCas;
+    CasSharpness = Config.CasSharpness;
+    bAutoExposureEnabled = Config.bEnableAutoExposure;
+    AutoExposureKey = Config.AutoExposureKey;
+    AutoExposureMin = Config.AutoExposureMin;
+    AutoExposureMax = Config.AutoExposureMax;
+    AutoExposureSpeedUp = Config.AutoExposureSpeedUp;
+    AutoExposureSpeedDown = Config.AutoExposureSpeedDown;
+    bTaaEnabled = Config.bEnableTAA;
+    TaaHistoryWeight = Config.TaaHistoryWeight;
+    TaaFrameCount = Config.FramesInFlight;
     TaaHistoryValid.clear();
     TaaHistoryValid.resize(TaaFrameCount, false);
     TaaSampleIndex = 0;
-    bHZBEnabled = Options.bEnableHZB;
+    bHZBEnabled = Config.bEnableHZB;
     bHZBReady = false;
 
-    InitializeCommonSettings(Width, Height, Options);
+    InitializeCommonSettings(Width, Height, Config);
 
     LogInfo("Creating deferred renderer base pass root signature...");
     if (!CreateBasePassRootSignature(Device))
@@ -243,7 +244,7 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
         return false;
     }
 
-    if (!CreateTaaResources(Device, Width, Height, Options.FramesInFlight))
+    if (!CreateTaaResources(Device, Width, Height, Config.FramesInFlight))
     {
         LogError("Deferred renderer initialization failed: TAA resource creation failed");
         return false;
@@ -255,7 +256,7 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
         return false;
     }
 
-    const std::wstring SceneFilePath = Options.SceneFilePath.empty() ? L"Assets/Scenes/Scene.json" : Options.SceneFilePath;
+    const std::wstring SceneFilePath = Config.SceneFile.empty() ? L"Assets/Scenes/Scene.json" : Config.SceneFile;
     if (!RendererUtils::CreateSceneModelsFromJson(Device, SceneFilePath, SceneModels, SceneCenter, SceneRadius))
     {
         LogWarning("Falling back to default geometry; scene JSON could not be loaded.");

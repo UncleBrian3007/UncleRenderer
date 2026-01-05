@@ -12,35 +12,7 @@
 
 struct FSceneModelResource;
 class FTextureLoader;
-
-struct FRendererOptions
-{
-    std::wstring SceneFilePath = L"Assets/Scenes/Scene.json";
-    bool bUseDepthPrepass = true;
-    bool bEnableShadows = true;
-    float ShadowBias = 0.0f;
-    bool bEnableTonemap = true;
-    float TonemapExposure = 0.5f;
-    float TonemapWhitePoint = 4.0f;
-    float TonemapGamma = 1.0f;
-    bool bEnableCas = true;
-    float CasSharpness = 0.5f;
-    bool bEnableAutoExposure = false;
-    float AutoExposureKey = 0.18f;
-    float AutoExposureMin = 0.1f;
-    float AutoExposureMax = 5.0f;
-    float AutoExposureSpeedUp = 3.0f;
-    float AutoExposureSpeedDown = 1.0f;
-    bool bEnableTAA = false;
-    float TaaHistoryWeight = 0.9f;
-    uint32_t FramesInFlight = 2;
-    bool bLogResourceBarriers = false;
-    bool bEnableGraphDump = false;
-    bool bEnableGpuTiming = false;
-    bool bEnableHZB = true;
-    bool bEnableIndirectDraw = false;
-    bool bEnableGpuDebugPrint = false;
-};
+struct FRendererConfig;
 
 class FDX12Device;
 class FDX12CommandContext;
@@ -64,7 +36,7 @@ public:
 
     virtual ~FRenderer();
 
-    virtual bool Initialize(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT BackBufferFormat, const FRendererOptions& Options) = 0;
+    virtual bool Initialize(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT BackBufferFormat, const FRendererConfig& Config) = 0;
     virtual void RenderFrame(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle, const FCamera& Camera, float DeltaTime) = 0;
     virtual void OnFrameFenceSignaled(uint32_t FrameIndex, uint64_t FenceValue) {}
 
@@ -106,7 +78,7 @@ public:
     virtual bool ConsumeObjectIdReadback(uint32_t& OutObjectId);
 
 protected:
-    void InitializeCommonSettings(uint32_t Width, uint32_t Height, const FRendererOptions& Options);
+    void InitializeCommonSettings(uint32_t Width, uint32_t Height, const FRendererConfig& Config);
     bool CreateShadowPipeline(FDX12Device* Device, ID3D12RootSignature* RootSignature, Microsoft::WRL::ComPtr<ID3D12PipelineState>& OutPipelineState);
     bool CreateShadowResources(
         FDX12Device* Device,

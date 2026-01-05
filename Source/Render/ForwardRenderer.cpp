@@ -10,6 +10,7 @@
 #include "../RHI/DX12CommandContext.h"
 #include "../Core/GpuDebugMarkers.h"
 #include "../Core/Logger.h"
+#include "../Core/RendererConfig.h"
 #include <cstring>
 #include <string>
 #include <vector>
@@ -32,7 +33,7 @@ namespace
     }
 }
 
-bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT BackBufferFormat, const FRendererOptions& Options)
+bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT BackBufferFormat, const FRendererConfig& Config)
 {
     if (Device == nullptr)
     {
@@ -44,7 +45,7 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
 
     LogInfo("Forward renderer initialization started");
 
-    InitializeCommonSettings(Width, Height, Options);
+    InitializeCommonSettings(Width, Height, Config);
 
     LogInfo("Creating forward renderer root signature...");
     if (!CreateRootSignature(Device))
@@ -143,7 +144,7 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
         return false;
     }
 
-    const std::wstring SceneFilePath = Options.SceneFilePath.empty() ? L"Assets/Scenes/Scene.json" : Options.SceneFilePath;
+    const std::wstring SceneFilePath = Config.SceneFile.empty() ? L"Assets/Scenes/Scene.json" : Config.SceneFile;
     if (!RendererUtils::CreateSceneModelsFromJson(Device, SceneFilePath, SceneModels, SceneCenter, SceneRadius))
     {
         LogWarning("Falling back to default geometry; scene JSON could not be loaded.");
