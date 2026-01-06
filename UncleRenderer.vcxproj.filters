@@ -364,5 +364,9 @@
     <None Include="Shaders\Gtao.hlsl">
       <Filter>Shaders</Filter>
     </None>
+    <None Include="README.md" />
+    <None Include="Shaders\LinearDepth.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
   </ItemGroup>
 </Project>

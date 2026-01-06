@@ -195,6 +195,7 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <None Include="Assets\Scenes\sponza.json" />
     <None Include="bin\RendererConfig.ini" />
     <None Include="packages.config" />
+    <None Include="README.md" />
     <None Include="Shaders\DeferredBasePass.hlsl" />
     <None Include="Shaders\DeferredLighting.hlsl" />
     <None Include="Shaders\ForwardPS.hlsl" />
@@ -258,6 +259,11 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\Gtao.hlsl">
+      <FileType>Document</FileType>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Shaders\LinearDepth.hlsl">
       <FileType>Document</FileType>
     </None>
   </ItemGroup>
