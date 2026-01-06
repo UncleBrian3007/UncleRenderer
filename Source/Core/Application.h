@@ -89,7 +89,7 @@ private:
     bool bIndirectDrawEnabled = true;
     bool bModelPixEventsEnabled = true;
     bool bGtaoEnabled = true;
-    bool bGtaoJitterEnabled = true;
+    bool bGtaoJitterEnabled = false;
     float GtaoRadius = 0.75f;
     float GtaoThickness = 0.1f;
     bool bCasEnabled = true;
