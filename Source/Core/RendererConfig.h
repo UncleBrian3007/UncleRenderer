@@ -38,8 +38,16 @@ struct FRendererConfig
     bool bEnableGraphDump = false;
     bool bEnableGpuTiming = false;
     bool bEnableHZB = true;
+    bool bEnableGtao = true;
+    bool bEnableGtaoJitter = true;
     bool bEnableIndirectDraw = true;
     bool bEnableGpuDebugPrint = true;
+    float GtaoRadius = 0.75f;
+    float GtaoIntensity = 1.0f;
+    float GtaoPower = 1.5f;
+    float GtaoThickness = 0.1f;
+    uint32_t GtaoDirectionCount = 6;
+    uint32_t GtaoStepCount = 4;
     uint32_t WindowWidth = 1280;
     uint32_t WindowHeight = 720;
 };

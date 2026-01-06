@@ -1039,6 +1039,14 @@ void RendererUtils::UpdateSceneConstants(
     float ShadowMapWidth,
     float ShadowMapHeight,
     float EnvMapMipCount,
+    const DirectX::XMFLOAT2& TaaJitter,
+    bool bGtaoEnabled,
+    float GtaoRadius,
+    float GtaoIntensity,
+    float GtaoPower,
+    float GtaoThickness,
+    uint32_t GtaoDirectionCount,
+    uint32_t GtaoStepCount,
     uint8_t* ConstantBufferMapped,
     uint64_t ConstantBufferOffset)
 {
@@ -1078,6 +1086,13 @@ void RendererUtils::UpdateSceneConstants(
     Constants.AlphaCutoff = Model.AlphaCutoff;
     Constants.AlphaMode = Model.AlphaMode;
     Constants.EnvMapMipCount = EnvMapMipCount;
+    Constants.TaaJitter = TaaJitter;
+    Constants.GtaoRadius = GtaoRadius;
+    Constants.GtaoIntensity = bGtaoEnabled ? GtaoIntensity : 0.0f;
+    Constants.GtaoPower = GtaoPower;
+    Constants.GtaoThickness = GtaoThickness;
+    Constants.GtaoDirectionCount = GtaoDirectionCount;
+    Constants.GtaoStepCount = GtaoStepCount;
     Constants.ObjectId = Model.ObjectId;
     FillTransformConstants(Model.BaseColorTransformOffsetScale, Model.BaseColorTransformRotation, Constants.BaseColorTransformOffsetScale, Constants.BaseColorTransformRotation);
     FillTransformConstants(Model.MetallicRoughnessTransformOffsetScale, Model.MetallicRoughnessTransformRotation, Constants.MetallicRoughnessTransformOffsetScale, Constants.MetallicRoughnessTransformRotation);

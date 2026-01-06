@@ -300,6 +300,91 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
         OutConfig.bEnableHZB = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
 
+    if (LowerKey == "gtao" || LowerKey == "enablegtao")
+    {
+        OutConfig.bEnableGtao = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+    if (LowerKey == "gtaojitter" || LowerKey == "enablegtaojitter")
+    {
+        OutConfig.bEnableGtaoJitter = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+
+    if (LowerKey == "gtaoradius")
+    {
+        try
+        {
+            OutConfig.GtaoRadius = std::stof(Value);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid GTAO radius value in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "gtaointensity")
+    {
+        try
+        {
+            OutConfig.GtaoIntensity = std::stof(Value);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid GTAO intensity value in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "gtaopower")
+    {
+        try
+        {
+            OutConfig.GtaoPower = std::stof(Value);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid GTAO power value in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "gtaothickness")
+    {
+        try
+        {
+            OutConfig.GtaoThickness = std::stof(Value);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid GTAO thickness value in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "gtaodirectioncount")
+    {
+        try
+        {
+            const int32_t ParsedValue = std::stoi(Value);
+            const int32_t ClampedValue = std::clamp(ParsedValue, 1, 16);
+            OutConfig.GtaoDirectionCount = static_cast<uint32_t>(ClampedValue);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid GTAO direction count value in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "gtaostepcount")
+    {
+        try
+        {
+            const int32_t ParsedValue = std::stoi(Value);
+            const int32_t ClampedValue = std::clamp(ParsedValue, 1, 8);
+            OutConfig.GtaoStepCount = static_cast<uint32_t>(ClampedValue);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid GTAO step count value in renderer config: " + Value);
+        }
+    }
+
     if (LowerKey == "gpudebugprint" || LowerKey == "enablegpudebugprint")
     {
         OutConfig.bEnableGpuDebugPrint = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");

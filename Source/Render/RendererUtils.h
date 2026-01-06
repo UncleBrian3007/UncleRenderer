@@ -74,6 +74,13 @@ struct FSceneConstants
     DirectX::XMFLOAT4 EmissiveTransformRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
     float EnvMapMipCount = 1.0f;
     DirectX::XMFLOAT3 PaddingEnvMap{ 0.0f, 0.0f, 0.0f };
+    float GtaoRadius = 0.75f;
+    float GtaoIntensity = 1.0f;
+    float GtaoPower = 1.5f;
+    float GtaoThickness = 0.1f;
+    uint32_t GtaoDirectionCount = 6;
+    uint32_t GtaoStepCount = 4;
+    DirectX::XMFLOAT2 TaaJitter{ 0.0f, 0.0f };
     uint32_t ObjectId = 0;
     DirectX::XMFLOAT3 PaddingObjectId{ 0.0f, 0.0f, 0.0f };
 };
@@ -230,9 +237,17 @@ namespace RendererUtils
         const DirectX::XMMATRIX& Projection,
         float ShadowStrength,
         float ShadowBias,
-        float ShadowMapWidth,
-        float ShadowMapHeight,
-        float EnvMapMipCount,
+    float ShadowMapWidth,
+    float ShadowMapHeight,
+    float EnvMapMipCount,
+    const DirectX::XMFLOAT2& TaaJitter,
+    bool bGtaoEnabled,
+        float GtaoRadius,
+        float GtaoIntensity,
+        float GtaoPower,
+        float GtaoThickness,
+        uint32_t GtaoDirectionCount,
+        uint32_t GtaoStepCount,
         uint8_t* ConstantBufferMapped,
         uint64_t ConstantBufferOffset = 0);
     void UpdateSkyConstants(

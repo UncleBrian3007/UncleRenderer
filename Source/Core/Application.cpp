@@ -171,6 +171,10 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     AutoExposureSpeedDown = RendererConfig.AutoExposureSpeedDown;
     bTaaEnabled = RendererConfig.bEnableTAA;
     TaaHistoryWeight = RendererConfig.TaaHistoryWeight;
+    bGtaoEnabled = RendererConfig.bEnableGtao;
+    bGtaoJitterEnabled = RendererConfig.bEnableGtaoJitter;
+    GtaoRadius = RendererConfig.GtaoRadius;
+    GtaoThickness = RendererConfig.GtaoThickness;
 
     if (bTaskSystemEnabled)
     {
@@ -917,6 +921,10 @@ bool FApplication::ReloadScene(const std::wstring& ScenePath)
     ReloadConfig.bEnableShadows = bShadowsEnabled;
     ReloadConfig.ShadowBias = ShadowBias;
     ReloadConfig.bEnableHZB = bHZBEnabled;
+    ReloadConfig.bEnableGtao = bGtaoEnabled;
+    ReloadConfig.bEnableGtaoJitter = bGtaoJitterEnabled;
+    ReloadConfig.GtaoRadius = GtaoRadius;
+    ReloadConfig.GtaoThickness = GtaoThickness;
     ReloadConfig.bEnableIndirectDraw = bIndirectDrawEnabled;
     ReloadConfig.bEnableGpuDebugPrint = bGpuDebugPrintEnabled;
     ReloadConfig.bEnableTAA = bTaaEnabled;
@@ -1045,6 +1053,10 @@ void FApplication::StartAsyncSceneReload(const std::wstring& ScenePath)
     AsyncConfig.bEnableGpuTiming = bGpuTimingEnabled;
     AsyncConfig.bEnableGpuDebugPrint = bGpuDebugPrintEnabled;
     AsyncConfig.bEnableHZB = bHZBEnabled;
+    AsyncConfig.bEnableGtao = bGtaoEnabled;
+    AsyncConfig.bEnableGtaoJitter = bGtaoJitterEnabled;
+    AsyncConfig.GtaoRadius = GtaoRadius;
+    AsyncConfig.GtaoThickness = GtaoThickness;
     AsyncConfig.bEnableIndirectDraw = bIndirectDrawEnabled;
     AsyncConfig.FramesInFlight = SwapChain ? SwapChain->GetBackBufferCount() : 2u;
 
@@ -1536,6 +1548,66 @@ void FApplication::RenderUI()
         }
 
         ImGui::SameLine();
+        bool bGtao = bGtaoEnabled;
+        if (ImGui::Checkbox("GTAO", &bGtao))
+        {
+            bGtaoEnabled = bGtao;
+            RendererConfig.bEnableGtao = bGtaoEnabled;
+        }
+
+        ImGui::SameLine();
+        bool bGtaoJitter = bGtaoJitterEnabled;
+        if (ImGui::Checkbox("GTAO Jitter", &bGtaoJitter))
+        {
+            bGtaoJitterEnabled = bGtaoJitter;
+            RendererConfig.bEnableGtaoJitter = bGtaoJitterEnabled;
+        }
+
+        if (DeferredRenderer)
+        {
+            DeferredRenderer->SetGtaoEnabled(bGtaoEnabled);
+            DeferredRenderer->SetGtaoJitterEnabled(bGtaoJitterEnabled);
+        }
+
+        if (ForwardRenderer)
+        {
+            ForwardRenderer->SetGtaoJitterEnabled(bGtaoJitterEnabled);
+        }
+
+        float GtaoRadiusValue = GtaoRadius;
+        if (ImGui::SliderFloat("GTAO Radius", &GtaoRadiusValue, 0.05f, 3.0f, "%.2f"))
+        {
+            GtaoRadius = GtaoRadiusValue;
+            RendererConfig.GtaoRadius = GtaoRadius;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetGtaoRadius(GtaoRadius);
+            }
+
+            if (ForwardRenderer)
+            {
+                ForwardRenderer->SetGtaoRadius(GtaoRadius);
+            }
+        }
+
+        float GtaoThicknessValue = GtaoThickness;
+        if (ImGui::SliderFloat("GTAO Thickness", &GtaoThicknessValue, 0.0f, 1.0f, "%.2f"))
+        {
+            GtaoThickness = GtaoThicknessValue;
+            RendererConfig.GtaoThickness = GtaoThickness;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetGtaoThickness(GtaoThickness);
+            }
+
+            if (ForwardRenderer)
+            {
+                ForwardRenderer->SetGtaoThickness(GtaoThickness);
+            }
+        }
+
         bool bIndirectDraw = bIndirectDrawEnabled;
         if (ImGui::Checkbox("Indirect Draw", &bIndirectDraw))
         {

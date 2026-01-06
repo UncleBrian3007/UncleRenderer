@@ -38,7 +38,7 @@ namespace
 
     constexpr DXGI_FORMAT GBufferFormats[3] =
     {
-        DXGI_FORMAT_R16G16B16A16_FLOAT,
+        DXGI_FORMAT_R10G10B10A2_UNORM,
         DXGI_FORMAT_R16G16B16A16_FLOAT,
         DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
     };
@@ -154,6 +154,20 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
         return false;
     }
 
+    LogInfo("Creating deferred renderer linear depth root signature and pipeline...");
+    if (!CreateLinearDepthRootSignature(Device) || !CreateLinearDepthPipeline(Device))
+    {
+        LogError("Deferred renderer initialization failed: linear depth pipeline creation failed");
+        return false;
+    }
+
+    LogInfo("Creating deferred renderer GTAO root signature and pipeline...");
+    if (!CreateGtaoRootSignature(Device) || !CreateGtaoPipeline(Device))
+    {
+        LogError("Deferred renderer initialization failed: GTAO pipeline creation failed");
+        return false;
+    }
+
     LogInfo("Creating deferred renderer hierarchical Z-buffer root signature and pipeline...");
     if (!CreateHZBRootSignature(Device) || !CreateHZBPipeline(Device))
     {
@@ -235,6 +249,18 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     if (!CreateGBufferResources(Device, Width, Height))
     {
         LogError("Deferred renderer initialization failed: GBuffer resource creation failed");
+        return false;
+    }
+
+    if (!CreateLinearDepthResources(Device, Width, Height))
+    {
+        LogError("Deferred renderer initialization failed: linear depth resource creation failed");
+        return false;
+    }
+
+    if (!CreateGtaoResources(Device, Width, Height))
+    {
+        LogError("Deferred renderer initialization failed: GTAO resource creation failed");
         return false;
     }
 
@@ -405,7 +431,9 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
     AddBasePass(Graph, Camera, FrameState, Resources.GBufferHandles, Resources.DepthHandle, Resources.LightingHandle);
     AddObjectIdPass(Graph, Camera, Resources.ObjectIdHandle, Resources.DepthHandle);
     AddHZBPass(Graph, FrameState, Resources.DepthHandle, Resources.HZBHandle);
-    AddLightingPass(Graph, FrameState, Resources.GBufferHandles, Resources.ShadowHandle, Resources.LightingHandle);
+    AddLinearDepthPass(Graph, FrameState, Resources.DepthHandle, Resources.LinearDepthHandle);
+    AddGtaoPass(Graph, FrameState, Resources.GBufferHandles, Resources.LinearDepthHandle, Resources.GtaoHandle);
+    AddLightingPass(Graph, FrameState, Resources.GBufferHandles, Resources.DepthHandle, Resources.GtaoHandle, Resources.ShadowHandle, Resources.LightingHandle);
     AddSkyPass(Graph, Camera, Resources.DepthHandle, Resources.LightingHandle);
     AddTemporalAAPass(Graph, FrameState, Resources.LightingHandle, Resources.TaaHandles);
     AddAutoExposurePass(Graph, FrameState, Resources.LightingHandle, Resources.LuminanceHandles, DeltaTime);
@@ -431,7 +459,10 @@ void FDeferredRenderer::PrepareFrameState(const FCamera& Camera, FDeferredFrameS
         : false;
 
     bUseTaaJitter = OutState.bTaaActive && OutState.bTaaHistoryReady;
-    if (bUseTaaJitter)
+    OutState.bGtaoJitterActive = bGtaoEnabled && bGtaoJitterEnabled;
+    const bool bUseGtaoJitter = OutState.bGtaoJitterActive;
+    const bool bNeedJitter = bUseTaaJitter || bUseGtaoJitter;
+    if (bNeedJitter)
     {
         TaaJitter = BuildTaaJitter(TaaSampleIndex);
     }
@@ -504,6 +535,18 @@ void FDeferredRenderer::ImportFrameResources(FRenderGraph& Graph, FDeferredFrame
         Graph.ImportTexture("GBufferB", GBufferB.Get(), &GBufferStates[1], { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), GBufferFormats[1] }),
         Graph.ImportTexture("GBufferC", GBufferC.Get(), &GBufferStates[2], { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), GBufferFormats[2] }),
     };
+
+    OutResources.LinearDepthHandle = Graph.ImportTexture(
+        "LinearDepth",
+        LinearDepthTexture.Get(),
+        &LinearDepthState,
+        { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), DXGI_FORMAT_R16_FLOAT });
+
+    OutResources.GtaoHandle = Graph.ImportTexture(
+        "GTAO",
+        GtaoTexture.Get(),
+        &GtaoState,
+        { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), DXGI_FORMAT_R8_UNORM });
 
     OutResources.LightingHandle = Graph.ImportTexture(
         "Lighting",
@@ -1267,7 +1310,111 @@ void FDeferredRenderer::AddHZBPass(FRenderGraph& Graph, const FDeferredFrameStat
     });
 }
 
-void FDeferredRenderer::AddLightingPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle ShadowHandle, FRGResourceHandle LightingHandle)
+void FDeferredRenderer::AddLinearDepthPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle LinearDepthHandle)
+{
+    struct FLinearDepthPassData
+    {
+        bool bEnabled = false;
+    };
+
+    Graph.AddPass<FLinearDepthPassData>("LinearDepth", [this, DepthHandle, LinearDepthHandle](FLinearDepthPassData& Data, FRGPassBuilder& Builder)
+    {
+        Data.bEnabled = LinearDepthPipeline && LinearDepthRootSignature;
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        Builder.ReadTexture(DepthHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Builder.WriteTexture(LinearDepthHandle, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    }, [this](const FLinearDepthPassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
+        FScopedPixEvent LinearDepthEvent(LocalCommandList, L"LinearDepth");
+
+        ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
+        LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        Cmd.SetRenderTarget(LinearDepthRtvHandle, nullptr);
+
+        const float ClearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+        LocalCommandList->ClearRenderTargetView(LinearDepthRtvHandle, ClearColor, 0, nullptr);
+
+        LocalCommandList->SetPipelineState(LinearDepthPipeline.Get());
+        LocalCommandList->SetGraphicsRootSignature(LinearDepthRootSignature.Get());
+
+        LocalCommandList->RSSetViewports(1, &Viewport);
+        LocalCommandList->RSSetScissorRects(1, &ScissorRect);
+
+        LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        LocalCommandList->SetGraphicsRootConstantBufferView(0, GetSceneConstantBufferAddress());
+
+        const uint32_t DepthIndex = GetFrameIndex() % static_cast<uint32_t>(DepthBufferHandles.size());
+        const D3D12_GPU_DESCRIPTOR_HANDLE DepthHandle = DepthBufferHandles.empty() ? D3D12_GPU_DESCRIPTOR_HANDLE{} : DepthBufferHandles[DepthIndex];
+        LocalCommandList->SetGraphicsRootDescriptorTable(1, DepthHandle);
+
+        LocalCommandList->DrawInstanced(3, 1, 0, 0);
+    });
+}
+
+void FDeferredRenderer::AddGtaoPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle GtaoHandle)
+{
+    struct FGtaoPassData
+    {
+        bool bEnabled = false;
+        uint32_t PipelineIndex = 0;
+    };
+
+    Graph.AddPass<FGtaoPassData>("GTAO", [this, GBufferHandles, LinearDepthHandle, GtaoHandle](FGtaoPassData& Data, FRGPassBuilder& Builder)
+    {
+        Data.PipelineIndex = bGtaoJitterEnabled ? 1u : 0u;
+        Data.bEnabled = bGtaoEnabled && GtaoRootSignature && GtaoPipelines[Data.PipelineIndex];
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(LinearDepthHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Builder.WriteTexture(GtaoHandle, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    }, [this](const FGtaoPassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
+        FScopedPixEvent GtaoEvent(LocalCommandList, L"GTAO");
+
+        ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
+        LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        Cmd.SetRenderTarget(GtaoRtvHandle, nullptr);
+
+        const float ClearColor[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+        LocalCommandList->ClearRenderTargetView(GtaoRtvHandle, ClearColor, 0, nullptr);
+
+        LocalCommandList->SetPipelineState(GtaoPipelines[Data.PipelineIndex].Get());
+        LocalCommandList->SetGraphicsRootSignature(GtaoRootSignature.Get());
+
+        LocalCommandList->RSSetViewports(1, &Viewport);
+        LocalCommandList->RSSetScissorRects(1, &ScissorRect);
+
+        LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        LocalCommandList->SetGraphicsRootConstantBufferView(0, GetSceneConstantBufferAddress());
+        LocalCommandList->SetGraphicsRootDescriptorTable(1, GBufferGpuHandles[0]);
+
+        LocalCommandList->SetGraphicsRootDescriptorTable(2, LinearDepthSrvHandle);
+
+        LocalCommandList->DrawInstanced(3, 1, 0, 0);
+    });
+}
+
+void FDeferredRenderer::AddLightingPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle GtaoHandle, FRGResourceHandle ShadowHandle, FRGResourceHandle LightingHandle)
 {
     struct FLightingPassData
     {
@@ -1281,6 +1428,8 @@ void FDeferredRenderer::AddLightingPass(FRenderGraph& Graph, const FDeferredFram
         Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(GBufferHandles[1], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(GBufferHandles[2], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(DepthHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(GtaoHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
         if (Data.bUseShadows)
         {
@@ -1308,6 +1457,10 @@ void FDeferredRenderer::AddLightingPass(FRenderGraph& Graph, const FDeferredFram
         LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         LocalCommandList->SetGraphicsRootConstantBufferView(0, GetSceneConstantBufferAddress());
         LocalCommandList->SetGraphicsRootDescriptorTable(1, GBufferGpuHandles[0]);
+        const uint32_t DepthIndex = GetFrameIndex() % static_cast<uint32_t>(DepthBufferHandles.size());
+        const D3D12_GPU_DESCRIPTOR_HANDLE DepthHandle = DepthBufferHandles.empty() ? D3D12_GPU_DESCRIPTOR_HANDLE{} : DepthBufferHandles[DepthIndex];
+        LocalCommandList->SetGraphicsRootDescriptorTable(2, DepthHandle);
+        LocalCommandList->SetGraphicsRootDescriptorTable(3, GtaoSrvHandle);
 
         LocalCommandList->DrawInstanced(3, 1, 0, 0);
     });
@@ -1674,7 +1827,7 @@ void FDeferredRenderer::AddDebugPrintPass(FRenderGraph& Graph, const D3D12_CPU_D
 
 void FDeferredRenderer::FinalizeFrameState(const FDeferredFrameState& FrameState)
 {
-    if (FrameState.bTaaActive)
+    if (FrameState.bTaaActive || FrameState.bGtaoJitterActive)
     {
         TaaSampleIndex = (TaaSampleIndex + 1u) % 8u;
     }
@@ -1768,7 +1921,23 @@ bool FDeferredRenderer::CreateLightingRootSignature(FDX12Device* Device)
         DescriptorRanges[i].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
     }
 
-    D3D12_ROOT_PARAMETER1 RootParams[2] = {};
+    D3D12_DESCRIPTOR_RANGE1 DepthRange = {};
+    DepthRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    DepthRange.NumDescriptors = 1;
+    DepthRange.BaseShaderRegister = 6;
+    DepthRange.RegisterSpace = 0;
+    DepthRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
+    DepthRange.OffsetInDescriptorsFromTableStart = 0;
+
+    D3D12_DESCRIPTOR_RANGE1 GtaoRange = {};
+    GtaoRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    GtaoRange.NumDescriptors = 1;
+    GtaoRange.BaseShaderRegister = 7;
+    GtaoRange.RegisterSpace = 0;
+    GtaoRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
+    GtaoRange.OffsetInDescriptorsFromTableStart = 0;
+
+    D3D12_ROOT_PARAMETER1 RootParams[4] = {};
     // RootParams[0]: Lighting constants (b0)
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
@@ -1781,6 +1950,18 @@ bool FDeferredRenderer::CreateLightingRootSignature(FDX12Device* Device)
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     RootParams[1].DescriptorTable.NumDescriptorRanges = _countof(DescriptorRanges);
     RootParams[1].DescriptorTable.pDescriptorRanges = DescriptorRanges;
+
+    // RootParams[2]: Depth SRV table (t6)
+    RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    RootParams[2].DescriptorTable.NumDescriptorRanges = 1;
+    RootParams[2].DescriptorTable.pDescriptorRanges = &DepthRange;
+
+    // RootParams[3]: GTAO SRV table (t7)
+    RootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    RootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    RootParams[3].DescriptorTable.NumDescriptorRanges = 1;
+    RootParams[3].DescriptorTable.pDescriptorRanges = &GtaoRange;
 
     D3D12_STATIC_SAMPLER_DESC Samplers[3] = {};
     Samplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
@@ -2035,6 +2216,110 @@ bool FDeferredRenderer::CreateDepthPrepassPipeline(FDX12Device* Device)
     return true;
 }
 
+bool FDeferredRenderer::CreateLinearDepthRootSignature(FDX12Device* Device)
+{
+    D3D12_DESCRIPTOR_RANGE1 DescriptorRange = {};
+    DescriptorRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    DescriptorRange.NumDescriptors = 1;
+    DescriptorRange.BaseShaderRegister = 0;
+    DescriptorRange.RegisterSpace = 0;
+    DescriptorRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
+    DescriptorRange.OffsetInDescriptorsFromTableStart = 0;
+
+    D3D12_ROOT_PARAMETER1 RootParams[2] = {};
+    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[0].Descriptor.ShaderRegister = 0;
+    RootParams[0].Descriptor.RegisterSpace = 0;
+    RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+
+    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    RootParams[1].DescriptorTable.NumDescriptorRanges = 1;
+    RootParams[1].DescriptorTable.pDescriptorRanges = &DescriptorRange;
+
+    D3D12_STATIC_SAMPLER_DESC SamplerDesc = {};
+    SamplerDesc.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+    SamplerDesc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    SamplerDesc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    SamplerDesc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    SamplerDesc.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    SamplerDesc.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
+    SamplerDesc.MinLOD = 0.0f;
+    SamplerDesc.MaxLOD = D3D12_FLOAT32_MAX;
+    SamplerDesc.ShaderRegister = 0;
+    SamplerDesc.RegisterSpace = 0;
+    SamplerDesc.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
+    RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    RootSigDesc.Desc_1_1.NumParameters = _countof(RootParams);
+    RootSigDesc.Desc_1_1.pParameters = RootParams;
+    RootSigDesc.Desc_1_1.NumStaticSamplers = 1;
+    RootSigDesc.Desc_1_1.pStaticSamplers = &SamplerDesc;
+    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    ComPtr<ID3DBlob> SerializedSig;
+    ComPtr<ID3DBlob> ErrorBlob;
+    HR_CHECK(D3D12SerializeVersionedRootSignature(&RootSigDesc, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
+
+    if (ErrorBlob)
+    {
+        OutputDebugStringA(static_cast<const char*>(ErrorBlob->GetBufferPointer()));
+    }
+
+    HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(LinearDepthRootSignature.GetAddressOf())));
+    return true;
+}
+
+bool FDeferredRenderer::CreateLinearDepthPipeline(FDX12Device* Device)
+{
+    FShaderCompiler Compiler;
+    std::vector<uint8_t> VSByteCode;
+    std::vector<uint8_t> PSByteCode;
+
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
+    const std::wstring PSTarget = RendererUtils::BuildShaderTarget(L"ps", ShaderModel);
+
+    if (!Compiler.CompileFromFile(L"Shaders/LinearDepth.hlsl", L"VSMain", VSTarget, VSByteCode))
+    {
+        return false;
+    }
+
+    if (!Compiler.CompileFromFile(L"Shaders/LinearDepth.hlsl", L"PSMain", PSTarget, PSByteCode))
+    {
+        return false;
+    }
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
+    PsoDesc.pRootSignature = LinearDepthRootSignature.Get();
+    PsoDesc.VS = { VSByteCode.data(), VSByteCode.size() };
+    PsoDesc.PS = { PSByteCode.data(), PSByteCode.size() };
+    PsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    PsoDesc.SampleDesc.Count = 1;
+    PsoDesc.SampleMask = UINT_MAX;
+
+    PsoDesc.RasterizerState = {};
+    PsoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    PsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    PsoDesc.RasterizerState.FrontCounterClockwise = TRUE;
+    PsoDesc.RasterizerState.DepthClipEnable = TRUE;
+
+    PsoDesc.BlendState = {};
+    PsoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    PsoDesc.DepthStencilState = {};
+    PsoDesc.DepthStencilState.DepthEnable = FALSE;
+    PsoDesc.DepthStencilState.StencilEnable = FALSE;
+    PsoDesc.NumRenderTargets = 1;
+    PsoDesc.RTVFormats[0] = DXGI_FORMAT_R16_FLOAT;
+    PsoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
+
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(LinearDepthPipeline.GetAddressOf())));
+    return true;
+}
+
 bool FDeferredRenderer::CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat)
 {
     FShaderCompiler Compiler;
@@ -2087,6 +2372,131 @@ bool FDeferredRenderer::CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT 
     PsoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
 
     HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(LightingPipeline.GetAddressOf())));
+    return true;
+}
+
+bool FDeferredRenderer::CreateGtaoRootSignature(FDX12Device* Device)
+{
+    D3D12_DESCRIPTOR_RANGE1 DescriptorRanges[2] = {};
+    DescriptorRanges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    DescriptorRanges[0].NumDescriptors = 1;
+    DescriptorRanges[0].BaseShaderRegister = 0;
+    DescriptorRanges[0].RegisterSpace = 0;
+    DescriptorRanges[0].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
+    DescriptorRanges[0].OffsetInDescriptorsFromTableStart = 0;
+
+    DescriptorRanges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    DescriptorRanges[1].NumDescriptors = 1;
+    DescriptorRanges[1].BaseShaderRegister = 1;
+    DescriptorRanges[1].RegisterSpace = 0;
+    DescriptorRanges[1].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
+    DescriptorRanges[1].OffsetInDescriptorsFromTableStart = 0;
+
+    D3D12_ROOT_PARAMETER1 RootParams[3] = {};
+    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[0].Descriptor.ShaderRegister = 0;
+    RootParams[0].Descriptor.RegisterSpace = 0;
+    RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+
+    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    RootParams[1].DescriptorTable.NumDescriptorRanges = 1;
+    RootParams[1].DescriptorTable.pDescriptorRanges = &DescriptorRanges[0];
+
+    RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    RootParams[2].DescriptorTable.NumDescriptorRanges = 1;
+    RootParams[2].DescriptorTable.pDescriptorRanges = &DescriptorRanges[1];
+
+    D3D12_STATIC_SAMPLER_DESC SamplerDesc = {};
+    SamplerDesc.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+    SamplerDesc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    SamplerDesc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    SamplerDesc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    SamplerDesc.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    SamplerDesc.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
+    SamplerDesc.MinLOD = 0.0f;
+    SamplerDesc.MaxLOD = D3D12_FLOAT32_MAX;
+    SamplerDesc.ShaderRegister = 0;
+    SamplerDesc.RegisterSpace = 0;
+    SamplerDesc.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
+    RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    RootSigDesc.Desc_1_1.NumParameters = _countof(RootParams);
+    RootSigDesc.Desc_1_1.pParameters = RootParams;
+    RootSigDesc.Desc_1_1.NumStaticSamplers = 1;
+    RootSigDesc.Desc_1_1.pStaticSamplers = &SamplerDesc;
+    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    ComPtr<ID3DBlob> SerializedSig;
+    ComPtr<ID3DBlob> ErrorBlob;
+    HR_CHECK(D3D12SerializeVersionedRootSignature(&RootSigDesc, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
+
+    if (ErrorBlob)
+    {
+        OutputDebugStringA(static_cast<const char*>(ErrorBlob->GetBufferPointer()));
+    }
+
+    HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(GtaoRootSignature.GetAddressOf())));
+    return true;
+}
+
+bool FDeferredRenderer::CreateGtaoPipeline(FDX12Device* Device)
+{
+    FShaderCompiler Compiler;
+    std::vector<uint8_t> VSByteCode;
+    std::array<std::vector<uint8_t>, 2> PSByteCodes;
+
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
+    const std::wstring PSTarget = RendererUtils::BuildShaderTarget(L"ps", ShaderModel);
+
+    if (!Compiler.CompileFromFile(L"Shaders/Gtao.hlsl", L"VSMain", VSTarget, VSByteCode))
+    {
+        return false;
+    }
+
+    const std::vector<std::wstring> JitterOffDefines = { L"GTAO_USE_JITTER=0" };
+    const std::vector<std::wstring> JitterOnDefines = { L"GTAO_USE_JITTER=1" };
+    if (!Compiler.CompileFromFile(L"Shaders/Gtao.hlsl", L"PSMain", PSTarget, PSByteCodes[0], JitterOffDefines))
+    {
+        return false;
+    }
+
+    if (!Compiler.CompileFromFile(L"Shaders/Gtao.hlsl", L"PSMain", PSTarget, PSByteCodes[1], JitterOnDefines))
+    {
+        return false;
+    }
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
+    PsoDesc.pRootSignature = GtaoRootSignature.Get();
+    PsoDesc.VS = { VSByteCode.data(), VSByteCode.size() };
+    PsoDesc.PS = { PSByteCodes[0].data(), PSByteCodes[0].size() };
+    PsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    PsoDesc.SampleDesc.Count = 1;
+    PsoDesc.SampleMask = UINT_MAX;
+
+    PsoDesc.RasterizerState = {};
+    PsoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    PsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    PsoDesc.RasterizerState.FrontCounterClockwise = TRUE;
+    PsoDesc.RasterizerState.DepthClipEnable = TRUE;
+
+    PsoDesc.BlendState = {};
+    PsoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    PsoDesc.DepthStencilState = {};
+    PsoDesc.DepthStencilState.DepthEnable = FALSE;
+    PsoDesc.DepthStencilState.StencilEnable = FALSE;
+    PsoDesc.NumRenderTargets = 1;
+    PsoDesc.RTVFormats[0] = DXGI_FORMAT_R8_UNORM;
+    PsoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
+
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(GtaoPipelines[0].GetAddressOf())));
+    PsoDesc.PS = { PSByteCodes[1].data(), PSByteCodes[1].size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(GtaoPipelines[1].GetAddressOf())));
     return true;
 }
 
@@ -2764,6 +3174,132 @@ bool FDeferredRenderer::CreateGBufferResources(FDX12Device* Device, uint32_t Wid
     return true;
 }
 
+bool FDeferredRenderer::CreateLinearDepthResources(FDX12Device* Device, uint32_t Width, uint32_t Height)
+{
+    if (Device == nullptr)
+    {
+        return false;
+    }
+
+    D3D12_HEAP_PROPERTIES HeapProps = {};
+    HeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+    HeapProps.CreationNodeMask = 1;
+    HeapProps.VisibleNodeMask = 1;
+
+    D3D12_RESOURCE_DESC Desc = {};
+    Desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    Desc.Width = Width;
+    Desc.Height = Height;
+    Desc.DepthOrArraySize = 1;
+    Desc.MipLevels = 1;
+    Desc.Format = DXGI_FORMAT_R16_FLOAT;
+    Desc.SampleDesc.Count = 1;
+    Desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    Desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+    D3D12_CLEAR_VALUE ClearValue = {};
+    ClearValue.Format = Desc.Format;
+    ClearValue.Color[0] = 0.0f;
+    ClearValue.Color[1] = 0.0f;
+    ClearValue.Color[2] = 0.0f;
+    ClearValue.Color[3] = 0.0f;
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &HeapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &Desc,
+        D3D12_RESOURCE_STATE_RENDER_TARGET,
+        &ClearValue,
+        IID_PPV_ARGS(LinearDepthTexture.GetAddressOf())));
+
+    if (LinearDepthTexture)
+    {
+        LinearDepthTexture->SetName(L"LinearDepth");
+    }
+
+    D3D12_DESCRIPTOR_HEAP_DESC RtvHeapDesc = {};
+    RtvHeapDesc.NumDescriptors = 1;
+    RtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    RtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&RtvHeapDesc, IID_PPV_ARGS(LinearDepthRtvHeap.GetAddressOf())));
+    if (LinearDepthRtvHeap)
+    {
+        LinearDepthRtvHeap->SetName(L"LinearDepthRTVHeap");
+    }
+
+    LinearDepthRtvHandle = LinearDepthRtvHeap->GetCPUDescriptorHandleForHeapStart();
+    D3D12_RENDER_TARGET_VIEW_DESC RtvDesc = {};
+    RtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+    RtvDesc.Format = DXGI_FORMAT_R16_FLOAT;
+    Device->GetDevice()->CreateRenderTargetView(LinearDepthTexture.Get(), &RtvDesc, LinearDepthRtvHandle);
+
+    LinearDepthState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    return true;
+}
+
+bool FDeferredRenderer::CreateGtaoResources(FDX12Device* Device, uint32_t Width, uint32_t Height)
+{
+    if (Device == nullptr)
+    {
+        return false;
+    }
+
+    D3D12_HEAP_PROPERTIES HeapProps = {};
+    HeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+    HeapProps.CreationNodeMask = 1;
+    HeapProps.VisibleNodeMask = 1;
+
+    D3D12_RESOURCE_DESC Desc = {};
+    Desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    Desc.Width = Width;
+    Desc.Height = Height;
+    Desc.DepthOrArraySize = 1;
+    Desc.MipLevels = 1;
+    Desc.Format = DXGI_FORMAT_R8_UNORM;
+    Desc.SampleDesc.Count = 1;
+    Desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    Desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+    D3D12_CLEAR_VALUE ClearValue = {};
+    ClearValue.Format = Desc.Format;
+    ClearValue.Color[0] = 1.0f;
+    ClearValue.Color[1] = 1.0f;
+    ClearValue.Color[2] = 1.0f;
+    ClearValue.Color[3] = 1.0f;
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &HeapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &Desc,
+        D3D12_RESOURCE_STATE_RENDER_TARGET,
+        &ClearValue,
+        IID_PPV_ARGS(GtaoTexture.GetAddressOf())));
+
+    if (GtaoTexture)
+    {
+        GtaoTexture->SetName(L"GTAO");
+    }
+
+    D3D12_DESCRIPTOR_HEAP_DESC RtvHeapDesc = {};
+    RtvHeapDesc.NumDescriptors = 1;
+    RtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    RtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&RtvHeapDesc, IID_PPV_ARGS(GtaoRtvHeap.GetAddressOf())));
+    if (GtaoRtvHeap)
+    {
+        GtaoRtvHeap->SetName(L"GTAO_RTVHeap");
+    }
+
+    GtaoRtvHandle = GtaoRtvHeap->GetCPUDescriptorHandleForHeapStart();
+    D3D12_RENDER_TARGET_VIEW_DESC RtvDesc = {};
+    RtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+    RtvDesc.Format = DXGI_FORMAT_R8_UNORM;
+    Device->GetDevice()->CreateRenderTargetView(GtaoTexture.Get(), &RtvDesc, GtaoRtvHandle);
+
+    GtaoState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    return true;
+}
+
 bool FDeferredRenderer::CreateLuminanceResources(FDX12Device* Device)
 {
     if (Device == nullptr)
@@ -2961,7 +3497,7 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
     const UINT DepthDescriptorCount = GetFramesInFlight();
 
     D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
-    HeapDesc.NumDescriptors = TextureCount * 4 + 12 + HZBDescriptorCount + TaaDescriptorCount + DepthDescriptorCount;
+    HeapDesc.NumDescriptors = TextureCount * 4 + 14 + HZBDescriptorCount + TaaDescriptorCount + DepthDescriptorCount;
     HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(DescriptorHeap.GetAddressOf())));
@@ -3069,6 +3605,32 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         BrdfSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
         Device->GetDevice()->CreateShaderResourceView(BrdfLutTexture.Get(), &BrdfSrvDesc, CpuHandle);
         BrdfLutHandle = GpuHandle;
+
+        CpuHandle.ptr += DescriptorSize;
+        GpuHandle.ptr += DescriptorSize;
+    }
+
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC LinearDepthSrvDesc = {};
+        LinearDepthSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        LinearDepthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        LinearDepthSrvDesc.Format = DXGI_FORMAT_R16_FLOAT;
+        LinearDepthSrvDesc.Texture2D.MipLevels = 1;
+        Device->GetDevice()->CreateShaderResourceView(LinearDepthTexture.Get(), &LinearDepthSrvDesc, CpuHandle);
+        LinearDepthSrvHandle = GpuHandle;
+
+        CpuHandle.ptr += DescriptorSize;
+        GpuHandle.ptr += DescriptorSize;
+    }
+
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC GtaoSrvDesc = {};
+        GtaoSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        GtaoSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        GtaoSrvDesc.Format = DXGI_FORMAT_R8_UNORM;
+        GtaoSrvDesc.Texture2D.MipLevels = 1;
+        Device->GetDevice()->CreateShaderResourceView(GtaoTexture.Get(), &GtaoSrvDesc, CpuHandle);
+        GtaoSrvHandle = GpuHandle;
 
         CpuHandle.ptr += DescriptorSize;
         GpuHandle.ptr += DescriptorSize;
@@ -3843,6 +4405,7 @@ void FDeferredRenderer::UpdateSceneConstants(const FCamera& Camera, const FScene
     const DirectX::XMMATRIX LightVP = RendererUtils::BuildDirectionalLightViewProjection(SceneCenter, SceneRadius, LightDirection);
     DirectX::XMStoreFloat4x4(&LightViewProjection, LightVP);
     const DirectX::XMMATRIX Projection = bUseTaaJitter ? TaaProjection : Camera.GetProjectionMatrix();
+    const DirectX::XMFLOAT2 Jitter = (bGtaoEnabled && bGtaoJitterEnabled) ? TaaJitter : DirectX::XMFLOAT2(0.0f, 0.0f);
 
     RendererUtils::UpdateSceneConstants(
         Camera,
@@ -3857,6 +4420,14 @@ void FDeferredRenderer::UpdateSceneConstants(const FCamera& Camera, const FScene
         static_cast<float>(ShadowMapWidth),
         static_cast<float>(ShadowMapHeight),
         EnvironmentMipCount,
+        Jitter,
+        bGtaoEnabled,
+        GtaoRadius,
+        GtaoIntensity,
+        GtaoPower,
+        GtaoThickness,
+        GtaoDirectionCount,
+        GtaoStepCount,
         GetSceneConstantBufferMapped(),
         ConstantBufferOffset);
 }

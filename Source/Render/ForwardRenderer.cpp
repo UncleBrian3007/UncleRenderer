@@ -2177,6 +2177,14 @@ void FForwardRenderer::UpdateSceneConstants(const FCamera& Camera, const FSceneM
         static_cast<float>(ShadowMapWidth),
         static_cast<float>(ShadowMapHeight),
         EnvironmentMipCount,
+        DirectX::XMFLOAT2(0.0f, 0.0f),
+        bGtaoEnabled,
+        GtaoRadius,
+        GtaoIntensity,
+        GtaoPower,
+        GtaoThickness,
+        GtaoDirectionCount,
+        GtaoStepCount,
         GetSceneConstantBufferMapped(),
         ConstantBufferOffset);
 }

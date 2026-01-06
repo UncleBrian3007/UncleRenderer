@@ -361,5 +361,8 @@
     <None Include="Assets\Scenes\Scene.json">
       <Filter>Assets</Filter>
     </None>
+    <None Include="Shaders\Gtao.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
   </ItemGroup>
 </Project>

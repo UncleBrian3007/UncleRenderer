@@ -14,6 +14,8 @@ Texture2D GBufferC : register(t2);
 Texture2D ShadowMap : register(t3);
 TextureCube EnvironmentMap : register(t4);
 Texture2D BrdfLut : register(t5);
+Texture2D DepthBuffer : register(t6);
+Texture2D GtaoTexture : register(t7);
 SamplerState GBufferSampler : register(s0);
 SamplerComparisonState ShadowSampler : register(s1);
 SamplerState IblSampler : register(s2);
@@ -32,23 +34,33 @@ VSOutput VSMain(uint VertexId : SV_VertexID)
     return Output;
 }
 
+float ReconstructViewZ(float depth)
+{
+    return Projection._43 / max(depth, 1e-6f);
+}
+
+float3 ReconstructViewPosition(float2 uv, float depth)
+{
+    float2 ndc = float2(uv * 2.0f - 1.0f);
+    float viewZ = ReconstructViewZ(depth);
+    float viewX = ndc.x * viewZ / Projection._11;
+    float viewY = -ndc.y * viewZ / Projection._22;
+    return float3(viewX, viewY, viewZ);
+}
+
 float4 PSMain(VSOutput Input) : SV_Target
 {
-    float4 normalDepth = GBufferA.Sample(GBufferSampler, Input.UV);
-    float3 normal = normalize(normalDepth.xyz);
-    float depth = normalDepth.w;
+    float4 normalEncoded = GBufferA.Sample(GBufferSampler, Input.UV);
+    float3 normal = normalize(normalEncoded.xyz * 2.0f - 1.0f);
     float4 smr = GBufferB.Sample(GBufferSampler, Input.UV);
+    float depth = DepthBuffer.Sample(GBufferSampler, Input.UV).r;
     float3 albedo = GBufferC.Sample(GBufferSampler, Input.UV).rgb;
 
     float roughness = smr.z;
     float metallic = smr.y;
     float3 F0 = lerp(smr.x.xxx, albedo, metallic);
 
-    float2 ndc = float2(Input.UV * 2.0f - 1.0f);
-    float viewZ = -depth;
-    float viewX = ndc.x * viewZ / Projection._11;
-    float viewY = -ndc.y * viewZ / Projection._22;
-    float3 viewPos = float3(viewX, viewY, viewZ);
+    float3 viewPos = ReconstructViewPosition(Input.UV, depth);
 
     float3 V = normalize(-viewPos);
     float3 L = normalize(mul(float4(LightDirection, 0.0f), View).xyz);
@@ -88,7 +100,8 @@ float4 PSMain(VSOutput Input) : SV_Target
     float3 irradiance = EnvironmentMap.SampleLevel(IblSampler, worldNormal, maxMip).rgb;
     float3 diffuseIbl = irradiance * albedo * (1.0f - metallic);
 
-    float3 ambient = diffuseIbl + specularIbl;
+    float ao = (GtaoIntensity <= 0.0f) ? 1.0f : GtaoTexture.Sample(GBufferSampler, Input.UV).r;
+    float3 ambient = (diffuseIbl + specularIbl) * ao;
     float3 color = lighting + ambient;
     return float4(color, 1.0);
 }

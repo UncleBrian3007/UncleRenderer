@@ -88,6 +88,10 @@ private:
     bool bTonemapEnabled = true;
     bool bIndirectDrawEnabled = true;
     bool bModelPixEventsEnabled = true;
+    bool bGtaoEnabled = true;
+    bool bGtaoJitterEnabled = true;
+    float GtaoRadius = 0.75f;
+    float GtaoThickness = 0.1f;
     bool bCasEnabled = true;
     float CasSharpness = 0.2f;
     float TonemapExposure = 0.5f;

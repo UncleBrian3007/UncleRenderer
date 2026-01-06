@@ -71,7 +71,7 @@ VSOutput VSMain(VSInput Input)
 
 struct PSOutput
 {
-    float4 GBufferA : SV_Target0; // Normal
+    float4 GBufferA : SV_Target0; // Normal (encoded)
     float4 GBufferB : SV_Target1; // Specular/Metallic/Roughness
     float4 GBufferC : SV_Target2; // BaseColor
     float4 SceneColor : SV_Target3; // Emissive
@@ -126,8 +126,7 @@ PSOutput PSMain(VSOutput Input)
     }
 #endif
 
-    float viewDepth = -mul(float4(Input.WorldPos, 1.0), View).z;
-    Output.GBufferA = float4(viewNormal, viewDepth);
+    Output.GBufferA = float4(viewNormal * 0.5f + 0.5f, 1.0f);
 
     const float specular = 0.04f;
     float metallic = MetallicFactor;
@@ -137,7 +136,7 @@ PSOutput PSMain(VSOutput Input)
     metallic *= metallicRoughness.x;
     roughness *= metallicRoughness.y;
 #endif
-    Output.GBufferB = float4(specular, metallic, roughness, 1.0);
+    Output.GBufferB = float4(specular, metallic, roughness, 1.0f);
 
     Output.GBufferC = float4(albedo, 1.0);
 

@@ -52,8 +52,17 @@ void FRenderer::InitializeCommonSettings(uint32_t Width, uint32_t Height, const 
     bEnableGpuTiming = Config.bEnableGpuTiming;
     bEnableIndirectDraw = Config.bEnableIndirectDraw;
     bEnableGpuDebugPrint = Config.bEnableGpuDebugPrint;
+    bGtaoEnabled = Config.bEnableGtao;
+    bGtaoJitterEnabled = Config.bEnableGtaoJitter;
     FramesInFlight = (std::max)(1u, Config.FramesInFlight);
     CurrentFrameIndex = 0;
+
+    GtaoRadius = Config.GtaoRadius;
+    GtaoIntensity = Config.GtaoIntensity;
+    GtaoPower = Config.GtaoPower;
+    GtaoThickness = Config.GtaoThickness;
+    GtaoDirectionCount = Config.GtaoDirectionCount;
+    GtaoStepCount = Config.GtaoStepCount;
 
     Viewport.TopLeftX = 0.0f;
     Viewport.TopLeftY = 0.0f;

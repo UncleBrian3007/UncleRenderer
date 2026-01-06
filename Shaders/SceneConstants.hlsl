@@ -34,6 +34,13 @@ cbuffer SceneConstants : register(b0)
     float4 EmissiveTransformRotation;
     float EnvMapMipCount;
     float3 PaddingEnvMap;
+    float GtaoRadius;
+    float GtaoIntensity;
+    float GtaoPower;
+    float GtaoThickness;
+    uint GtaoDirectionCount;
+    uint GtaoStepCount;
+    float2 TaaJitter;
     uint ObjectId;
     float3 PaddingObjectId;
 };

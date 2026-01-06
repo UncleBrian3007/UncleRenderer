@@ -72,6 +72,12 @@ public:
     const FCamera* GetCullingCameraOverride() const { return CullingCameraOverride; }
     void SetIndirectDrawEnabled(bool bEnabled) { bEnableIndirectDraw = bEnabled; }
     bool IsIndirectDrawEnabled() const { return bEnableIndirectDraw; }
+    void SetGtaoRadius(float Radius) { GtaoRadius = Radius; }
+    float GetGtaoRadius() const { return GtaoRadius; }
+    void SetGtaoThickness(float Thickness) { GtaoThickness = Thickness; }
+    float GetGtaoThickness() const { return GtaoThickness; }
+    void SetGtaoJitterEnabled(bool bEnabled) { bGtaoJitterEnabled = bEnabled; }
+    bool IsGtaoJitterEnabled() const { return bGtaoJitterEnabled; }
     virtual const std::vector<FSceneModelResource>* GetSceneModels() const { return &SceneModels; }
     virtual bool GetSceneModelStats(size_t& OutTotal, size_t& OutCulled) const;
     virtual void RequestObjectIdReadback(uint32_t X, uint32_t Y);
@@ -187,7 +193,15 @@ protected:
     bool bEnableGpuTiming = false;
     bool bEnableIndirectDraw = false;
     bool bEnableGpuDebugPrint = false;
+    bool bGtaoEnabled = true;
+    bool bGtaoJitterEnabled = true;
     float EnvironmentMipCount = 1.0f;
+    float GtaoRadius = 0.75f;
+    float GtaoIntensity = 1.0f;
+    float GtaoPower = 1.5f;
+    float GtaoThickness = 0.1f;
+    uint32_t GtaoDirectionCount = 6;
+    uint32_t GtaoStepCount = 4;
     bool bObjectIdReadbackRequested = false;
     bool bObjectIdReadbackRecorded = false;
     uint32_t ObjectIdReadbackX = 0;

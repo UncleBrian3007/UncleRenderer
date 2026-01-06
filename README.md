@@ -1,5 +1,5 @@
 # UncleRenderer
-UncleRenderer is a DirectX 12–based experimental renderer to undestand modern engine architecture.
+UncleRenderer is a DirectX 12–based experimental renderer to understand modern engine architecture.
 
 ![Pica_pica Scene](screenshots/pica_pica.png)
 
@@ -15,5 +15,6 @@ UncleRenderer is a DirectX 12–based experimental renderer to undestand modern 
 * glTF 2.0 scene and material support
 * Asynchronous scene and texture loading (Task system)
 * Sky / Atmosphere Rendering (Rayleigh / Mie)
-* Auto Exposure / Tonemapping Pass
+* PBR Neutral Tonemapping 
+* Robust Contrast Aware Sharpness
 * ImGui-based debug and profiling UI (D3D12 Timestamp Query)

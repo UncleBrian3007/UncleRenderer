@@ -87,6 +87,8 @@ public:
 
     void SetHZBEnabled(bool bEnabled) { bHZBEnabled = bEnabled; }
     bool IsHZBEnabled() const { return bHZBEnabled; }
+    void SetGtaoEnabled(bool bEnabled) { bGtaoEnabled = bEnabled; }
+    bool IsGtaoEnabled() const { return bGtaoEnabled; }
 
     void OnFrameFenceSignaled(uint32_t FrameIndex, uint64_t FenceValue) override;
 
@@ -102,6 +104,7 @@ private:
         bool bDoDepthPrepass = false;
         bool bUseHZBOcclusion = false;
         bool bCasActive = false;
+        bool bGtaoJitterActive = false;
         DirectX::XMMATRIX LightViewProjection = DirectX::XMMatrixIdentity();
     };
 
@@ -111,6 +114,8 @@ private:
         FRGResourceHandle DepthHandle{};
         FRGResourceHandle ObjectIdHandle{};
         std::array<FRGResourceHandle, 3> GBufferHandles{};
+        FRGResourceHandle LinearDepthHandle{};
+        FRGResourceHandle GtaoHandle{};
         FRGResourceHandle LightingHandle{};
         FRGResourceHandle TonemapOutputResource{};
         std::array<FRGResourceHandle, 2> LuminanceHandles{};
@@ -122,6 +127,10 @@ private:
     bool CreateLightingRootSignature(FDX12Device* Device);
     bool CreateBasePassPipeline(FDX12Device* Device, DXGI_FORMAT LightingFormat);
     bool CreateDepthPrepassPipeline(FDX12Device* Device);
+    bool CreateLinearDepthRootSignature(FDX12Device* Device);
+    bool CreateLinearDepthPipeline(FDX12Device* Device);
+    bool CreateGtaoRootSignature(FDX12Device* Device);
+    bool CreateGtaoPipeline(FDX12Device* Device);
     bool CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateHZBRootSignature(FDX12Device* Device);
     bool CreateHZBPipeline(FDX12Device* Device);
@@ -134,6 +143,8 @@ private:
     bool CreateCasRootSignature(FDX12Device* Device);
     bool CreateCasPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateGBufferResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
+    bool CreateLinearDepthResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
+    bool CreateGtaoResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateHZBResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateLuminanceResources(FDX12Device* Device);
     bool CreateTaaResources(FDX12Device* Device, uint32_t Width, uint32_t Height, uint32_t FrameCount);
@@ -154,7 +165,9 @@ private:
     void AddBasePass(FRenderGraph& Graph, const FCamera& Camera, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle LightingHandle);
     void AddObjectIdPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle ObjectIdHandle, FRGResourceHandle DepthHandle);
     void AddHZBPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle HZBHandle);
-    void AddLightingPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle ShadowHandle, FRGResourceHandle LightingHandle);
+    void AddLinearDepthPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle LinearDepthHandle);
+    void AddGtaoPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle GtaoHandle);
+    void AddLightingPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle GtaoHandle, FRGResourceHandle ShadowHandle, FRGResourceHandle LightingHandle);
     void AddSkyPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle DepthHandle, FRGResourceHandle LightingHandle);
     void AddTemporalAAPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle LightingHandle, const std::vector<FRGResourceHandle>& TaaHandles);
     void AddAutoExposurePass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle LightingHandle, const std::array<FRGResourceHandle, 2>& LuminanceHandles, float DeltaTime);
@@ -171,6 +184,10 @@ private:
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 32> BasePassPipelines;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ShadowPipeline;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> LinearDepthRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> LinearDepthPipeline;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> GtaoRootSignature;
+    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2> GtaoPipelines;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> LightingPipeline;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> HZBPipelines;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> AutoExposurePipeline;
@@ -187,6 +204,8 @@ private:
     std::vector<FModelTextureSet> SceneTextures;
     Microsoft::WRL::ComPtr<ID3D12Resource> SceneTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> LightingBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> LinearDepthTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> GtaoTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> TonemapOutput;
     std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 2> LuminanceTextures;
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> TaaHistoryTextures;
@@ -194,6 +213,8 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> HZBNullUavResource;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> DescriptorHeap;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> GBufferRTVHeap;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> LinearDepthRtvHeap;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> GtaoRtvHeap;
     Microsoft::WRL::ComPtr<ID3D12Resource> GBufferA;
     Microsoft::WRL::ComPtr<ID3D12Resource> GBufferB;
     Microsoft::WRL::ComPtr<ID3D12Resource> GBufferC;
@@ -203,9 +224,13 @@ private:
 
     D3D12_CPU_DESCRIPTOR_HANDLE GBufferRTVHandles[3]{};
     D3D12_CPU_DESCRIPTOR_HANDLE LightingRTVHandle{};
+    D3D12_CPU_DESCRIPTOR_HANDLE LinearDepthRtvHandle{};
+    D3D12_CPU_DESCRIPTOR_HANDLE GtaoRtvHandle{};
     D3D12_CPU_DESCRIPTOR_HANDLE TonemapOutputRtvHandle{};
     D3D12_GPU_DESCRIPTOR_HANDLE GBufferGpuHandles[3]{};
     D3D12_GPU_DESCRIPTOR_HANDLE LightingBufferHandle{};
+    D3D12_GPU_DESCRIPTOR_HANDLE LinearDepthSrvHandle{};
+    D3D12_GPU_DESCRIPTOR_HANDLE GtaoSrvHandle{};
     D3D12_GPU_DESCRIPTOR_HANDLE TonemapOutputHandle{};
     std::array<D3D12_GPU_DESCRIPTOR_HANDLE, 2> LuminanceSrvHandles{};
     std::array<D3D12_GPU_DESCRIPTOR_HANDLE, 2> LuminanceUavHandles{};
@@ -227,6 +252,8 @@ private:
     };
     D3D12_RESOURCE_STATES HZBState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES LightingBufferState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    D3D12_RESOURCE_STATES LinearDepthState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    D3D12_RESOURCE_STATES GtaoState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES TonemapOutputState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     std::array<D3D12_RESOURCE_STATES, 2> LuminanceStates = { D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
     std::vector<D3D12_RESOURCE_STATES> TaaStates;
