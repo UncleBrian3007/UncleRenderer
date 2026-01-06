@@ -3,6 +3,11 @@ UncleRenderer is a DirectX 12–based experimental renderer to undestand modern 
 
 ![Pica_pica Scene](screenshots/pica_pica.png)
 
+## Setup
+To use this project with ImGui support, you need to initialize the git submodules:
+* In Git GUI/Git Sync: Use **SubModule Update** to download the ImGui submodule
+* Or via command line: `git submodule update --init --recursive`
+
 ## Features
 * DirectX 12–based renderer
 * Forward and Deferred rendering paths
