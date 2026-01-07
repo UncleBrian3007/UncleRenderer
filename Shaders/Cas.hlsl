@@ -64,6 +64,7 @@ static const float2 CrossOffsets[4] =
     float2(0.0f, 1.0f)
 };
 
+// Based on rs_rcas.fsh from AMD FidelityFX CAS
 float4 PSMain(VSOutput Input) : SV_Target
 {
     float2 uv = Input.UV;
@@ -80,20 +81,27 @@ float4 PSMain(VSOutput Input) : SV_Target
     float EL = dot(E, LumCoeff);
     float SL = dot(S, LumCoeff);
 
-    float3 minRGB = min(min(min(N, W), min(E, S)), C);
-    float3 maxRGB = max(max(max(N, W), max(E, S)), C);
+    // 샤프닝을 해도 안전한 곳을 찾는 것, 이미 너무 어둡거나/밝거나/대비가 심한 곳은 제외 
+	float3 minRGB = min(min(min(N, W), min(E, S)), C); // 중심과 주변의 가장 어두운 색상
+	float3 maxRGB = max(max(max(N, W), max(E, S)), C); // 중심과 주변의 가장 밝은 색상
     float3 invMax = 1.0f / (maxRGB + FsrEps);
     float3 amp = clamp(min(minRGB, 2.0f - maxRGB) * invMax, 0.0f, 1.0f);
-    amp = rsqrt(amp + FsrEps);
+    // 여기서 amp 는 픽셀이 중간톤(0.5)에 가까울수록 1.0에 가까워지고, 극단적인 밝기(0.0 또는 1.0)에 가까울수록 0.0에 가까워짐
+    
+    // rsqrt 로 중간은 1.0, 극단은 1/sqrt(0 + 0.0001) -> 100.0 에 가까워짐
+    amp = rsqrt(amp + FsrEps); // 1 ~ 100
 
-    float w = -RcasInvPeak / dot(amp, LumCoeff);
+    float w = -RcasInvPeak / dot(amp, LumCoeff); // -0.2(중간) ~ -0.002(극단)
 
     float sumL = NL + WL + EL + SL;
     float invDen = 1.0f / (4.0f * w + 1.0f);
     float sharpL = clamp((sumL * w + CL) * invDen, 0.0f, 1.0f);
-
-    float3 chroma = C - CL;
-    float3 sharpColor = chroma + sharpL;
+    // sharpL = ((NL + WL + EL + SL) * w  + CL) / (4w + 1) // 주변 픽셀(N,W,E,S)의 기여도는 각각 w, 중심 픽셀(C)의 기여도는 1
+    // 샤프닝 최대 w(중간,-0.2), 샤프닝 최소 w(극단,-0.002)
+    // 현재 픽셀이 주변 대비 밝으면 더 밝게(+, [CL-0.2*SumL]/(4w+1) > 0), 어두우면 더 어둡게(-,[CL-0.2*SumL]/(4w+1) < 0) 조정하는 것이 샤프닝 효과 
+    
+    float3 chroma = C - CL; // 색상 성분 분리
+    float3 sharpColor = chroma + sharpL; // 색상은 그대로 두고 휘도만 샤프닝 적용
     float3 outColor = lerp(C, sharpColor, Sharpness);
 
     return float4(outColor, 1.0f);

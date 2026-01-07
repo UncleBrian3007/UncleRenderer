@@ -47,6 +47,7 @@ private:
     void HandleCameraInput(float DeltaSeconds);
     void PositionCameraForScene();
     void ApplySceneCameraFromJson(const std::wstring& ScenePath);
+    void ApplySceneLightingFromJson(const std::wstring& ScenePath);
     void UpdateSelectionFromMouseClick();
     void DrawSelectionBounds(float DisplayWidth, float DisplayHeight);
     bool ReloadScene(const std::wstring& ScenePath);

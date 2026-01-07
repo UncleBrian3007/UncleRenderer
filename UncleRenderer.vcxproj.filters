@@ -51,6 +51,9 @@
     <Filter Include="Source Files\ThirdParty\ddspp">
       <UniqueIdentifier>{f4a591e7-002b-4386-b419-8e35be6c8c19}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Source Files\ThirdParty\meshoptimizer">
+      <UniqueIdentifier>{872f13f4-ed69-462e-b90a-a014dcd6e376}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Source\Main.cpp">
@@ -160,6 +163,54 @@
     </ClCompile>
     <ClCompile Include="ThirdParty\imgui\imgui_widgets.cpp">
       <Filter>Source Files\ThirdParty\imgui</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\src\allocator.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\src\clusterizer.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\src\indexanalyzer.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\src\indexcodec.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\src\indexgenerator.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\src\overdrawoptimizer.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\src\partition.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\src\quantization.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\src\rasterizer.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\src\simplifier.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\src\spatialorder.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\src\stripifier.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\src\vcacheoptimizer.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\src\vertexcodec.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\src\vertexfilter.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\src\vfetchoptimizer.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -285,6 +336,9 @@
     </ClInclude>
     <ClInclude Include="Source\Core\GpuDebugMarkers.h">
       <Filter>Header Files\Core</Filter>
+    </ClInclude>
+    <ClInclude Include="ThirdParty\meshoptimizer\src\meshoptimizer.h">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

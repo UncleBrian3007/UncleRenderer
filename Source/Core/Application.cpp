@@ -203,21 +203,7 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     const std::wstring SceneFilePath = RendererConfig.SceneFile.empty() ? L"Assets/Scenes/Scene.json" : RendererConfig.SceneFile;
     CurrentScenePath = SceneFilePath;
 
-    FSceneLightDesc SceneLight;
-    if (FSceneJsonLoader::LoadSceneLighting(SceneFilePath, SceneLight))
-    {
-        LightIntensity = SceneLight.Intensity;
-        LightColor = DirectX::XMFLOAT3(SceneLight.Color.x, SceneLight.Color.y, SceneLight.Color.z);
-
-        DirectX::XMFLOAT3 Direction(SceneLight.Direction.x, SceneLight.Direction.y, SceneLight.Direction.z);
-        const DirectX::XMVECTOR DirectionVec = DirectX::XMVector3Normalize(DirectX::XMLoadFloat3(&Direction));
-        const float LengthSq = DirectX::XMVectorGetX(DirectX::XMVector3LengthSq(DirectionVec));
-        if (LengthSq > 0.0f)
-        {
-            LightPitch = asinf(DirectX::XMVectorGetY(DirectionVec));
-            LightYaw = atan2f(DirectX::XMVectorGetX(DirectionVec), DirectX::XMVectorGetZ(DirectionVec));
-        }
-    }
+    ApplySceneLightingFromJson(SceneFilePath);
 
     LogInfo("Creating window...");
     if (!MainWindow->Create(InstanceHandle, WindowWidth, WindowHeight, L"UncleRenderer"))
@@ -895,6 +881,27 @@ void FApplication::ApplySceneCameraFromJson(const std::wstring& ScenePath)
     Camera->SetUp(Up);
 }
 
+void FApplication::ApplySceneLightingFromJson(const std::wstring& ScenePath)
+{
+    FSceneLightDesc SceneLight;
+    if (!FSceneJsonLoader::LoadSceneLighting(ScenePath, SceneLight))
+    {
+        return;
+    }
+
+    LightIntensity = SceneLight.Intensity;
+    LightColor = DirectX::XMFLOAT3(SceneLight.Color.x, SceneLight.Color.y, SceneLight.Color.z);
+
+    DirectX::XMFLOAT3 Direction(SceneLight.Direction.x, SceneLight.Direction.y, SceneLight.Direction.z);
+    const DirectX::XMVECTOR DirectionVec = DirectX::XMVector3Normalize(DirectX::XMLoadFloat3(&Direction));
+    const float LengthSq = DirectX::XMVectorGetX(DirectX::XMVector3LengthSq(DirectionVec));
+    if (LengthSq > 0.0f)
+    {
+        LightPitch = asinf(DirectX::XMVectorGetY(DirectionVec));
+        LightYaw = atan2f(DirectX::XMVectorGetX(DirectionVec), DirectX::XMVectorGetZ(DirectionVec));
+    }
+}
+
 bool FApplication::ReloadScene(const std::wstring& ScenePath)
 {
     if (ScenePath.empty())
@@ -983,6 +990,7 @@ bool FApplication::ReloadScene(const std::wstring& ScenePath)
     CurrentScenePath = ScenePath;
     RendererConfig.SceneFile = ScenePath;
 
+    ApplySceneLightingFromJson(ScenePath);
     UpdateRendererLighting();
     ApplySceneCameraFromJson(ScenePath);
 
@@ -1147,6 +1155,7 @@ void FApplication::CompleteAsyncSceneReload()
     CurrentScenePath = AsyncScenePath;
     RendererConfig.SceneFile = AsyncScenePath;
 
+    ApplySceneLightingFromJson(AsyncScenePath);
     UpdateRendererLighting();
     ApplySceneCameraFromJson(AsyncScenePath);
 
