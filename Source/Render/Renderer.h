@@ -52,6 +52,9 @@ public:
     ID3D12Resource* GetSceneConstantBuffer() const;
     D3D12_GPU_VIRTUAL_ADDRESS GetSceneConstantBufferAddress() const;
     uint8_t* GetSceneConstantBufferMapped() const;
+    ID3D12Resource* GetCullingConstantBuffer() const;
+    D3D12_GPU_VIRTUAL_ADDRESS GetCullingConstantBufferAddress() const;
+    uint8_t* GetCullingConstantBufferMapped() const;
     ID3D12Resource* GetIndirectCommandBuffer() const;
     D3D12_RESOURCE_STATES& GetIndirectCommandState();
     uint32_t GetFramesInFlight() const { return FramesInFlight; }
@@ -104,11 +107,14 @@ protected:
     void RenderGpuDebugPrint(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& OutputHandle);
     bool CreateDepthResourcesPerFrame(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT Format);
     bool CreateSceneConstantBuffersPerFrame(FDX12Device* Device, uint64_t BufferSize);
+    bool CreateCullingConstantBuffersPerFrame(FDX12Device* Device);
 
     std::vector<FDepthResources> DepthResourcesPerFrame;
     std::vector<D3D12_RESOURCE_STATES> DepthBufferStates;
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SceneConstantBuffers;
     std::vector<uint8_t*> SceneConstantBufferMapped;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> CullingConstantBuffers;
+    std::vector<uint8_t*> CullingConstantBufferMapped;
     D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilHandle{};
     D3D12_CPU_DESCRIPTOR_HANDLE ShadowDSVHandle{};
     D3D12_CPU_DESCRIPTOR_HANDLE ObjectIdRtvHandle{};
@@ -138,6 +144,10 @@ protected:
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> IndirectCommandBuffers;
     Microsoft::WRL::ComPtr<ID3D12Resource> ModelBoundsBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> ModelBoundsUpload;
+    Microsoft::WRL::ComPtr<ID3D12Resource> MeshletConeAxisBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> MeshletConeAxisUpload;
+    Microsoft::WRL::ComPtr<ID3D12Resource> MeshletConeApexBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> MeshletConeApexUpload;
     Microsoft::WRL::ComPtr<ID3D12Resource> GpuDebugPrintBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> GpuDebugPrintUpload;
     Microsoft::WRL::ComPtr<ID3D12Resource> GpuDebugPrintStatsBuffer;

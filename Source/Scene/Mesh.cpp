@@ -3,7 +3,15 @@
 #include <DirectXMath.h>
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <vector>
+
+#if __has_include("meshoptimizer.h")
+#include "meshoptimizer.h"
+#define WITH_MESHOPTIMIZER 1
+#else
+#define WITH_MESHOPTIMIZER 0
+#endif
 
 namespace
 {
@@ -29,6 +37,118 @@ namespace
         const XMVECTOR Up = std::abs(XMVectorGetX(Normal)) < 0.99f ? g_XMIdentityR1 : g_XMIdentityR0;
         return XMVector3Normalize(XMVector3Cross(Up, Normal));
     }
+
+#if WITH_MESHOPTIMIZER
+    bool BuildMeshletGroup(
+        const std::vector<FMesh::FVertex>& Vertices,
+        const std::vector<uint32_t>& Indices,
+        uint32_t IndexStart,
+        uint32_t IndexCount,
+        uint32_t MaxVertices,
+        uint32_t MaxTriangles,
+        float ConeWeight,
+        FMesh::FMeshletGroup& OutGroup)
+    {
+        OutGroup = {};
+
+        if (Vertices.empty() || IndexCount < 3 || IndexStart + IndexCount > Indices.size())
+        {
+            return false;
+        }
+
+        const size_t MaxMeshlets = meshopt_buildMeshletsBound(IndexCount, MaxVertices, MaxTriangles);
+        std::vector<meshopt_Meshlet> TempMeshlets(MaxMeshlets);
+        std::vector<unsigned int> TempMeshletVertices(MaxMeshlets * MaxVertices);
+        std::vector<unsigned char> TempMeshletTriangles(MaxMeshlets * MaxTriangles * 3);
+
+        const float* Positions = &Vertices[0].Position.x;
+        const size_t MeshletCount = meshopt_buildMeshlets(
+            TempMeshlets.data(),
+            TempMeshletVertices.data(),
+            TempMeshletTriangles.data(),
+            Indices.data() + IndexStart,
+            IndexCount,
+            Positions,
+            Vertices.size(),
+            sizeof(FMesh::FVertex),
+            MaxVertices,
+            MaxTriangles,
+            ConeWeight);
+
+        if (MeshletCount == 0)
+        {
+            return false;
+        }
+
+        TempMeshlets.resize(MeshletCount);
+
+        size_t TotalVertexCount = 0;
+        size_t TotalTriangleIndexCount = 0;
+        for (const meshopt_Meshlet& Meshlet : TempMeshlets)
+        {
+            TotalVertexCount = std::max(TotalVertexCount, static_cast<size_t>(Meshlet.vertex_offset + Meshlet.vertex_count));
+            TotalTriangleIndexCount = std::max(TotalTriangleIndexCount, static_cast<size_t>(Meshlet.triangle_offset + Meshlet.triangle_count * 3));
+        }
+
+        OutGroup.MeshletVertices.assign(TempMeshletVertices.begin(), TempMeshletVertices.begin() + TotalVertexCount);
+        OutGroup.MeshletTriangles.assign(TempMeshletTriangles.begin(), TempMeshletTriangles.begin() + TotalTriangleIndexCount);
+
+        OutGroup.Meshlets.reserve(MeshletCount);
+        OutGroup.MeshletBounds.reserve(MeshletCount);
+
+        size_t TotalTriangleCount = 0;
+        for (const meshopt_Meshlet& Meshlet : TempMeshlets)
+        {
+            FMesh::FMeshlet OutMeshlet{};
+            OutMeshlet.VertexOffset = static_cast<uint32_t>(Meshlet.vertex_offset);
+            OutMeshlet.TriangleOffset = static_cast<uint32_t>(Meshlet.triangle_offset);
+            OutMeshlet.VertexCount = static_cast<uint32_t>(Meshlet.vertex_count);
+            OutMeshlet.TriangleCount = static_cast<uint32_t>(Meshlet.triangle_count);
+            OutGroup.Meshlets.push_back(OutMeshlet);
+            TotalTriangleCount += Meshlet.triangle_count;
+        }
+
+        OutGroup.MeshletIndices.reserve(TotalTriangleCount * 3);
+
+        for (FMesh::FMeshlet& Meshlet : OutGroup.Meshlets)
+        {
+            const uint32_t MeshletIndexOffset = static_cast<uint32_t>(OutGroup.MeshletIndices.size());
+            for (uint32_t Triangle = 0; Triangle < Meshlet.TriangleCount; ++Triangle)
+            {
+                const uint32_t TriangleOffset = Meshlet.TriangleOffset + Triangle * 3;
+                const uint8_t Index0 = OutGroup.MeshletTriangles[TriangleOffset];
+                const uint8_t Index1 = OutGroup.MeshletTriangles[TriangleOffset + 1];
+                const uint8_t Index2 = OutGroup.MeshletTriangles[TriangleOffset + 2];
+
+                const uint32_t VertexBase = Meshlet.VertexOffset;
+                OutGroup.MeshletIndices.push_back(OutGroup.MeshletVertices[VertexBase + Index0]);
+                OutGroup.MeshletIndices.push_back(OutGroup.MeshletVertices[VertexBase + Index1]);
+                OutGroup.MeshletIndices.push_back(OutGroup.MeshletVertices[VertexBase + Index2]);
+            }
+
+            Meshlet.IndexOffset = MeshletIndexOffset;
+            Meshlet.IndexCount = Meshlet.TriangleCount * 3;
+
+            const meshopt_Bounds Bounds = meshopt_computeMeshletBounds(
+                &OutGroup.MeshletVertices[Meshlet.VertexOffset],
+                &OutGroup.MeshletTriangles[Meshlet.TriangleOffset],
+                Meshlet.TriangleCount,
+                Positions,
+                Vertices.size(),
+                sizeof(FMesh::FVertex));
+
+            FMesh::FMeshletBounds OutBounds{};
+            OutBounds.Center = { Bounds.center[0], Bounds.center[1], Bounds.center[2] };
+            OutBounds.Radius = Bounds.radius;
+            OutBounds.ConeApex = { Bounds.cone_apex[0], Bounds.cone_apex[1], Bounds.cone_apex[2] };
+            OutBounds.ConeCutoff = Bounds.cone_cutoff;
+            OutBounds.ConeAxis = { Bounds.cone_axis[0], Bounds.cone_axis[1], Bounds.cone_axis[2] };
+            OutGroup.MeshletBounds.push_back(OutBounds);
+        }
+
+        return true;
+    }
+#endif
 }
 
 FMesh FMesh::CreateCube(float Size)
@@ -99,6 +219,8 @@ FMesh FMesh::CreateCube(float Size)
 
     Mesh.SetVertices(Vertices);
     Mesh.SetIndices(Indices);
+    Mesh.SetMeshletIndexingAllowed(true);
+    Mesh.BuildMeshlets();
 
     return Mesh;
 }
@@ -183,6 +305,8 @@ FMesh FMesh::CreateSphere(float Radius, uint32_t SliceCount, uint32_t StackCount
 
     Mesh.SetVertices(Vertices);
     Mesh.SetIndices(Indices);
+    Mesh.SetMeshletIndexingAllowed(true);
+    Mesh.BuildMeshlets();
 
     return Mesh;
 }
@@ -328,4 +452,92 @@ void FMesh::GenerateTangentsIfMissing()
         const float Handedness = XMVectorGetX(XMVector3Dot(XMVector3Cross(Normal, Tangent), Bitangent)) < 0.0f ? -1.0f : 1.0f;
         XMStoreFloat4(&Vertices[i].Tangent, XMVectorSetW(Tangent, Handedness));
     }
+}
+
+void FMesh::BuildMeshlets(uint32_t MaxVertices, uint32_t MaxTriangles, float ConeWeight)
+{
+    Meshlets.clear();
+    MeshletVertices.clear();
+    MeshletTriangles.clear();
+    MeshletIndices.clear();
+    MeshletBounds.clear();
+    MeshletGroups.clear();
+
+    if (Vertices.empty() || Indices.size() < 3)
+    {
+        return;
+    }
+
+#if WITH_MESHOPTIMIZER
+    FMeshletGroup Group;
+    if (!BuildMeshletGroup(Vertices, Indices, 0, static_cast<uint32_t>(Indices.size()), MaxVertices, MaxTriangles, ConeWeight, Group))
+    {
+        return;
+    }
+
+    Meshlets = Group.Meshlets;
+    MeshletVertices = Group.MeshletVertices;
+    MeshletTriangles = Group.MeshletTriangles;
+    MeshletIndices = Group.MeshletIndices;
+    MeshletBounds = Group.MeshletBounds;
+    MeshletGroups.push_back(std::move(Group));
+#endif
+}
+
+void FMesh::BuildMeshletGroups(const std::vector<std::pair<uint32_t, uint32_t>>& IndexRanges, uint32_t MaxVertices, uint32_t MaxTriangles, float ConeWeight)
+{
+    Meshlets.clear();
+    MeshletVertices.clear();
+    MeshletTriangles.clear();
+    MeshletIndices.clear();
+    MeshletBounds.clear();
+    MeshletGroups.clear();
+
+    if (Vertices.empty() || Indices.size() < 3 || IndexRanges.empty())
+    {
+        return;
+    }
+
+#if WITH_MESHOPTIMIZER
+    MeshletGroups.reserve(IndexRanges.size());
+    for (const auto& Range : IndexRanges)
+    {
+        FMeshletGroup Group;
+        if (BuildMeshletGroup(Vertices, Indices, Range.first, Range.second, MaxVertices, MaxTriangles, ConeWeight, Group))
+        {
+            MeshletGroups.push_back(std::move(Group));
+        }
+        else
+        {
+            MeshletGroups.emplace_back();
+        }
+    }
+
+    if (MeshletGroups.size() == 1)
+    {
+        Meshlets = MeshletGroups[0].Meshlets;
+        MeshletVertices = MeshletGroups[0].MeshletVertices;
+        MeshletTriangles = MeshletGroups[0].MeshletTriangles;
+        MeshletIndices = MeshletGroups[0].MeshletIndices;
+        MeshletBounds = MeshletGroups[0].MeshletBounds;
+    }
+#endif
+}
+
+const FMesh::FMeshletGroup* FMesh::GetMeshletGroup(size_t Index) const
+{
+    if (Index >= MeshletGroups.size())
+    {
+        return nullptr;
+    }
+    return &MeshletGroups[Index];
+}
+
+bool FMesh::HasMeshlets() const
+{
+    if (!MeshletGroups.empty())
+    {
+        return !MeshletGroups[0].MeshletIndices.empty();
+    }
+    return !Meshlets.empty() && !MeshletIndices.empty();
 }

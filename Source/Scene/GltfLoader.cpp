@@ -1160,6 +1160,22 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
         Mesh.SetIndices(MeshData.Indices);
         Mesh.GenerateNormalsIfMissing();
         Mesh.GenerateTangentsIfMissing();
+        std::vector<std::pair<uint32_t, uint32_t>> PrimitiveRanges;
+        PrimitiveRanges.reserve(MeshData.Primitives.size());
+        for (const FMeshData::FPrimitiveInfo& PrimitiveInfo : MeshData.Primitives)
+        {
+            PrimitiveRanges.emplace_back(PrimitiveInfo.IndexStart, PrimitiveInfo.IndexCount);
+        }
+
+        Mesh.SetMeshletIndexingAllowed(!PrimitiveRanges.empty());
+        if (PrimitiveRanges.size() <= 1)
+        {
+            Mesh.BuildMeshlets();
+        }
+        else
+        {
+            Mesh.BuildMeshletGroups(PrimitiveRanges);
+        }
         OutScene.Meshes.push_back(std::move(Mesh));
     }
 

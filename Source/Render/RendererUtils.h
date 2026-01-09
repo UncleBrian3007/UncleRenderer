@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include "../Math/MathTypes.h"
+#include "../Scene/Mesh.h"
 
 class FDX12Device;
 class FCamera;
@@ -124,6 +125,7 @@ struct FSceneModelResource
     FMeshGeometryBuffers Geometry;
     uint32_t DrawIndexStart = 0;
     uint32_t DrawIndexCount = 0;
+    uint32_t BaseIndexCount = 0;
     DirectX::XMFLOAT4X4 WorldMatrix{};
     DirectX::XMFLOAT3 Center{ 0.0f, 0.0f, 0.0f };
     float Radius = 1.0f;
@@ -152,6 +154,11 @@ struct FSceneModelResource
     DirectX::XMFLOAT3 BoundsMin{ 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT3 BoundsMax{ 0.0f, 0.0f, 0.0f };
     uint32_t ObjectId = 0;
+    bool bUseMeshletCulling = false;
+    std::vector<FMesh::FMeshlet> Meshlets;
+    std::vector<FMesh::FMeshletBounds> MeshletBounds;
+    std::vector<uint32_t> MeshletIndices;
+    std::vector<uint32_t> MeshletVisibleIndices;
 };
 
 namespace RendererUtils
@@ -214,7 +221,7 @@ namespace RendererUtils
         DirectX::XMVECTOR OutPlanes[6]);
     void UpdateCullingVisibility(
         const FCamera& Camera,
-        const std::vector<FSceneModelResource>& Models,
+        std::vector<FSceneModelResource>& Models,
         std::vector<bool>& OutVisibility);
     bool CreateMappedConstantBuffer(FDX12Device* Device, uint64_t BufferSize, FMappedConstantBuffer& OutConstantBuffer);
     bool CreateSkyAtmosphereResources(

@@ -178,6 +178,32 @@ uint8_t* FRenderer::GetSceneConstantBufferMapped() const
     return SceneConstantBufferMapped[CurrentFrameIndex];
 }
 
+ID3D12Resource* FRenderer::GetCullingConstantBuffer() const
+{
+    if (CullingConstantBuffers.empty())
+    {
+        return nullptr;
+    }
+
+    return CullingConstantBuffers[CurrentFrameIndex].Get();
+}
+
+D3D12_GPU_VIRTUAL_ADDRESS FRenderer::GetCullingConstantBufferAddress() const
+{
+    ID3D12Resource* Buffer = GetCullingConstantBuffer();
+    return Buffer ? Buffer->GetGPUVirtualAddress() : 0;
+}
+
+uint8_t* FRenderer::GetCullingConstantBufferMapped() const
+{
+    if (CullingConstantBufferMapped.empty())
+    {
+        return nullptr;
+    }
+
+    return CullingConstantBufferMapped[CurrentFrameIndex];
+}
+
 bool FRenderer::CreateDepthResourcesPerFrame(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT Format)
 {
     if (!Device)
@@ -241,6 +267,41 @@ bool FRenderer::CreateSceneConstantBuffersPerFrame(FDX12Device* Device, uint64_t
         {
             const std::wstring Name = L"SceneConstantBuffer_Frame" + std::to_wstring(Index);
             SceneConstantBuffers[Index]->SetName(Name.c_str());
+        }
+    }
+
+    return true;
+}
+
+bool FRenderer::CreateCullingConstantBuffersPerFrame(FDX12Device* Device)
+{
+    if (!Device)
+    {
+        return false;
+    }
+
+    CullingConstantBuffers.clear();
+    CullingConstantBufferMapped.clear();
+    CullingConstantBuffers.resize(FramesInFlight);
+    CullingConstantBufferMapped.resize(FramesInFlight, nullptr);
+
+    constexpr uint64_t CullingConstantSize = sizeof(uint32_t) * 52;
+
+    for (uint32_t Index = 0; Index < FramesInFlight; ++Index)
+    {
+        FMappedConstantBuffer ConstantBufferResource = {};
+        if (!RendererUtils::CreateMappedConstantBuffer(Device, CullingConstantSize, ConstantBufferResource))
+        {
+            return false;
+        }
+
+        CullingConstantBuffers[Index] = ConstantBufferResource.Resource;
+        CullingConstantBufferMapped[Index] = ConstantBufferResource.MappedData;
+
+        if (CullingConstantBuffers[Index])
+        {
+            const std::wstring Name = L"CullingConstantBuffer_Frame" + std::to_wstring(Index);
+            CullingConstantBuffers[Index]->SetName(Name.c_str());
         }
     }
 
@@ -418,7 +479,7 @@ void FRenderer::DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamer
     DirectX::XMVECTOR Planes[6] = {};
     RendererUtils::BuildCameraFrustumPlanes(*CullingCamera, Planes);
 
-    std::array<uint32_t, 46> Constants = {};
+    std::array<uint32_t, 52> Constants = {};
     for (uint32_t PlaneIndex = 0; PlaneIndex < 6; ++PlaneIndex)
     {
         DirectX::XMFLOAT4 Plane;
@@ -437,6 +498,11 @@ void FRenderer::DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamer
     Constants[43] = HZBCullingWidth;
     Constants[44] = HZBCullingHeight;
     Constants[45] = bEnableGpuDebugPrint ? 1u : 0u;
+    Constants[46] = 0;
+    Constants[47] = 0;
+    const DirectX::XMFLOAT3 CameraPosition = CullingCamera->GetPosition();
+    std::memcpy(Constants.data() + 48, &CameraPosition, sizeof(DirectX::XMFLOAT3));
+    Constants[51] = 0;
 
     ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
     FScopedPixEvent CullingEvent(CommandList, L"GpuCulling");
@@ -454,18 +520,26 @@ void FRenderer::DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamer
         IndirectState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     }
 
+    uint8_t* CullingConstantsMapped = GetCullingConstantBufferMapped();
+    if (CullingConstantsMapped)
+    {
+        std::memcpy(CullingConstantsMapped, Constants.data(), sizeof(Constants));
+    }
+
     CommandList->SetPipelineState(CullingPipeline.Get());
     CommandList->SetComputeRootSignature(CullingRootSignature.Get());
-    CommandList->SetComputeRoot32BitConstants(0, static_cast<UINT>(Constants.size()), Constants.data(), 0);
+    CommandList->SetComputeRootConstantBufferView(0, GetCullingConstantBufferAddress());
     CommandList->SetComputeRootShaderResourceView(1, ModelBoundsBuffer->GetGPUVirtualAddress());
-    CommandList->SetComputeRootUnorderedAccessView(2, IndirectBuffer->GetGPUVirtualAddress());
-    CommandList->SetComputeRootUnorderedAccessView(3, GpuDebugPrintBuffer->GetGPUVirtualAddress());
-    CommandList->SetComputeRootUnorderedAccessView(4, GpuDebugPrintStatsBuffer->GetGPUVirtualAddress());
+    CommandList->SetComputeRootShaderResourceView(2, MeshletConeAxisBuffer ? MeshletConeAxisBuffer->GetGPUVirtualAddress() : 0);
+    CommandList->SetComputeRootShaderResourceView(3, MeshletConeApexBuffer ? MeshletConeApexBuffer->GetGPUVirtualAddress() : 0);
+    CommandList->SetComputeRootUnorderedAccessView(4, IndirectBuffer->GetGPUVirtualAddress());
+    CommandList->SetComputeRootUnorderedAccessView(5, GpuDebugPrintBuffer->GetGPUVirtualAddress());
+    CommandList->SetComputeRootUnorderedAccessView(6, GpuDebugPrintStatsBuffer->GetGPUVirtualAddress());
     if (CullingDescriptorHeap)
     {
         ID3D12DescriptorHeap* Heaps[] = { CullingDescriptorHeap.Get() };
         CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
-        CommandList->SetComputeRootDescriptorTable(5, HZBCullingHandle);
+        CommandList->SetComputeRootDescriptorTable(7, HZBCullingHandle);
     }
 
     const uint32_t DispatchCount = (IndirectCommandCount + 63) / 64;

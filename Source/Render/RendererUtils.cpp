@@ -164,10 +164,12 @@ bool RendererUtils::CreateMeshGeometry(FDX12Device* Device, const FMesh& Mesh, F
         return false;
     }
 
-    OutGeometry.IndexCount = static_cast<uint32_t>(Mesh.GetIndices().size());
+    const std::vector<uint32_t>& DrawIndices = Mesh.GetIndices();
+
+    OutGeometry.IndexCount = static_cast<uint32_t>(DrawIndices.size());
 
     const UINT VertexBufferSize = static_cast<UINT>(Mesh.GetVertices().size() * sizeof(FMesh::FVertex));
-    const UINT IndexBufferSize = static_cast<UINT>(Mesh.GetIndices().size() * sizeof(uint32_t));
+    const UINT IndexBufferSize = static_cast<UINT>(DrawIndices.size() * sizeof(uint32_t));
 
     D3D12_HEAP_PROPERTIES UploadHeap = {};
     UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
@@ -217,7 +219,7 @@ bool RendererUtils::CreateMeshGeometry(FDX12Device* Device, const FMesh& Mesh, F
 
     void* IndexData = nullptr;
     HR_CHECK(OutGeometry.IndexBuffer->Map(0, &EmptyRange, &IndexData));
-    memcpy(IndexData, Mesh.GetIndices().data(), IndexBufferSize);
+    memcpy(IndexData, DrawIndices.data(), IndexBufferSize);
     OutGeometry.IndexBuffer->Unmap(0, nullptr);
 
     return true;
@@ -293,6 +295,124 @@ namespace
 
         return (std::max)((std::max)(ScaleX, ScaleY), ScaleZ);
     }
+
+    bool CreateIndexBufferForSection(
+        FDX12Device* Device,
+        const std::vector<uint32_t>& Indices,
+        uint32_t IndexStart,
+        uint32_t IndexCount,
+        FMeshGeometryBuffers& InOutGeometry)
+    {
+        if (!Device || IndexCount == 0 || IndexStart + IndexCount > Indices.size())
+        {
+            return false;
+        }
+
+        const UINT IndexBufferSize = static_cast<UINT>(IndexCount * sizeof(uint32_t));
+
+        D3D12_HEAP_PROPERTIES UploadHeap = {};
+        UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+        UploadHeap.CreationNodeMask = 1;
+        UploadHeap.VisibleNodeMask = 1;
+
+        D3D12_RESOURCE_DESC BufferDesc = {};
+        BufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        BufferDesc.Width = IndexBufferSize;
+        BufferDesc.Height = 1;
+        BufferDesc.DepthOrArraySize = 1;
+        BufferDesc.MipLevels = 1;
+        BufferDesc.Format = DXGI_FORMAT_UNKNOWN;
+        BufferDesc.SampleDesc.Count = 1;
+        BufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+            &UploadHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &BufferDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(InOutGeometry.IndexBuffer.ReleaseAndGetAddressOf())));
+
+        InOutGeometry.IndexBufferView.BufferLocation = InOutGeometry.IndexBuffer->GetGPUVirtualAddress();
+        InOutGeometry.IndexBufferView.Format = DXGI_FORMAT_R32_UINT;
+        InOutGeometry.IndexBufferView.SizeInBytes = IndexBufferSize;
+        InOutGeometry.IndexCount = IndexCount;
+
+        void* IndexData = nullptr;
+        D3D12_RANGE EmptyRange = { 0, 0 };
+        HR_CHECK(InOutGeometry.IndexBuffer->Map(0, &EmptyRange, &IndexData));
+        memcpy(IndexData, Indices.data() + IndexStart, IndexBufferSize);
+        InOutGeometry.IndexBuffer->Unmap(0, nullptr);
+
+        return true;
+    }
+
+    bool CreateIndexBufferFromIndices(
+        FDX12Device* Device,
+        const std::vector<uint32_t>& Indices,
+        FMeshGeometryBuffers& InOutGeometry)
+    {
+        if (!Device || Indices.empty())
+        {
+            return false;
+        }
+
+        const UINT IndexBufferSize = static_cast<UINT>(Indices.size() * sizeof(uint32_t));
+
+        D3D12_HEAP_PROPERTIES UploadHeap = {};
+        UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+        UploadHeap.CreationNodeMask = 1;
+        UploadHeap.VisibleNodeMask = 1;
+
+        D3D12_RESOURCE_DESC BufferDesc = {};
+        BufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        BufferDesc.Width = IndexBufferSize;
+        BufferDesc.Height = 1;
+        BufferDesc.DepthOrArraySize = 1;
+        BufferDesc.MipLevels = 1;
+        BufferDesc.Format = DXGI_FORMAT_UNKNOWN;
+        BufferDesc.SampleDesc.Count = 1;
+        BufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+            &UploadHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &BufferDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(InOutGeometry.IndexBuffer.ReleaseAndGetAddressOf())));
+
+        InOutGeometry.IndexBufferView.BufferLocation = InOutGeometry.IndexBuffer->GetGPUVirtualAddress();
+        InOutGeometry.IndexBufferView.Format = DXGI_FORMAT_R32_UINT;
+        InOutGeometry.IndexBufferView.SizeInBytes = IndexBufferSize;
+        InOutGeometry.IndexCount = static_cast<uint32_t>(Indices.size());
+
+        void* IndexData = nullptr;
+        D3D12_RANGE EmptyRange = { 0, 0 };
+        HR_CHECK(InOutGeometry.IndexBuffer->Map(0, &EmptyRange, &IndexData));
+        memcpy(IndexData, Indices.data(), IndexBufferSize);
+        InOutGeometry.IndexBuffer->Unmap(0, nullptr);
+
+        return true;
+    }
+
+    bool IsSphereInCameraFrustum(const DirectX::XMVECTOR Planes[6], const DirectX::XMFLOAT3& Center, float Radius)
+    {
+        using namespace DirectX;
+        const XMVECTOR CenterVec = XMLoadFloat3(&Center);
+        for (size_t PlaneIndex = 0; PlaneIndex < 6; ++PlaneIndex)
+        {
+            const XMVECTOR Plane = Planes[PlaneIndex];
+            const float Distance = XMVectorGetX(XMPlaneDotCoord(Plane, CenterVec));
+            if (Distance < -Radius)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
 }
 
 bool RendererUtils::CreateSceneModelsFromJson(
@@ -466,6 +586,7 @@ bool RendererUtils::CreateSceneModelsFromJson(
                 ModelResource.Geometry = MeshGeometries[MeshIndex];
                 ModelResource.DrawIndexStart = Section.IndexStart;
                 ModelResource.DrawIndexCount = Section.IndexCount;
+                ModelResource.BaseIndexCount = Section.IndexCount;
 
                 XMStoreFloat4x4(&ModelResource.WorldMatrix, World);
 
@@ -516,6 +637,26 @@ bool RendererUtils::CreateSceneModelsFromJson(
                 ModelResource.NormalTransformRotation = BuildRotationConstants(Material.NormalTransform);
                 ModelResource.EmissiveTransformOffsetScale = BuildOffsetScale(Material.EmissiveTransform);
                 ModelResource.EmissiveTransformRotation = BuildRotationConstants(Material.EmissiveTransform);
+
+                const FMesh& Mesh = LoadedScene.Meshes[MeshIndex];
+                const FMesh::FMeshletGroup* MeshletGroup = Mesh.GetMeshletGroup(SectionIndex);
+                if (Mesh.IsMeshletIndexingAllowed() && MeshletGroup && !MeshletGroup->MeshletIndices.empty())
+                {
+                    if (CreateIndexBufferFromIndices(Device, MeshletGroup->MeshletIndices, ModelResource.Geometry))
+                    {
+                        ModelResource.bUseMeshletCulling = true;
+                        ModelResource.Meshlets = MeshletGroup->Meshlets;
+                        ModelResource.MeshletBounds = MeshletGroup->MeshletBounds;
+                        ModelResource.MeshletIndices = MeshletGroup->MeshletIndices;
+                        ModelResource.DrawIndexStart = 0;
+                        ModelResource.DrawIndexCount = static_cast<uint32_t>(MeshletGroup->MeshletIndices.size());
+                        ModelResource.BaseIndexCount = ModelResource.DrawIndexCount;
+                    }
+                }
+                else
+                {
+                    CreateIndexBufferForSection(Device, Mesh.GetIndices(), Section.IndexStart, Section.IndexCount, ModelResource.Geometry);
+                }
 
                 UpdateSceneBounds(ModelResource.Center, ModelResource.Radius, SceneMin, SceneMax);
 
@@ -829,7 +970,7 @@ bool RendererUtils::ComputeSceneModelStats(
 
 void RendererUtils::UpdateCullingVisibility(
     const FCamera& Camera,
-    const std::vector<FSceneModelResource>& Models,
+    std::vector<FSceneModelResource>& Models,
     std::vector<bool>& OutVisibility)
 {
     OutVisibility.assign(Models.size(), true);
@@ -837,8 +978,67 @@ void RendererUtils::UpdateCullingVisibility(
     RendererUtils::BuildCameraFrustumPlanes(Camera, Planes);
     for (size_t ModelIndex = 0; ModelIndex < Models.size(); ++ModelIndex)
     {
-        const FSceneModelResource& Model = Models[ModelIndex];
-        OutVisibility[ModelIndex] = RendererUtils::IsAabbInCameraFrustum(Planes, Model.BoundsMin, Model.BoundsMax);
+        FSceneModelResource& Model = Models[ModelIndex];
+        const bool bModelVisible = RendererUtils::IsAabbInCameraFrustum(Planes, Model.BoundsMin, Model.BoundsMax);
+        OutVisibility[ModelIndex] = bModelVisible;
+
+        if (!Model.bUseMeshletCulling || !bModelVisible || Model.Meshlets.empty() || Model.MeshletBounds.empty())
+        {
+            Model.DrawIndexCount = Model.BaseIndexCount;
+            continue;
+        }
+
+        using namespace DirectX;
+        const XMMATRIX World = XMLoadFloat4x4(&Model.WorldMatrix);
+        const float ModelScale = ComputeMaxScale(Model.WorldMatrix);
+
+        Model.MeshletVisibleIndices.clear();
+        Model.MeshletVisibleIndices.reserve(Model.MeshletIndices.size());
+
+        const size_t MeshletCount = std::min(Model.Meshlets.size(), Model.MeshletBounds.size());
+        for (size_t MeshletIndex = 0; MeshletIndex < MeshletCount; ++MeshletIndex)
+        {
+            const FMesh::FMeshletBounds& Bounds = Model.MeshletBounds[MeshletIndex];
+            const XMVECTOR LocalCenter = XMLoadFloat3(&Bounds.Center);
+            XMVECTOR WorldCenter = XMVector3TransformCoord(LocalCenter, World);
+            DirectX::XMFLOAT3 WorldCenterFloat{};
+            XMStoreFloat3(&WorldCenterFloat, WorldCenter);
+
+            const float WorldRadius = Bounds.Radius * ModelScale;
+            if (!IsSphereInCameraFrustum(Planes, WorldCenterFloat, WorldRadius))
+            {
+                continue;
+            }
+
+            const FMesh::FMeshlet& Meshlet = Model.Meshlets[MeshletIndex];
+            const uint32_t IndexStart = Meshlet.IndexOffset;
+            const uint32_t IndexCount = Meshlet.IndexCount;
+            if (IndexStart + IndexCount > Model.MeshletIndices.size())
+            {
+                continue;
+            }
+
+            Model.MeshletVisibleIndices.insert(
+                Model.MeshletVisibleIndices.end(),
+                Model.MeshletIndices.begin() + IndexStart,
+                Model.MeshletIndices.begin() + IndexStart + IndexCount);
+        }
+
+        Model.DrawIndexStart = 0;
+        Model.DrawIndexCount = static_cast<uint32_t>(Model.MeshletVisibleIndices.size());
+        Model.Geometry.IndexCount = Model.DrawIndexCount;
+
+        if (!Model.MeshletVisibleIndices.empty())
+        {
+            void* IndexData = nullptr;
+            D3D12_RANGE EmptyRange = { 0, 0 };
+            if (SUCCEEDED(Model.Geometry.IndexBuffer->Map(0, &EmptyRange, &IndexData)))
+            {
+                const size_t CopySize = Model.MeshletVisibleIndices.size() * sizeof(uint32_t);
+                memcpy(IndexData, Model.MeshletVisibleIndices.data(), CopySize);
+                Model.Geometry.IndexBuffer->Unmap(0, nullptr);
+            }
+        }
     }
 }
 
@@ -931,6 +1131,7 @@ bool RendererUtils::CreateSkyAtmospherePipeline(
     }
 
     D3D12_ROOT_PARAMETER1 RootParam = {};
+    // RootParam: Sky constants (b0), used in Shaders/SkyAtmosphere.hlsl VSMain and PSMain
     RootParam.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     RootParam.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParam.Descriptor.ShaderRegister = 0;

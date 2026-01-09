@@ -337,6 +337,7 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
         DefaultModel.ObjectId = 1;
         DefaultModel.DrawIndexStart = 0;
         DefaultModel.DrawIndexCount = DefaultModel.Geometry.IndexCount;
+        DefaultModel.BaseIndexCount = DefaultModel.DrawIndexCount;
         const FGltfMaterialTextureSet DefaultTextureSet = DefaultTextures.PerPrimitive.empty() ? FGltfMaterialTextureSet{} : DefaultTextures.PerPrimitive.front();
         DefaultModel.BaseColorTexturePath = DefaultTextureSet.BaseColor;
         DefaultModel.MetallicRoughnessTexturePath = DefaultTextureSet.MetallicRoughness;
@@ -360,6 +361,11 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     if (!CreateSceneConstantBuffersPerFrame(Device, ConstantBufferSize))
     {
         LogError("Deferred renderer initialization failed: constant buffer creation failed");
+        return false;
+    }
+    if (!CreateCullingConstantBuffersPerFrame(Device))
+    {
+        LogError("Deferred renderer initialization failed: culling constant buffer creation failed");
         return false;
     }
 
@@ -635,7 +641,8 @@ void FDeferredRenderer::AddGpuCullingPass(FRenderGraph& Graph, const FCamera& Ca
 
     Graph.AddPass<FGpuCullingPassData>("GPU Culling", [this, &Camera, HZBHandle, FrameState](FGpuCullingPassData& Data, FRGPassBuilder& Builder)
     {
-        Data.bEnabled = bEnableIndirectDraw && CullingPipeline && CullingRootSignature && GetIndirectCommandBuffer() && ModelBoundsBuffer;
+        Data.bEnabled = bEnableIndirectDraw && CullingPipeline && CullingRootSignature && GetIndirectCommandBuffer()
+            && ModelBoundsBuffer && MeshletConeAxisBuffer && MeshletConeApexBuffer;
         Data.Camera = &Camera;
         if (Data.bEnabled)
         {
@@ -1893,14 +1900,14 @@ bool FDeferredRenderer::CreateBasePassRootSignature(FDX12Device* Device)
     DescriptorRange.OffsetInDescriptorsFromTableStart = 0;
 
     D3D12_ROOT_PARAMETER1 RootParams[2] = {};
-    // RootParams[0]: Scene constant buffer (b0)
+    // RootParams[0]: Scene constant buffer (b0), used in Shaders/DeferredBasePass.hlsl VSMain and PSMain
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[0].Descriptor.ShaderRegister = 0;
     RootParams[0].Descriptor.RegisterSpace = 0;
     RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
 
-    // RootParams[1]: Base pass material texture SRV table (t0..t3)
+    // RootParams[1]: Base pass material texture SRV table (t0..t3), used in Shaders/DeferredBasePass.hlsl PSMain
     RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     RootParams[1].DescriptorTable.NumDescriptorRanges = 1;
@@ -1972,26 +1979,26 @@ bool FDeferredRenderer::CreateLightingRootSignature(FDX12Device* Device)
     GtaoRange.OffsetInDescriptorsFromTableStart = 0;
 
     D3D12_ROOT_PARAMETER1 RootParams[4] = {};
-    // RootParams[0]: Lighting constants (b0)
+    // RootParams[0]: Lighting constants (b0), used in Shaders/DeferredLighting.hlsl PSMain
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[0].Descriptor.ShaderRegister = 0;
     RootParams[0].Descriptor.RegisterSpace = 0;
     RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
 
-    // RootParams[1]: GBuffer/IBL/shadow SRV table (t0..t5)
+    // RootParams[1]: GBuffer/IBL/shadow SRV table (t0..t5), used in Shaders/DeferredLighting.hlsl PSMain
     RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     RootParams[1].DescriptorTable.NumDescriptorRanges = _countof(DescriptorRanges);
     RootParams[1].DescriptorTable.pDescriptorRanges = DescriptorRanges;
 
-    // RootParams[2]: Depth SRV table (t6)
+    // RootParams[2]: Depth SRV table (t6), used in Shaders/DeferredLighting.hlsl PSMain
     RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     RootParams[2].DescriptorTable.NumDescriptorRanges = 1;
     RootParams[2].DescriptorTable.pDescriptorRanges = &DepthRange;
 
-    // RootParams[3]: GTAO SRV table (t7)
+    // RootParams[3]: GTAO SRV table (t7), used in Shaders/DeferredLighting.hlsl PSMain
     RootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     RootParams[3].DescriptorTable.NumDescriptorRanges = 1;
@@ -2261,12 +2268,14 @@ bool FDeferredRenderer::CreateLinearDepthRootSignature(FDX12Device* Device)
     DescriptorRange.OffsetInDescriptorsFromTableStart = 0;
 
     D3D12_ROOT_PARAMETER1 RootParams[2] = {};
+    // RootParams[0]: Linear depth constants (b0), used in Shaders/LinearDepth.hlsl VSMain and PSMain
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[0].Descriptor.ShaderRegister = 0;
     RootParams[0].Descriptor.RegisterSpace = 0;
     RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
 
+    // RootParams[1]: Depth SRV table (t0), used in Shaders/LinearDepth.hlsl PSMain
     RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     RootParams[1].DescriptorTable.NumDescriptorRanges = 1;
@@ -2591,38 +2600,38 @@ bool FDeferredRenderer::CreateHZBRootSignature(FDX12Device* Device)
 
     D3D12_ROOT_PARAMETER1 RootParams[6] = {};
 
-    // RootParams[0]: HZB constants (mip counts, dimensions, source mip)
+    // RootParams[0]: HZB constants (mip counts, dimensions, source mip), used in Shaders/BuildHZB.hlsl BuildHZB
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[0].Constants.Num32BitValues = 11;
     RootParams[0].Constants.RegisterSpace = 0;
     RootParams[0].Constants.ShaderRegister = 0;
 
-    // RootParams[1]: HZB source texture SRV (t0)
+    // RootParams[1]: HZB source texture SRV (t0), used in Shaders/BuildHZB.hlsl BuildHZB
     RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[1].DescriptorTable.NumDescriptorRanges = 1;
     RootParams[1].DescriptorTable.pDescriptorRanges = &DescriptorRanges[0];
 
-    // RootParams[2]: HZB output UAV 0 (u0)
+    // RootParams[2]: HZB output UAV 0 (u0), used in Shaders/BuildHZB.hlsl BuildHZB
     RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[2].DescriptorTable.NumDescriptorRanges = 1;
     RootParams[2].DescriptorTable.pDescriptorRanges = &DescriptorRanges[1];
 
-    // RootParams[3]: HZB output UAV 1 (u1)
+    // RootParams[3]: HZB output UAV 1 (u1), used in Shaders/BuildHZB.hlsl BuildHZB
     RootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[3].DescriptorTable.NumDescriptorRanges = 1;
     RootParams[3].DescriptorTable.pDescriptorRanges = &DescriptorRanges[2];
 
-    // RootParams[4]: HZB output UAV 2 (u2)
+    // RootParams[4]: HZB output UAV 2 (u2), used in Shaders/BuildHZB.hlsl BuildHZB
     RootParams[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[4].DescriptorTable.NumDescriptorRanges = 1;
     RootParams[4].DescriptorTable.pDescriptorRanges = &DescriptorRanges[3];
 
-    // RootParams[5]: HZB output UAV 3 (u3)
+    // RootParams[5]: HZB output UAV 3 (u3), used in Shaders/BuildHZB.hlsl BuildHZB
     RootParams[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[5].DescriptorTable.NumDescriptorRanges = 1;
@@ -2702,26 +2711,26 @@ bool FDeferredRenderer::CreateAutoExposureRootSignature(FDX12Device* Device)
     UavRange.OffsetInDescriptorsFromTableStart = 0;
 
     D3D12_ROOT_PARAMETER1 RootParams[4] = {};
-    // RootParams[0]: Auto exposure constants (input size, delta time, adaptation)
+    // RootParams[0]: Auto exposure constants (input size, delta time, adaptation), used in Shaders/AutoExposure.hlsl CSMain
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[0].Constants.Num32BitValues = 9;
     RootParams[0].Constants.RegisterSpace = 0;
     RootParams[0].Constants.ShaderRegister = 0;
 
-    // RootParams[1]: Scene color SRV (t0)
+    // RootParams[1]: Scene color SRV (t0), used in Shaders/AutoExposure.hlsl CSMain
     RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[1].DescriptorTable.NumDescriptorRanges = 1;
     RootParams[1].DescriptorTable.pDescriptorRanges = &SceneSrvRange;
 
-    // RootParams[2]: Luminance history SRV (t1)
+    // RootParams[2]: Luminance history SRV (t1), used in Shaders/AutoExposure.hlsl CSMain
     RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[2].DescriptorTable.NumDescriptorRanges = 1;
     RootParams[2].DescriptorTable.pDescriptorRanges = &HistorySrvRange;
 
-    // RootParams[3]: Luminance output UAV (u0)
+    // RootParams[3]: Luminance output UAV (u0), used in Shaders/AutoExposure.hlsl CSMain
     RootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[3].DescriptorTable.NumDescriptorRanges = 1;
@@ -2808,26 +2817,26 @@ bool FDeferredRenderer::CreateTaaRootSignature(FDX12Device* Device)
 
     D3D12_ROOT_PARAMETER1 RootParams[4] = {};
 
-    // RootParams[0]: TAA constants (output size, history weight, history toggle)
+    // RootParams[0]: TAA constants (output size, history weight, history toggle), used in Shaders/TemporalAA.hlsl CSMain
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[0].Constants.Num32BitValues = 4;
     RootParams[0].Constants.RegisterSpace = 0;
     RootParams[0].Constants.ShaderRegister = 0;
 
-    // RootParams[1]: Current lighting SRV (t0)
+    // RootParams[1]: Current lighting SRV (t0), used in Shaders/TemporalAA.hlsl CSMain
     RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[1].DescriptorTable.NumDescriptorRanges = 1;
     RootParams[1].DescriptorTable.pDescriptorRanges = &CurrentRange;
 
-    // RootParams[2]: History SRV (t1)
+    // RootParams[2]: History SRV (t1), used in Shaders/TemporalAA.hlsl CSMain
     RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[2].DescriptorTable.NumDescriptorRanges = 1;
     RootParams[2].DescriptorTable.pDescriptorRanges = &HistoryRange;
 
-    // RootParams[3]: Output UAV (u0)
+    // RootParams[3]: Output UAV (u0), used in Shaders/TemporalAA.hlsl CSMain
     RootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[3].DescriptorTable.NumDescriptorRanges = 1;
@@ -2893,20 +2902,20 @@ bool FDeferredRenderer::CreateTonemapRootSignature(FDX12Device* Device)
 
     D3D12_ROOT_PARAMETER1 RootParams[3] = {};
 
-    // RootParams[0]: Tonemap constants (exposure/gamma/auto-exposure)
+    // RootParams[0]: Tonemap constants (exposure/gamma/auto-exposure), used in Shaders/Tonemap.hlsl PSMain
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     RootParams[0].Constants.Num32BitValues = 4;
     RootParams[0].Constants.RegisterSpace = 0;
     RootParams[0].Constants.ShaderRegister = 0;
 
-    // RootParams[1]: Lighting buffer SRV (t0)
+    // RootParams[1]: Lighting buffer SRV (t0), used in Shaders/Tonemap.hlsl PSMain
     RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     RootParams[1].DescriptorTable.NumDescriptorRanges = 1;
     RootParams[1].DescriptorTable.pDescriptorRanges = &LightingRange;
 
-    // RootParams[2]: Luminance SRV (t1)
+    // RootParams[2]: Luminance SRV (t1), used in Shaders/Tonemap.hlsl PSMain
     RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     RootParams[2].DescriptorTable.NumDescriptorRanges = 1;
@@ -4138,11 +4147,29 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
         return ModelA.TextureHandle.ptr < ModelB.TextureHandle.ptr;
     });
 
+    size_t TotalCommandCount = 0;
+    for (const FSceneModelResource& Model : SceneModels)
+    {
+        if (Model.bUseMeshletCulling && !Model.Meshlets.empty())
+        {
+            TotalCommandCount += Model.Meshlets.size();
+        }
+        else
+        {
+            TotalCommandCount += 1;
+        }
+    }
+
     std::vector<FIndirectDrawCommand> Commands;
-    Commands.reserve(SceneModels.size());
+    Commands.reserve(TotalCommandCount);
 
     std::vector<DirectX::XMFLOAT4> Bounds;
-    Bounds.reserve(SceneModels.size() * 2);
+    Bounds.reserve(TotalCommandCount * 2);
+
+    std::vector<DirectX::XMFLOAT4> MeshletConeAxisCutoff;
+    std::vector<DirectX::XMFLOAT4> MeshletConeApex;
+    MeshletConeAxisCutoff.reserve(TotalCommandCount);
+    MeshletConeApex.reserve(TotalCommandCount);
 
     const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferBase = GetSceneConstantBufferAddress();
     auto AppendIndirectDrawData = [&](uint32_t SortedIndex)
@@ -4166,19 +4193,72 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
             IndirectDrawRanges.push_back(Range);
         }
 
-        FIndirectDrawCommand Command = {};
-        Command.VertexBufferView = Model.Geometry.VertexBufferView;
-        Command.IndexBufferView = Model.Geometry.IndexBufferView;
-        Command.ConstantBufferAddress = ConstantBufferBase + SceneConstantBufferStride * SortedIndex;
-        Command.DrawArguments.IndexCountPerInstance = Model.DrawIndexCount;
-        Command.DrawArguments.InstanceCount = 1;
-        Command.DrawArguments.StartIndexLocation = Model.DrawIndexStart;
-        Command.DrawArguments.BaseVertexLocation = 0;
-        Command.DrawArguments.StartInstanceLocation = SortedIndex;
-        Commands.push_back(Command);
-        Bounds.emplace_back(Model.BoundsMin.x, Model.BoundsMin.y, Model.BoundsMin.z, 0.0f);
-        Bounds.emplace_back(Model.BoundsMax.x, Model.BoundsMax.y, Model.BoundsMax.z, 0.0f);
-        IndirectDrawRanges.back().Count += 1;
+        if (Model.bUseMeshletCulling && !Model.Meshlets.empty() && !Model.MeshletBounds.empty())
+        {
+            const DirectX::XMMATRIX World = DirectX::XMLoadFloat4x4(&Model.WorldMatrix);
+            const float ScaleX = std::sqrt(Model.WorldMatrix._11 * Model.WorldMatrix._11 + Model.WorldMatrix._21 * Model.WorldMatrix._21 + Model.WorldMatrix._31 * Model.WorldMatrix._31);
+            const float ScaleY = std::sqrt(Model.WorldMatrix._12 * Model.WorldMatrix._12 + Model.WorldMatrix._22 * Model.WorldMatrix._22 + Model.WorldMatrix._32 * Model.WorldMatrix._32);
+            const float ScaleZ = std::sqrt(Model.WorldMatrix._13 * Model.WorldMatrix._13 + Model.WorldMatrix._23 * Model.WorldMatrix._23 + Model.WorldMatrix._33 * Model.WorldMatrix._33);
+            const float ModelScale = (std::max)((std::max)(ScaleX, ScaleY), ScaleZ);
+
+            const size_t MeshletCount = (std::min)(Model.Meshlets.size(), Model.MeshletBounds.size());
+            for (size_t MeshletIndex = 0; MeshletIndex < MeshletCount; ++MeshletIndex)
+            {
+                const FMesh::FMeshlet& Meshlet = Model.Meshlets[MeshletIndex];
+                const FMesh::FMeshletBounds& BoundsData = Model.MeshletBounds[MeshletIndex];
+
+                FIndirectDrawCommand Command = {};
+                Command.VertexBufferView = Model.Geometry.VertexBufferView;
+                Command.IndexBufferView = Model.Geometry.IndexBufferView;
+                Command.ConstantBufferAddress = ConstantBufferBase + SceneConstantBufferStride * SortedIndex;
+                Command.DrawArguments.IndexCountPerInstance = Meshlet.IndexCount;
+                Command.DrawArguments.InstanceCount = 1;
+                Command.DrawArguments.StartIndexLocation = Meshlet.IndexOffset;
+                Command.DrawArguments.BaseVertexLocation = 0;
+                Command.DrawArguments.StartInstanceLocation = SortedIndex;
+                Commands.push_back(Command);
+
+                const DirectX::XMVECTOR LocalCenter = DirectX::XMLoadFloat3(&BoundsData.Center);
+                const DirectX::XMVECTOR WorldCenter = DirectX::XMVector3TransformCoord(LocalCenter, World);
+                DirectX::XMFLOAT3 Center{};
+                DirectX::XMStoreFloat3(&Center, WorldCenter);
+                const float Radius = BoundsData.Radius * ModelScale;
+                Bounds.emplace_back(Center.x - Radius, Center.y - Radius, Center.z - Radius, 0.0f);
+                Bounds.emplace_back(Center.x + Radius, Center.y + Radius, Center.z + Radius, 0.0f);
+
+                const DirectX::XMVECTOR LocalAxis = DirectX::XMLoadFloat3(&BoundsData.ConeAxis);
+                const DirectX::XMVECTOR WorldAxis = DirectX::XMVector3Normalize(DirectX::XMVector3TransformNormal(LocalAxis, World));
+                DirectX::XMFLOAT3 Axis{};
+                DirectX::XMStoreFloat3(&Axis, WorldAxis);
+                MeshletConeAxisCutoff.emplace_back(Axis.x, Axis.y, Axis.z, BoundsData.ConeCutoff);
+
+                const DirectX::XMVECTOR LocalApex = DirectX::XMLoadFloat3(&BoundsData.ConeApex);
+                const DirectX::XMVECTOR WorldApex = DirectX::XMVector3TransformCoord(LocalApex, World);
+                DirectX::XMFLOAT3 Apex{};
+                DirectX::XMStoreFloat3(&Apex, WorldApex);
+                MeshletConeApex.emplace_back(Apex.x, Apex.y, Apex.z, 0.0f);
+
+                IndirectDrawRanges.back().Count += 1;
+            }
+        }
+        else
+        {
+            FIndirectDrawCommand Command = {};
+            Command.VertexBufferView = Model.Geometry.VertexBufferView;
+            Command.IndexBufferView = Model.Geometry.IndexBufferView;
+            Command.ConstantBufferAddress = ConstantBufferBase + SceneConstantBufferStride * SortedIndex;
+            Command.DrawArguments.IndexCountPerInstance = Model.DrawIndexCount;
+            Command.DrawArguments.InstanceCount = 1;
+            Command.DrawArguments.StartIndexLocation = Model.DrawIndexStart;
+            Command.DrawArguments.BaseVertexLocation = 0;
+            Command.DrawArguments.StartInstanceLocation = SortedIndex;
+            Commands.push_back(Command);
+            Bounds.emplace_back(Model.BoundsMin.x, Model.BoundsMin.y, Model.BoundsMin.z, 0.0f);
+            Bounds.emplace_back(Model.BoundsMax.x, Model.BoundsMax.y, Model.BoundsMax.z, 0.0f);
+            MeshletConeAxisCutoff.emplace_back(0.0f, 0.0f, 1.0f, -1.0f);
+            MeshletConeApex.emplace_back(0.0f, 0.0f, 0.0f, 0.0f);
+            IndirectDrawRanges.back().Count += 1;
+        }
     };
 
     for (uint32_t SortedIndex : SortedIndices)
@@ -4292,6 +4372,70 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     std::memcpy(UploadData, Bounds.data(), BoundsBufferSize);
     ModelBoundsUpload->Unmap(0, nullptr);
 
+    const uint64_t ConeBufferSize = sizeof(DirectX::XMFLOAT4) * MeshletConeAxisCutoff.size();
+    D3D12_RESOURCE_DESC ConeDesc = BoundsDesc;
+    ConeDesc.Width = ConeBufferSize;
+
+    D3D12_RESOURCE_DESC ConeUploadDesc = ConeDesc;
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &DefaultHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &ConeDesc,
+        D3D12_RESOURCE_STATE_COMMON,
+        nullptr,
+        IID_PPV_ARGS(MeshletConeAxisBuffer.GetAddressOf())));
+    if (MeshletConeAxisBuffer)
+    {
+        MeshletConeAxisBuffer->SetName(L"MeshletConeAxisBuffer");
+    }
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &UploadHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &ConeUploadDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(MeshletConeAxisUpload.GetAddressOf())));
+    if (MeshletConeAxisUpload)
+    {
+        MeshletConeAxisUpload->SetName(L"MeshletConeAxisUpload");
+    }
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &DefaultHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &ConeDesc,
+        D3D12_RESOURCE_STATE_COMMON,
+        nullptr,
+        IID_PPV_ARGS(MeshletConeApexBuffer.GetAddressOf())));
+    if (MeshletConeApexBuffer)
+    {
+        MeshletConeApexBuffer->SetName(L"MeshletConeApexBuffer");
+    }
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &UploadHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &ConeUploadDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(MeshletConeApexUpload.GetAddressOf())));
+    if (MeshletConeApexUpload)
+    {
+        MeshletConeApexUpload->SetName(L"MeshletConeApexUpload");
+    }
+
+    void* ConeAxisData = nullptr;
+    HR_CHECK(MeshletConeAxisUpload->Map(0, &EmptyRange, &ConeAxisData));
+    std::memcpy(ConeAxisData, MeshletConeAxisCutoff.data(), ConeBufferSize);
+    MeshletConeAxisUpload->Unmap(0, nullptr);
+
+    void* ConeApexData = nullptr;
+    HR_CHECK(MeshletConeApexUpload->Map(0, &EmptyRange, &ConeApexData));
+    std::memcpy(ConeApexData, MeshletConeApex.data(), ConeBufferSize);
+    MeshletConeApexUpload->Unmap(0, nullptr);
+
     D3D12_RESOURCE_DESC DebugDesc = BufferDesc;
     DebugDesc.Width = GpuDebugPrintBufferSize;
     DebugDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
@@ -4394,7 +4538,7 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     HR_CHECK(Device->GetDevice()->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, UploadAllocator.Get(), nullptr, IID_PPV_ARGS(UploadList.GetAddressOf())));
 
     std::vector<D3D12_RESOURCE_BARRIER> PreCopyBarriers;
-    PreCopyBarriers.reserve(GetFramesInFlight() + 3);
+    PreCopyBarriers.reserve(GetFramesInFlight() + 5);
     for (uint32_t FrameIndex = 0; FrameIndex < GetFramesInFlight(); ++FrameIndex)
     {
         D3D12_RESOURCE_BARRIER Barrier = {};
@@ -4412,6 +4556,22 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     BoundsBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
     BoundsBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
     PreCopyBarriers.push_back(BoundsBarrier);
+
+    D3D12_RESOURCE_BARRIER ConeAxisBarrier = {};
+    ConeAxisBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    ConeAxisBarrier.Transition.pResource = MeshletConeAxisBuffer.Get();
+    ConeAxisBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    ConeAxisBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    ConeAxisBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    PreCopyBarriers.push_back(ConeAxisBarrier);
+
+    D3D12_RESOURCE_BARRIER ConeApexBarrier = {};
+    ConeApexBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    ConeApexBarrier.Transition.pResource = MeshletConeApexBuffer.Get();
+    ConeApexBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    ConeApexBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    ConeApexBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    PreCopyBarriers.push_back(ConeApexBarrier);
 
     D3D12_RESOURCE_BARRIER DebugBarrier = {};
     DebugBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -4441,6 +4601,8 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
             CommandBufferSize);
     }
     UploadList->CopyBufferRegion(ModelBoundsBuffer.Get(), 0, ModelBoundsUpload.Get(), 0, BoundsBufferSize);
+    UploadList->CopyBufferRegion(MeshletConeAxisBuffer.Get(), 0, MeshletConeAxisUpload.Get(), 0, ConeBufferSize);
+    UploadList->CopyBufferRegion(MeshletConeApexBuffer.Get(), 0, MeshletConeApexUpload.Get(), 0, ConeBufferSize);
     if (GpuDebugPrintBuffer && GpuDebugPrintUpload)
     {
         UploadList->CopyBufferRegion(GpuDebugPrintBuffer.Get(), 0, GpuDebugPrintUpload.Get(), 0, sizeof(uint32_t));
@@ -4451,7 +4613,7 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     }
 
     std::vector<D3D12_RESOURCE_BARRIER> PostCopyBarriers;
-    PostCopyBarriers.reserve(GetFramesInFlight() + 3);
+    PostCopyBarriers.reserve(GetFramesInFlight() + 5);
     for (uint32_t FrameIndex = 0; FrameIndex < GetFramesInFlight(); ++FrameIndex)
     {
         D3D12_RESOURCE_BARRIER Barrier = {};
@@ -4470,6 +4632,22 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     PostBoundsBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
     PostBoundsBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     PostCopyBarriers.push_back(PostBoundsBarrier);
+
+    D3D12_RESOURCE_BARRIER PostConeAxisBarrier = {};
+    PostConeAxisBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    PostConeAxisBarrier.Transition.pResource = MeshletConeAxisBuffer.Get();
+    PostConeAxisBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    PostConeAxisBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    PostConeAxisBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    PostCopyBarriers.push_back(PostConeAxisBarrier);
+
+    D3D12_RESOURCE_BARRIER PostConeApexBarrier = {};
+    PostConeApexBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    PostConeApexBarrier.Transition.pResource = MeshletConeApexBuffer.Get();
+    PostConeApexBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    PostConeApexBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    PostConeApexBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    PostCopyBarriers.push_back(PostConeApexBarrier);
 
     D3D12_RESOURCE_BARRIER PostDebugBarrier = {};
     PostDebugBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -4498,59 +4676,82 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     GpuDebugPrintState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     GpuDebugPrintStatsState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 
-    D3D12_ROOT_PARAMETER RootParams[6] = {};
-    // RootParams[0]: cbuffer CullingConstants (frustum planes, view-projection, HZB settings, debug toggle)
-    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    RootParams[0].Constants.ShaderRegister = 0;
-    RootParams[0].Constants.RegisterSpace = 0;
-    RootParams[0].Constants.Num32BitValues = 46;
+    D3D12_ROOT_PARAMETER1 RootParams[8] = {};
+    // RootParams[0]: CullingConstants CBV (b0), used in Shaders/CullIndirectArgs.hlsl CSMain
+    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    RootParams[0].Descriptor.ShaderRegister = 0;
+    RootParams[0].Descriptor.RegisterSpace = 0;
+    RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // RootParams[1]: SRV ModelBounds buffer (t0)
+    // RootParams[1]: ModelBounds SRV (t0), used in Shaders/CullIndirectArgs.hlsl CSMain
     RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
     RootParams[1].Descriptor.ShaderRegister = 0;
     RootParams[1].Descriptor.RegisterSpace = 0;
+    RootParams[1].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // RootParams[2]: UAV IndirectArgs buffer (u0)
-    RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    RootParams[2].Descriptor.ShaderRegister = 0;
+    // RootParams[2]: MeshletConeAxisCutoff SRV (t2), used in Shaders/CullIndirectArgs.hlsl CSMain
+    RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+    RootParams[2].Descriptor.ShaderRegister = 2;
     RootParams[2].Descriptor.RegisterSpace = 0;
+    RootParams[2].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
     RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // RootParams[3]: UAV DebugPrintBuffer for text entries (u1)
-    RootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    RootParams[3].Descriptor.ShaderRegister = 1;
+    // RootParams[3]: MeshletConeApex SRV (t3), used in Shaders/CullIndirectArgs.hlsl CSMain
+    RootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+    RootParams[3].Descriptor.ShaderRegister = 3;
     RootParams[3].Descriptor.RegisterSpace = 0;
+    RootParams[3].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
     RootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // RootParams[4]: UAV DebugPrintStatsBuffer for culling counters (u2)
+    // RootParams[4]: IndirectArgs UAV (u0), used in Shaders/CullIndirectArgs.hlsl CSMain
     RootParams[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    RootParams[4].Descriptor.ShaderRegister = 2;
+    RootParams[4].Descriptor.ShaderRegister = 0;
     RootParams[4].Descriptor.RegisterSpace = 0;
+    RootParams[4].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
     RootParams[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    D3D12_DESCRIPTOR_RANGE HZBRange = {};
+    // RootParams[5]: DebugPrintBuffer UAV (u1), used in Shaders/CullIndirectArgs.hlsl CSMain
+    RootParams[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+    RootParams[5].Descriptor.ShaderRegister = 1;
+    RootParams[5].Descriptor.RegisterSpace = 0;
+    RootParams[5].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+    RootParams[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    // RootParams[6]: DebugPrintStats UAV (u2), used in Shaders/CullIndirectArgs.hlsl CSMain
+    RootParams[6].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+    RootParams[6].Descriptor.ShaderRegister = 2;
+    RootParams[6].Descriptor.RegisterSpace = 0;
+    RootParams[6].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+    RootParams[6].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    D3D12_DESCRIPTOR_RANGE1 HZBRange = {};
     HZBRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     HZBRange.NumDescriptors = 1;
     HZBRange.BaseShaderRegister = 1;
     HZBRange.RegisterSpace = 0;
+    HZBRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
     HZBRange.OffsetInDescriptorsFromTableStart = 0;
 
-    // RootParams[5]: HZB SRV table (t1)
-    RootParams[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    RootParams[5].DescriptorTable.NumDescriptorRanges = 1;
-    RootParams[5].DescriptorTable.pDescriptorRanges = &HZBRange;
-    RootParams[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    // RootParams[7]: HZB SRV table (t1), used in Shaders/CullIndirectArgs.hlsl CSMain
+    RootParams[7].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    RootParams[7].DescriptorTable.NumDescriptorRanges = 1;
+    RootParams[7].DescriptorTable.pDescriptorRanges = &HZBRange;
+    RootParams[7].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    D3D12_ROOT_SIGNATURE_DESC RootDesc = {};
+    D3D12_ROOT_SIGNATURE_DESC1 RootDesc = {};
     RootDesc.NumParameters = _countof(RootParams);
     RootDesc.pParameters = RootParams;
     RootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
 
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC VersionedRootDesc = {};
+    VersionedRootDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    VersionedRootDesc.Desc_1_1 = RootDesc;
+
     ComPtr<ID3DBlob> SerializedSig;
     ComPtr<ID3DBlob> ErrorBlob;
-    HR_CHECK(D3D12SerializeRootSignature(&RootDesc, D3D_ROOT_SIGNATURE_VERSION_1, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
+    HR_CHECK(D3D12SerializeVersionedRootSignature(&VersionedRootDesc, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
     HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(CullingRootSignature.GetAddressOf())));
 
     FShaderCompiler Compiler;

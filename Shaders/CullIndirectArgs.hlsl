@@ -8,10 +8,16 @@ cbuffer CullingConstants : register(b0)
     uint HZBWidth;
     uint HZBHeight;
     uint DebugPrintEnabled;
+    uint Padding0;
+    uint Padding1;
+    float3 CameraPosition;
+    float Padding2;
 };
 
 StructuredBuffer<float4> ModelBounds : register(t0);
 Texture2D<float> HZBTexture : register(t1);
+StructuredBuffer<float4> MeshletConeAxisCutoff : register(t2);
+StructuredBuffer<float4> MeshletConeApex : register(t3);
 RWByteAddressBuffer IndirectArgs : register(u0);
 RWByteAddressBuffer DebugPrintBuffer : register(u1);
 RWByteAddressBuffer DebugPrintStats : register(u2);
@@ -38,6 +44,27 @@ bool IsAabbVisible(float3 boundsMin, float3 boundsMax)
         }
     }
     return true;
+}
+
+bool IsConeVisible(uint index)
+{
+    float4 axisCutoff = MeshletConeAxisCutoff[index];
+    if (axisCutoff.w < 0.0f)
+    {
+        return true;
+    }
+
+    float3 axis = axisCutoff.xyz;
+    float3 apex = MeshletConeApex[index].xyz;
+    float3 viewDir = CameraPosition - apex;
+    float lengthSq = dot(viewDir, viewDir);
+    if (lengthSq <= 1e-8f)
+    {
+        return true;
+    }
+
+    viewDir = viewDir * rsqrt(lengthSq);
+    return dot(viewDir, axis) > axisCutoff.w;
 }
 
 float4 ProjectToClip(float3 position)
@@ -143,13 +170,17 @@ void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     float3 boundsMax = ModelBounds[boundsIndex + 1].xyz;
     bool frustumVisible = IsAabbVisible(boundsMin, boundsMax);
     bool visible = frustumVisible;
+    if (visible)
+    {
+        visible = IsConeVisible(index);
+    }
     bool occluded = false;
     if (visible && HZBEnabled != 0)
     {
         occluded = IsOccluded(boundsMin, boundsMax);
         visible = !occluded;
     }
-
+    
     uint baseOffset = index * kCommandStride + kInstanceCountOffset;
     IndirectArgs.Store(baseOffset, visible ? 1u : 0u);
 
