@@ -61,7 +61,7 @@
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>WIN32;_WINDOWS;_DEBUG;_UNICODE;UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>$(ProjectDir)Source;$(ProjectDir)Source\Core;$(ProjectDir)Source\RHI;$(ProjectDir)Source\Render;$(ProjectDir)ThirdParty\imgui;$(ProjectDir)ThirdParty\imgui\backends;$(ProjectDir)ThirdParty\d3d12;$(ProjectDir)ThirdParty\WinPixEventRuntime;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)Source;$(ProjectDir)Source\Core;$(ProjectDir)Source\RHI;$(ProjectDir)Source\Render;$(ProjectDir)ThirdParty\imgui;$(ProjectDir)ThirdParty\imgui\backends;$(ProjectDir)ThirdParty\d3d12;$(ProjectDir)ThirdParty\WinPixEventRuntime;$(ProjectDir)ThirdParty\meshoptimizer;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
@@ -88,7 +88,7 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>WIN32;_WINDOWS;NDEBUG;_UNICODE;UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>$(ProjectDir)Source;$(ProjectDir)Source\Core;$(ProjectDir)Source\RHI;$(ProjectDir)Source\Render;$(ProjectDir)ThirdParty\imgui;$(ProjectDir)ThirdParty\imgui\backends;$(ProjectDir)ThirdParty\d3d12;$(ProjectDir)ThirdParty\WinPixEventRuntime;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)Source;$(ProjectDir)Source\Core;$(ProjectDir)Source\RHI;$(ProjectDir)Source\Render;$(ProjectDir)ThirdParty\imgui;$(ProjectDir)ThirdParty\imgui\backends;$(ProjectDir)ThirdParty\d3d12;$(ProjectDir)ThirdParty\WinPixEventRuntime;$(ProjectDir)ThirdParty\meshoptimizer;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
@@ -145,22 +145,21 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <ClCompile Include="ThirdParty\imgui\imgui_draw.cpp" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imgui_draw.cpp')" />
     <ClCompile Include="ThirdParty\imgui\imgui_tables.cpp" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imgui_tables.cpp')" />
     <ClCompile Include="ThirdParty\imgui\imgui_widgets.cpp" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imgui_widgets.cpp')" />
-    <ClCompile Include="ThirdParty\meshoptimizer\src\allocator.cpp" />
-    <ClCompile Include="ThirdParty\meshoptimizer\src\clusterizer.cpp" />
-    <ClCompile Include="ThirdParty\meshoptimizer\src\indexanalyzer.cpp" />
-    <ClCompile Include="ThirdParty\meshoptimizer\src\indexcodec.cpp" />
-    <ClCompile Include="ThirdParty\meshoptimizer\src\indexgenerator.cpp" />
-    <ClCompile Include="ThirdParty\meshoptimizer\src\overdrawoptimizer.cpp" />
-    <ClCompile Include="ThirdParty\meshoptimizer\src\partition.cpp" />
-    <ClCompile Include="ThirdParty\meshoptimizer\src\quantization.cpp" />
-    <ClCompile Include="ThirdParty\meshoptimizer\src\rasterizer.cpp" />
-    <ClCompile Include="ThirdParty\meshoptimizer\src\simplifier.cpp" />
-    <ClCompile Include="ThirdParty\meshoptimizer\src\spatialorder.cpp" />
-    <ClCompile Include="ThirdParty\meshoptimizer\src\stripifier.cpp" />
-    <ClCompile Include="ThirdParty\meshoptimizer\src\vcacheoptimizer.cpp" />
-    <ClCompile Include="ThirdParty\meshoptimizer\src\vertexcodec.cpp" />
-    <ClCompile Include="ThirdParty\meshoptimizer\src\vertexfilter.cpp" />
-    <ClCompile Include="ThirdParty\meshoptimizer\src\vfetchoptimizer.cpp" />
+    <ClCompile Include="ThirdParty\meshoptimizer\allocator.cpp" />
+    <ClCompile Include="ThirdParty\meshoptimizer\clusterizer.cpp" />
+    <ClCompile Include="ThirdParty\meshoptimizer\indexcodec.cpp" />
+    <ClCompile Include="ThirdParty\meshoptimizer\indexgenerator.cpp" />
+    <ClCompile Include="ThirdParty\meshoptimizer\overdrawanalyzer.cpp" />
+    <ClCompile Include="ThirdParty\meshoptimizer\overdrawoptimizer.cpp" />
+    <ClCompile Include="ThirdParty\meshoptimizer\simplifier.cpp" />
+    <ClCompile Include="ThirdParty\meshoptimizer\spatialorder.cpp" />
+    <ClCompile Include="ThirdParty\meshoptimizer\stripifier.cpp" />
+    <ClCompile Include="ThirdParty\meshoptimizer\vcacheanalyzer.cpp" />
+    <ClCompile Include="ThirdParty\meshoptimizer\vcacheoptimizer.cpp" />
+    <ClCompile Include="ThirdParty\meshoptimizer\vertexcodec.cpp" />
+    <ClCompile Include="ThirdParty\meshoptimizer\vertexfilter.cpp" />
+    <ClCompile Include="ThirdParty\meshoptimizer\vfetchanalyzer.cpp" />
+    <ClCompile Include="ThirdParty\meshoptimizer\vfetchoptimizer.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Source\Core\Application.h" />
@@ -204,7 +203,7 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <ClInclude Include="ThirdParty\imgui\imstb_rectpack.h" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imstb_rectpack.h')" />
     <ClInclude Include="ThirdParty\imgui\imstb_textedit.h" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imstb_textedit.h')" />
     <ClInclude Include="ThirdParty\imgui\imstb_truetype.h" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imstb_truetype.h')" />
-    <ClInclude Include="ThirdParty\meshoptimizer\src\meshoptimizer.h" />
+    <ClInclude Include="ThirdParty\meshoptimizer\meshoptimizer.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Assets\Scenes\pica_pica.json" />
