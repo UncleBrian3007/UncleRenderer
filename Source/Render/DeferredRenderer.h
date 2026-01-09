@@ -145,6 +145,7 @@ private:
     bool CreateGBufferResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateLinearDepthResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateGtaoResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
+    bool CreateHilbertLutResources(FDX12Device* Device);
     bool CreateHZBResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateLuminanceResources(FDX12Device* Device);
     bool CreateTaaResources(FDX12Device* Device, uint32_t Width, uint32_t Height, uint32_t FrameCount);
@@ -206,6 +207,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> LightingBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> LinearDepthTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> GtaoTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> HilbertLutTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> TonemapOutput;
     std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 2> LuminanceTextures;
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> TaaHistoryTextures;
@@ -231,6 +233,7 @@ private:
     D3D12_GPU_DESCRIPTOR_HANDLE LightingBufferHandle{};
     D3D12_GPU_DESCRIPTOR_HANDLE LinearDepthSrvHandle{};
     D3D12_GPU_DESCRIPTOR_HANDLE GtaoSrvHandle{};
+    D3D12_GPU_DESCRIPTOR_HANDLE HilbertLutSrvHandle{};
     D3D12_GPU_DESCRIPTOR_HANDLE TonemapOutputHandle{};
     std::array<D3D12_GPU_DESCRIPTOR_HANDLE, 2> LuminanceSrvHandles{};
     std::array<D3D12_GPU_DESCRIPTOR_HANDLE, 2> LuminanceUavHandles{};

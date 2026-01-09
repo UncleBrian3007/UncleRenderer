@@ -66,6 +66,33 @@ namespace
         const float JitterY = HaltonSequence(Index, 3) - 0.5f;
         return DirectX::XMFLOAT2(JitterX, JitterY);
     }
+
+    uint32_t HilbertIndex(uint32_t PosX, uint32_t PosY)
+    {
+        constexpr uint32_t HilbertLevel = 6u;
+        constexpr uint32_t HilbertWidth = 1u << HilbertLevel;
+        uint32_t Index = 0u;
+
+        for (uint32_t CurLevel = HilbertWidth / 2u; CurLevel > 0u; CurLevel /= 2u)
+        {
+            const uint32_t RegionX = (PosX & CurLevel) > 0u;
+            const uint32_t RegionY = (PosY & CurLevel) > 0u;
+            Index += CurLevel * CurLevel * ((3u * RegionX) ^ RegionY);
+
+            if (RegionY == 0u)
+            {
+                if (RegionX == 1u)
+                {
+                    PosX = (HilbertWidth - 1u) - PosX;
+                    PosY = (HilbertWidth - 1u) - PosY;
+                }
+
+                std::swap(PosX, PosY);
+            }
+        }
+
+        return Index;
+    }
 }
 
 bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT BackBufferFormat, const FRendererConfig& Config)
@@ -261,6 +288,12 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     if (!CreateGtaoResources(Device, Width, Height))
     {
         LogError("Deferred renderer initialization failed: GTAO resource creation failed");
+        return false;
+    }
+
+    if (!CreateHilbertLutResources(Device))
+    {
+        LogError("Deferred renderer initialization failed: GTAO Hilbert LUT creation failed");
         return false;
     }
 
@@ -1409,6 +1442,7 @@ void FDeferredRenderer::AddGtaoPass(FRenderGraph& Graph, const FDeferredFrameSta
         LocalCommandList->SetGraphicsRootDescriptorTable(1, GBufferGpuHandles[0]);
 
         LocalCommandList->SetGraphicsRootDescriptorTable(2, LinearDepthSrvHandle);
+        LocalCommandList->SetGraphicsRootDescriptorTable(3, HilbertLutSrvHandle);
 
         LocalCommandList->DrawInstanced(3, 1, 0, 0);
     });
@@ -2377,7 +2411,7 @@ bool FDeferredRenderer::CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT 
 
 bool FDeferredRenderer::CreateGtaoRootSignature(FDX12Device* Device)
 {
-    D3D12_DESCRIPTOR_RANGE1 DescriptorRanges[2] = {};
+    D3D12_DESCRIPTOR_RANGE1 DescriptorRanges[3] = {};
     DescriptorRanges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     DescriptorRanges[0].NumDescriptors = 1;
     DescriptorRanges[0].BaseShaderRegister = 0;
@@ -2392,22 +2426,38 @@ bool FDeferredRenderer::CreateGtaoRootSignature(FDX12Device* Device)
     DescriptorRanges[1].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
     DescriptorRanges[1].OffsetInDescriptorsFromTableStart = 0;
 
-    D3D12_ROOT_PARAMETER1 RootParams[3] = {};
+    DescriptorRanges[2].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    DescriptorRanges[2].NumDescriptors = 1;
+    DescriptorRanges[2].BaseShaderRegister = 2;
+    DescriptorRanges[2].RegisterSpace = 0;
+    DescriptorRanges[2].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
+    DescriptorRanges[2].OffsetInDescriptorsFromTableStart = 0;
+
+    D3D12_ROOT_PARAMETER1 RootParams[4] = {};
+    // RootParams[0]: Scene constants (b0) used in Gtao.hlsl.
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[0].Descriptor.ShaderRegister = 0;
     RootParams[0].Descriptor.RegisterSpace = 0;
     RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
 
+    // RootParams[1]: GBufferA SRV (t0) used in Gtao.hlsl.
     RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     RootParams[1].DescriptorTable.NumDescriptorRanges = 1;
     RootParams[1].DescriptorTable.pDescriptorRanges = &DescriptorRanges[0];
 
+    // RootParams[2]: Linear depth SRV (t1) used in Gtao.hlsl.
     RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     RootParams[2].DescriptorTable.NumDescriptorRanges = 1;
     RootParams[2].DescriptorTable.pDescriptorRanges = &DescriptorRanges[1];
+
+    // RootParams[3]: Hilbert LUT SRV (t2) used in Gtao.hlsl.
+    RootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    RootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    RootParams[3].DescriptorTable.NumDescriptorRanges = 1;
+    RootParams[3].DescriptorTable.pDescriptorRanges = &DescriptorRanges[2];
 
     D3D12_STATIC_SAMPLER_DESC SamplerDesc = {};
     SamplerDesc.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
@@ -3300,6 +3350,127 @@ bool FDeferredRenderer::CreateGtaoResources(FDX12Device* Device, uint32_t Width,
     return true;
 }
 
+bool FDeferredRenderer::CreateHilbertLutResources(FDX12Device* Device)
+{
+    if (Device == nullptr)
+    {
+        return false;
+    }
+
+    constexpr uint32_t HilbertWidth = 64u;
+    std::array<uint16_t, HilbertWidth * HilbertWidth> Data = {};
+    for (uint32_t Y = 0; Y < HilbertWidth; ++Y)
+    {
+        for (uint32_t X = 0; X < HilbertWidth; ++X)
+        {
+            const uint32_t Index = HilbertIndex(X, Y);
+            Data[X + HilbertWidth * Y] = static_cast<uint16_t>(Index);
+        }
+    }
+
+    D3D12_RESOURCE_DESC Desc = {};
+    Desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    Desc.Width = HilbertWidth;
+    Desc.Height = HilbertWidth;
+    Desc.DepthOrArraySize = 1;
+    Desc.MipLevels = 1;
+    Desc.Format = DXGI_FORMAT_R16_UINT;
+    Desc.SampleDesc.Count = 1;
+    Desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    Desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+    D3D12_HEAP_PROPERTIES DefaultHeap = {};
+    DefaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    DefaultHeap.CreationNodeMask = 1;
+    DefaultHeap.VisibleNodeMask = 1;
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &DefaultHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &Desc,
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        nullptr,
+        IID_PPV_ARGS(HilbertLutTexture.GetAddressOf())));
+
+    if (HilbertLutTexture)
+    {
+        HilbertLutTexture->SetName(L"GTAO_HilbertLUT");
+    }
+
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT Layout = {};
+    UINT NumRows = 0;
+    UINT64 RowSizeInBytes = 0;
+    UINT64 UploadBufferSize = 0;
+    Device->GetDevice()->GetCopyableFootprints(&Desc, 0, 1, 0, &Layout, &NumRows, &RowSizeInBytes, &UploadBufferSize);
+
+    D3D12_HEAP_PROPERTIES UploadHeap = {};
+    UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    UploadHeap.CreationNodeMask = 1;
+    UploadHeap.VisibleNodeMask = 1;
+
+    D3D12_RESOURCE_DESC UploadDesc = {};
+    UploadDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    UploadDesc.Width = UploadBufferSize;
+    UploadDesc.Height = 1;
+    UploadDesc.DepthOrArraySize = 1;
+    UploadDesc.MipLevels = 1;
+    UploadDesc.Format = DXGI_FORMAT_UNKNOWN;
+    UploadDesc.SampleDesc.Count = 1;
+    UploadDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    UploadDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+    ComPtr<ID3D12Resource> UploadResource;
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &UploadHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &UploadDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(UploadResource.GetAddressOf())));
+
+    uint8_t* UploadData = nullptr;
+    const D3D12_RANGE EmptyRange = { 0, 0 };
+    HR_CHECK(UploadResource->Map(0, &EmptyRange, reinterpret_cast<void**>(&UploadData)));
+    const size_t RowBytes = HilbertWidth * sizeof(uint16_t);
+    for (uint32_t Row = 0; Row < NumRows; ++Row)
+    {
+        std::memcpy(UploadData + Row * Layout.Footprint.RowPitch, &Data[Row * HilbertWidth], RowBytes);
+    }
+    UploadResource->Unmap(0, nullptr);
+
+    ComPtr<ID3D12CommandAllocator> UploadAllocator;
+    ComPtr<ID3D12GraphicsCommandList> UploadList;
+    HR_CHECK(Device->GetDevice()->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(UploadAllocator.GetAddressOf())));
+    HR_CHECK(Device->GetDevice()->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, UploadAllocator.Get(), nullptr, IID_PPV_ARGS(UploadList.GetAddressOf())));
+
+    D3D12_TEXTURE_COPY_LOCATION DstLocation = {};
+    DstLocation.pResource = HilbertLutTexture.Get();
+    DstLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    DstLocation.SubresourceIndex = 0;
+
+    D3D12_TEXTURE_COPY_LOCATION SrcLocation = {};
+    SrcLocation.pResource = UploadResource.Get();
+    SrcLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    SrcLocation.PlacedFootprint = Layout;
+
+    UploadList->CopyTextureRegion(&DstLocation, 0, 0, 0, &SrcLocation, nullptr);
+
+    D3D12_RESOURCE_BARRIER Barrier = {};
+    Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    Barrier.Transition.pResource = HilbertLutTexture.Get();
+    Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    UploadList->ResourceBarrier(1, &Barrier);
+
+    HR_CHECK(UploadList->Close());
+    ID3D12CommandList* Lists[] = { UploadList.Get() };
+    Device->GetGraphicsQueue()->ExecuteCommandLists(1, Lists);
+    Device->GetGraphicsQueue()->Flush();
+
+    return true;
+}
+
 bool FDeferredRenderer::CreateLuminanceResources(FDX12Device* Device)
 {
     if (Device == nullptr)
@@ -3497,7 +3668,7 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
     const UINT DepthDescriptorCount = GetFramesInFlight();
 
     D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
-    HeapDesc.NumDescriptors = TextureCount * 4 + 14 + HZBDescriptorCount + TaaDescriptorCount + DepthDescriptorCount;
+    HeapDesc.NumDescriptors = TextureCount * 4 + 15 + HZBDescriptorCount + TaaDescriptorCount + DepthDescriptorCount;
     HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(DescriptorHeap.GetAddressOf())));
@@ -3618,6 +3789,19 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         LinearDepthSrvDesc.Texture2D.MipLevels = 1;
         Device->GetDevice()->CreateShaderResourceView(LinearDepthTexture.Get(), &LinearDepthSrvDesc, CpuHandle);
         LinearDepthSrvHandle = GpuHandle;
+
+        CpuHandle.ptr += DescriptorSize;
+        GpuHandle.ptr += DescriptorSize;
+    }
+
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC HilbertSrvDesc = {};
+        HilbertSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        HilbertSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        HilbertSrvDesc.Format = DXGI_FORMAT_R16_UINT;
+        HilbertSrvDesc.Texture2D.MipLevels = 1;
+        Device->GetDevice()->CreateShaderResourceView(HilbertLutTexture.Get(), &HilbertSrvDesc, CpuHandle);
+        HilbertLutSrvHandle = GpuHandle;
 
         CpuHandle.ptr += DescriptorSize;
         GpuHandle.ptr += DescriptorSize;
@@ -4406,6 +4590,7 @@ void FDeferredRenderer::UpdateSceneConstants(const FCamera& Camera, const FScene
     DirectX::XMStoreFloat4x4(&LightViewProjection, LightVP);
     const DirectX::XMMATRIX Projection = bUseTaaJitter ? TaaProjection : Camera.GetProjectionMatrix();
     const DirectX::XMFLOAT2 Jitter = (bGtaoEnabled && bGtaoJitterEnabled) ? TaaJitter : DirectX::XMFLOAT2(0.0f, 0.0f);
+    const uint32_t GtaoTemporalIndex = (bGtaoEnabled && bGtaoJitterEnabled) ? TaaSampleIndex : 0u;
 
     RendererUtils::UpdateSceneConstants(
         Camera,
@@ -4421,6 +4606,7 @@ void FDeferredRenderer::UpdateSceneConstants(const FCamera& Camera, const FScene
         static_cast<float>(ShadowMapHeight),
         EnvironmentMipCount,
         Jitter,
+        GtaoTemporalIndex,
         bGtaoEnabled,
         GtaoRadius,
         GtaoIntensity,

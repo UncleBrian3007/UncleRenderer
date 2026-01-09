@@ -81,8 +81,10 @@ struct FSceneConstants
     uint32_t GtaoDirectionCount = 6;
     uint32_t GtaoStepCount = 4;
     DirectX::XMFLOAT2 TaaJitter{ 0.0f, 0.0f };
+    uint32_t GtaoTemporalIndex = 0;
     uint32_t ObjectId = 0;
-    DirectX::XMFLOAT3 PaddingObjectId{ 0.0f, 0.0f, 0.0f };
+    DirectX::XMFLOAT2 PaddingObjectId{ 0.0f, 0.0f };
+    DirectX::XMFLOAT2 PaddingObjectId2{ 0.0f, 0.0f };
 };
 
 struct FSkyAtmosphereConstants
@@ -237,11 +239,12 @@ namespace RendererUtils
         const DirectX::XMMATRIX& Projection,
         float ShadowStrength,
         float ShadowBias,
-    float ShadowMapWidth,
-    float ShadowMapHeight,
-    float EnvMapMipCount,
-    const DirectX::XMFLOAT2& TaaJitter,
-    bool bGtaoEnabled,
+        float ShadowMapWidth,
+        float ShadowMapHeight,
+        float EnvMapMipCount,
+        const DirectX::XMFLOAT2& TaaJitter,
+        uint32_t GtaoTemporalIndex,
+        bool bGtaoEnabled,
         float GtaoRadius,
         float GtaoIntensity,
         float GtaoPower,

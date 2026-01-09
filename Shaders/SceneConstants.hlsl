@@ -41,6 +41,8 @@ cbuffer SceneConstants : register(b0)
     uint GtaoDirectionCount;
     uint GtaoStepCount;
     float2 TaaJitter;
+    uint GtaoTemporalIndex;
     uint ObjectId;
-    float3 PaddingObjectId;
+    float2 PaddingObjectId;
+    float2 PaddingObjectId2;
 };

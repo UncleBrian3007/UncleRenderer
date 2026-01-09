@@ -8,6 +8,7 @@ struct VSOutput
 
 Texture2D GBufferA : register(t0);
 Texture2D LinearDepthTexture : register(t1);
+Texture2D<uint> HilbertLUT : register(t2);
 SamplerState GBufferSampler : register(s0);
 
 VSOutput VSMain(uint VertexId : SV_VertexID)
@@ -47,8 +48,21 @@ float FastACos(float inX)
     return (inX >= 0.0f) ? res : pi - res;
 }
 
+
+// Based on https://www.shadertoy.com/view/3tB3z3 (R2 sequence)
+#define XE_HILBERT_LEVEL 6u
+#define XE_HILBERT_WIDTH (1u << XE_HILBERT_LEVEL)
+
+float2 SpatioTemporalNoise(uint2 pixCoord, uint temporalIndex)
+{
+    uint2 wrappedCoord = pixCoord & (XE_HILBERT_WIDTH - 1u);
+    uint index = HilbertLUT.Load(uint3(wrappedCoord, 0)).x;
+    index += 288u * (temporalIndex & (XE_HILBERT_WIDTH - 1u));
+    return frac(0.5f + index * float2(0.75487766624669276005f, 0.56984029099805326591f));
+}
+
 // Based on https://github.com/GameTechDev/XeGTAO
-float ComputeGtao(float2 uv, float3 viewPos, float3 viewNormal)
+float ComputeGtao(float2 uv, uint2 pixCoord, float3 viewPos, float3 viewNormal)
 {
     if (GtaoIntensity <= 0.0f || GtaoRadius <= 0.0f)
     {
@@ -64,7 +78,7 @@ float ComputeGtao(float2 uv, float3 viewPos, float3 viewNormal)
     float3 viewVec = normalize(-viewPos);
 
 #if GTAO_USE_JITTER
-    float2 jitter = TaaJitter * 0.5f + 0.5f;
+    float2 jitter = SpatioTemporalNoise(pixCoord, GtaoTemporalIndex);
 #else
     float2 jitter = float2(0.5f, 0.5f);
 #endif
@@ -105,31 +119,31 @@ float ComputeGtao(float2 uv, float3 viewPos, float3 viewNormal)
         float phi = sliceK * pi;
         float cosPhi = cos(phi);
         float sinPhi = sin(phi);
-        float2 omega = float2(cosPhi, -sinPhi) * screenspaceRadius; // ÇöÀç direction ¿¡¼­ÀÇ ÃÖ´ë Screen-space ¹Ý°æ
+        float2 omega = float2(cosPhi, -sinPhi) * screenspaceRadius; // í˜„ìž¬ direction ì—ì„œì˜ ìµœëŒ€ Screen-space ë°˜ê²½
 
-		float3 directionVec = float3(cosPhi, sinPhi, 0.0f); // Screen-space ±âÁØ AO »ùÇÃ ¹æÇâ 
-        float3 orthoDirectionVec = directionVec - (dot(directionVec, viewVec) * viewVec); // »ùÇÃ ¹æÇâÀ» ½Ã¼±¿¡ ¼öÁ÷ÇÑ Æò¸éÀ¸·Î Åõ¿µ, È­¸é¿¡¼­ÀÇ ½ÇÁ¦ »ùÇÃ ÁøÇà ¹æÇâ
-        float3 axisVec = normalize(cross(orthoDirectionVec, viewVec)); // ÇöÀç AO direction ½½¶óÀÌ½ºÀÇ È¸Àü Ãà
-        float3 projectedNormalVec = viewNormal - axisVec * dot(viewNormal, axisVec); // ¹ý¼±À» ½½¶óÀÌ½º Æò¸éÀ¸·Î Åõ¿µ 
+		float3 directionVec = float3(cosPhi, sinPhi, 0.0f); // Screen-space ê¸°ì¤€ AO ìƒ˜í”Œ ë°©í–¥ 
+        float3 orthoDirectionVec = directionVec - (dot(directionVec, viewVec) * viewVec); // ìƒ˜í”Œ ë°©í–¥ì„ ì‹œì„ ì— ìˆ˜ì§í•œ í‰ë©´ìœ¼ë¡œ íˆ¬ì˜, í™”ë©´ì—ì„œì˜ ì‹¤ì œ ìƒ˜í”Œ ì§„í–‰ ë°©í–¥
+        float3 axisVec = normalize(cross(orthoDirectionVec, viewVec)); // í˜„ìž¬ AO direction ìŠ¬ë¼ì´ìŠ¤ì˜ íšŒì „ ì¶•
+        float3 projectedNormalVec = viewNormal - axisVec * dot(viewNormal, axisVec); // ë²•ì„ ì„ ìŠ¬ë¼ì´ìŠ¤ í‰ë©´ìœ¼ë¡œ íˆ¬ì˜ 
         float projectedNormalVecLength = max(length(projectedNormalVec), 1e-4f);
-        float signNorm = sign(dot(orthoDirectionVec, projectedNormalVec)); // ½½¶óÀÌ½º¿¡ Åõ¿µµÈ ¹ý¼±ÀÌ ¾î´ÀÂÊÀÎÁö ÆÇ´Ü (¿Þ/¿À¸¥ÂÊ)
-		float cosNorm = saturate(dot(projectedNormalVec, viewVec) / projectedNormalVecLength); // ½½¶óÀÌ½º¿¡ Åõ¿µµÈ ¹ý¼±°ú ½Ã¼±ÀÇ ÄÚ»çÀÎ, Horizon ¿¡ ´©¿ì¸é 0, ¼öÁ÷ÀÌ¸é 1
-        float n = signNorm * FastACos(cosNorm); // Horizon ¿¡ ´©¿ì¸é Acos(0) ÀÌ¶ó¼­ 1.57 È¤Àº -1.57(¹Ý´ëÆí), ¼öÁ÷ÀÌ¸é 0
-        float lowHorizonCos0 = cos(n + halfPi); // ¾Æ¹« Horizon ÀÌ ¾øÀ» ¶§ÀÇ ÄÚ»çÀÎ °ª
-        float lowHorizonCos1 = cos(n - halfPi); // ¹ý¼±¸¸À¸·Î °áÁ´µÈ ÃÖ¼Ò °¡·ÁÁü °¢µµ
+        float signNorm = sign(dot(orthoDirectionVec, projectedNormalVec)); // ìŠ¬ë¼ì´ìŠ¤ì— íˆ¬ì˜ëœ ë²•ì„ ì´ ì–´ëŠìª½ì¸ì§€ íŒë‹¨ (ì™¼/ì˜¤ë¥¸ìª½)
+		float cosNorm = saturate(dot(projectedNormalVec, viewVec) / projectedNormalVecLength); // ìŠ¬ë¼ì´ìŠ¤ì— íˆ¬ì˜ëœ ë²•ì„ ê³¼ ì‹œì„ ì˜ ì½”ì‚¬ì¸, Horizon ì— ëˆ„ìš°ë©´ 0, ìˆ˜ì§ì´ë©´ 1
+        float n = signNorm * FastACos(cosNorm); // Horizon ì— ëˆ„ìš°ë©´ Acos(0) ì´ë¼ì„œ 1.57 í˜¹ì€ -1.57(ë°˜ëŒ€íŽ¸), ìˆ˜ì§ì´ë©´ 0
+        float lowHorizonCos0 = cos(n + halfPi); // ì•„ë¬´ Horizon ì´ ì—†ì„ ë•Œì˜ ì½”ì‚¬ì¸ ê°’
+        float lowHorizonCos1 = cos(n - halfPi); // ë²•ì„ ë§Œìœ¼ë¡œ ê²°ì¡ëœ ìµœì†Œ ê°€ë ¤ì§ ê°ë„
         float horizonCos0 = lowHorizonCos0;
         float horizonCos1 = lowHorizonCos1;
 
-        // ±âº» horizon(¹ý¼± ±â¹Ý) ¿¡ ½ÇÁ¦ Geometry »ùÇÃµéÀÌ ¾ó¸¶³ª ÇÏ´ÃÀ» °¡¸®´ÂÁö¸¦ ´©Àû
+        // ê¸°ë³¸ horizon(ë²•ì„  ê¸°ë°˜) ì— ì‹¤ì œ Geometry ìƒ˜í”Œë“¤ì´ ì–¼ë§ˆë‚˜ í•˜ëŠ˜ì„ ê°€ë¦¬ëŠ”ì§€ë¥¼ ëˆ„ì 
         [loop]
         for (uint stepIndex = 0; stepIndex < stepCount; ++stepIndex)
         {
             float stepBaseNoise = ((float)dirIndex + (float)stepIndex * (float)stepCount) * 0.6180339887f;
             float stepNoise = frac(noiseSample + stepBaseNoise);
             float s = (stepIndex + stepNoise) * invSteps;
-			s = pow(s, 2.0f); // ±Ù°Å¸® »ùÇÃ ¹Ðµµ Áõ°¡, AO ´Â °¡±î¿î Occluder °¡ ´õ Áß¿ä, Importance Sampling
+			s = pow(s, 2.0f); // ê·¼ê±°ë¦¬ ìƒ˜í”Œ ë°€ë„ ì¦ê°€, AO ëŠ” ê°€ê¹Œìš´ Occluder ê°€ ë” ì¤‘ìš”, Importance Sampling
 
-			float2 sampleOffset = round(s * omega) * pixelSize; // (s * ÃÖ´ë ¹Ý°æ), round´Â ÇÈ¼¿ ´ÜÀ§ »ùÇÃ¸µÀ» À§ÇØ, subpixel jitter·Î ÀÎÇÑ temporal instability ¹æÁö 
+			float2 sampleOffset = round(s * omega) * pixelSize; // (s * ìµœëŒ€ ë°˜ê²½), roundëŠ” í”½ì…€ ë‹¨ìœ„ ìƒ˜í”Œë§ì„ ìœ„í•´, subpixel jitterë¡œ ì¸í•œ temporal instability ë°©ì§€ 
 
             float2 sampleUv0 = uv + sampleOffset;
             float2 sampleUv1 = uv - sampleOffset;
@@ -148,34 +162,34 @@ float ComputeGtao(float2 uv, float3 viewPos, float3 viewNormal)
             float sampleDist0 = max(length(sampleDelta0), 1e-4f);
             float sampleDist1 = max(length(sampleDelta1), 1e-4f);
 
-            float3 sampleHorizonVec0 = sampleDelta0 / sampleDist0; // ÇöÀç »ùÇÃÀÌ ¾î´À °¢µµ·Î ÇÏ´ÃÀ» °¡¸®´ÂÁö¸¦ ³ªÅ¸³»´Â Á¤±ÔÈ­µÈ º¤ÅÍ
+            float3 sampleHorizonVec0 = sampleDelta0 / sampleDist0; // í˜„ìž¬ ìƒ˜í”Œì´ ì–´ëŠ ê°ë„ë¡œ í•˜ëŠ˜ì„ ê°€ë¦¬ëŠ”ì§€ë¥¼ ë‚˜íƒ€ë‚´ëŠ” ì •ê·œí™”ëœ ë²¡í„°
             float3 sampleHorizonVec1 = sampleDelta1 / sampleDist1;
 
-            // °Å¸® ±â¹Ý falloff Àû¿ë, ¸Ö¸® ÀÖ´Â occluder ´Â ´ú Áß¿ä, ¶ÇÇÑ ¾ãÀº ¿ÀÅ¬·ç´õ º¸Á¤µµ Àû¿ë
+            // ê±°ë¦¬ ê¸°ë°˜ falloff ì ìš©, ë©€ë¦¬ ìžˆëŠ” occluder ëŠ” ëœ ì¤‘ìš”, ë˜í•œ ì–‡ì€ ì˜¤í´ë£¨ë” ë³´ì •ë„ ì ìš©
             float falloffBase0 = length(float3(sampleDelta0.x, sampleDelta0.y, sampleDelta0.z * (1.0f + thinOccluderCompensation)));
             float falloffBase1 = length(float3(sampleDelta1.x, sampleDelta1.y, sampleDelta1.z * (1.0f + thinOccluderCompensation)));
             float weight0 = saturate(falloffBase0 * falloffMul + falloffAdd);
             float weight1 = saturate(falloffBase1 * falloffMul + falloffAdd);
 
-            float shc0 = dot(sampleHorizonVec0, viewVec); // »ùÇÃÀÌ ¾ó¸¶³ª view ¹Ý±¸¸¦ °¡¸®´ÂÁö
+            float shc0 = dot(sampleHorizonVec0, viewVec); // ìƒ˜í”Œì´ ì–¼ë§ˆë‚˜ view ë°˜êµ¬ë¥¼ ê°€ë¦¬ëŠ”ì§€
             float shc1 = dot(sampleHorizonVec1, viewVec);
-            shc0 = lerp(lowHorizonCos0, shc0, weight0); // °¡±î¿ì¸é »ùÇÃÀ» ½Å·Ú, ¸Ö¸é ¹ý¼± ±â¹Ý ÃÖ¼Ò °¡¸²°ªÀ¸·Î º¸Á¤
+            shc0 = lerp(lowHorizonCos0, shc0, weight0); // ê°€ê¹Œìš°ë©´ ìƒ˜í”Œì„ ì‹ ë¢°, ë©€ë©´ ë²•ì„  ê¸°ë°˜ ìµœì†Œ ê°€ë¦¼ê°’ìœ¼ë¡œ ë³´ì •
             shc1 = lerp(lowHorizonCos1, shc1, weight1);
 
-			horizonCos0 = max(horizonCos0, shc0); // °¡Àå °¡¸®´Â Occluder °¡ Áö¹è
+			horizonCos0 = max(horizonCos0, shc0); // ê°€ìž¥ ê°€ë¦¬ëŠ” Occluder ê°€ ì§€ë°°
             horizonCos1 = max(horizonCos1, shc1);
         }
 
-		float h0 = -FastACos(horizonCos1); // Horizon °¢µµ °è»ê, ÀûºÐÀº °¢µµ °ø°£¿¡¼­ ¼öÇàÇØ¾ßÇÔ
-		float h1 = FastACos(horizonCos0); // h0 ¿¡ À½¼ö¸¦ ºÙÀÎ ÀÌÀ¯´Â ÁÂÃø °¢µµ ¹üÀ§¸¦ [-Pi/2, 0], ¿ìÃø °¢µµ ¹üÀ§¸¦ [0, Pi/2] ·Î ³ª´©±â À§ÇØ¼­
-        float iarc0 = (cosNorm + 2.0f * h0 * sin(n) - cos(2.0f * h0 - n)) * 0.25f; // ¡ò cos(¥è - n) d¥è, ¥è´Â ½Ã¼±°ú ¹ý¼±ÀÌ ÀÌ·ç´Â °¢µµ
-        float iarc1 = (cosNorm + 2.0f * h1 * sin(n) - cos(2.0f * h1 - n)) * 0.25f; // cosNorm : ¹ý¼± ¹æÇâ ±âº» ±â¿©, 2*h*sin(n) : ¹ý¼± ±â¿ï±â¿¡ µû¸¥ °¡½Ã ¹Ý±¸ ¸éÀû, cos(2*h - n) : horizon¿¡ ÀÇÇØ Àß¸° ¿µ¿ª º¸Á¤, 0.25 : ¹Ý±¸ Á¤±ÔÈ­ »ó¼ö
-        float localVisibility = projectedNormalVecLength * (iarc0 + iarc1); // ¹ý¼±ÀÌ slice¿¡ Àß µå·¯³ª ÀÖÀ¸¸é ¡æ ±â¿© ¡è, ¹ý¼±ÀÌ slice¿Í °ÅÀÇ ¼öÁ÷ÀÌ¸é ¡æ ±â¿© ¡é
+		float h0 = -FastACos(horizonCos1); // Horizon ê°ë„ ê³„ì‚°, ì ë¶„ì€ ê°ë„ ê³µê°„ì—ì„œ ìˆ˜í–‰í•´ì•¼í•¨
+		float h1 = FastACos(horizonCos0); // h0 ì— ìŒìˆ˜ë¥¼ ë¶™ì¸ ì´ìœ ëŠ” ì¢Œì¸¡ ê°ë„ ë²”ìœ„ë¥¼ [-Pi/2, 0], ìš°ì¸¡ ê°ë„ ë²”ìœ„ë¥¼ [0, Pi/2] ë¡œ ë‚˜ëˆ„ê¸° ìœ„í•´ì„œ
+        float iarc0 = (cosNorm + 2.0f * h0 * sin(n) - cos(2.0f * h0 - n)) * 0.25f; // âˆ« cos(Î¸ - n) dÎ¸, Î¸ëŠ” ì‹œì„ ê³¼ ë²•ì„ ì´ ì´ë£¨ëŠ” ê°ë„
+        float iarc1 = (cosNorm + 2.0f * h1 * sin(n) - cos(2.0f * h1 - n)) * 0.25f; // cosNorm : ë²•ì„  ë°©í–¥ ê¸°ë³¸ ê¸°ì—¬, 2*h*sin(n) : ë²•ì„  ê¸°ìš¸ê¸°ì— ë”°ë¥¸ ê°€ì‹œ ë°˜êµ¬ ë©´ì , cos(2*h - n) : horizonì— ì˜í•´ ìž˜ë¦° ì˜ì—­ ë³´ì •, 0.25 : ë°˜êµ¬ ì •ê·œí™” ìƒìˆ˜
+        float localVisibility = projectedNormalVecLength * (iarc0 + iarc1); // ë²•ì„ ì´ sliceì— ìž˜ ë“œëŸ¬ë‚˜ ìžˆìœ¼ë©´ â†’ ê¸°ì—¬ â†‘, ë²•ì„ ì´ sliceì™€ ê±°ì˜ ìˆ˜ì§ì´ë©´ â†’ ê¸°ì—¬ â†“
         visibility += localVisibility;
     }
 
     visibility /= max((float)directionCount, 1.0f);
-	visibility = max(visibility, 0.03f); // ÃÖ¼ÒÇÑÀÇ È¯°æ±¤ º¸Àå
+	visibility = max(visibility, 0.03f); // ìµœì†Œí•œì˜ í™˜ê²½ê´‘ ë³´ìž¥
     float ao = saturate(1.0f - (1.0f - visibility) * GtaoIntensity);
     ao = pow(ao, max(GtaoPower, 1e-3f));
     return ao;
@@ -187,6 +201,7 @@ float4 PSMain(VSOutput Input) : SV_Target
     float3 normal = normalize(normalEncoded.xyz * 2.0f - 1.0f);
     float viewZ = LinearDepthTexture.Sample(GBufferSampler, Input.UV).r;
     float3 viewPos = ReconstructViewPosition(Input.UV, viewZ);
-    float ao = ComputeGtao(Input.UV, viewPos, normal);
+    uint2 pixCoord = uint2(Input.Position.xy);
+    float ao = ComputeGtao(Input.UV, pixCoord, viewPos, normal);
     return float4(ao, ao, ao, 1.0f);
 }

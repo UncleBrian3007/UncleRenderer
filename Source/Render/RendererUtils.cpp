@@ -1040,6 +1040,7 @@ void RendererUtils::UpdateSceneConstants(
     float ShadowMapHeight,
     float EnvMapMipCount,
     const DirectX::XMFLOAT2& TaaJitter,
+    uint32_t GtaoTemporalIndex,
     bool bGtaoEnabled,
     float GtaoRadius,
     float GtaoIntensity,
@@ -1087,6 +1088,7 @@ void RendererUtils::UpdateSceneConstants(
     Constants.AlphaMode = Model.AlphaMode;
     Constants.EnvMapMipCount = EnvMapMipCount;
     Constants.TaaJitter = TaaJitter;
+    Constants.GtaoTemporalIndex = GtaoTemporalIndex;
     Constants.GtaoRadius = GtaoRadius;
     Constants.GtaoIntensity = bGtaoEnabled ? GtaoIntensity : 0.0f;
     Constants.GtaoPower = GtaoPower;
