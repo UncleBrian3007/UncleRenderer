@@ -4196,6 +4196,7 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
         if (Model.bUseMeshletCulling && !Model.Meshlets.empty() && !Model.MeshletBounds.empty())
         {
             const DirectX::XMMATRIX World = DirectX::XMLoadFloat4x4(&Model.WorldMatrix);
+            const DirectX::XMMATRIX NormalMatrix = DirectX::XMMatrixTranspose(DirectX::XMMatrixInverse(nullptr, World));
             const float ScaleX = std::sqrt(Model.WorldMatrix._11 * Model.WorldMatrix._11 + Model.WorldMatrix._21 * Model.WorldMatrix._21 + Model.WorldMatrix._31 * Model.WorldMatrix._31);
             const float ScaleY = std::sqrt(Model.WorldMatrix._12 * Model.WorldMatrix._12 + Model.WorldMatrix._22 * Model.WorldMatrix._22 + Model.WorldMatrix._32 * Model.WorldMatrix._32);
             const float ScaleZ = std::sqrt(Model.WorldMatrix._13 * Model.WorldMatrix._13 + Model.WorldMatrix._23 * Model.WorldMatrix._23 + Model.WorldMatrix._33 * Model.WorldMatrix._33);
@@ -4227,7 +4228,7 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
                 Bounds.emplace_back(Center.x + Radius, Center.y + Radius, Center.z + Radius, 0.0f);
 
                 const DirectX::XMVECTOR LocalAxis = DirectX::XMLoadFloat3(&BoundsData.ConeAxis);
-                const DirectX::XMVECTOR WorldAxis = DirectX::XMVector3Normalize(DirectX::XMVector3TransformNormal(LocalAxis, World));
+                const DirectX::XMVECTOR WorldAxis = DirectX::XMVector3Normalize(DirectX::XMVector3TransformNormal(LocalAxis, NormalMatrix));
                 DirectX::XMFLOAT3 Axis{};
                 DirectX::XMStoreFloat3(&Axis, WorldAxis);
                 MeshletConeAxisCutoff.emplace_back(Axis.x, Axis.y, Axis.z, BoundsData.ConeCutoff);
@@ -4841,5 +4842,7 @@ void FDeferredRenderer::UpdateCullingVisibility(const FCamera& Camera)
         CullingCamera = &Camera;
     }
 
-    RendererUtils::UpdateCullingVisibility(*CullingCamera, SceneModels, SceneModelVisibility);
+    const bool bGpuCullingActive = bEnableIndirectDraw && CullingPipeline && CullingRootSignature && GetIndirectCommandBuffer()
+        && ModelBoundsBuffer && MeshletConeAxisBuffer && MeshletConeApexBuffer;
+    RendererUtils::UpdateCullingVisibility(*CullingCamera, SceneModels, SceneModelVisibility, !bGpuCullingActive);
 }

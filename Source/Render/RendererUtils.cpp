@@ -971,7 +971,8 @@ bool RendererUtils::ComputeSceneModelStats(
 void RendererUtils::UpdateCullingVisibility(
     const FCamera& Camera,
     std::vector<FSceneModelResource>& Models,
-    std::vector<bool>& OutVisibility)
+    std::vector<bool>& OutVisibility,
+    bool bAllowMeshletCulling)
 {
     OutVisibility.assign(Models.size(), true);
     DirectX::XMVECTOR Planes[6] = {};
@@ -982,9 +983,11 @@ void RendererUtils::UpdateCullingVisibility(
         const bool bModelVisible = RendererUtils::IsAabbInCameraFrustum(Planes, Model.BoundsMin, Model.BoundsMax);
         OutVisibility[ModelIndex] = bModelVisible;
 
-        if (!Model.bUseMeshletCulling || !bModelVisible || Model.Meshlets.empty() || Model.MeshletBounds.empty())
+        if (!bAllowMeshletCulling || !Model.bUseMeshletCulling || !bModelVisible || Model.Meshlets.empty() || Model.MeshletBounds.empty())
         {
             Model.DrawIndexCount = Model.BaseIndexCount;
+            Model.DrawIndexStart = 0;
+            Model.Geometry.IndexCount = Model.BaseIndexCount;
             continue;
         }
 

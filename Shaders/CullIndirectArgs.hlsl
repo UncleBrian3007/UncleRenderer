@@ -46,25 +46,34 @@ bool IsAabbVisible(float3 boundsMin, float3 boundsMax)
     return true;
 }
 
-bool IsConeVisible(uint index)
+bool IsConeVisible_SphereExpanded(
+    float3 center,
+    float radius,
+    uint index)
 {
-    float4 axisCutoff = MeshletConeAxisCutoff[index];
-    if (axisCutoff.w < 0.0f)
-    {
-        return true;
-    }
+	float4 axisCutoff = MeshletConeAxisCutoff[index];
 
-    float3 axis = axisCutoff.xyz;
-    float3 apex = MeshletConeApex[index].xyz;
-    float3 viewDir = CameraPosition - apex;
-    float lengthSq = dot(viewDir, viewDir);
-    if (lengthSq <= 1e-8f)
-    {
-        return true;
-    }
+    // cone 의미 없음 → 항상 visible
+	if (axisCutoff.w < 0.0f)
+		return true;
 
-    viewDir = viewDir * rsqrt(lengthSq);
-    return dot(viewDir, axis) > axisCutoff.w;
+	float3 axis = axisCutoff.xyz;
+
+    // camera → center
+	float3 view = center - CameraPosition;
+
+	float distSq = dot(view, view);
+	if (distSq <= 1e-8f)
+		return true;
+
+	float dist = sqrt(distSq);
+
+    // 완전히 cone 뒤에 들어갔는가?
+    // dot(view, -axis) >= cos(theta) * |view| + radius
+	bool coneCulled =
+        dot(view, -axis) >= axisCutoff.w * dist + radius;
+
+	return !coneCulled;
 }
 
 float4 ProjectToClip(float3 position)
@@ -159,40 +168,44 @@ bool IsOccluded(float3 boundsMin, float3 boundsMax)
 [numthreads(64, 1, 1)]
 void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    uint index = dispatchThreadId.x;
-    if (index >= ModelCount)
-    {
-        return;
-    }
+	uint index = dispatchThreadId.x;
+	if (index >= ModelCount)
+		return;
 
-    uint boundsIndex = index * 2;
-    float3 boundsMin = ModelBounds[boundsIndex].xyz;
-    float3 boundsMax = ModelBounds[boundsIndex + 1].xyz;
-    bool frustumVisible = IsAabbVisible(boundsMin, boundsMax);
-    bool visible = frustumVisible;
-    if (visible)
-    {
-        visible = IsConeVisible(index);
-    }
-    bool occluded = false;
-    if (visible && HZBEnabled != 0)
-    {
-        occluded = IsOccluded(boundsMin, boundsMax);
-        visible = !occluded;
-    }
-    
-    uint baseOffset = index * kCommandStride + kInstanceCountOffset;
-    IndirectArgs.Store(baseOffset, visible ? 1u : 0u);
+	uint boundsIndex = index * 2;
+	float3 boundsMin = ModelBounds[boundsIndex].xyz;
+	float3 boundsMax = ModelBounds[boundsIndex + 1].xyz;
 
-    if (DebugPrintEnabled != 0 && !visible)
-    {
-        if (!frustumVisible)
-        {
-            DebugPrintStats.InterlockedAdd(0, 1);
-        }
-        else if (occluded)
-        {
-            DebugPrintStats.InterlockedAdd(4, 1);
-        }
-    }
+	bool frustumVisible = IsAabbVisible(boundsMin, boundsMax);
+	bool visible = frustumVisible;
+
+	float3 center = (boundsMin + boundsMax) * 0.5f;
+	float radius = length(boundsMax - center);
+
+	if (visible)
+	{
+		visible = IsConeVisible_SphereExpanded(center, radius, index);
+	}
+
+	bool occluded = false;
+	if (visible && HZBEnabled != 0)
+	{
+		occluded = IsOccluded(boundsMin, boundsMax);
+		visible = !occluded;
+	}
+
+	uint baseOffset = index * kCommandStride + kInstanceCountOffset;
+	IndirectArgs.Store(baseOffset, visible ? 1u : 0u);
+
+	if (DebugPrintEnabled != 0 && !visible)
+	{
+		if (!frustumVisible)
+		{
+			DebugPrintStats.InterlockedAdd(0, 1);
+		}
+		else if (occluded)
+		{
+			DebugPrintStats.InterlockedAdd(4, 1);
+		}
+	}
 }

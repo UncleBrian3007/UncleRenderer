@@ -222,7 +222,8 @@ namespace RendererUtils
     void UpdateCullingVisibility(
         const FCamera& Camera,
         std::vector<FSceneModelResource>& Models,
-        std::vector<bool>& OutVisibility);
+        std::vector<bool>& OutVisibility,
+        bool bAllowMeshletCulling);
     bool CreateMappedConstantBuffer(FDX12Device* Device, uint64_t BufferSize, FMappedConstantBuffer& OutConstantBuffer);
     bool CreateSkyAtmosphereResources(
         FDX12Device* Device,
