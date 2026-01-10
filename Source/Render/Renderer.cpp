@@ -152,6 +152,27 @@ D3D12_RESOURCE_STATES& FRenderer::GetIndirectCommandState()
     return IndirectCommandStates[CurrentFrameIndex];
 }
 
+ID3D12Resource* FRenderer::GetMeshletRunCountBuffer() const
+{
+    if (MeshletRunCountBuffers.empty())
+    {
+        return nullptr;
+    }
+
+    return MeshletRunCountBuffers[CurrentFrameIndex].Get();
+}
+
+D3D12_RESOURCE_STATES& FRenderer::GetMeshletRunCountState()
+{
+    if (MeshletRunCountStates.empty())
+    {
+        static D3D12_RESOURCE_STATES DefaultState = D3D12_RESOURCE_STATE_COMMON;
+        return DefaultState;
+    }
+
+    return MeshletRunCountStates[CurrentFrameIndex];
+}
+
 ID3D12Resource* FRenderer::GetSceneConstantBuffer() const
 {
     if (SceneConstantBuffers.empty())
@@ -465,7 +486,12 @@ void FRenderer::ConfigureHZBOcclusion(bool bEnabled, ID3D12DescriptorHeap* Descr
 void FRenderer::DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamera& Camera)
 {
     ID3D12Resource* IndirectBuffer = GetIndirectCommandBuffer();
-    if (!CullingPipeline || !CullingRootSignature || !IndirectBuffer || !ModelBoundsBuffer || IndirectCommandCount == 0)
+    ID3D12Resource* RunCountBuffer = GetMeshletRunCountBuffer();
+    ID3D12Resource* VisibilityBuffer = MeshletVisibilityBuffers.empty() ? nullptr : MeshletVisibilityBuffers[CurrentFrameIndex].Get();
+    ID3D12Resource* TemplateBuffer = IndirectCommandTemplateBuffers.empty() ? nullptr : IndirectCommandTemplateBuffers[CurrentFrameIndex].Get();
+    if (!CullingPipeline || !CullingRootSignature || !MeshletRunAppendPipeline || !MeshletRunClearPipeline || !MeshletRunRootSignature
+        || !IndirectBuffer || !ModelBoundsBuffer || !VisibilityBuffer || !RunCountBuffer || !MeshletDrawDataBuffer || !MeshletRangeOffsetBuffer
+        || !TemplateBuffer || IndirectCommandCount == 0 || IndirectDrawRanges.empty())
     {
         return;
     }
@@ -498,7 +524,7 @@ void FRenderer::DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamer
     Constants[43] = HZBCullingWidth;
     Constants[44] = HZBCullingHeight;
     Constants[45] = bEnableGpuDebugPrint ? 1u : 0u;
-    Constants[46] = 0;
+    Constants[46] = static_cast<uint32_t>(IndirectDrawRanges.size());
     Constants[47] = 0;
     const DirectX::XMFLOAT3 CameraPosition = CullingCamera->GetPosition();
     std::memcpy(Constants.data() + 48, &CameraPosition, sizeof(DirectX::XMFLOAT3));
@@ -520,11 +546,49 @@ void FRenderer::DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamer
         IndirectState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     }
 
+    D3D12_RESOURCE_STATES& VisibilityState = MeshletVisibilityStates[CurrentFrameIndex];
+    if (VisibilityState != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+    {
+        D3D12_RESOURCE_BARRIER Barrier = {};
+        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        Barrier.Transition.pResource = VisibilityBuffer;
+        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        Barrier.Transition.StateBefore = VisibilityState;
+        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        CommandList->ResourceBarrier(1, &Barrier);
+        VisibilityState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    }
+
+    D3D12_RESOURCE_STATES& RunCountState = GetMeshletRunCountState();
+    if (RunCountState != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+    {
+        D3D12_RESOURCE_BARRIER Barrier = {};
+        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        Barrier.Transition.pResource = RunCountBuffer;
+        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        Barrier.Transition.StateBefore = RunCountState;
+        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        CommandList->ResourceBarrier(1, &Barrier);
+        RunCountState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    }
+
     uint8_t* CullingConstantsMapped = GetCullingConstantBufferMapped();
     if (CullingConstantsMapped)
     {
         std::memcpy(CullingConstantsMapped, Constants.data(), sizeof(Constants));
     }
+
+    CommandList->SetPipelineState(MeshletRunClearPipeline.Get());
+    CommandList->SetComputeRootSignature(MeshletRunRootSignature.Get());
+    CommandList->SetComputeRootConstantBufferView(0, GetCullingConstantBufferAddress());
+    CommandList->SetComputeRootUnorderedAccessView(5, RunCountBuffer->GetGPUVirtualAddress());
+    const uint32_t RangeDispatchCount = (static_cast<uint32_t>(IndirectDrawRanges.size()) + 63) / 64;
+    CommandList->Dispatch(RangeDispatchCount, 1, 1);
+
+    D3D12_RESOURCE_BARRIER RunCountBarrier = {};
+    RunCountBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+    RunCountBarrier.UAV.pResource = RunCountBuffer;
+    CommandList->ResourceBarrier(1, &RunCountBarrier);
 
     CommandList->SetPipelineState(CullingPipeline.Get());
     CommandList->SetComputeRootSignature(CullingRootSignature.Get());
@@ -532,7 +596,7 @@ void FRenderer::DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamer
     CommandList->SetComputeRootShaderResourceView(1, ModelBoundsBuffer->GetGPUVirtualAddress());
     CommandList->SetComputeRootShaderResourceView(2, MeshletConeAxisBuffer ? MeshletConeAxisBuffer->GetGPUVirtualAddress() : 0);
     CommandList->SetComputeRootShaderResourceView(3, MeshletConeApexBuffer ? MeshletConeApexBuffer->GetGPUVirtualAddress() : 0);
-    CommandList->SetComputeRootUnorderedAccessView(4, IndirectBuffer->GetGPUVirtualAddress());
+    CommandList->SetComputeRootUnorderedAccessView(4, VisibilityBuffer->GetGPUVirtualAddress());
     CommandList->SetComputeRootUnorderedAccessView(5, GpuDebugPrintBuffer->GetGPUVirtualAddress());
     CommandList->SetComputeRootUnorderedAccessView(6, GpuDebugPrintStatsBuffer->GetGPUVirtualAddress());
     if (CullingDescriptorHeap)
@@ -545,6 +609,29 @@ void FRenderer::DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamer
     const uint32_t DispatchCount = (IndirectCommandCount + 63) / 64;
     CommandList->Dispatch(DispatchCount, 1, 1);
 
+    if (VisibilityState != D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
+    {
+        D3D12_RESOURCE_BARRIER Barrier = {};
+        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        Barrier.Transition.pResource = VisibilityBuffer;
+        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        Barrier.Transition.StateBefore = VisibilityState;
+        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        CommandList->ResourceBarrier(1, &Barrier);
+        VisibilityState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    }
+
+    CommandList->SetPipelineState(MeshletRunAppendPipeline.Get());
+    CommandList->SetComputeRootSignature(MeshletRunRootSignature.Get());
+    CommandList->SetComputeRootConstantBufferView(0, GetCullingConstantBufferAddress());
+    CommandList->SetComputeRootShaderResourceView(1, VisibilityBuffer->GetGPUVirtualAddress());
+    CommandList->SetComputeRootShaderResourceView(2, MeshletDrawDataBuffer->GetGPUVirtualAddress());
+    CommandList->SetComputeRootShaderResourceView(3, MeshletRangeOffsetBuffer->GetGPUVirtualAddress());
+    CommandList->SetComputeRootShaderResourceView(4, TemplateBuffer->GetGPUVirtualAddress());
+    CommandList->SetComputeRootUnorderedAccessView(5, RunCountBuffer->GetGPUVirtualAddress());
+    CommandList->SetComputeRootUnorderedAccessView(6, IndirectBuffer->GetGPUVirtualAddress());
+    CommandList->Dispatch(DispatchCount, 1, 1);
+
     D3D12_RESOURCE_BARRIER Barrier = {};
     Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     Barrier.Transition.pResource = IndirectBuffer;
@@ -553,6 +640,18 @@ void FRenderer::DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamer
     Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
     CommandList->ResourceBarrier(1, &Barrier);
     IndirectState = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+
+    if (RunCountState != D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT)
+    {
+        D3D12_RESOURCE_BARRIER CountBarrier = {};
+        CountBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        CountBarrier.Transition.pResource = RunCountBuffer;
+        CountBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        CountBarrier.Transition.StateBefore = RunCountState;
+        CountBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+        CommandList->ResourceBarrier(1, &CountBarrier);
+        RunCountState = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+    }
 }
 
 void FRenderer::PrepareGpuDebugPrint(FDX12CommandContext& CmdContext)

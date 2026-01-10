@@ -120,6 +120,14 @@ struct FIndirectDrawCommand
 
 static_assert(sizeof(FIndirectDrawCommand) == 64, "Indirect command layout must be 64 bytes.");
 
+struct FMeshletDrawData
+{
+    uint32_t StartIndex = 0;
+    uint32_t IndexCount = 0;
+    uint32_t RangeIndex = 0;
+    uint32_t GroupIndex = 0;
+};
+
 struct FSceneModelResource
 {
     FMeshGeometryBuffers Geometry;

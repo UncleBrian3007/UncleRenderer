@@ -914,7 +914,8 @@ void FDeferredRenderer::AddBasePass(FRenderGraph& Graph, const FCamera& Camera, 
         }
 
         ID3D12Resource* IndirectBuffer = GetIndirectCommandBuffer();
-        if (bEnableIndirectDraw && IndirectCommandSignature && IndirectBuffer && !IndirectDrawRanges.empty())
+        ID3D12Resource* RunCountBuffer = GetMeshletRunCountBuffer();
+        if (bEnableIndirectDraw && IndirectCommandSignature && IndirectBuffer && RunCountBuffer && !IndirectDrawRanges.empty())
         {
             LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
@@ -923,22 +924,24 @@ void FDeferredRenderer::AddBasePass(FRenderGraph& Graph, const FCamera& Camera, 
                 return BasePassPipelines[Key].Get();
             };
 
-            for (const FIndirectDrawRange& Range : IndirectDrawRanges)
+            for (size_t RangeIndex = 0; RangeIndex < IndirectDrawRanges.size(); ++RangeIndex)
             {
+                const FIndirectDrawRange& Range = IndirectDrawRanges[RangeIndex];
                 ID3D12PipelineState* Pipeline = SelectPipelineByKey(Range.PipelineKey);
                 LocalCommandList->SetPipelineState(Pipeline);
                 LocalCommandList->SetGraphicsRootDescriptorTable(1, Range.TextureHandle);
 
                 const uint64_t Offset = static_cast<uint64_t>(Range.Start) * sizeof(FIndirectDrawCommand);
+                const uint64_t CountOffset = RangeIndex * sizeof(uint32_t);
                 if (AreModelPixEventsEnabled())
                 {
                     const wchar_t* Label = Range.Name.empty() ? L"IndirectDrawRange" : Range.Name.c_str();
                     FScopedPixEvent ModelEvent(LocalCommandList, Label);
-                    LocalCommandList->ExecuteIndirect(IndirectCommandSignature.Get(), Range.Count, IndirectBuffer, Offset, nullptr, 0);
+                    LocalCommandList->ExecuteIndirect(IndirectCommandSignature.Get(), Range.Count, IndirectBuffer, Offset, RunCountBuffer, CountOffset);
                 }
                 else
                 {
-                    LocalCommandList->ExecuteIndirect(IndirectCommandSignature.Get(), Range.Count, IndirectBuffer, Offset, nullptr, 0);
+                    LocalCommandList->ExecuteIndirect(IndirectCommandSignature.Get(), Range.Count, IndirectBuffer, Offset, RunCountBuffer, CountOffset);
                 }
             }
         }
@@ -4163,6 +4166,9 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     std::vector<FIndirectDrawCommand> Commands;
     Commands.reserve(TotalCommandCount);
 
+    std::vector<FMeshletDrawData> MeshletDrawData;
+    MeshletDrawData.reserve(TotalCommandCount);
+
     std::vector<DirectX::XMFLOAT4> Bounds;
     Bounds.reserve(TotalCommandCount);
 
@@ -4172,6 +4178,7 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     MeshletConeApex.reserve(TotalCommandCount);
 
     const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferBase = GetSceneConstantBufferAddress();
+    uint32_t GroupIndex = 0;
     auto AppendIndirectDrawData = [&](uint32_t SortedIndex)
     {
         const FSceneModelResource& Model = SceneModels[SortedIndex];
@@ -4193,6 +4200,7 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
             IndirectDrawRanges.push_back(Range);
         }
 
+        const uint32_t RangeIndex = static_cast<uint32_t>(IndirectDrawRanges.size() - 1);
         if (Model.bUseMeshletCulling && !Model.Meshlets.empty() && !Model.MeshletBounds.empty())
         {
             const DirectX::XMMATRIX World = DirectX::XMLoadFloat4x4(&Model.WorldMatrix);
@@ -4218,6 +4226,13 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
                 Command.DrawArguments.BaseVertexLocation = 0;
                 Command.DrawArguments.StartInstanceLocation = SortedIndex;
                 Commands.push_back(Command);
+
+                FMeshletDrawData DrawData{};
+                DrawData.StartIndex = Meshlet.IndexOffset;
+                DrawData.IndexCount = Meshlet.IndexCount;
+                DrawData.RangeIndex = RangeIndex;
+                DrawData.GroupIndex = GroupIndex;
+                MeshletDrawData.push_back(DrawData);
 
                 const DirectX::XMVECTOR LocalCenter = DirectX::XMLoadFloat3(&BoundsData.Center);
                 const DirectX::XMVECTOR WorldCenter = DirectX::XMVector3TransformCoord(LocalCenter, World);
@@ -4253,6 +4268,14 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
             Command.DrawArguments.BaseVertexLocation = 0;
             Command.DrawArguments.StartInstanceLocation = SortedIndex;
             Commands.push_back(Command);
+
+            FMeshletDrawData DrawData{};
+            DrawData.StartIndex = Model.DrawIndexStart;
+            DrawData.IndexCount = Model.DrawIndexCount;
+            DrawData.RangeIndex = RangeIndex;
+            DrawData.GroupIndex = GroupIndex;
+            MeshletDrawData.push_back(DrawData);
+
             const DirectX::XMFLOAT3 Center{
                 (Model.BoundsMin.x + Model.BoundsMax.x) * 0.5f,
                 (Model.BoundsMin.y + Model.BoundsMax.y) * 0.5f,
@@ -4267,6 +4290,8 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
             MeshletConeApex.emplace_back(0.0f, 0.0f, 0.0f, 0.0f);
             IndirectDrawRanges.back().Count += 1;
         }
+
+        GroupIndex += 1;
     };
 
     for (uint32_t SortedIndex : SortedIndices)
@@ -4276,7 +4301,16 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
 
     IndirectCommandCount = static_cast<uint32_t>(Commands.size());
 
+    std::vector<uint32_t> RangeOffsets;
+    RangeOffsets.reserve(IndirectDrawRanges.size());
+    for (const FIndirectDrawRange& Range : IndirectDrawRanges)
+    {
+        RangeOffsets.push_back(Range.Start);
+    }
+
     const uint64_t CommandBufferSize = sizeof(FIndirectDrawCommand) * Commands.size();
+    const uint64_t MeshletDrawDataSize = sizeof(FMeshletDrawData) * MeshletDrawData.size();
+    const uint64_t RangeOffsetSize = sizeof(uint32_t) * RangeOffsets.size();
 
     D3D12_HEAP_PROPERTIES UploadHeap = {};
     UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
@@ -4302,11 +4336,24 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     D3D12_RESOURCE_DESC UploadDesc = BufferDesc;
     UploadDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
+    D3D12_RESOURCE_DESC TemplateDesc = BufferDesc;
+    TemplateDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
     const D3D12_RANGE EmptyRange = { 0, 0 };
     IndirectCommandBuffers.clear();
+    IndirectCommandTemplateBuffers.clear();
     IndirectCommandStates.clear();
+    MeshletVisibilityBuffers.clear();
+    MeshletRunCountBuffers.clear();
+    MeshletVisibilityStates.clear();
+    MeshletRunCountStates.clear();
     IndirectCommandBuffers.resize(GetFramesInFlight());
+    IndirectCommandTemplateBuffers.resize(GetFramesInFlight());
     IndirectCommandStates.resize(GetFramesInFlight(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
+    MeshletVisibilityBuffers.resize(GetFramesInFlight());
+    MeshletRunCountBuffers.resize(GetFramesInFlight());
+    MeshletVisibilityStates.resize(GetFramesInFlight(), D3D12_RESOURCE_STATE_COMMON);
+    MeshletRunCountStates.resize(GetFramesInFlight(), D3D12_RESOURCE_STATE_COMMON);
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> IndirectCommandUploads;
     IndirectCommandUploads.resize(GetFramesInFlight());
 
@@ -4323,6 +4370,19 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
         {
             const std::wstring Name = L"IndirectCommandBuffer_Frame" + std::to_wstring(FrameIndex);
             IndirectCommandBuffers[FrameIndex]->SetName(Name.c_str());
+        }
+
+        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+            &DefaultHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &TemplateDesc,
+            D3D12_RESOURCE_STATE_COMMON,
+            nullptr,
+            IID_PPV_ARGS(IndirectCommandTemplateBuffers[FrameIndex].GetAddressOf())));
+        if (IndirectCommandTemplateBuffers[FrameIndex])
+        {
+            const std::wstring Name = L"IndirectCommandTemplateBuffer_Frame" + std::to_wstring(FrameIndex);
+            IndirectCommandTemplateBuffers[FrameIndex]->SetName(Name.c_str());
         }
 
         HR_CHECK(Device->GetDevice()->CreateCommittedResource(
@@ -4349,6 +4409,38 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
             }
             std::memcpy(UploadData, FrameCommands.data(), CommandBufferSize);
             IndirectCommandUploads[FrameIndex]->Unmap(0, nullptr);
+        }
+
+        D3D12_RESOURCE_DESC VisibilityDesc = BufferDesc;
+        VisibilityDesc.Width = sizeof(uint32_t) * IndirectCommandCount;
+        VisibilityDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+            &DefaultHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &VisibilityDesc,
+            D3D12_RESOURCE_STATE_COMMON,
+            nullptr,
+            IID_PPV_ARGS(MeshletVisibilityBuffers[FrameIndex].GetAddressOf())));
+        if (MeshletVisibilityBuffers[FrameIndex])
+        {
+            const std::wstring Name = L"MeshletVisibilityBuffer_Frame" + std::to_wstring(FrameIndex);
+            MeshletVisibilityBuffers[FrameIndex]->SetName(Name.c_str());
+        }
+
+        D3D12_RESOURCE_DESC RunCountDesc = BufferDesc;
+        RunCountDesc.Width = sizeof(uint32_t) * RangeOffsets.size();
+        RunCountDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+            &DefaultHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &RunCountDesc,
+            D3D12_RESOURCE_STATE_COMMON,
+            nullptr,
+            IID_PPV_ARGS(MeshletRunCountBuffers[FrameIndex].GetAddressOf())));
+        if (MeshletRunCountBuffers[FrameIndex])
+        {
+            const std::wstring Name = L"MeshletRunCountBuffer_Frame" + std::to_wstring(FrameIndex);
+            MeshletRunCountBuffers[FrameIndex]->SetName(Name.c_str());
         }
     }
 
@@ -4379,6 +4471,68 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     HR_CHECK(ModelBoundsUpload->Map(0, &EmptyRange, &UploadData));
     std::memcpy(UploadData, Bounds.data(), BoundsBufferSize);
     ModelBoundsUpload->Unmap(0, nullptr);
+
+    D3D12_RESOURCE_DESC DrawDataDesc = BoundsDesc;
+    DrawDataDesc.Width = MeshletDrawDataSize;
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &DefaultHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &DrawDataDesc,
+        D3D12_RESOURCE_STATE_COMMON,
+        nullptr,
+        IID_PPV_ARGS(MeshletDrawDataBuffer.GetAddressOf())));
+    if (MeshletDrawDataBuffer)
+    {
+        MeshletDrawDataBuffer->SetName(L"MeshletDrawDataBuffer");
+    }
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &UploadHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &DrawDataDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(MeshletDrawDataUpload.GetAddressOf())));
+    if (MeshletDrawDataUpload)
+    {
+        MeshletDrawDataUpload->SetName(L"MeshletDrawDataUpload");
+    }
+
+    HR_CHECK(MeshletDrawDataUpload->Map(0, &EmptyRange, &UploadData));
+    std::memcpy(UploadData, MeshletDrawData.data(), MeshletDrawDataSize);
+    MeshletDrawDataUpload->Unmap(0, nullptr);
+
+    D3D12_RESOURCE_DESC RangeOffsetDesc = BoundsDesc;
+    RangeOffsetDesc.Width = RangeOffsetSize;
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &DefaultHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &RangeOffsetDesc,
+        D3D12_RESOURCE_STATE_COMMON,
+        nullptr,
+        IID_PPV_ARGS(MeshletRangeOffsetBuffer.GetAddressOf())));
+    if (MeshletRangeOffsetBuffer)
+    {
+        MeshletRangeOffsetBuffer->SetName(L"MeshletRangeOffsetBuffer");
+    }
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &UploadHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &RangeOffsetDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(MeshletRangeOffsetUpload.GetAddressOf())));
+    if (MeshletRangeOffsetUpload)
+    {
+        MeshletRangeOffsetUpload->SetName(L"MeshletRangeOffsetUpload");
+    }
+
+    HR_CHECK(MeshletRangeOffsetUpload->Map(0, &EmptyRange, &UploadData));
+    std::memcpy(UploadData, RangeOffsets.data(), RangeOffsetSize);
+    MeshletRangeOffsetUpload->Unmap(0, nullptr);
 
     const uint64_t ConeBufferSize = sizeof(DirectX::XMFLOAT4) * MeshletConeAxisCutoff.size();
     D3D12_RESOURCE_DESC ConeDesc = BoundsDesc;
@@ -4546,17 +4700,32 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     HR_CHECK(Device->GetDevice()->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, UploadAllocator.Get(), nullptr, IID_PPV_ARGS(UploadList.GetAddressOf())));
 
     std::vector<D3D12_RESOURCE_BARRIER> PreCopyBarriers;
-    PreCopyBarriers.reserve(GetFramesInFlight() + 5);
+    PreCopyBarriers.reserve(GetFramesInFlight() * 2 + 7);
     for (uint32_t FrameIndex = 0; FrameIndex < GetFramesInFlight(); ++FrameIndex)
     {
         D3D12_RESOURCE_BARRIER Barrier = {};
         Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        Barrier.Transition.pResource = IndirectCommandBuffers[FrameIndex].Get();
+        Barrier.Transition.pResource = IndirectCommandTemplateBuffers[FrameIndex].Get();
         Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
         Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
         PreCopyBarriers.push_back(Barrier);
     }
+    D3D12_RESOURCE_BARRIER DrawDataBarrier = {};
+    DrawDataBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    DrawDataBarrier.Transition.pResource = MeshletDrawDataBuffer.Get();
+    DrawDataBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    DrawDataBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    DrawDataBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    PreCopyBarriers.push_back(DrawDataBarrier);
+
+    D3D12_RESOURCE_BARRIER RangeOffsetBarrier = {};
+    RangeOffsetBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    RangeOffsetBarrier.Transition.pResource = MeshletRangeOffsetBuffer.Get();
+    RangeOffsetBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    RangeOffsetBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    RangeOffsetBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    PreCopyBarriers.push_back(RangeOffsetBarrier);
     D3D12_RESOURCE_BARRIER BoundsBarrier = {};
     BoundsBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     BoundsBarrier.Transition.pResource = ModelBoundsBuffer.Get();
@@ -4602,13 +4771,15 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     for (uint32_t FrameIndex = 0; FrameIndex < GetFramesInFlight(); ++FrameIndex)
     {
         UploadList->CopyBufferRegion(
-            IndirectCommandBuffers[FrameIndex].Get(),
+            IndirectCommandTemplateBuffers[FrameIndex].Get(),
             0,
             IndirectCommandUploads[FrameIndex].Get(),
             0,
             CommandBufferSize);
     }
     UploadList->CopyBufferRegion(ModelBoundsBuffer.Get(), 0, ModelBoundsUpload.Get(), 0, BoundsBufferSize);
+    UploadList->CopyBufferRegion(MeshletDrawDataBuffer.Get(), 0, MeshletDrawDataUpload.Get(), 0, MeshletDrawDataSize);
+    UploadList->CopyBufferRegion(MeshletRangeOffsetBuffer.Get(), 0, MeshletRangeOffsetUpload.Get(), 0, RangeOffsetSize);
     UploadList->CopyBufferRegion(MeshletConeAxisBuffer.Get(), 0, MeshletConeAxisUpload.Get(), 0, ConeBufferSize);
     UploadList->CopyBufferRegion(MeshletConeApexBuffer.Get(), 0, MeshletConeApexUpload.Get(), 0, ConeBufferSize);
     if (GpuDebugPrintBuffer && GpuDebugPrintUpload)
@@ -4621,15 +4792,15 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     }
 
     std::vector<D3D12_RESOURCE_BARRIER> PostCopyBarriers;
-    PostCopyBarriers.reserve(GetFramesInFlight() + 5);
+    PostCopyBarriers.reserve(GetFramesInFlight() * 2 + 7);
     for (uint32_t FrameIndex = 0; FrameIndex < GetFramesInFlight(); ++FrameIndex)
     {
         D3D12_RESOURCE_BARRIER Barrier = {};
         Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        Barrier.Transition.pResource = IndirectCommandBuffers[FrameIndex].Get();
+        Barrier.Transition.pResource = IndirectCommandTemplateBuffers[FrameIndex].Get();
         Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
         PostCopyBarriers.push_back(Barrier);
     }
 
@@ -4640,6 +4811,22 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     PostBoundsBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
     PostBoundsBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     PostCopyBarriers.push_back(PostBoundsBarrier);
+
+    D3D12_RESOURCE_BARRIER PostDrawDataBarrier = {};
+    PostDrawDataBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    PostDrawDataBarrier.Transition.pResource = MeshletDrawDataBuffer.Get();
+    PostDrawDataBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    PostDrawDataBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    PostDrawDataBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    PostCopyBarriers.push_back(PostDrawDataBarrier);
+
+    D3D12_RESOURCE_BARRIER PostRangeOffsetBarrier = {};
+    PostRangeOffsetBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    PostRangeOffsetBarrier.Transition.pResource = MeshletRangeOffsetBuffer.Get();
+    PostRangeOffsetBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    PostRangeOffsetBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    PostRangeOffsetBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    PostCopyBarriers.push_back(PostRangeOffsetBarrier);
 
     D3D12_RESOURCE_BARRIER PostConeAxisBarrier = {};
     PostConeAxisBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -4680,54 +4867,56 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     Device->GetGraphicsQueue()->ExecuteCommandLists(1, Lists);
     Device->GetGraphicsQueue()->Flush();
 
-    IndirectCommandStates.assign(GetFramesInFlight(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
+    IndirectCommandStates.assign(GetFramesInFlight(), D3D12_RESOURCE_STATE_COMMON);
+    MeshletVisibilityStates.assign(GetFramesInFlight(), D3D12_RESOURCE_STATE_COMMON);
+    MeshletRunCountStates.assign(GetFramesInFlight(), D3D12_RESOURCE_STATE_COMMON);
     GpuDebugPrintState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     GpuDebugPrintStatsState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 
     D3D12_ROOT_PARAMETER1 RootParams[8] = {};
-    // RootParams[0]: CullingConstants CBV (b0), used in Shaders/CullIndirectArgs.hlsl CSMain
+    // RootParams[0]: CullingConstants CBV (b0), used in Shaders/CullMeshletVisibility.hlsl CSMain
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     RootParams[0].Descriptor.ShaderRegister = 0;
     RootParams[0].Descriptor.RegisterSpace = 0;
     RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // RootParams[1]: ModelBounds SRV (t0), used in Shaders/CullIndirectArgs.hlsl CSMain
+    // RootParams[1]: ModelBounds SRV (t0), used in Shaders/CullMeshletVisibility.hlsl CSMain
     RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
     RootParams[1].Descriptor.ShaderRegister = 0;
     RootParams[1].Descriptor.RegisterSpace = 0;
     RootParams[1].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // RootParams[2]: MeshletConeAxisCutoff SRV (t2), used in Shaders/CullIndirectArgs.hlsl CSMain
+    // RootParams[2]: MeshletConeAxisCutoff SRV (t2), used in Shaders/CullMeshletVisibility.hlsl CSMain
     RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
     RootParams[2].Descriptor.ShaderRegister = 2;
     RootParams[2].Descriptor.RegisterSpace = 0;
     RootParams[2].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
     RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // RootParams[3]: MeshletConeApex SRV (t3), used in Shaders/CullIndirectArgs.hlsl CSMain
+    // RootParams[3]: MeshletConeApex SRV (t3), used in Shaders/CullMeshletVisibility.hlsl CSMain
     RootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
     RootParams[3].Descriptor.ShaderRegister = 3;
     RootParams[3].Descriptor.RegisterSpace = 0;
     RootParams[3].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
     RootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // RootParams[4]: IndirectArgs UAV (u0), used in Shaders/CullIndirectArgs.hlsl CSMain
+    // RootParams[4]: VisibleMeshlets UAV (u0), used in Shaders/CullMeshletVisibility.hlsl CSMain
     RootParams[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
     RootParams[4].Descriptor.ShaderRegister = 0;
     RootParams[4].Descriptor.RegisterSpace = 0;
     RootParams[4].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
     RootParams[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // RootParams[5]: DebugPrintBuffer UAV (u1), used in Shaders/CullIndirectArgs.hlsl CSMain
+    // RootParams[5]: DebugPrintBuffer UAV (u1), used in Shaders/CullMeshletVisibility.hlsl CSMain
     RootParams[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
     RootParams[5].Descriptor.ShaderRegister = 1;
     RootParams[5].Descriptor.RegisterSpace = 0;
     RootParams[5].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
     RootParams[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // RootParams[6]: DebugPrintStats UAV (u2), used in Shaders/CullIndirectArgs.hlsl CSMain
+    // RootParams[6]: DebugPrintStats UAV (u2), used in Shaders/CullMeshletVisibility.hlsl CSMain
     RootParams[6].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
     RootParams[6].Descriptor.ShaderRegister = 2;
     RootParams[6].Descriptor.RegisterSpace = 0;
@@ -4742,7 +4931,7 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     HZBRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
     HZBRange.OffsetInDescriptorsFromTableStart = 0;
 
-    // RootParams[7]: HZB SRV table (t1), used in Shaders/CullIndirectArgs.hlsl CSMain
+    // RootParams[7]: HZB SRV table (t1), used in Shaders/CullMeshletVisibility.hlsl CSMain
     RootParams[7].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[7].DescriptorTable.NumDescriptorRanges = 1;
     RootParams[7].DescriptorTable.pDescriptorRanges = &HZBRange;
@@ -4764,7 +4953,7 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
 
     FShaderCompiler Compiler;
     std::vector<uint8_t> CsByteCode;
-    if (!Compiler.CompileFromFile(L"Shaders/CullIndirectArgs.hlsl", L"CSMain", L"cs_6_0", CsByteCode))
+    if (!Compiler.CompileFromFile(L"Shaders/CullMeshletVisibility.hlsl", L"CSMain", L"cs_6_0", CsByteCode))
     {
         LogError("Failed to compile culling compute shader");
         return false;
@@ -4774,6 +4963,94 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     CsDesc.pRootSignature = CullingRootSignature.Get();
     CsDesc.CS = { CsByteCode.data(), CsByteCode.size() };
     HR_CHECK(Device->GetDevice()->CreateComputePipelineState(&CsDesc, IID_PPV_ARGS(CullingPipeline.GetAddressOf())));
+
+    D3D12_ROOT_PARAMETER1 RunRootParams[7] = {};
+    // RunRootParams[0]: CullingConstants CBV (b0), used in Shaders/ClearMeshletRunCounts.hlsl CSMain and Shaders/BuildMeshletRunsAppend.hlsl CSMain
+    RunRootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    RunRootParams[0].Descriptor.ShaderRegister = 0;
+    RunRootParams[0].Descriptor.RegisterSpace = 0;
+    RunRootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+    RunRootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    // RunRootParams[1]: VisibleMeshlets SRV (t0), used in Shaders/BuildMeshletRunsAppend.hlsl CSMain
+    RunRootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+    RunRootParams[1].Descriptor.ShaderRegister = 0;
+    RunRootParams[1].Descriptor.RegisterSpace = 0;
+    RunRootParams[1].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+    RunRootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    // RunRootParams[2]: MeshletDrawData SRV (t1), used in Shaders/BuildMeshletRunsAppend.hlsl CSMain
+    RunRootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+    RunRootParams[2].Descriptor.ShaderRegister = 1;
+    RunRootParams[2].Descriptor.RegisterSpace = 0;
+    RunRootParams[2].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+    RunRootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    // RunRootParams[3]: RangeOffsets SRV (t2), used in Shaders/BuildMeshletRunsAppend.hlsl CSMain
+    RunRootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+    RunRootParams[3].Descriptor.ShaderRegister = 2;
+    RunRootParams[3].Descriptor.RegisterSpace = 0;
+    RunRootParams[3].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+    RunRootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    // RunRootParams[4]: CommandTemplates SRV (t3), used in Shaders/BuildMeshletRunsAppend.hlsl CSMain
+    RunRootParams[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+    RunRootParams[4].Descriptor.ShaderRegister = 3;
+    RunRootParams[4].Descriptor.RegisterSpace = 0;
+    RunRootParams[4].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+    RunRootParams[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    // RunRootParams[5]: RunCounts UAV (u1), used in Shaders/ClearMeshletRunCounts.hlsl CSMain and Shaders/BuildMeshletRunsAppend.hlsl CSMain
+    RunRootParams[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+    RunRootParams[5].Descriptor.ShaderRegister = 1;
+    RunRootParams[5].Descriptor.RegisterSpace = 0;
+    RunRootParams[5].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+    RunRootParams[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    // RunRootParams[6]: OutputCommands UAV (u0), used in Shaders/BuildMeshletRunsAppend.hlsl CSMain
+    RunRootParams[6].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+    RunRootParams[6].Descriptor.ShaderRegister = 0;
+    RunRootParams[6].Descriptor.RegisterSpace = 0;
+    RunRootParams[6].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+    RunRootParams[6].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    D3D12_ROOT_SIGNATURE_DESC1 RunRootDesc = {};
+    RunRootDesc.NumParameters = _countof(RunRootParams);
+    RunRootDesc.pParameters = RunRootParams;
+    RunRootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC RunVersionedDesc = {};
+    RunVersionedDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    RunVersionedDesc.Desc_1_1 = RunRootDesc;
+
+    ComPtr<ID3DBlob> RunSerializedSig;
+    ComPtr<ID3DBlob> RunErrorBlob;
+    HR_CHECK(D3D12SerializeVersionedRootSignature(&RunVersionedDesc, RunSerializedSig.GetAddressOf(), RunErrorBlob.GetAddressOf()));
+    HR_CHECK(Device->GetDevice()->CreateRootSignature(0, RunSerializedSig->GetBufferPointer(), RunSerializedSig->GetBufferSize(), IID_PPV_ARGS(MeshletRunRootSignature.GetAddressOf())));
+
+    std::vector<uint8_t> ClearByteCode;
+    if (!Compiler.CompileFromFile(L"Shaders/ClearMeshletRunCounts.hlsl", L"CSMain", L"cs_6_0", ClearByteCode))
+    {
+        LogError("Failed to compile meshlet run clear compute shader");
+        return false;
+    }
+
+    D3D12_COMPUTE_PIPELINE_STATE_DESC ClearDesc = {};
+    ClearDesc.pRootSignature = MeshletRunRootSignature.Get();
+    ClearDesc.CS = { ClearByteCode.data(), ClearByteCode.size() };
+    HR_CHECK(Device->GetDevice()->CreateComputePipelineState(&ClearDesc, IID_PPV_ARGS(MeshletRunClearPipeline.GetAddressOf())));
+
+    std::vector<uint8_t> RunByteCode;
+    if (!Compiler.CompileFromFile(L"Shaders/BuildMeshletRunsAppend.hlsl", L"CSMain", L"cs_6_0", RunByteCode))
+    {
+        LogError("Failed to compile meshlet run append compute shader");
+        return false;
+    }
+
+    D3D12_COMPUTE_PIPELINE_STATE_DESC RunDesc = {};
+    RunDesc.pRootSignature = MeshletRunRootSignature.Get();
+    RunDesc.CS = { RunByteCode.data(), RunByteCode.size() };
+    HR_CHECK(Device->GetDevice()->CreateComputePipelineState(&RunDesc, IID_PPV_ARGS(MeshletRunAppendPipeline.GetAddressOf())));
 
     D3D12_INDIRECT_ARGUMENT_DESC IndirectArgs[4] = {};
     IndirectArgs[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_VERTEX_BUFFER_VIEW;

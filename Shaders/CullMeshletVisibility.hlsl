@@ -4,14 +4,11 @@ StructuredBuffer<float4> ModelBounds : register(t0);
 Texture2D<float> HZBTexture : register(t1);
 StructuredBuffer<float4> MeshletConeAxisCutoff : register(t2);
 StructuredBuffer<float4> MeshletConeApex : register(t3);
-RWByteAddressBuffer IndirectArgs : register(u0);
+RWStructuredBuffer<uint> VisibleMeshlets : register(u0);
 RWByteAddressBuffer DebugPrintBuffer : register(u1);
 RWByteAddressBuffer DebugPrintStats : register(u2);
 
 #include "DebugPrintCommon.hlsl"
-
-static const uint kCommandStride = 64;
-static const uint kInstanceCountOffset = 44;
 
 bool IsSphereVisible(float3 center, float radius)
 {
@@ -33,28 +30,25 @@ bool IsConeVisible_SphereExpanded(
     float radius,
     uint index)
 {
-	float4 axisCutoff = MeshletConeAxisCutoff[index];
+    float4 axisCutoff = MeshletConeAxisCutoff[index];
 
-	if (axisCutoff.w < 0.0f)
-		return true;
+    if (axisCutoff.w < 0.0f)
+        return true;
 
-	float3 axis = axisCutoff.xyz;
+    float3 axis = axisCutoff.xyz;
 
-    // camera → center
-	float3 view = center - CameraPosition;
+    float3 view = center - CameraPosition;
 
-	float distSq = dot(view, view);
-	if (distSq <= 1e-8f)
-		return true;
+    float distSq = dot(view, view);
+    if (distSq <= 1e-8f)
+        return true;
 
-	float dist = sqrt(distSq);
+    float dist = sqrt(distSq);
 
-    // 완전히 cone 뒤에 들어갔는가?
-    // dot(view, -axis) >= cos(theta) * |view| + radius
-	bool coneCulled =
+    bool coneCulled =
         dot(view, -axis) >= axisCutoff.w * dist + radius;
 
-	return !coneCulled;
+    return !coneCulled;
 }
 
 float4 ProjectToClip(float3 position)
@@ -147,47 +141,46 @@ bool IsOccluded(float3 center, float radius)
 [numthreads(64, 1, 1)]
 void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-	uint index = dispatchThreadId.x;
-	if (index >= IndirectCommandCount)
-		return;
+    uint index = dispatchThreadId.x;
+    if (index >= IndirectCommandCount)
+        return;
 
-	float4 sphere = ModelBounds[index];
-	float3 center = sphere.xyz;
-	float radius = sphere.w;
+    float4 sphere = ModelBounds[index];
+    float3 center = sphere.xyz;
+    float radius = sphere.w;
 
-	bool frustumVisible = IsSphereVisible(center, radius);
-	bool coneVisible = true;
-	bool visible = frustumVisible;
+    bool frustumVisible = IsSphereVisible(center, radius);
+    bool coneVisible = true;
+    bool visible = frustumVisible;
 
-	if (visible)
-	{
-		coneVisible = IsConeVisible_SphereExpanded(center, radius, index);
-		visible = coneVisible;
-	}
+    if (visible)
+    {
+        coneVisible = IsConeVisible_SphereExpanded(center, radius, index);
+        visible = coneVisible;
+    }
 
-	bool occluded = false;
-	if (visible && HZBEnabled != 0)
-	{
-		occluded = IsOccluded(center, radius);
-		visible = !occluded;
-	}
+    bool occluded = false;
+    if (visible && HZBEnabled != 0)
+    {
+        occluded = IsOccluded(center, radius);
+        visible = !occluded;
+    }
 
-	uint baseOffset = index * kCommandStride + kInstanceCountOffset;
-	IndirectArgs.Store(baseOffset, visible ? 1u : 0u);
+    VisibleMeshlets[index] = visible ? 1u : 0u;
 
-	if (DebugPrintEnabled != 0 && !visible)
-	{
-		if (!frustumVisible)
-		{
-			DebugPrintStats.InterlockedAdd(0, 1);
-		}
-		else if (!coneVisible)
-		{
-			DebugPrintStats.InterlockedAdd(8, 1);
-		}
-		else if (occluded)
-		{
-			DebugPrintStats.InterlockedAdd(4, 1);
-		}
-	}
+    if (DebugPrintEnabled != 0 && !visible)
+    {
+        if (!frustumVisible)
+        {
+            DebugPrintStats.InterlockedAdd(0, 1);
+        }
+        else if (!coneVisible)
+        {
+            DebugPrintStats.InterlockedAdd(8, 1);
+        }
+        else if (occluded)
+        {
+            DebugPrintStats.InterlockedAdd(4, 1);
+        }
+    }
 }

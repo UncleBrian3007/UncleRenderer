@@ -57,6 +57,8 @@ public:
     uint8_t* GetCullingConstantBufferMapped() const;
     ID3D12Resource* GetIndirectCommandBuffer() const;
     D3D12_RESOURCE_STATES& GetIndirectCommandState();
+    ID3D12Resource* GetMeshletRunCountBuffer() const;
+    D3D12_RESOURCE_STATES& GetMeshletRunCountState();
     uint32_t GetFramesInFlight() const { return FramesInFlight; }
 
     DirectX::XMFLOAT3 GetSceneCenter() const { return SceneCenter; }
@@ -142,6 +144,13 @@ protected:
     Microsoft::WRL::ComPtr<ID3D12Resource> SkyConstantBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> ShadowMap;
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> IndirectCommandBuffers;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> IndirectCommandTemplateBuffers;
+    Microsoft::WRL::ComPtr<ID3D12Resource> MeshletDrawDataBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> MeshletDrawDataUpload;
+    Microsoft::WRL::ComPtr<ID3D12Resource> MeshletRangeOffsetBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> MeshletRangeOffsetUpload;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> MeshletVisibilityBuffers;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> MeshletRunCountBuffers;
     Microsoft::WRL::ComPtr<ID3D12Resource> ModelBoundsBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> ModelBoundsUpload;
     Microsoft::WRL::ComPtr<ID3D12Resource> MeshletConeAxisBuffer;
@@ -162,6 +171,9 @@ protected:
     std::unique_ptr<FTextureLoader> TextureLoader;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> CullingRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> CullingPipeline;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> MeshletRunRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> MeshletRunClearPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> MeshletRunAppendPipeline;
     Microsoft::WRL::ComPtr<ID3D12CommandSignature> IndirectCommandSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> GpuDebugPrintRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> GpuDebugPrintPipeline;
@@ -188,6 +200,8 @@ protected:
     D3D12_RESOURCE_STATES ShadowMapState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
     D3D12_RESOURCE_STATES ObjectIdState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     std::vector<D3D12_RESOURCE_STATES> IndirectCommandStates;
+    std::vector<D3D12_RESOURCE_STATES> MeshletVisibilityStates;
+    std::vector<D3D12_RESOURCE_STATES> MeshletRunCountStates;
     D3D12_RESOURCE_STATES GpuDebugPrintState = D3D12_RESOURCE_STATE_COMMON;
     D3D12_RESOURCE_STATES GpuDebugPrintStatsState = D3D12_RESOURCE_STATE_COMMON;
 
