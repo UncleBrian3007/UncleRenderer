@@ -2,7 +2,7 @@ cbuffer CullingConstants : register(b0)
 {
     float4 FrustumPlanes[6];
     float4x4 ViewProjection;
-    uint ModelCount;
+    uint IndirectCommandCount;
     uint HZBEnabled;
     uint HZBMipCount;
     uint HZBWidth;
@@ -27,18 +27,14 @@ RWByteAddressBuffer DebugPrintStats : register(u2);
 static const uint kCommandStride = 64;
 static const uint kInstanceCountOffset = 44;
 
-bool IsAabbVisible(float3 boundsMin, float3 boundsMax)
+bool IsSphereVisible(float3 center, float radius)
 {
     [unroll]
     for (uint i = 0; i < 6; ++i)
     {
         float4 plane = FrustumPlanes[i];
-        float3 positiveVertex = float3(
-            plane.x >= 0.0f ? boundsMax.x : boundsMin.x,
-            plane.y >= 0.0f ? boundsMax.y : boundsMin.y,
-            plane.z >= 0.0f ? boundsMax.z : boundsMin.z);
-
-        if (dot(plane.xyz, positiveVertex) + plane.w < 0.0f)
+        float distance = dot(plane.xyz, center) + plane.w;
+        if (distance < -radius)
         {
             return false;
         }
@@ -53,13 +49,12 @@ bool IsConeVisible_SphereExpanded(
 {
 	float4 axisCutoff = MeshletConeAxisCutoff[index];
 
-    // cone ÀÇ¹Ì ¾øÀ½ ¡æ Ç×»ó visible
 	if (axisCutoff.w < 0.0f)
 		return true;
 
 	float3 axis = axisCutoff.xyz;
 
-    // camera ¡æ center
+    // camera â†’ center
 	float3 view = center - CameraPosition;
 
 	float distSq = dot(view, view);
@@ -68,7 +63,7 @@ bool IsConeVisible_SphereExpanded(
 
 	float dist = sqrt(distSq);
 
-    // ¿ÏÀüÈ÷ cone µÚ¿¡ µé¾î°¬´Â°¡?
+    // ì™„ì „ížˆ cone ë’¤ì— ë“¤ì–´ê°”ëŠ”ê°€?
     // dot(view, -axis) >= cos(theta) * |view| + radius
 	bool coneCulled =
         dot(view, -axis) >= axisCutoff.w * dist + radius;
@@ -81,12 +76,10 @@ float4 ProjectToClip(float3 position)
     return mul(float4(position, 1.0f), ViewProjection);
 }
 
-bool IsOccluded(float3 boundsMin, float3 boundsMax)
+bool IsOccluded(float3 center, float radius)
 {
-    if (HZBEnabled == 0 || HZBWidth == 0 || HZBHeight == 0 || HZBMipCount == 0)
-    {
-        return false;
-    }
+    float3 boundsMin = center - radius;
+    float3 boundsMax = center + radius;
 
     float3 corners[8] =
     {
@@ -169,28 +162,27 @@ bool IsOccluded(float3 boundsMin, float3 boundsMax)
 void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
 	uint index = dispatchThreadId.x;
-	if (index >= ModelCount)
+	if (index >= IndirectCommandCount)
 		return;
 
-	uint boundsIndex = index * 2;
-	float3 boundsMin = ModelBounds[boundsIndex].xyz;
-	float3 boundsMax = ModelBounds[boundsIndex + 1].xyz;
+	float4 sphere = ModelBounds[index];
+	float3 center = sphere.xyz;
+	float radius = sphere.w;
 
-	bool frustumVisible = IsAabbVisible(boundsMin, boundsMax);
+	bool frustumVisible = IsSphereVisible(center, radius);
+	bool coneVisible = true;
 	bool visible = frustumVisible;
-
-	float3 center = (boundsMin + boundsMax) * 0.5f;
-	float radius = length(boundsMax - center);
 
 	if (visible)
 	{
-		visible = IsConeVisible_SphereExpanded(center, radius, index);
+		coneVisible = IsConeVisible_SphereExpanded(center, radius, index);
+		visible = coneVisible;
 	}
 
 	bool occluded = false;
 	if (visible && HZBEnabled != 0)
 	{
-		occluded = IsOccluded(boundsMin, boundsMax);
+		occluded = IsOccluded(center, radius);
 		visible = !occluded;
 	}
 
@@ -202,6 +194,10 @@ void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 		if (!frustumVisible)
 		{
 			DebugPrintStats.InterlockedAdd(0, 1);
+		}
+		else if (!coneVisible)
+		{
+			DebugPrintStats.InterlockedAdd(8, 1);
 		}
 		else if (occluded)
 		{

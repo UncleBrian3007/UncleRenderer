@@ -35,6 +35,7 @@ void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
     uint frustum = StatsBuffer.Load(0);
     uint occlusion = StatsBuffer.Load(4);
+    uint cone = StatsBuffer.Load(8);
 
     const uint textColor = 0xffffffffu;
     uint2 pos = uint2(8, 20);
@@ -44,4 +45,8 @@ void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     pos = uint2(8, 36);
     PrintLabel(pos, textColor, 'O', 'C', 'C', 'L', 'U', 'D', 'E', ' ');
     PrintUInt(uint2(8 + 8 * 8, 36), occlusion, textColor);
+
+    pos = uint2(8, 52);
+    PrintLabel(pos, textColor, 'C', 'O', 'N', 'E', 'C', 'U', 'L', ' ');
+    PrintUInt(uint2(8 + 8 * 8, 52), cone, textColor);
 }

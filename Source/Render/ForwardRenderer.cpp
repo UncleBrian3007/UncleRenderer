@@ -1710,7 +1710,7 @@ bool FForwardRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     Commands.reserve(TotalCommandCount);
 
     std::vector<DirectX::XMFLOAT4> Bounds;
-    Bounds.reserve(TotalCommandCount * 2);
+    Bounds.reserve(TotalCommandCount);
 
     std::vector<DirectX::XMFLOAT4> MeshletConeAxisCutoff;
     std::vector<DirectX::XMFLOAT4> MeshletConeApex;
@@ -1770,8 +1770,7 @@ bool FForwardRenderer::CreateGpuDrivenResources(FDX12Device* Device)
                 DirectX::XMFLOAT3 Center{};
                 DirectX::XMStoreFloat3(&Center, WorldCenter);
                 const float Radius = BoundsData.Radius * ModelScale;
-                Bounds.emplace_back(Center.x - Radius, Center.y - Radius, Center.z - Radius, 0.0f);
-                Bounds.emplace_back(Center.x + Radius, Center.y + Radius, Center.z + Radius, 0.0f);
+                Bounds.emplace_back(Center.x, Center.y, Center.z, Radius);
 
                 const DirectX::XMVECTOR LocalAxis = DirectX::XMLoadFloat3(&BoundsData.ConeAxis);
                 const DirectX::XMVECTOR WorldAxis = DirectX::XMVector3Normalize(DirectX::XMVector3TransformNormal(LocalAxis, NormalMatrix));
@@ -1800,8 +1799,16 @@ bool FForwardRenderer::CreateGpuDrivenResources(FDX12Device* Device)
             Command.DrawArguments.BaseVertexLocation = 0;
             Command.DrawArguments.StartInstanceLocation = SortedIndex;
             Commands.push_back(Command);
-            Bounds.emplace_back(Model.BoundsMin.x, Model.BoundsMin.y, Model.BoundsMin.z, 0.0f);
-            Bounds.emplace_back(Model.BoundsMax.x, Model.BoundsMax.y, Model.BoundsMax.z, 0.0f);
+            const DirectX::XMFLOAT3 Center{
+                (Model.BoundsMin.x + Model.BoundsMax.x) * 0.5f,
+                (Model.BoundsMin.y + Model.BoundsMax.y) * 0.5f,
+                (Model.BoundsMin.z + Model.BoundsMax.z) * 0.5f
+            };
+            const float Radius = std::sqrt(
+                (Model.BoundsMax.x - Center.x) * (Model.BoundsMax.x - Center.x) +
+                (Model.BoundsMax.y - Center.y) * (Model.BoundsMax.y - Center.y) +
+                (Model.BoundsMax.z - Center.z) * (Model.BoundsMax.z - Center.z));
+            Bounds.emplace_back(Center.x, Center.y, Center.z, Radius);
             MeshletConeAxisCutoff.emplace_back(0.0f, 0.0f, 1.0f, -1.0f);
             MeshletConeApex.emplace_back(0.0f, 0.0f, 0.0f, 0.0f);
             IndirectDrawRanges.back().Count += 1;
@@ -2038,7 +2045,7 @@ bool FForwardRenderer::CreateGpuDrivenResources(FDX12Device* Device)
 
     D3D12_RESOURCE_DESC StatsDesc = {};
     StatsDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    StatsDesc.Width = sizeof(uint32_t) * 2;
+    StatsDesc.Width = sizeof(uint32_t) * 3;
     StatsDesc.Height = 1;
     StatsDesc.DepthOrArraySize = 1;
     StatsDesc.MipLevels = 1;
@@ -2075,7 +2082,7 @@ bool FForwardRenderer::CreateGpuDrivenResources(FDX12Device* Device)
         HR_CHECK(GpuDebugPrintStatsUpload->Map(0, &EmptyRange, &StatsUploadData));
         if (StatsUploadData)
         {
-            std::memset(StatsUploadData, 0, sizeof(uint32_t) * 2);
+            std::memset(StatsUploadData, 0, sizeof(uint32_t) * 3);
         }
         GpuDebugPrintStatsUpload->Unmap(0, nullptr);
     }
@@ -2163,7 +2170,7 @@ bool FForwardRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     }
     if (GpuDebugPrintStatsBuffer && GpuDebugPrintStatsUpload)
     {
-        UploadList->CopyBufferRegion(GpuDebugPrintStatsBuffer.Get(), 0, GpuDebugPrintStatsUpload.Get(), 0, sizeof(uint32_t) * 2);
+        UploadList->CopyBufferRegion(GpuDebugPrintStatsBuffer.Get(), 0, GpuDebugPrintStatsUpload.Get(), 0, sizeof(uint32_t) * 3);
     }
 
     std::vector<D3D12_RESOURCE_BARRIER> PostCopyBarriers;

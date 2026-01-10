@@ -454,12 +454,12 @@ bool FRenderer::CreateShadowResources(
 
 void FRenderer::ConfigureHZBOcclusion(bool bEnabled, ID3D12DescriptorHeap* DescriptorHeap, D3D12_GPU_DESCRIPTOR_HANDLE Handle, uint32_t Width, uint32_t Height, uint32_t MipCount)
 {
-    bHZBOcclusionEnabled = bEnabled;
     CullingDescriptorHeap = DescriptorHeap;
     HZBCullingHandle = Handle;
     HZBCullingWidth = Width;
     HZBCullingHeight = Height;
     HZBCullingMipCount = MipCount;
+	bHZBOcclusionEnabled = bEnabled && HZBCullingWidth > 0 && HZBCullingHeight > 0 && HZBCullingMipCount > 0;
 }
 
 void FRenderer::DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamera& Camera)
@@ -598,7 +598,7 @@ void FRenderer::PrepareGpuDebugPrint(FDX12CommandContext& CmdContext)
         GpuDebugPrintStatsState = D3D12_RESOURCE_STATE_COPY_DEST;
     }
 
-    CommandList->CopyBufferRegion(GpuDebugPrintStatsBuffer.Get(), 0, GpuDebugPrintStatsUpload.Get(), 0, sizeof(uint32_t) * 2);
+    CommandList->CopyBufferRegion(GpuDebugPrintStatsBuffer.Get(), 0, GpuDebugPrintStatsUpload.Get(), 0, sizeof(uint32_t) * 3);
 
     D3D12_RESOURCE_BARRIER StatsBarrier = {};
     StatsBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -698,7 +698,7 @@ bool FRenderer::CreateGpuDebugPrintResources(FDX12Device* Device)
     StatsSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     StatsSrvDesc.Format = DXGI_FORMAT_R32_TYPELESS;
     StatsSrvDesc.Buffer.FirstElement = 0;
-    StatsSrvDesc.Buffer.NumElements = 2;
+    StatsSrvDesc.Buffer.NumElements = 3;
     StatsSrvDesc.Buffer.StructureByteStride = 0;
     StatsSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
     Device->GetDevice()->CreateShaderResourceView(GpuDebugPrintStatsBuffer.Get(), &StatsSrvDesc, CpuHandle);
@@ -814,34 +814,40 @@ bool FRenderer::CreateGpuDebugPrintStatsPipeline(FDX12Device* Device)
         return false;
     }
 
-    D3D12_DESCRIPTOR_RANGE Range = {};
+    D3D12_DESCRIPTOR_RANGE1 Range = {};
     Range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     Range.NumDescriptors = 1;
     Range.BaseShaderRegister = 0;
     Range.RegisterSpace = 0;
+    Range.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
     Range.OffsetInDescriptorsFromTableStart = 0;
 
-    D3D12_ROOT_PARAMETER Params[2] = {};
-    // Params[0]: Stats buffer SRV table (t0)
-    Params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    Params[0].DescriptorTable.NumDescriptorRanges = 1;
-    Params[0].DescriptorTable.pDescriptorRanges = &Range;
-    Params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    D3D12_ROOT_PARAMETER1 RootParams[2] = {};
+    // RootParams[0]: Stats buffer SRV table (t0), used in Shaders/GpuDebugPrintStats.hlsl CSMain
+    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    RootParams[0].DescriptorTable.NumDescriptorRanges = 1;
+    RootParams[0].DescriptorTable.pDescriptorRanges = &Range;
+    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // Params[1]: Debug print buffer UAV (u0)
-    Params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    Params[1].Descriptor.ShaderRegister = 0;
-    Params[1].Descriptor.RegisterSpace = 0;
-    Params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    // RootParams[1]: Debug print buffer UAV (u0), used in Shaders/GpuDebugPrintStats.hlsl CSMain
+    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+    RootParams[1].Descriptor.ShaderRegister = 0;
+    RootParams[1].Descriptor.RegisterSpace = 0;
+    RootParams[1].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+    RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    D3D12_ROOT_SIGNATURE_DESC RootDesc = {};
-    RootDesc.NumParameters = _countof(Params);
-    RootDesc.pParameters = Params;
+    D3D12_ROOT_SIGNATURE_DESC1 RootDesc = {};
+    RootDesc.NumParameters = _countof(RootParams);
+    RootDesc.pParameters = RootParams;
     RootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC VersionedRootDesc = {};
+    VersionedRootDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    VersionedRootDesc.Desc_1_1 = RootDesc;
 
     ComPtr<ID3DBlob> SerializedSig;
     ComPtr<ID3DBlob> ErrorBlob;
-    HR_CHECK(D3D12SerializeRootSignature(&RootDesc, D3D_ROOT_SIGNATURE_VERSION_1, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
+    HR_CHECK(D3D12SerializeVersionedRootSignature(&VersionedRootDesc, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
     HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(GpuDebugPrintStatsRootSignature.GetAddressOf())));
 
     FShaderCompiler Compiler;
