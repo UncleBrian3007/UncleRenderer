@@ -111,6 +111,31 @@ protected:
     bool CreateSceneConstantBuffersPerFrame(FDX12Device* Device, uint64_t BufferSize);
     bool CreateCullingConstantBuffersPerFrame(FDX12Device* Device);
 
+    // GPU-driven rendering helper methods
+
+    // Number of shared buffers transitioned during GPU-driven resource upload
+    // (DrawData, RangeOffset, Bounds, ConeAxis, ConeApex, Debug, Stats)
+    static constexpr uint32_t GpuDrivenSharedBufferCount = 7;
+
+    // Container for GPU-driven rendering data prepared for upload to GPU.
+    // Holds indirect draw commands, meshlet data, bounds, and culling cone information.
+    struct FGpuDrivenPreparedData
+    {
+        std::vector<FIndirectDrawCommand> Commands;     // Indirect draw commands for ExecuteIndirect
+        std::vector<FMeshletDrawData> MeshletDrawData;  // Per-meshlet draw metadata
+        std::vector<DirectX::XMFLOAT4> Bounds;          // Bounding sphere (xyz=center, w=radius)
+        std::vector<DirectX::XMFLOAT4> ConeAxisCutoff;  // Cone axis and cutoff for backface culling
+        std::vector<DirectX::XMFLOAT4> ConeApex;        // Cone apex for backface culling
+        std::vector<uint32_t> RangeOffsets;             // Starting offset for each draw range
+    };
+
+    bool PrepareGpuDrivenDrawData(FGpuDrivenPreparedData& OutData);
+    bool CreatePerFrameIndirectBuffers(FDX12Device* Device, const FGpuDrivenPreparedData& Data);
+    bool CreateSharedGpuDrivenBuffers(FDX12Device* Device, const FGpuDrivenPreparedData& Data);
+    bool UploadGpuDrivenBuffers(FDX12Device* Device, const FGpuDrivenPreparedData& Data);
+    bool CreateCullingPipelines(FDX12Device* Device);
+    bool CreateIndirectCommandSignature(FDX12Device* Device, ID3D12RootSignature* RootSignature);
+
     std::vector<FDepthResources> DepthResourcesPerFrame;
     std::vector<D3D12_RESOURCE_STATES> DepthBufferStates;
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SceneConstantBuffers;

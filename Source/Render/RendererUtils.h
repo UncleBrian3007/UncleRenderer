@@ -283,4 +283,8 @@ namespace RendererUtils
         const DirectX::XMVECTOR Planes[6],
         const DirectX::XMFLOAT3& BoundsMin,
         const DirectX::XMFLOAT3& BoundsMax);
+
+    // Builds a pipeline key from material properties for shader permutation selection
+    // bit 0: Normal, bit 1: MR, bit 2: BaseColor, bit 3: Emissive, bit 4: AlphaMask
+    uint32_t BuildPipelineKey(const FSceneModelResource& Model);
 }

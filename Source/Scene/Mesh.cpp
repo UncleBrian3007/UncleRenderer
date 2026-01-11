@@ -127,7 +127,7 @@ namespace
         size_t TotalTriangleCount = 0;
         for (const meshopt_Meshlet& Meshlet : TempMeshlets)
         {
-            FMesh::FMeshlet OutMeshlet{};
+            FMesh::FMeshlet OutMeshlet;
             OutMeshlet.VertexOffset = static_cast<uint32_t>(Meshlet.vertex_offset);
             OutMeshlet.TriangleOffset = static_cast<uint32_t>(Meshlet.triangle_offset);
             OutMeshlet.VertexCount = static_cast<uint32_t>(Meshlet.vertex_count);
@@ -165,7 +165,7 @@ namespace
                 BuildVertices.size(),
                 sizeof(FMesh::FVertex));
 
-            FMesh::FMeshletBounds OutBounds{};
+            FMesh::FMeshletBounds OutBounds;
             OutBounds.Center = { Bounds.center[0], Bounds.center[1], Bounds.center[2] };
             OutBounds.Radius = Bounds.radius;
             OutBounds.ConeApex = { Bounds.cone_apex[0], Bounds.cone_apex[1], Bounds.cone_apex[2] };

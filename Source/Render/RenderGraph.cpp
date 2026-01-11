@@ -156,7 +156,7 @@ FRGResourceHandle FRenderGraph::ImportTexture(
 FRGResourceHandle FRenderGraph::RegisterTexture(const std::string& Name, const FRGTextureDesc& Desc)
 {
     FRGResourceHandle Handle = { static_cast<uint32>(Textures.size()) };
-    FRGTextureResource Resource = {};
+    FRGTextureResource Resource;
     Resource.Name = Name;
     Resource.Desc = Desc;
     Textures.push_back(Resource);
@@ -595,7 +595,7 @@ bool FRenderGraph::AcquireTransientTexture(FRGTextureResource& Texture, D3D12_RE
         NewResource->SetName(WName.c_str());
     }
 
-    FPooledTexture Pooled = {};
+    FPooledTexture Pooled;
     Pooled.Desc = Texture.Desc;
     Pooled.Flags = Texture.Flags;
     Pooled.Resource = NewResource;

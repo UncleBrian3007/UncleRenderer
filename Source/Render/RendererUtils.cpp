@@ -1190,7 +1190,7 @@ bool RendererUtils::CreateSkyAtmosphereResources(
     Microsoft::WRL::ComPtr<ID3D12Resource>& OutConstantBuffer,
     uint8_t*& OutConstantBufferMapped)
 {
-    FMappedConstantBuffer SkyConstantBuffer = {};
+    FMappedConstantBuffer SkyConstantBuffer;
     if (!CreateMappedConstantBuffer(Device, sizeof(FSkyAtmosphereConstants), SkyConstantBuffer))
     {
         return false;
@@ -1535,4 +1535,14 @@ bool RendererUtils::IsAabbInCameraFrustum(
     }
 
     return true;
+}
+
+uint32_t RendererUtils::BuildPipelineKey(const FSceneModelResource& Model)
+{
+    const uint32_t UseNormal = Model.bHasNormalMap ? 1u : 0u;
+    const uint32_t UseMr = !Model.MetallicRoughnessTexturePath.empty() ? 1u : 0u;
+    const uint32_t UseBase = !Model.BaseColorTexturePath.empty() ? 1u : 0u;
+    const uint32_t UseEmissive = !Model.EmissiveTexturePath.empty() ? 1u : 0u;
+    const uint32_t UseAlphaMask = (Model.AlphaMode == 1u) ? 1u : 0u;
+    return (UseNormal) | (UseMr << 1) | (UseBase << 2) | (UseEmissive << 3) | (UseAlphaMask << 4);
 }
