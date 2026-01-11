@@ -10,9 +10,13 @@ cbuffer AutoExposureConstants : register(b0)
     float AutoExposureMax;
 };
 
-Texture2D HDRScene : register(t0);
-Texture2D PrevLogAverageLuminance : register(t1);
-RWTexture2D<float> LogAverageLuminance : register(u0);
+cbuffer AutoExposureBindlessConstants : register(b1)
+{
+    uint HDRSceneIndex;
+    uint PrevLogAverageLuminanceIndex;
+    uint LogAverageLuminanceIndex;
+};
+
 SamplerState SceneSampler : register(s0);
 
 #if (__SHADER_TARGET_MAJOR__ >= 6)
@@ -29,6 +33,9 @@ void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID, uint3 GroupThreadId : 
     float2 uv = samplePos / max(InputSize, 1.0f);
     float mipLevel = max(0.0f, log2(max(InputSize.x, InputSize.y)) - 4.0f);
 
+    Texture2D HDRScene = ResourceDescriptorHeap[HDRSceneIndex];
+    Texture2D PrevLogAverageLuminance = ResourceDescriptorHeap[PrevLogAverageLuminanceIndex];
+    RWTexture2D<float> LogAverageLuminance = ResourceDescriptorHeap[LogAverageLuminanceIndex];
     float3 color = HDRScene.SampleLevel(SceneSampler, uv, mipLevel).rgb;
     const float3 LuminanceWeights = float3(0.2126f, 0.7152f, 0.0722f);
     float luminance = dot(max(color, 0.0f), LuminanceWeights);

@@ -1339,7 +1339,7 @@ void FDeferredRenderer::AddLinearDepthPass(FRenderGraph& Graph, const FDeferredF
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
         FScopedPixEvent LinearDepthEvent(LocalCommandList, L"LinearDepth");
 
-        ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
+        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         Cmd.SetRenderTarget(LinearDepthRtvHandle, nullptr);
 
@@ -1355,9 +1355,9 @@ void FDeferredRenderer::AddLinearDepthPass(FRenderGraph& Graph, const FDeferredF
         LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         LocalCommandList->SetGraphicsRootConstantBufferView(0, GetSceneConstantBufferAddress());
 
-        const uint32_t DepthIndex = GetFrameIndex() % static_cast<uint32_t>(DepthBufferHandles.size());
-        const D3D12_GPU_DESCRIPTOR_HANDLE DepthHandle = DepthBufferHandles.empty() ? D3D12_GPU_DESCRIPTOR_HANDLE{} : DepthBufferHandles[DepthIndex];
-        LocalCommandList->SetGraphicsRootDescriptorTable(1, DepthHandle);
+        const uint32_t DepthIndex = GetFrameIndex() % static_cast<uint32_t>(DepthBindlessIndices.size());
+        const uint32_t DepthBindlessIndex = DepthBindlessIndices.empty() ? UINT32_MAX : DepthBindlessIndices[DepthIndex];
+        LocalCommandList->SetGraphicsRoot32BitConstant(1, DepthBindlessIndex, 0);
 
         LocalCommandList->DrawInstanced(3, 1, 0, 0);
     });
@@ -1393,7 +1393,7 @@ void FDeferredRenderer::AddGtaoPass(FRenderGraph& Graph, const FDeferredFrameSta
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
         FScopedPixEvent GtaoEvent(LocalCommandList, L"GTAO");
 
-        ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
+        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         Cmd.SetRenderTarget(GtaoRtvHandle, nullptr);
 
@@ -1408,10 +1408,13 @@ void FDeferredRenderer::AddGtaoPass(FRenderGraph& Graph, const FDeferredFrameSta
 
         LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         LocalCommandList->SetGraphicsRootConstantBufferView(0, GetSceneConstantBufferAddress());
-        LocalCommandList->SetGraphicsRootDescriptorTable(1, GBufferGpuHandles[0]);
-
-        LocalCommandList->SetGraphicsRootDescriptorTable(2, LinearDepthSrvHandle);
-        LocalCommandList->SetGraphicsRootDescriptorTable(3, HilbertLutSrvHandle);
+        const uint32_t GtaoBindlessIndices[] =
+        {
+            GBufferBindlessIndices[0],
+            LinearDepthBindlessIndex,
+            HilbertLutBindlessIndex
+        };
+        LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(GtaoBindlessIndices), GtaoBindlessIndices, 0);
 
         LocalCommandList->DrawInstanced(3, 1, 0, 0);
     });
@@ -1566,14 +1569,18 @@ void FDeferredRenderer::AddTemporalAAPass(FRenderGraph& Graph, const FDeferredFr
             Data.UseHistory
         };
 
-        ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
+        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
         LocalCommandList->SetPipelineState(TaaPipeline.Get());
         LocalCommandList->SetComputeRootSignature(TaaRootSignature.Get());
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(Constants) / sizeof(uint32_t), &Constants, 0);
-        LocalCommandList->SetComputeRootDescriptorTable(1, LightingBufferHandle);
-        LocalCommandList->SetComputeRootDescriptorTable(2, TaaSrvHandles[Data.ReadIndex]);
-        LocalCommandList->SetComputeRootDescriptorTable(3, TaaUavHandles[Data.WriteIndex]);
+        const uint32_t TaaBindlessIndices[] =
+        {
+            LightingBufferBindlessIndex,
+            TaaSrvBindlessIndices[Data.ReadIndex],
+            TaaUavBindlessIndices[Data.WriteIndex]
+        };
+        LocalCommandList->SetComputeRoot32BitConstants(1, _countof(TaaBindlessIndices), TaaBindlessIndices, 0);
 
         const uint32_t GroupX = (static_cast<uint32_t>(Data.OutputSize.x) + 7u) / 8u;
         const uint32_t GroupY = (static_cast<uint32_t>(Data.OutputSize.y) + 7u) / 8u;
@@ -1646,14 +1653,18 @@ void FDeferredRenderer::AddAutoExposurePass(FRenderGraph& Graph, const FDeferred
             AutoExposureMax
         };
 
-        ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
+        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
         LocalCommandList->SetPipelineState(AutoExposurePipeline.Get());
         LocalCommandList->SetComputeRootSignature(AutoExposureRootSignature.Get());
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(Constants) / sizeof(uint32_t), &Constants, 0);
-        LocalCommandList->SetComputeRootDescriptorTable(1, LightingBufferHandle);
-        LocalCommandList->SetComputeRootDescriptorTable(2, LuminanceSrvHandles[Data.ReadIndex]);
-        LocalCommandList->SetComputeRootDescriptorTable(3, LuminanceUavHandles[Data.WriteIndex]);
+        const uint32_t AutoExposureBindlessIndices[] =
+        {
+            LightingBufferBindlessIndex,
+            LuminanceSrvBindlessIndices[Data.ReadIndex],
+            LuminanceUavBindlessIndices[Data.WriteIndex]
+        };
+        LocalCommandList->SetComputeRoot32BitConstants(1, _countof(AutoExposureBindlessIndices), AutoExposureBindlessIndices, 0);
         LocalCommandList->Dispatch(1, 1, 1);
     });
 }
@@ -1664,6 +1675,7 @@ void FDeferredRenderer::AddTonemapPass(FRenderGraph& Graph, const FDeferredFrame
     {
         D3D12_CPU_DESCRIPTOR_HANDLE OutputHandle{};
         D3D12_GPU_DESCRIPTOR_HANDLE InputHandle{};
+        uint32_t InputBindlessIndex = UINT32_MAX;
         bool bUseCas = false;
         bool bUseAutoExposure = false;
         bool bUseTaa = false;
@@ -1678,6 +1690,7 @@ void FDeferredRenderer::AddTonemapPass(FRenderGraph& Graph, const FDeferredFrame
         Data.bUseTaa = FrameState.bTaaActive;
         Data.LuminanceIndex = LuminanceWriteIndex;
         Data.InputHandle = Data.bUseTaa ? TaaSrvHandles[FrameState.TaaWriteIndex] : LightingBufferHandle;
+        Data.InputBindlessIndex = Data.bUseTaa ? TaaSrvBindlessIndices[FrameState.TaaWriteIndex] : LightingBufferBindlessIndex;
         if (Data.bUseTaa)
         {
             Builder.ReadTexture(TaaHandles[FrameState.TaaWriteIndex], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -1718,7 +1731,7 @@ void FDeferredRenderer::AddTonemapPass(FRenderGraph& Graph, const FDeferredFrame
             TonemapGamma
         };
 
-        ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
+        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
         LocalCommandList->SetPipelineState(TonemapPipeline.Get());
         LocalCommandList->SetGraphicsRootSignature(TonemapRootSignature.Get());
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
@@ -1728,8 +1741,12 @@ void FDeferredRenderer::AddTonemapPass(FRenderGraph& Graph, const FDeferredFrame
 
         LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         LocalCommandList->SetGraphicsRoot32BitConstants(0, sizeof(TonemapConstants) / sizeof(uint32_t), &TonemapConstants, 0);
-        LocalCommandList->SetGraphicsRootDescriptorTable(1, Data.InputHandle);
-        LocalCommandList->SetGraphicsRootDescriptorTable(2, LuminanceSrvHandles[Data.LuminanceIndex]);
+        const uint32_t TonemapBindlessIndices[] =
+        {
+            Data.InputBindlessIndex,
+            LuminanceSrvBindlessIndices[Data.LuminanceIndex]
+        };
+        LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(TonemapBindlessIndices), TonemapBindlessIndices, 0);
         LocalCommandList->DrawInstanced(3, 1, 0, 0);
 
         Cmd.TransitionResource(LightingBuffer.Get(), LightingBufferState, D3D12_RESOURCE_STATE_RENDER_TARGET);
@@ -1785,7 +1802,7 @@ void FDeferredRenderer::AddCasPass(FRenderGraph& Graph, const FDeferredFrameStat
             0.0f
         };
 
-        ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
+        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
         LocalCommandList->SetPipelineState(CasPipeline.Get());
         LocalCommandList->SetGraphicsRootSignature(CasRootSignature.Get());
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
@@ -1795,7 +1812,7 @@ void FDeferredRenderer::AddCasPass(FRenderGraph& Graph, const FDeferredFrameStat
 
         LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         LocalCommandList->SetGraphicsRoot32BitConstants(0, sizeof(CasConstants) / sizeof(uint32_t), &CasConstants, 0);
-        LocalCommandList->SetGraphicsRootDescriptorTable(1, Data.InputHandle);
+        LocalCommandList->SetGraphicsRoot32BitConstant(1, TonemapOutputBindlessIndex, 0);
         LocalCommandList->DrawInstanced(3, 1, 0, 0);
     });
 }
@@ -2221,14 +2238,6 @@ bool FDeferredRenderer::CreateDepthPrepassPipeline(FDX12Device* Device)
 
 bool FDeferredRenderer::CreateLinearDepthRootSignature(FDX12Device* Device)
 {
-    D3D12_DESCRIPTOR_RANGE1 DescriptorRange = {};
-    DescriptorRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    DescriptorRange.NumDescriptors = 1;
-    DescriptorRange.BaseShaderRegister = 0;
-    DescriptorRange.RegisterSpace = 0;
-    DescriptorRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
-    DescriptorRange.OffsetInDescriptorsFromTableStart = 0;
-
     D3D12_ROOT_PARAMETER1 RootParams[2] = {};
     // RootParams[0]: Linear depth constants (b0), used in Shaders/LinearDepth.hlsl VSMain and PSMain
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
@@ -2237,11 +2246,12 @@ bool FDeferredRenderer::CreateLinearDepthRootSignature(FDX12Device* Device)
     RootParams[0].Descriptor.RegisterSpace = 0;
     RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
 
-    // RootParams[1]: Depth SRV table (t0), used in Shaders/LinearDepth.hlsl PSMain
-    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    // RootParams[1]: Depth bindless index (b1), used in Shaders/LinearDepth.hlsl PSMain
+    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    RootParams[1].DescriptorTable.NumDescriptorRanges = 1;
-    RootParams[1].DescriptorTable.pDescriptorRanges = &DescriptorRange;
+    RootParams[1].Constants.Num32BitValues = 1;
+    RootParams[1].Constants.ShaderRegister = 1;
+    RootParams[1].Constants.RegisterSpace = 0;
 
     D3D12_STATIC_SAMPLER_DESC SamplerDesc = {};
     SamplerDesc.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
@@ -2262,7 +2272,8 @@ bool FDeferredRenderer::CreateLinearDepthRootSignature(FDX12Device* Device)
     RootSigDesc.Desc_1_1.pParameters = RootParams;
     RootSigDesc.Desc_1_1.NumStaticSamplers = 1;
     RootSigDesc.Desc_1_1.pStaticSamplers = &SamplerDesc;
-    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+        | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
 
     ComPtr<ID3DBlob> SerializedSig;
     ComPtr<ID3DBlob> ErrorBlob;
@@ -2382,29 +2393,7 @@ bool FDeferredRenderer::CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT 
 
 bool FDeferredRenderer::CreateGtaoRootSignature(FDX12Device* Device)
 {
-    D3D12_DESCRIPTOR_RANGE1 DescriptorRanges[3] = {};
-    DescriptorRanges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    DescriptorRanges[0].NumDescriptors = 1;
-    DescriptorRanges[0].BaseShaderRegister = 0;
-    DescriptorRanges[0].RegisterSpace = 0;
-    DescriptorRanges[0].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
-    DescriptorRanges[0].OffsetInDescriptorsFromTableStart = 0;
-
-    DescriptorRanges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    DescriptorRanges[1].NumDescriptors = 1;
-    DescriptorRanges[1].BaseShaderRegister = 1;
-    DescriptorRanges[1].RegisterSpace = 0;
-    DescriptorRanges[1].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
-    DescriptorRanges[1].OffsetInDescriptorsFromTableStart = 0;
-
-    DescriptorRanges[2].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    DescriptorRanges[2].NumDescriptors = 1;
-    DescriptorRanges[2].BaseShaderRegister = 2;
-    DescriptorRanges[2].RegisterSpace = 0;
-    DescriptorRanges[2].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
-    DescriptorRanges[2].OffsetInDescriptorsFromTableStart = 0;
-
-    D3D12_ROOT_PARAMETER1 RootParams[4] = {};
+    D3D12_ROOT_PARAMETER1 RootParams[2] = {};
     // RootParams[0]: Scene constants (b0) used in Gtao.hlsl.
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
@@ -2412,23 +2401,12 @@ bool FDeferredRenderer::CreateGtaoRootSignature(FDX12Device* Device)
     RootParams[0].Descriptor.RegisterSpace = 0;
     RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
 
-    // RootParams[1]: GBufferA SRV (t0) used in Gtao.hlsl.
-    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    // RootParams[1]: GTAO bindless indices (b1) used in Gtao.hlsl.
+    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    RootParams[1].DescriptorTable.NumDescriptorRanges = 1;
-    RootParams[1].DescriptorTable.pDescriptorRanges = &DescriptorRanges[0];
-
-    // RootParams[2]: Linear depth SRV (t1) used in Gtao.hlsl.
-    RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    RootParams[2].DescriptorTable.NumDescriptorRanges = 1;
-    RootParams[2].DescriptorTable.pDescriptorRanges = &DescriptorRanges[1];
-
-    // RootParams[3]: Hilbert LUT SRV (t2) used in Gtao.hlsl.
-    RootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    RootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    RootParams[3].DescriptorTable.NumDescriptorRanges = 1;
-    RootParams[3].DescriptorTable.pDescriptorRanges = &DescriptorRanges[2];
+    RootParams[1].Constants.Num32BitValues = 3;
+    RootParams[1].Constants.ShaderRegister = 1;
+    RootParams[1].Constants.RegisterSpace = 0;
 
     D3D12_STATIC_SAMPLER_DESC SamplerDesc = {};
     SamplerDesc.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
@@ -2449,7 +2427,8 @@ bool FDeferredRenderer::CreateGtaoRootSignature(FDX12Device* Device)
     RootSigDesc.Desc_1_1.pParameters = RootParams;
     RootSigDesc.Desc_1_1.NumStaticSamplers = 1;
     RootSigDesc.Desc_1_1.pStaticSamplers = &SamplerDesc;
-    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+        | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
 
     ComPtr<ID3DBlob> SerializedSig;
     ComPtr<ID3DBlob> ErrorBlob;
@@ -2648,31 +2627,7 @@ bool FDeferredRenderer::CreateHZBPipeline(FDX12Device* Device)
 
 bool FDeferredRenderer::CreateAutoExposureRootSignature(FDX12Device* Device)
 {
-    D3D12_DESCRIPTOR_RANGE1 SceneSrvRange = {};
-    SceneSrvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    SceneSrvRange.NumDescriptors = 1;
-    SceneSrvRange.BaseShaderRegister = 0;
-    SceneSrvRange.RegisterSpace = 0;
-    SceneSrvRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
-    SceneSrvRange.OffsetInDescriptorsFromTableStart = 0;
-
-    D3D12_DESCRIPTOR_RANGE1 HistorySrvRange = {};
-    HistorySrvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    HistorySrvRange.NumDescriptors = 1;
-    HistorySrvRange.BaseShaderRegister = 1;
-    HistorySrvRange.RegisterSpace = 0;
-    HistorySrvRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
-    HistorySrvRange.OffsetInDescriptorsFromTableStart = 0;
-
-    D3D12_DESCRIPTOR_RANGE1 UavRange = {};
-    UavRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-    UavRange.NumDescriptors = 1;
-    UavRange.BaseShaderRegister = 0;
-    UavRange.RegisterSpace = 0;
-    UavRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
-    UavRange.OffsetInDescriptorsFromTableStart = 0;
-
-    D3D12_ROOT_PARAMETER1 RootParams[4] = {};
+    D3D12_ROOT_PARAMETER1 RootParams[2] = {};
     // RootParams[0]: Auto exposure constants (input size, delta time, adaptation), used in Shaders/AutoExposure.hlsl CSMain
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
@@ -2680,23 +2635,12 @@ bool FDeferredRenderer::CreateAutoExposureRootSignature(FDX12Device* Device)
     RootParams[0].Constants.RegisterSpace = 0;
     RootParams[0].Constants.ShaderRegister = 0;
 
-    // RootParams[1]: Scene color SRV (t0), used in Shaders/AutoExposure.hlsl CSMain
-    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    // RootParams[1]: Auto exposure bindless indices (b1), used in Shaders/AutoExposure.hlsl CSMain
+    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[1].DescriptorTable.NumDescriptorRanges = 1;
-    RootParams[1].DescriptorTable.pDescriptorRanges = &SceneSrvRange;
-
-    // RootParams[2]: Luminance history SRV (t1), used in Shaders/AutoExposure.hlsl CSMain
-    RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[2].DescriptorTable.NumDescriptorRanges = 1;
-    RootParams[2].DescriptorTable.pDescriptorRanges = &HistorySrvRange;
-
-    // RootParams[3]: Luminance output UAV (u0), used in Shaders/AutoExposure.hlsl CSMain
-    RootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    RootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[3].DescriptorTable.NumDescriptorRanges = 1;
-    RootParams[3].DescriptorTable.pDescriptorRanges = &UavRange;
+    RootParams[1].Constants.Num32BitValues = 3;
+    RootParams[1].Constants.RegisterSpace = 0;
+    RootParams[1].Constants.ShaderRegister = 1;
 
     D3D12_STATIC_SAMPLER_DESC SamplerDesc = {};
     SamplerDesc.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -2717,7 +2661,7 @@ bool FDeferredRenderer::CreateAutoExposureRootSignature(FDX12Device* Device)
     RootSigDesc.Desc_1_1.pParameters = RootParams;
     RootSigDesc.Desc_1_1.NumStaticSamplers = 1;
     RootSigDesc.Desc_1_1.pStaticSamplers = &SamplerDesc;
-    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
 
     ComPtr<ID3DBlob> SerializedSig;
     ComPtr<ID3DBlob> ErrorBlob;
@@ -2753,31 +2697,7 @@ bool FDeferredRenderer::CreateAutoExposurePipeline(FDX12Device* Device)
 
 bool FDeferredRenderer::CreateTaaRootSignature(FDX12Device* Device)
 {
-    D3D12_DESCRIPTOR_RANGE1 CurrentRange = {};
-    CurrentRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    CurrentRange.NumDescriptors = 1;
-    CurrentRange.BaseShaderRegister = 0;
-    CurrentRange.RegisterSpace = 0;
-    CurrentRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
-    CurrentRange.OffsetInDescriptorsFromTableStart = 0;
-
-    D3D12_DESCRIPTOR_RANGE1 HistoryRange = {};
-    HistoryRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    HistoryRange.NumDescriptors = 1;
-    HistoryRange.BaseShaderRegister = 1;
-    HistoryRange.RegisterSpace = 0;
-    HistoryRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
-    HistoryRange.OffsetInDescriptorsFromTableStart = 0;
-
-    D3D12_DESCRIPTOR_RANGE1 OutputRange = {};
-    OutputRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-    OutputRange.NumDescriptors = 1;
-    OutputRange.BaseShaderRegister = 0;
-    OutputRange.RegisterSpace = 0;
-    OutputRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
-    OutputRange.OffsetInDescriptorsFromTableStart = 0;
-
-    D3D12_ROOT_PARAMETER1 RootParams[4] = {};
+    D3D12_ROOT_PARAMETER1 RootParams[2] = {};
 
     // RootParams[0]: TAA constants (output size, history weight, history toggle), used in Shaders/TemporalAA.hlsl CSMain
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
@@ -2786,23 +2706,12 @@ bool FDeferredRenderer::CreateTaaRootSignature(FDX12Device* Device)
     RootParams[0].Constants.RegisterSpace = 0;
     RootParams[0].Constants.ShaderRegister = 0;
 
-    // RootParams[1]: Current lighting SRV (t0), used in Shaders/TemporalAA.hlsl CSMain
-    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    // RootParams[1]: TAA bindless indices (b1), used in Shaders/TemporalAA.hlsl CSMain
+    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[1].DescriptorTable.NumDescriptorRanges = 1;
-    RootParams[1].DescriptorTable.pDescriptorRanges = &CurrentRange;
-
-    // RootParams[2]: History SRV (t1), used in Shaders/TemporalAA.hlsl CSMain
-    RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[2].DescriptorTable.NumDescriptorRanges = 1;
-    RootParams[2].DescriptorTable.pDescriptorRanges = &HistoryRange;
-
-    // RootParams[3]: Output UAV (u0), used in Shaders/TemporalAA.hlsl CSMain
-    RootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    RootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[3].DescriptorTable.NumDescriptorRanges = 1;
-    RootParams[3].DescriptorTable.pDescriptorRanges = &OutputRange;
+    RootParams[1].Constants.Num32BitValues = 3;
+    RootParams[1].Constants.RegisterSpace = 0;
+    RootParams[1].Constants.ShaderRegister = 1;
 
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
     RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
@@ -2810,7 +2719,7 @@ bool FDeferredRenderer::CreateTaaRootSignature(FDX12Device* Device)
     RootSigDesc.Desc_1_1.pParameters = RootParams;
     RootSigDesc.Desc_1_1.NumStaticSamplers = 0;
     RootSigDesc.Desc_1_1.pStaticSamplers = nullptr;
-    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
 
     ComPtr<ID3DBlob> SerializedSig;
     ComPtr<ID3DBlob> ErrorBlob;
@@ -2846,23 +2755,7 @@ bool FDeferredRenderer::CreateTaaPipeline(FDX12Device* Device)
 
 bool FDeferredRenderer::CreateTonemapRootSignature(FDX12Device* Device)
 {
-    D3D12_DESCRIPTOR_RANGE1 LightingRange = {};
-    LightingRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    LightingRange.NumDescriptors = 1;
-    LightingRange.BaseShaderRegister = 0;
-    LightingRange.RegisterSpace = 0;
-    LightingRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
-    LightingRange.OffsetInDescriptorsFromTableStart = 0;
-
-    D3D12_DESCRIPTOR_RANGE1 LuminanceRange = {};
-    LuminanceRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    LuminanceRange.NumDescriptors = 1;
-    LuminanceRange.BaseShaderRegister = 1;
-    LuminanceRange.RegisterSpace = 0;
-    LuminanceRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
-    LuminanceRange.OffsetInDescriptorsFromTableStart = 0;
-
-    D3D12_ROOT_PARAMETER1 RootParams[3] = {};
+    D3D12_ROOT_PARAMETER1 RootParams[2] = {};
 
     // RootParams[0]: Tonemap constants (exposure/gamma/auto-exposure), used in Shaders/Tonemap.hlsl PSMain
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
@@ -2871,17 +2764,12 @@ bool FDeferredRenderer::CreateTonemapRootSignature(FDX12Device* Device)
     RootParams[0].Constants.RegisterSpace = 0;
     RootParams[0].Constants.ShaderRegister = 0;
 
-    // RootParams[1]: Lighting buffer SRV (t0), used in Shaders/Tonemap.hlsl PSMain
-    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    // RootParams[1]: Tonemap bindless indices (b1), used in Shaders/Tonemap.hlsl PSMain
+    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    RootParams[1].DescriptorTable.NumDescriptorRanges = 1;
-    RootParams[1].DescriptorTable.pDescriptorRanges = &LightingRange;
-
-    // RootParams[2]: Luminance SRV (t1), used in Shaders/Tonemap.hlsl PSMain
-    RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    RootParams[2].DescriptorTable.NumDescriptorRanges = 1;
-    RootParams[2].DescriptorTable.pDescriptorRanges = &LuminanceRange;
+    RootParams[1].Constants.Num32BitValues = 2;
+    RootParams[1].Constants.RegisterSpace = 0;
+    RootParams[1].Constants.ShaderRegister = 1;
 
     D3D12_STATIC_SAMPLER_DESC SamplerDesc = {};
     SamplerDesc.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -2902,7 +2790,8 @@ bool FDeferredRenderer::CreateTonemapRootSignature(FDX12Device* Device)
     RootSigDesc.Desc_1_1.pParameters = RootParams;
     RootSigDesc.Desc_1_1.NumStaticSamplers = 1;
     RootSigDesc.Desc_1_1.pStaticSamplers = &SamplerDesc;
-    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+        | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
 
     ComPtr<ID3DBlob> SerializedSig;
     ComPtr<ID3DBlob> ErrorBlob;
@@ -2967,14 +2856,6 @@ bool FDeferredRenderer::CreateTonemapPipeline(FDX12Device* Device, DXGI_FORMAT B
 
 bool FDeferredRenderer::CreateCasRootSignature(FDX12Device* Device)
 {
-    D3D12_DESCRIPTOR_RANGE1 InputRange = {};
-    InputRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    InputRange.NumDescriptors = 1;
-    InputRange.BaseShaderRegister = 0;
-    InputRange.RegisterSpace = 0;
-    InputRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
-    InputRange.OffsetInDescriptorsFromTableStart = 0;
-
     D3D12_ROOT_PARAMETER1 RootParams[2] = {};
 
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
@@ -2983,10 +2864,11 @@ bool FDeferredRenderer::CreateCasRootSignature(FDX12Device* Device)
     RootParams[0].Constants.RegisterSpace = 0;
     RootParams[0].Constants.ShaderRegister = 0;
 
-    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    RootParams[1].DescriptorTable.NumDescriptorRanges = 1;
-    RootParams[1].DescriptorTable.pDescriptorRanges = &InputRange;
+    RootParams[1].Constants.Num32BitValues = 1;
+    RootParams[1].Constants.RegisterSpace = 0;
+    RootParams[1].Constants.ShaderRegister = 1;
 
     D3D12_STATIC_SAMPLER_DESC SamplerDesc = {};
     SamplerDesc.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -3007,7 +2889,8 @@ bool FDeferredRenderer::CreateCasRootSignature(FDX12Device* Device)
     RootSigDesc.Desc_1_1.pParameters = RootParams;
     RootSigDesc.Desc_1_1.NumStaticSamplers = 1;
     RootSigDesc.Desc_1_1.pStaticSamplers = &SamplerDesc;
-    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+        | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
 
     ComPtr<ID3DBlob> SerializedSig;
     ComPtr<ID3DBlob> ErrorBlob;

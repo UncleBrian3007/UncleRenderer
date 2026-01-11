@@ -6,9 +6,13 @@ struct VSOutput
     float2 UV       : TEXCOORD0;
 };
 
-Texture2D GBufferA : register(t0);
-Texture2D LinearDepthTexture : register(t1);
-Texture2D<uint> HilbertLUT : register(t2);
+cbuffer GtaoBindlessConstants : register(b1)
+{
+    uint GBufferAIndex;
+    uint LinearDepthIndex;
+    uint HilbertLutIndex;
+};
+
 SamplerState GBufferSampler : register(s0);
 
 VSOutput VSMain(uint VertexId : SV_VertexID)
@@ -53,16 +57,16 @@ float FastACos(float inX)
 #define XE_HILBERT_LEVEL 6u
 #define XE_HILBERT_WIDTH (1u << XE_HILBERT_LEVEL)
 
-float2 SpatioTemporalNoise(uint2 pixCoord, uint temporalIndex)
+float2 SpatioTemporalNoise(Texture2D<uint> HilbertLut, uint2 pixCoord, uint temporalIndex)
 {
     uint2 wrappedCoord = pixCoord & (XE_HILBERT_WIDTH - 1u);
-    uint index = HilbertLUT.Load(uint3(wrappedCoord, 0)).x;
+    uint index = HilbertLut.Load(uint3(wrappedCoord, 0)).x;
     index += 288u * (temporalIndex & (XE_HILBERT_WIDTH - 1u));
     return frac(0.5f + index * float2(0.75487766624669276005f, 0.56984029099805326591f));
 }
 
 // Based on https://github.com/GameTechDev/XeGTAO
-float ComputeGtao(float2 uv, uint2 pixCoord, float3 viewPos, float3 viewNormal)
+float ComputeGtao(Texture2D<float> LinearDepthTexture, Texture2D<uint> HilbertLut, float2 uv, uint2 pixCoord, float3 viewPos, float3 viewNormal)
 {
     if (GtaoIntensity <= 0.0f || GtaoRadius <= 0.0f)
     {
@@ -78,7 +82,7 @@ float ComputeGtao(float2 uv, uint2 pixCoord, float3 viewPos, float3 viewNormal)
     float3 viewVec = normalize(-viewPos);
 
 #if GTAO_USE_JITTER
-    float2 jitter = SpatioTemporalNoise(pixCoord, GtaoTemporalIndex);
+    float2 jitter = SpatioTemporalNoise(HilbertLut, pixCoord, GtaoTemporalIndex);
 #else
     float2 jitter = float2(0.5f, 0.5f);
 #endif
@@ -197,11 +201,14 @@ float ComputeGtao(float2 uv, uint2 pixCoord, float3 viewPos, float3 viewNormal)
 
 float4 PSMain(VSOutput Input) : SV_Target
 {
+    Texture2D<float4> GBufferA = ResourceDescriptorHeap[GBufferAIndex];
+    Texture2D<float> LinearDepthTexture = ResourceDescriptorHeap[LinearDepthIndex];
+    Texture2D<uint> HilbertLut = ResourceDescriptorHeap[HilbertLutIndex];
     float4 normalEncoded = GBufferA.Sample(GBufferSampler, Input.UV);
     float3 normal = normalize(normalEncoded.xyz * 2.0f - 1.0f);
     float viewZ = LinearDepthTexture.Sample(GBufferSampler, Input.UV).r;
     float3 viewPos = ReconstructViewPosition(Input.UV, viewZ);
     uint2 pixCoord = uint2(Input.Position.xy);
-    float ao = ComputeGtao(Input.UV, pixCoord, viewPos, normal);
+    float ao = ComputeGtao(LinearDepthTexture, HilbertLut, Input.UV, pixCoord, viewPos, normal);
     return float4(ao, ao, ao, 1.0f);
 }

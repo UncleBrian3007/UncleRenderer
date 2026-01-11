@@ -48,5 +48,5 @@ private:
     std::unique_ptr<FDX12CommandQueue> GraphicsQueue;
 
     bool bAllowTearing = false;
-    D3D_SHADER_MODEL ShaderModel = D3D_SHADER_MODEL_6_0;
+    D3D_SHADER_MODEL ShaderModel = D3D_SHADER_MODEL_6_6;
 };

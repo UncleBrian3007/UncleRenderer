@@ -48,7 +48,11 @@ cbuffer CasParams : register(b0)
     float Padding;
 };
 
-Texture2D InputTexture : register(t0);
+cbuffer CasBindlessConstants : register(b1)
+{
+    uint InputTextureIndex;
+};
+
 SamplerState InputSampler : register(s0);
 
 static const float3 LumCoeff = float3(0.2126f, 0.7152f, 0.0722f);
@@ -67,6 +71,7 @@ static const float2 CrossOffsets[4] =
 // Based on rs_rcas.fsh from AMD FidelityFX CAS
 float4 PSMain(VSOutput Input) : SV_Target
 {
+    Texture2D InputTexture = ResourceDescriptorHeap[InputTextureIndex];
     float2 uv = Input.UV;
     float3 C = InputTexture.Sample(InputSampler, uv).rgb;
     float CL = dot(C, LumCoeff);
@@ -81,27 +86,27 @@ float4 PSMain(VSOutput Input) : SV_Target
     float EL = dot(E, LumCoeff);
     float SL = dot(S, LumCoeff);
 
-    // »þÇÁ´×À» ÇØµµ ¾ÈÀüÇÑ °÷À» Ã£´Â °Í, ÀÌ¹Ì ³Ê¹« ¾îµÓ°Å³ª/¹à°Å³ª/´ëºñ°¡ ½ÉÇÑ °÷Àº Á¦¿Ü 
-	float3 minRGB = min(min(min(N, W), min(E, S)), C); // Áß½É°ú ÁÖº¯ÀÇ °¡Àå ¾îµÎ¿î »ö»ó
-	float3 maxRGB = max(max(max(N, W), max(E, S)), C); // Áß½É°ú ÁÖº¯ÀÇ °¡Àå ¹àÀº »ö»ó
+    // ìƒ¤í”„ë‹ì„ í•´ë„ ì•ˆì „í•œ ê³³ì„ ì°¾ëŠ” ê²ƒ, ì´ë¯¸ ë„ˆë¬´ ì–´ë‘¡ê±°ë‚˜/ë°ê±°ë‚˜/ëŒ€ë¹„ê°€ ì‹¬í•œ ê³³ì€ ì œì™¸ 
+	float3 minRGB = min(min(min(N, W), min(E, S)), C); // ì¤‘ì‹¬ê³¼ ì£¼ë³€ì˜ ê°€ìž¥ ì–´ë‘ìš´ ìƒ‰ìƒ
+	float3 maxRGB = max(max(max(N, W), max(E, S)), C); // ì¤‘ì‹¬ê³¼ ì£¼ë³€ì˜ ê°€ìž¥ ë°ì€ ìƒ‰ìƒ
     float3 invMax = 1.0f / (maxRGB + FsrEps);
     float3 amp = clamp(min(minRGB, 2.0f - maxRGB) * invMax, 0.0f, 1.0f);
-    // ¿©±â¼­ amp ´Â ÇÈ¼¿ÀÌ Áß°£Åæ(0.5)¿¡ °¡±î¿ï¼ö·Ï 1.0¿¡ °¡±î¿öÁö°í, ±Ø´ÜÀûÀÎ ¹à±â(0.0 ¶Ç´Â 1.0)¿¡ °¡±î¿ï¼ö·Ï 0.0¿¡ °¡±î¿öÁü
+    // ì—¬ê¸°ì„œ amp ëŠ” í”½ì…€ì´ ì¤‘ê°„í†¤(0.5)ì— ê°€ê¹Œìš¸ìˆ˜ë¡ 1.0ì— ê°€ê¹Œì›Œì§€ê³ , ê·¹ë‹¨ì ì¸ ë°ê¸°(0.0 ë˜ëŠ” 1.0)ì— ê°€ê¹Œìš¸ìˆ˜ë¡ 0.0ì— ê°€ê¹Œì›Œì§
     
-    // rsqrt ·Î Áß°£Àº 1.0, ±Ø´ÜÀº 1/sqrt(0 + 0.0001) -> 100.0 ¿¡ °¡±î¿öÁü
+    // rsqrt ë¡œ ì¤‘ê°„ì€ 1.0, ê·¹ë‹¨ì€ 1/sqrt(0 + 0.0001) -> 100.0 ì— ê°€ê¹Œì›Œì§
     amp = rsqrt(amp + FsrEps); // 1 ~ 100
 
-    float w = -RcasInvPeak / dot(amp, LumCoeff); // -0.2(Áß°£) ~ -0.002(±Ø´Ü)
+    float w = -RcasInvPeak / dot(amp, LumCoeff); // -0.2(ì¤‘ê°„) ~ -0.002(ê·¹ë‹¨)
 
     float sumL = NL + WL + EL + SL;
     float invDen = 1.0f / (4.0f * w + 1.0f);
     float sharpL = clamp((sumL * w + CL) * invDen, 0.0f, 1.0f);
-    // sharpL = ((NL + WL + EL + SL) * w  + CL) / (4w + 1) // ÁÖº¯ ÇÈ¼¿(N,W,E,S)ÀÇ ±â¿©µµ´Â °¢°¢ w, Áß½É ÇÈ¼¿(C)ÀÇ ±â¿©µµ´Â 1
-    // »þÇÁ´× ÃÖ´ë w(Áß°£,-0.2), »þÇÁ´× ÃÖ¼Ò w(±Ø´Ü,-0.002)
-    // ÇöÀç ÇÈ¼¿ÀÌ ÁÖº¯ ´ëºñ ¹àÀ¸¸é ´õ ¹à°Ô(+, [CL-0.2*SumL]/(4w+1) > 0), ¾îµÎ¿ì¸é ´õ ¾îµÓ°Ô(-,[CL-0.2*SumL]/(4w+1) < 0) Á¶Á¤ÇÏ´Â °ÍÀÌ »þÇÁ´× È¿°ú 
+    // sharpL = ((NL + WL + EL + SL) * w  + CL) / (4w + 1) // ì£¼ë³€ í”½ì…€(N,W,E,S)ì˜ ê¸°ì—¬ë„ëŠ” ê°ê° w, ì¤‘ì‹¬ í”½ì…€(C)ì˜ ê¸°ì—¬ë„ëŠ” 1
+    // ìƒ¤í”„ë‹ ìµœëŒ€ w(ì¤‘ê°„,-0.2), ìƒ¤í”„ë‹ ìµœì†Œ w(ê·¹ë‹¨,-0.002)
+    // í˜„ìž¬ í”½ì…€ì´ ì£¼ë³€ ëŒ€ë¹„ ë°ìœ¼ë©´ ë” ë°ê²Œ(+, [CL-0.2*SumL]/(4w+1) > 0), ì–´ë‘ìš°ë©´ ë” ì–´ë‘¡ê²Œ(-,[CL-0.2*SumL]/(4w+1) < 0) ì¡°ì •í•˜ëŠ” ê²ƒì´ ìƒ¤í”„ë‹ íš¨ê³¼ 
     
-    float3 chroma = C - CL; // »ö»ó ¼ººÐ ºÐ¸®
-    float3 sharpColor = chroma + sharpL; // »ö»óÀº ±×´ë·Î µÎ°í ÈÖµµ¸¸ »þÇÁ´× Àû¿ë
+    float3 chroma = C - CL; // ìƒ‰ìƒ ì„±ë¶„ ë¶„ë¦¬
+    float3 sharpColor = chroma + sharpL; // ìƒ‰ìƒì€ ê·¸ëŒ€ë¡œ ë‘ê³  íœ˜ë„ë§Œ ìƒ¤í”„ë‹ ì ìš©
     float3 outColor = lerp(C, sharpColor, Sharpness);
 
     return float4(outColor, 1.0f);

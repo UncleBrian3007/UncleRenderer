@@ -1,12 +1,15 @@
-Texture2D<float4> CurrentTexture : register(t0);
-Texture2D<float4> HistoryTexture : register(t1);
-RWTexture2D<float4> OutputTexture : register(u0);
-
 cbuffer TemporalAAConstants : register(b0)
 {
     uint2 OutputSize;
     float HistoryWeight;
     uint UseHistory;
+};
+
+cbuffer TemporalAABindlessConstants : register(b1)
+{
+    uint CurrentTextureIndex;
+    uint HistoryTextureIndex;
+    uint OutputTextureIndex;
 };
 
 [numthreads(8, 8, 1)]
@@ -18,6 +21,9 @@ void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID)
     }
 
     const int2 Pixel = int2(DispatchThreadId.xy);
+    Texture2D<float4> CurrentTexture = ResourceDescriptorHeap[CurrentTextureIndex];
+    Texture2D<float4> HistoryTexture = ResourceDescriptorHeap[HistoryTextureIndex];
+    RWTexture2D<float4> OutputTexture = ResourceDescriptorHeap[OutputTextureIndex];
     float4 Current = CurrentTexture.Load(int3(Pixel, 0));
 
     if (UseHistory == 0)

@@ -210,11 +210,10 @@ uint32_t FDX12Device::CreateBindlessUav(ID3D12Resource* Resource, ID3D12Resource
 
 bool FDX12Device::DetermineShaderModel()
 {
-    const D3D_SHADER_MODEL DesiredShaderModel = D3D_SHADER_MODEL_6_7;
+    const D3D_SHADER_MODEL RequiredShaderModel = D3D_SHADER_MODEL_6_6;
     static const D3D_SHADER_MODEL Candidates[] =
     {
-        DesiredShaderModel,
-        D3D_SHADER_MODEL_6_6,
+        RequiredShaderModel,
         D3D_SHADER_MODEL_6_5,
         D3D_SHADER_MODEL_6_4,
         D3D_SHADER_MODEL_6_3,
@@ -238,13 +237,14 @@ bool FDX12Device::DetermineShaderModel()
     }
 
     std::ostringstream Oss;
-    Oss << "Requested shader model: " << ShaderModelToString(DesiredShaderModel)
+    Oss << "Required shader model: " << ShaderModelToString(RequiredShaderModel)
         << ", device supports up to: " << ShaderModelToString(ShaderModel);
     LogInfo(Oss.str());
 
-    if (ShaderModel < DesiredShaderModel)
+    if (ShaderModel < RequiredShaderModel)
     {
-        LogWarning("Falling back to lower shader model; consider updating the Agility SDK/runtime for SM 6.7 support.");
+        LogError("Shader Model 6.6 is required for bindless ResourceDescriptorHeap indexing. Exiting.");
+        return false;
     }
 
     return true;

@@ -27,43 +27,52 @@ cbuffer TonemapParams : register(b0)
     float Gamma;
 };
 
-Texture2D HDRScene : register(t0);
-Texture2D LogAverageLuminance : register(t1);
+cbuffer TonemapBindlessConstants : register(b1)
+{
+    uint HDRSceneIndex;
+    uint LogAverageLuminanceIndex;
+};
+
 SamplerState SceneSampler : register(s0);
 
 // Based on https://github.com/KhronosGroup/ToneMapping/blob/main/PBR_Neutral/pbrNeutral.glsl
-// ¿øº» »ö»ó(Hue)°ú Ã¤µµ(Saturation)¸¦ ÃÖ´ëÇÑ À¯ÁöÇÏ¸é¼­ ¹àÀº ÇÏÀÌ¶óÀÌÆ® ºÎºĞ¸¸ ÀÚ¿¬½º·´°Ô ¾ĞÃà
+    Texture2D HDRScene = ResourceDescriptorHeap[HDRSceneIndex];
+    Texture2D LogAverageLuminance = ResourceDescriptorHeap[LogAverageLuminanceIndex];
+// ì›ë³¸ ìƒ‰ìƒ(Hue)ê³¼ ì±„ë„(Saturation)ë¥¼ ìµœëŒ€í•œ ìœ ì§€í•˜ë©´ì„œ ë°ì€ í•˜ì´ë¼ì´íŠ¸ ë¶€ë¶„ë§Œ ìì—°ìŠ¤ëŸ½ê²Œ ì••ì¶•
 float3 PBRNeutralToneMapping(float3 color)
 {
     const float startCompression = 0.8f - 0.04f;
     const float desaturation = 0.15f;
 
-    float x = min(color.r, min(color.g, color.b));
-	float offset = x < 0.08f ? x - 6.25f * x * x : 0.04f; // x - 6.25x^2 (x °¡ 0.08 º¸´Ù ÀÛ¾ÆÁü¿¡ µû¶ó 0.04 ºÎÅÍ ºÎµå·´°Ô 0 À¸·Î °¨¼Ò)
-    color -= offset; // È®½ÇÇÑ Black À¸·Î ´­·¯ÁÖ´Â È¿°ú, È¸»öÀÌ µÇÁö ¾Ê°Ô
+	float x = min(color.r, min(color.g, color.b));
+	float offset = x < 0.08f ? x - 6.25f * x * x : 0.04f; // x - 6.25x^2 (x ê°€ 0.08 ë³´ë‹¤ ì‘ì•„ì§ì— ë”°ë¼ 0.04 ë¶€í„° ë¶€ë“œëŸ½ê²Œ 0 ìœ¼ë¡œ ê°ì†Œ) 
+    color -= offset; // í™•ì‹¤í•œ Black ìœ¼ë¡œ ëˆŒëŸ¬ì£¼ëŠ” íš¨ê³¼, íšŒìƒ‰ì´ ë˜ì§€ ì•Šê²Œ
 
-    // È­¸éÀÌ ÃæºĞÈ÷ ¾îµÓ´Ù°í ÆÇ´ÜÇÏ¸é Åæ¸ÅÇÎÀ» Àû¿ëÇÏÁö ¾ÊÀ½, Áß°£ ÅæÀÇ »ö»óÀÌ ¸Å¿ì Á¤È®ÇÏ°Ô À¯ÁöµÊ
+    // í™”ë©´ì´ ì¶©ë¶„íˆ ì–´ë‘¡ë‹¤ê³  íŒë‹¨í•˜ë©´ í†¤ë§¤í•‘ì„ ì ìš©í•˜ì§€ ì•ŠìŒ, ì¤‘ê°„ í†¤ì˜ ìƒ‰ìƒì´ ë§¤ìš° ì •í™•í•˜ê²Œ ìœ ì§€ë¨
     float peak = max(color.r, max(color.g, color.b));
     if (peak < startCompression) // 0.76
     {
         return color;
     }
 
-    // ÇÏÀÌ¶óÀÌÆ® ¾ĞÃà
+    // í•˜ì´ë¼ì´íŠ¸ ì••ì¶•
     const float d = 1.0f - startCompression;
-	float newPeak = 1.0f - d * d / (peak + d - startCompression); // peak(0.76 ~ 100) °¡ ¾Æ¹«¸® Ä¿µµ newPeak (0.76 ~ 0.999) »çÀÌÀÇ °ªÀ¸·Î ¼ö·Å
-    // (ºĞ¸ğ¿¡ peak°¡ ÀÖ¾î¼­ peak ¹«ÇÑ´ë·Î Ä¿Áö¸é d^2/(peak..) ´Â 0¿¡ °¡±î¿öÁü)
+	float newPeak = 1.0f - d * d / (peak + d - startCompression); // peak(0.76 ~ 100) ê°€ ì•„ë¬´ë¦¬ ì»¤ë„ newPeak (0.76 ~ 0.999) ì‚¬ì´ì˜ ê°’ìœ¼ë¡œ ìˆ˜ë ´
+    // (ë¶„ëª¨ì— peakê°€ ìˆì–´ì„œ peak ë¬´í•œëŒ€ë¡œ ì»¤ì§€ë©´ d^2/(peak..) ëŠ” 0ì— ê°€ê¹Œì›Œì§)
 
-    color *= newPeak / max(peak, 1e-4f); // »ö»ó º¯°æ ¾øÀÌ ½ºÄÉÀÏ¸µÀ¸·Î¸¸ Ã³¸®
+    color *= newPeak / max(peak, 1e-4f); // ìƒ‰ìƒ ë³€ê²½ ì—†ì´ ìŠ¤ì¼€ì¼ë§ìœ¼ë¡œë§Œ ì²˜ë¦¬
 
-    // °íÈÖµµ Å»»ö, ¾ĞÃàµÈ Á¤µµ(peak-newPeak)°¡ Å¬¼ö·Ï »öÀ» ¹«Ã¤»ö(Èò»ö/È¸»ö)À¸·Î ¼¯¾îÁÜ
-    // ºûÀÌ ³Ê¹« °­ÇØÁö¸é ´«ÀÌ³ª Ä«¸Ş¶ó´Â »ö»óÀ» ÀÒ°í ÇÏ¾é°Ô º¸ÀÌ´Â Çö»ó ½Ã¹Ä·¹ÀÌ¼Ç
+    // ê³ íœ˜ë„ íƒˆìƒ‰, ì••ì¶•ëœ ì •ë„(peak-newPeak)ê°€ í´ìˆ˜ë¡ ìƒ‰ì„ ë¬´ì±„ìƒ‰(í°ìƒ‰/íšŒìƒ‰)ìœ¼ë¡œ ì„ì–´ì¤Œ
+    // ë¹›ì´ ë„ˆë¬´ ê°•í•´ì§€ë©´ ëˆˆì´ë‚˜ ì¹´ë©”ë¼ëŠ” ìƒ‰ìƒì„ ìƒê³  í•˜ì–—ê²Œ ë³´ì´ëŠ” í˜„ìƒ ì‹œë®¬ë ˆì´ì…˜
     float g = 1.0f - 1.0f / (desaturation * (peak - newPeak) + 1.0f);
     return lerp(color, newPeak * float3(1.0f, 1.0f, 1.0f), g);
 }
 
 float4 PSMain(VSOutput Input) : SV_Target
 {
+	Texture2D<float4> HDRScene = ResourceDescriptorHeap[HDRSceneIndex];
+	Texture2D<float> LogAverageLuminance = ResourceDescriptorHeap[LogAverageLuminanceIndex];
+
     float3 hdrColor = HDRScene.Sample(SceneSampler, Input.UV).rgb;
     float finalExposure = Exposure;
 

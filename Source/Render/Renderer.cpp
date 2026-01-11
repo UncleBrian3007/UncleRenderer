@@ -1918,49 +1918,49 @@ bool FRenderer::CreateCullingPipelines(FDX12Device* Device)
     }
 
     D3D12_ROOT_PARAMETER1 RootParams[8] = {};
-    // RootParams[0]: CullingConstants CBV (b0)
+    // RootParams[0]: CullingConstants CBV (b0), used in Shaders/CullMeshletVisibility.hlsl CSMain
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     RootParams[0].Descriptor.ShaderRegister = 0;
     RootParams[0].Descriptor.RegisterSpace = 0;
     RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // RootParams[1]: ModelBounds SRV (t0)
+    // RootParams[1]: ModelBounds SRV (t0), used in Shaders/CullMeshletVisibility.hlsl CSMain
     RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
     RootParams[1].Descriptor.ShaderRegister = 0;
     RootParams[1].Descriptor.RegisterSpace = 0;
     RootParams[1].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // RootParams[2]: MeshletConeAxisCutoff SRV (t2)
+    // RootParams[2]: MeshletConeAxisCutoff SRV (t2), used in Shaders/CullMeshletVisibility.hlsl CSMain
     RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
     RootParams[2].Descriptor.ShaderRegister = 2;
     RootParams[2].Descriptor.RegisterSpace = 0;
     RootParams[2].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
     RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // RootParams[3]: MeshletConeApex SRV (t3)
+    // RootParams[3]: MeshletConeApex SRV (t3), used in Shaders/CullMeshletVisibility.hlsl CSMain
     RootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
     RootParams[3].Descriptor.ShaderRegister = 3;
     RootParams[3].Descriptor.RegisterSpace = 0;
     RootParams[3].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
     RootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // RootParams[4]: VisibleMeshlets UAV (u0)
+    // RootParams[4]: VisibleMeshlets UAV (u0), used in Shaders/CullMeshletVisibility.hlsl CSMain
     RootParams[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
     RootParams[4].Descriptor.ShaderRegister = 0;
     RootParams[4].Descriptor.RegisterSpace = 0;
     RootParams[4].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
     RootParams[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // RootParams[5]: DebugPrintBuffer UAV (u1)
+    // RootParams[5]: DebugPrintBuffer UAV (u1), used in Shaders/CullMeshletVisibility.hlsl CSMain
     RootParams[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
     RootParams[5].Descriptor.ShaderRegister = 1;
     RootParams[5].Descriptor.RegisterSpace = 0;
     RootParams[5].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
     RootParams[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // RootParams[6]: DebugPrintStats UAV (u2)
+    // RootParams[6]: DebugPrintStats UAV (u2), used in Shaders/CullMeshletVisibility.hlsl CSMain
     RootParams[6].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
     RootParams[6].Descriptor.ShaderRegister = 2;
     RootParams[6].Descriptor.RegisterSpace = 0;
@@ -1975,7 +1975,7 @@ bool FRenderer::CreateCullingPipelines(FDX12Device* Device)
     HZBRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
     HZBRange.OffsetInDescriptorsFromTableStart = 0;
 
-    // RootParams[7]: HZB SRV table (t1)
+    // RootParams[7]: HZB SRV table (t1), used in Shaders/CullMeshletVisibility.hlsl CSMain
     RootParams[7].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     RootParams[7].DescriptorTable.NumDescriptorRanges = 1;
     RootParams[7].DescriptorTable.pDescriptorRanges = &HZBRange;
@@ -2010,49 +2010,49 @@ bool FRenderer::CreateCullingPipelines(FDX12Device* Device)
 
     // Meshlet run root signature and pipelines
     D3D12_ROOT_PARAMETER1 RunRootParams[7] = {};
-    // RunRootParams[0]: CullingConstants CBV (b0)
+    // RunRootParams[0]: CullingConstants CBV (b0), used in Shaders/ClearMeshletRunCounts.hlsl CSMain and Shaders/BuildMeshletRunsAppend.hlsl CSMain
     RunRootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     RunRootParams[0].Descriptor.ShaderRegister = 0;
     RunRootParams[0].Descriptor.RegisterSpace = 0;
     RunRootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
     RunRootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // RunRootParams[1]: VisibleMeshlets SRV (t0)
+    // RunRootParams[1]: VisibleMeshlets SRV (t0), used in Shaders/BuildMeshletRunsAppend.hlsl CSMain
     RunRootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
     RunRootParams[1].Descriptor.ShaderRegister = 0;
     RunRootParams[1].Descriptor.RegisterSpace = 0;
     RunRootParams[1].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
     RunRootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // RunRootParams[2]: MeshletDrawData SRV (t1)
+    // RunRootParams[2]: MeshletDrawData SRV (t1), used in Shaders/BuildMeshletRunsAppend.hlsl CSMain
     RunRootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
     RunRootParams[2].Descriptor.ShaderRegister = 1;
     RunRootParams[2].Descriptor.RegisterSpace = 0;
     RunRootParams[2].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
     RunRootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // RunRootParams[3]: RangeOffsets SRV (t2)
+    // RunRootParams[3]: RangeOffsets SRV (t2), used in Shaders/BuildMeshletRunsAppend.hlsl CSMain
     RunRootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
     RunRootParams[3].Descriptor.ShaderRegister = 2;
     RunRootParams[3].Descriptor.RegisterSpace = 0;
     RunRootParams[3].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
     RunRootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // RunRootParams[4]: CommandTemplates SRV (t3)
+    // RunRootParams[4]: CommandTemplates SRV (t3), used in Shaders/BuildMeshletRunsAppend.hlsl CSMain
     RunRootParams[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
     RunRootParams[4].Descriptor.ShaderRegister = 3;
     RunRootParams[4].Descriptor.RegisterSpace = 0;
     RunRootParams[4].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
     RunRootParams[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // RunRootParams[5]: RunCounts UAV (u1)
+    // RunRootParams[5]: RunCounts UAV (u1), used in Shaders/ClearMeshletRunCounts.hlsl CSMain and Shaders/BuildMeshletRunsAppend.hlsl CSMain
     RunRootParams[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
     RunRootParams[5].Descriptor.ShaderRegister = 1;
     RunRootParams[5].Descriptor.RegisterSpace = 0;
     RunRootParams[5].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
     RunRootParams[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // RunRootParams[6]: OutputCommands UAV (u0)
+    // RunRootParams[6]: OutputCommands UAV (u0), used in Shaders/BuildMeshletRunsAppend.hlsl CSMain
     RunRootParams[6].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
     RunRootParams[6].Descriptor.ShaderRegister = 0;
     RunRootParams[6].Descriptor.RegisterSpace = 0;
