@@ -69,6 +69,7 @@ bool FDX12Device::Initialize()
     if (!CreateFactory()) { LogError("Failed to create DXGI factory"); return false; }
     if (!PickAdapter())   { LogError("No suitable adapter found"); return false; }
     if (!CreateDevice())  { LogError("Failed to create D3D12 device"); return false; }
+    if (!CreateBindlessDescriptorHeap()) { LogError("Failed to create bindless descriptor heap"); return false; }
     if (!DetermineShaderModel()) { LogError("Failed to determine shader model"); return false; }
     if (!CreateCommandQueues()) { LogError("Failed to create command queues"); return false; }
 
@@ -135,6 +136,76 @@ bool FDX12Device::CreateDevice()
     LogLoadedModulePath(L"d3d12.dll", "D3D12.dll load path");
     LogLoadedModulePath(L"d3d12core.dll", "D3D12Core.dll load path");
     return true;
+}
+
+bool FDX12Device::CreateBindlessDescriptorHeap()
+{
+    D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
+    HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    HeapDesc.NumDescriptors = 65536;
+    HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    HeapDesc.NodeMask = 0;
+
+    HR_CHECK(Device->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(BindlessDescriptorHeap.ReleaseAndGetAddressOf())));
+    if (BindlessDescriptorHeap)
+    {
+        BindlessDescriptorHeap->SetName(L"BindlessDescriptorHeap");
+    }
+
+    BindlessDescriptorCount = HeapDesc.NumDescriptors;
+    BindlessDescriptorStride = Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    BindlessDescriptorNextIndex.store(0);
+
+    return true;
+}
+
+uint32_t FDX12Device::AllocateBindlessDescriptorIndex()
+{
+    const uint32_t Index = BindlessDescriptorNextIndex.fetch_add(1);
+    if (Index >= BindlessDescriptorCount)
+    {
+        LogError("Bindless descriptor heap overflow.");
+        return UINT32_MAX;
+    }
+    return Index;
+}
+
+uint32_t FDX12Device::CreateBindlessSrv(ID3D12Resource* Resource, const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc)
+{
+    if (!BindlessDescriptorHeap || !Device)
+    {
+        return UINT32_MAX;
+    }
+
+    const uint32_t Index = AllocateBindlessDescriptorIndex();
+    if (Index == UINT32_MAX)
+    {
+        return UINT32_MAX;
+    }
+
+    D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle = BindlessDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
+    CpuHandle.ptr += static_cast<SIZE_T>(Index) * BindlessDescriptorStride;
+    Device->CreateShaderResourceView(Resource, &Desc, CpuHandle);
+    return Index;
+}
+
+uint32_t FDX12Device::CreateBindlessUav(ID3D12Resource* Resource, ID3D12Resource* Counter, const D3D12_UNORDERED_ACCESS_VIEW_DESC& Desc)
+{
+    if (!BindlessDescriptorHeap || !Device)
+    {
+        return UINT32_MAX;
+    }
+
+    const uint32_t Index = AllocateBindlessDescriptorIndex();
+    if (Index == UINT32_MAX)
+    {
+        return UINT32_MAX;
+    }
+
+    D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle = BindlessDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
+    CpuHandle.ptr += static_cast<SIZE_T>(Index) * BindlessDescriptorStride;
+    Device->CreateUnorderedAccessView(Resource, Counter, &Desc, CpuHandle);
+    return Index;
 }
 
 bool FDX12Device::DetermineShaderModel()

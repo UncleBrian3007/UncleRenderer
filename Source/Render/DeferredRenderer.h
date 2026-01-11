@@ -247,6 +247,24 @@ private:
     D3D12_GPU_DESCRIPTOR_HANDLE ShadowMapHandle{};
     D3D12_GPU_DESCRIPTOR_HANDLE EnvironmentCubeHandle{};
     D3D12_GPU_DESCRIPTOR_HANDLE BrdfLutHandle{};
+    std::array<uint32_t, 3> GBufferBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX } };
+    uint32_t ShadowMapBindlessIndex = UINT32_MAX;
+    uint32_t EnvironmentCubeBindlessIndex = UINT32_MAX;
+    uint32_t BrdfLutBindlessIndex = UINT32_MAX;
+    uint32_t LinearDepthBindlessIndex = UINT32_MAX;
+    uint32_t HilbertLutBindlessIndex = UINT32_MAX;
+    uint32_t GtaoBindlessIndex = UINT32_MAX;
+    uint32_t LightingBufferBindlessIndex = UINT32_MAX;
+    uint32_t TonemapOutputBindlessIndex = UINT32_MAX;
+    std::array<uint32_t, 2> LuminanceSrvBindlessIndices{ { UINT32_MAX, UINT32_MAX } };
+    std::array<uint32_t, 2> LuminanceUavBindlessIndices{ { UINT32_MAX, UINT32_MAX } };
+    std::vector<uint32_t> TaaSrvBindlessIndices;
+    std::vector<uint32_t> TaaUavBindlessIndices;
+    std::vector<uint32_t> DepthBindlessIndices;
+    uint32_t HZBSrvBindlessIndex = UINT32_MAX;
+    std::vector<uint32_t> HZBSrvMipBindlessIndices;
+    std::vector<uint32_t> HZBUavBindlessIndices;
+    uint32_t HZBNullUavBindlessIndex = UINT32_MAX;
     D3D12_RESOURCE_STATES GBufferStates[3] =
     {
         D3D12_RESOURCE_STATE_RENDER_TARGET,

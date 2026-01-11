@@ -158,6 +158,10 @@ struct FSceneModelResource
     std::wstring EmissiveTexturePath;
     bool bHasNormalMap = true;
     D3D12_GPU_DESCRIPTOR_HANDLE TextureHandle{};
+    uint32_t BaseColorBindlessIndex = UINT32_MAX;
+    uint32_t MetallicRoughnessBindlessIndex = UINT32_MAX;
+    uint32_t NormalBindlessIndex = UINT32_MAX;
+    uint32_t EmissiveBindlessIndex = UINT32_MAX;
     DirectX::XMFLOAT4 BaseColorTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
     DirectX::XMFLOAT4 BaseColorTransformRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT4 MetallicRoughnessTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };

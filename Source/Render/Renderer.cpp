@@ -764,6 +764,7 @@ bool FRenderer::CreateGpuDebugPrintResources(FDX12Device* Device)
     GlyphSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
     Device->GetDevice()->CreateShaderResourceView(GpuDebugPrintGlyphBuffer.Get(), &GlyphSrvDesc, CpuHandle);
     GpuDebugPrintGlyphHandle = GpuHandle;
+    GpuDebugPrintGlyphBindlessIndex = Device->CreateBindlessSrv(GpuDebugPrintGlyphBuffer.Get(), GlyphSrvDesc);
 
     CpuHandle.ptr += DescriptorSize;
     GpuHandle.ptr += DescriptorSize;
@@ -776,6 +777,7 @@ bool FRenderer::CreateGpuDebugPrintResources(FDX12Device* Device)
     FontSrvDesc.Texture2D.MipLevels = 1;
     Device->GetDevice()->CreateShaderResourceView(GpuDebugPrintFontTexture.Get(), &FontSrvDesc, CpuHandle);
     GpuDebugPrintFontHandle = GpuHandle;
+    GpuDebugPrintFontBindlessIndex = Device->CreateBindlessSrv(GpuDebugPrintFontTexture.Get(), FontSrvDesc);
 
     CpuHandle.ptr += DescriptorSize;
     GpuHandle.ptr += DescriptorSize;
@@ -790,6 +792,7 @@ bool FRenderer::CreateGpuDebugPrintResources(FDX12Device* Device)
     BufferSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
     Device->GetDevice()->CreateShaderResourceView(GpuDebugPrintBuffer.Get(), &BufferSrvDesc, CpuHandle);
     GpuDebugPrintBufferHandle = GpuHandle;
+    GpuDebugPrintBufferBindlessIndex = Device->CreateBindlessSrv(GpuDebugPrintBuffer.Get(), BufferSrvDesc);
 
     CpuHandle.ptr += DescriptorSize;
     GpuHandle.ptr += DescriptorSize;
@@ -804,6 +807,7 @@ bool FRenderer::CreateGpuDebugPrintResources(FDX12Device* Device)
     StatsSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
     Device->GetDevice()->CreateShaderResourceView(GpuDebugPrintStatsBuffer.Get(), &StatsSrvDesc, CpuHandle);
     GpuDebugPrintStatsHandle = GpuHandle;
+    GpuDebugPrintStatsBindlessIndex = Device->CreateBindlessSrv(GpuDebugPrintStatsBuffer.Get(), StatsSrvDesc);
 
     return true;
 }

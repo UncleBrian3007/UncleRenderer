@@ -1415,6 +1415,8 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
 
     SceneTextures.clear();
     SceneTextures.reserve(Models.size() * 4); // 4 textures per model (base color + metallic roughness + normal + emissive)
+    SceneTextureBindlessIndices.clear();
+    SceneTextureBindlessIndices.reserve(Models.size() * 7);
 
     if (!ShadowMap)
     {
@@ -1532,6 +1534,7 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
         SrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
 
         Device->GetDevice()->CreateShaderResourceView(Resource, &SrvDesc, CpuHandle);
+        SceneTextureBindlessIndices.push_back(Device->CreateBindlessSrv(Resource, SrvDesc));
     };
 
     D3D12_SHADER_RESOURCE_VIEW_DESC ShadowSrvDesc = {};
@@ -1568,6 +1571,7 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
         }
         CreateSceneTextureSrv(LoadResults[Index].BaseColor.Get());
         SceneModels[Index].TextureHandle = GpuHandle;
+        SceneModels[Index].BaseColorBindlessIndex = SceneTextureBindlessIndices.back();
 
         CpuHandle.ptr += DescriptorSize;
         GpuHandle.ptr += DescriptorSize;
@@ -1579,6 +1583,7 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
             LoadResults[Index].MetallicRoughness->SetName(Name.c_str());
         }
         CreateSceneTextureSrv(LoadResults[Index].MetallicRoughness.Get());
+        SceneModels[Index].MetallicRoughnessBindlessIndex = SceneTextureBindlessIndices.back();
 
         CpuHandle.ptr += DescriptorSize;
         GpuHandle.ptr += DescriptorSize;
@@ -1590,6 +1595,7 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
             LoadResults[Index].Normal->SetName(Name.c_str());
         }
         CreateSceneTextureSrv(LoadResults[Index].Normal.Get());
+        SceneModels[Index].NormalBindlessIndex = SceneTextureBindlessIndices.back();
 
         CpuHandle.ptr += DescriptorSize;
         GpuHandle.ptr += DescriptorSize;
@@ -1601,21 +1607,25 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
             LoadResults[Index].Emissive->SetName(Name.c_str());
         }
         CreateSceneTextureSrv(LoadResults[Index].Emissive.Get());
+        SceneModels[Index].EmissiveBindlessIndex = SceneTextureBindlessIndices.back();
 
         CpuHandle.ptr += DescriptorSize;
         GpuHandle.ptr += DescriptorSize;
 
         Device->GetDevice()->CreateShaderResourceView(ShadowMap.Get(), &ShadowSrvDesc, CpuHandle);
+        SceneTextureBindlessIndices.push_back(Device->CreateBindlessSrv(ShadowMap.Get(), ShadowSrvDesc));
 
         CpuHandle.ptr += DescriptorSize;
         GpuHandle.ptr += DescriptorSize;
 
         Device->GetDevice()->CreateShaderResourceView(EnvironmentCubeTexture.Get(), &EnvSrvDesc, CpuHandle);
+        SceneTextureBindlessIndices.push_back(Device->CreateBindlessSrv(EnvironmentCubeTexture.Get(), EnvSrvDesc));
 
         CpuHandle.ptr += DescriptorSize;
         GpuHandle.ptr += DescriptorSize;
 
         Device->GetDevice()->CreateShaderResourceView(BrdfLutTexture.Get(), &BrdfSrvDesc, CpuHandle);
+        SceneTextureBindlessIndices.push_back(Device->CreateBindlessSrv(BrdfLutTexture.Get(), BrdfSrvDesc));
 
         CpuHandle.ptr += DescriptorSize;
         GpuHandle.ptr += DescriptorSize;

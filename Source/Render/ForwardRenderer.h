@@ -107,6 +107,7 @@ private:
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SceneTextures;
     Microsoft::WRL::ComPtr<ID3D12Resource> SceneTexture;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> TextureDescriptorHeap;
+    std::vector<uint32_t> SceneTextureBindlessIndices;
     FMeshGeometryBuffers SkyGeometry;
     float SkySphereRadius = 1000.0f;
 

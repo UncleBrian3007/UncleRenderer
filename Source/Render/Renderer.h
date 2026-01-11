@@ -211,6 +211,10 @@ protected:
     D3D12_GPU_DESCRIPTOR_HANDLE GpuDebugPrintFontHandle{};
     D3D12_GPU_DESCRIPTOR_HANDLE GpuDebugPrintBufferHandle{};
     D3D12_GPU_DESCRIPTOR_HANDLE GpuDebugPrintStatsHandle{};
+    uint32_t GpuDebugPrintGlyphBindlessIndex = UINT32_MAX;
+    uint32_t GpuDebugPrintFontBindlessIndex = UINT32_MAX;
+    uint32_t GpuDebugPrintBufferBindlessIndex = UINT32_MAX;
+    uint32_t GpuDebugPrintStatsBindlessIndex = UINT32_MAX;
     uint32_t GpuDebugPrintAtlasWidth = 0;
     uint32_t GpuDebugPrintAtlasHeight = 0;
     uint32_t GpuDebugPrintFirstChar = 32;
