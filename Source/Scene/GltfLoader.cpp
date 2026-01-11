@@ -802,7 +802,12 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
             return false;
         }
 
-        OutPrimitive.Primitive.Vertices.reserve(static_cast<size_t>(PositionCount));
+        FMesh::FVertexStreams& Streams = OutPrimitive.Primitive.VertexStreams;
+        Streams.Positions.resize(static_cast<size_t>(PositionCount));
+        Streams.Normals.resize(static_cast<size_t>(PositionCount), FFloat3(0.0f, 0.0f, 1.0f));
+        Streams.UVs.resize(static_cast<size_t>(PositionCount), FFloat2(0.0f, 0.0f));
+        Streams.Tangents.resize(static_cast<size_t>(PositionCount), FFloat4(0.0f, 0.0f, 0.0f, 1.0f));
+        Streams.Colors.resize(static_cast<size_t>(PositionCount), FFloat4(1.0f, 1.0f, 1.0f, 1.0f));
 
         for (int64_t i = 0; i < PositionCount; ++i)
         {
@@ -812,11 +817,11 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
                 return false;
             }
 
-            FMesh::FVertex Vertex{};
             float Position[3] = {};
             std::memcpy(Position, &BufferData[PositionOffset], sizeof(Position));
-            Vertex.Position = { Position[0], Position[1], Position[2] };
-            Vertex.Position.z = -Vertex.Position.z;
+            FFloat3 Pos = { Position[0], Position[1], Position[2] };
+            Pos.z = -Pos.z;
+            Streams.Positions[static_cast<size_t>(i)] = Pos;
 
             if (NormalAccessor && NormalBufferView)
             {
@@ -827,13 +832,16 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
                 }
                 float Normal[3] = {};
                 std::memcpy(Normal, &BufferData[Offset], sizeof(Normal));
-                Vertex.Normal = { Normal[0], Normal[1], Normal[2] };
+                FFloat3 NormalValue{ Normal[0], Normal[1], Normal[2] };
+                NormalValue.z = -NormalValue.z;
+                Streams.Normals[static_cast<size_t>(i)] = NormalValue;
             }
             else
             {
-                Vertex.Normal = { 0.0f, 0.0f, 1.0f };
+                FFloat3 NormalValue{ 0.0f, 0.0f, 1.0f };
+                NormalValue.z = -NormalValue.z;
+                Streams.Normals[static_cast<size_t>(i)] = NormalValue;
             }
-            Vertex.Normal.z = -Vertex.Normal.z;
 
             if (TangentAccessor && TangentBufferView)
             {
@@ -844,14 +852,18 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
                 }
                 float Tangent[4] = {};
                 std::memcpy(Tangent, &BufferData[Offset], sizeof(Tangent));
-                Vertex.Tangent = { Tangent[0], Tangent[1], Tangent[2], Tangent[3] };
+                FFloat4 TangentValue{ Tangent[0], Tangent[1], Tangent[2], Tangent[3] };
+                TangentValue.z = -TangentValue.z;
+                TangentValue.w = -TangentValue.w;
+                Streams.Tangents[static_cast<size_t>(i)] = TangentValue;
             }
             else
             {
-                Vertex.Tangent = { 0.0f, 0.0f, 0.0f, 1.0f };
+                FFloat4 TangentValue{ 0.0f, 0.0f, 0.0f, 1.0f };
+                TangentValue.z = -TangentValue.z;
+                TangentValue.w = -TangentValue.w;
+                Streams.Tangents[static_cast<size_t>(i)] = TangentValue;
             }
-            Vertex.Tangent.z = -Vertex.Tangent.z;
-            Vertex.Tangent.w = -Vertex.Tangent.w;
 
             if (TexcoordAccessor && TexcoordBufferView)
             {
@@ -862,11 +874,7 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
                 }
                 float UV[2] = {};
                 std::memcpy(UV, &BufferData[Offset], sizeof(UV));
-                Vertex.UV = { UV[0], UV[1] };
-            }
-            else
-            {
-                Vertex.UV = { 0.0f, 0.0f };
+                Streams.UVs[static_cast<size_t>(i)] = FFloat2(UV[0], UV[1]);
             }
 
             if (ColorAccessor && ColorBufferView)
@@ -881,10 +889,8 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
                 float Color[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
                 std::memcpy(Color, &BufferData[Offset], ExpectedBytes);
                 const float Alpha = ColorType == "VEC4" ? Color[3] : 1.0f;
-                Vertex.Color = { Color[0], Color[1], Color[2], Alpha };
+                Streams.Colors[static_cast<size_t>(i)] = FFloat4(Color[0], Color[1], Color[2], Alpha);
             }
-
-            OutPrimitive.Primitive.Vertices.push_back(Vertex);
         }
 
         std::vector<uint32_t> RawIndices;

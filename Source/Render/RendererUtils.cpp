@@ -53,27 +53,28 @@ namespace
 
         for (const FMesh::FPrimitive& Primitive : Primitives)
         {
-            if (Primitive.Vertices.empty())
+            const auto& Positions = Primitive.VertexStreams.Positions;
+            if (Positions.empty())
             {
                 continue;
             }
 
             if (!bHasVertex)
             {
-                Min = Primitive.Vertices.front().Position;
-                Max = Primitive.Vertices.front().Position;
+                Min = Positions.front();
+                Max = Positions.front();
                 bHasVertex = true;
             }
 
-            for (const auto& Vertex : Primitive.Vertices)
+            for (const auto& Position : Positions)
             {
-                Min.x = std::min(Min.x, Vertex.Position.x);
-                Min.y = std::min(Min.y, Vertex.Position.y);
-                Min.z = std::min(Min.z, Vertex.Position.z);
+                Min.x = std::min(Min.x, Position.x);
+                Min.y = std::min(Min.y, Position.y);
+                Min.z = std::min(Min.z, Position.z);
 
-                Max.x = std::max(Max.x, Vertex.Position.x);
-                Max.y = std::max(Max.y, Vertex.Position.y);
-                Max.z = std::max(Max.z, Vertex.Position.z);
+                Max.x = std::max(Max.x, Position.x);
+                Max.y = std::max(Max.y, Position.y);
+                Max.z = std::max(Max.z, Position.z);
             }
         }
 
@@ -136,14 +137,79 @@ namespace
             return false;
         }
 
-        if (Primitive.Vertices.empty() || Primitive.Indices.empty())
+        if (Primitive.VertexStreams.Positions.empty() || Primitive.Indices.empty())
         {
             return false;
         }
 
         OutGeometry.IndexCount = static_cast<uint32_t>(Primitive.Indices.size());
 
-        const UINT VertexBufferSize = static_cast<UINT>(Primitive.Vertices.size() * sizeof(FMesh::FVertex));
+        const std::vector<FFloat3>* Positions = &Primitive.VertexStreams.Positions;
+        const size_t VertexCount = Positions->size();
+        if (VertexCount == 0)
+        {
+            return false;
+        }
+
+        std::vector<FFloat3> DefaultNormals;
+        const std::vector<FFloat3>* Normals = &Primitive.VertexStreams.Normals;
+        if (Normals->size() != VertexCount)
+        {
+            DefaultNormals.assign(VertexCount, FFloat3(0.0f, 0.0f, 1.0f));
+            Normals = &DefaultNormals;
+        }
+
+        std::vector<FFloat2> DefaultUVs;
+        const std::vector<FFloat2>* UVs = &Primitive.VertexStreams.UVs;
+        if (UVs->size() != VertexCount)
+        {
+            DefaultUVs.assign(VertexCount, FFloat2(0.0f, 0.0f));
+            UVs = &DefaultUVs;
+        }
+
+        std::vector<FFloat4> DefaultTangents;
+        const std::vector<FFloat4>* Tangents = &Primitive.VertexStreams.Tangents;
+        if (Tangents->size() != VertexCount)
+        {
+            DefaultTangents.assign(VertexCount, FFloat4(0.0f, 0.0f, 0.0f, 1.0f));
+            Tangents = &DefaultTangents;
+        }
+
+        std::vector<FFloat4> DefaultColors;
+        const std::vector<FFloat4>* Colors = &Primitive.VertexStreams.Colors;
+        if (Colors->size() != VertexCount)
+        {
+            DefaultColors.assign(VertexCount, FFloat4(1.0f, 1.0f, 1.0f, 1.0f));
+            Colors = &DefaultColors;
+        }
+
+        const std::array<const void*, 5> StreamData =
+        {
+            Positions->data(),
+            Normals->data(),
+            UVs->data(),
+            Tangents->data(),
+            Colors->data()
+        };
+
+        const std::array<UINT, 5> StreamStrides =
+        {
+            static_cast<UINT>(sizeof(FFloat3)),
+            static_cast<UINT>(sizeof(FFloat3)),
+            static_cast<UINT>(sizeof(FFloat2)),
+            static_cast<UINT>(sizeof(FFloat4)),
+            static_cast<UINT>(sizeof(FFloat4))
+        };
+
+        const std::array<UINT, 5> StreamSizes =
+        {
+            static_cast<UINT>(VertexCount * sizeof(FFloat3)),
+            static_cast<UINT>(VertexCount * sizeof(FFloat3)),
+            static_cast<UINT>(VertexCount * sizeof(FFloat2)),
+            static_cast<UINT>(VertexCount * sizeof(FFloat4)),
+            static_cast<UINT>(VertexCount * sizeof(FFloat4))
+        };
+
         const UINT IndexBufferSize = static_cast<UINT>(Primitive.Indices.size() * sizeof(uint32_t));
 
         D3D12_HEAP_PROPERTIES DefaultHeap = {};
@@ -165,34 +231,42 @@ namespace
         BufferDesc.SampleDesc.Count = 1;
         BufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-        BufferDesc.Width = VertexBufferSize;
-        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-            &DefaultHeap,
-            D3D12_HEAP_FLAG_NONE,
-            &BufferDesc,
-            D3D12_RESOURCE_STATE_COPY_DEST,
-            nullptr,
-            IID_PPV_ARGS(OutGeometry.VertexBuffer.GetAddressOf())));
+        OutGeometry.VertexBufferCount = static_cast<uint32_t>(StreamData.size());
+        OutGeometry.VertexBufferViews.fill({});
 
-        OutGeometry.VertexBufferView.BufferLocation = OutGeometry.VertexBuffer->GetGPUVirtualAddress();
-        OutGeometry.VertexBufferView.StrideInBytes = sizeof(FMesh::FVertex);
-        OutGeometry.VertexBufferView.SizeInBytes = VertexBufferSize;
+        std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 5> UploadBuffers;
 
-        Microsoft::WRL::ComPtr<ID3D12Resource> VertexUploadBuffer;
-        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-            &UploadHeap,
-            D3D12_HEAP_FLAG_NONE,
-            &BufferDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ,
-            nullptr,
-            IID_PPV_ARGS(VertexUploadBuffer.ReleaseAndGetAddressOf())));
+        for (size_t StreamIndex = 0; StreamIndex < StreamData.size(); ++StreamIndex)
+        {
+            BufferDesc.Width = StreamSizes[StreamIndex];
+            HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+                &DefaultHeap,
+                D3D12_HEAP_FLAG_NONE,
+                &BufferDesc,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                nullptr,
+                IID_PPV_ARGS(OutGeometry.VertexBuffers[StreamIndex].ReleaseAndGetAddressOf())));
 
-        void* VertexData = nullptr;
-        D3D12_RANGE EmptyRange = { 0, 0 };
-        HR_CHECK(VertexUploadBuffer->Map(0, &EmptyRange, &VertexData));
-        memcpy(VertexData, Primitive.Vertices.data(), VertexBufferSize);
-        VertexUploadBuffer->Unmap(0, nullptr);
+            HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+                &UploadHeap,
+                D3D12_HEAP_FLAG_NONE,
+                &BufferDesc,
+                D3D12_RESOURCE_STATE_GENERIC_READ,
+                nullptr,
+                IID_PPV_ARGS(UploadBuffers[StreamIndex].ReleaseAndGetAddressOf())));
 
+            void* VertexData = nullptr;
+            D3D12_RANGE EmptyRange = { 0, 0 };
+            HR_CHECK(UploadBuffers[StreamIndex]->Map(0, &EmptyRange, &VertexData));
+            memcpy(VertexData, StreamData[StreamIndex], StreamSizes[StreamIndex]);
+            UploadBuffers[StreamIndex]->Unmap(0, nullptr);
+
+            OutGeometry.VertexBufferViews[StreamIndex].BufferLocation = OutGeometry.VertexBuffers[StreamIndex]->GetGPUVirtualAddress();
+            OutGeometry.VertexBufferViews[StreamIndex].StrideInBytes = StreamStrides[StreamIndex];
+            OutGeometry.VertexBufferViews[StreamIndex].SizeInBytes = StreamSizes[StreamIndex];
+        }
+
+        Microsoft::WRL::ComPtr<ID3D12Resource> IndexUploadBuffer;
         if (bCreateIndexBuffer)
         {
             BufferDesc.Width = IndexBufferSize;
@@ -208,7 +282,6 @@ namespace
             OutGeometry.IndexBufferView.Format = DXGI_FORMAT_R32_UINT;
             OutGeometry.IndexBufferView.SizeInBytes = IndexBufferSize;
 
-            Microsoft::WRL::ComPtr<ID3D12Resource> IndexUploadBuffer;
             HR_CHECK(Device->GetDevice()->CreateCommittedResource(
                 &UploadHeap,
                 D3D12_HEAP_FLAG_NONE,
@@ -218,37 +291,10 @@ namespace
                 IID_PPV_ARGS(IndexUploadBuffer.ReleaseAndGetAddressOf())));
 
             void* IndexData = nullptr;
+            D3D12_RANGE EmptyRange = { 0, 0 };
             HR_CHECK(IndexUploadBuffer->Map(0, &EmptyRange, &IndexData));
             memcpy(IndexData, Primitive.Indices.data(), IndexBufferSize);
             IndexUploadBuffer->Unmap(0, nullptr);
-
-            if (UploadBatch && !UploadBatch->bInitialized)
-            {
-                UploadBatch->Begin(Device);
-            }
-
-            FUploadBatch LocalBatch;
-            FUploadBatch* ActiveBatch = UploadBatch;
-            if (!ActiveBatch)
-            {
-                LocalBatch.Begin(Device);
-                ActiveBatch = &LocalBatch;
-            }
-
-            ID3D12GraphicsCommandList* CommandList = ActiveBatch->Context.GetCommandList();
-            CommandList->CopyBufferRegion(OutGeometry.VertexBuffer.Get(), 0, VertexUploadBuffer.Get(), 0, VertexBufferSize);
-            ActiveBatch->Context.TransitionResource(OutGeometry.VertexBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
-            CommandList->CopyBufferRegion(OutGeometry.IndexBuffer.Get(), 0, IndexUploadBuffer.Get(), 0, IndexBufferSize);
-            ActiveBatch->Context.TransitionResource(OutGeometry.IndexBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_INDEX_BUFFER);
-            ActiveBatch->AddUploadBuffer(std::move(VertexUploadBuffer));
-            ActiveBatch->AddUploadBuffer(std::move(IndexUploadBuffer));
-
-            if (!UploadBatch)
-            {
-                ActiveBatch->ExecuteAndFlush();
-            }
-
-            return true;
         }
 
         if (UploadBatch && !UploadBatch->bInitialized)
@@ -265,9 +311,27 @@ namespace
         }
 
         ID3D12GraphicsCommandList* CommandList = ActiveBatch->Context.GetCommandList();
-        CommandList->CopyBufferRegion(OutGeometry.VertexBuffer.Get(), 0, VertexUploadBuffer.Get(), 0, VertexBufferSize);
-        ActiveBatch->Context.TransitionResource(OutGeometry.VertexBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
-        ActiveBatch->AddUploadBuffer(std::move(VertexUploadBuffer));
+        for (size_t StreamIndex = 0; StreamIndex < StreamData.size(); ++StreamIndex)
+        {
+            CommandList->CopyBufferRegion(
+                OutGeometry.VertexBuffers[StreamIndex].Get(),
+                0,
+                UploadBuffers[StreamIndex].Get(),
+                0,
+                StreamSizes[StreamIndex]);
+            ActiveBatch->Context.TransitionResource(
+                OutGeometry.VertexBuffers[StreamIndex].Get(),
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
+            ActiveBatch->AddUploadBuffer(std::move(UploadBuffers[StreamIndex]));
+        }
+
+        if (bCreateIndexBuffer && IndexUploadBuffer)
+        {
+            CommandList->CopyBufferRegion(OutGeometry.IndexBuffer.Get(), 0, IndexUploadBuffer.Get(), 0, IndexBufferSize);
+            ActiveBatch->Context.TransitionResource(OutGeometry.IndexBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_INDEX_BUFFER);
+            ActiveBatch->AddUploadBuffer(std::move(IndexUploadBuffer));
+        }
 
         if (!UploadBatch)
         {
@@ -960,10 +1024,10 @@ bool RendererUtils::CreateObjectIdPipeline(
     D3D12_INPUT_ELEMENT_DESC InputLayout[] =
     {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,   D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TANGENT",  0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 48, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 1, 0,   D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    2, 0,   D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TANGENT",  0, DXGI_FORMAT_R32G32B32A32_FLOAT, 3, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 4, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
     };
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
@@ -1262,9 +1326,9 @@ bool RendererUtils::CreateSkyAtmospherePipeline(
     D3D12_INPUT_ELEMENT_DESC InputLayout[] =
     {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,   D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TANGENT",  0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 1, 0,   D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    2, 0,   D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TANGENT",  0, DXGI_FORMAT_R32G32B32A32_FLOAT, 3, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
     };
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};

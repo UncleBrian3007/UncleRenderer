@@ -7,6 +7,8 @@
 #include <cmath>
 #include <string>
 #include <vector>
+#include <array>
+#include <cstddef>
 #include "../Math/MathTypes.h"
 #include "../Scene/Mesh.h"
 
@@ -17,10 +19,11 @@ struct FGltfMaterialTextures;
 
 struct FMeshGeometryBuffers
 {
-    Microsoft::WRL::ComPtr<ID3D12Resource> VertexBuffer;
+    std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 5> VertexBuffers;
     Microsoft::WRL::ComPtr<ID3D12Resource> IndexBuffer;
-    D3D12_VERTEX_BUFFER_VIEW VertexBufferView{};
+    std::array<D3D12_VERTEX_BUFFER_VIEW, 5> VertexBufferViews{};
     D3D12_INDEX_BUFFER_VIEW IndexBufferView{};
+    uint32_t VertexBufferCount = 0;
     uint32_t IndexCount = 0;
 };
 
@@ -111,14 +114,19 @@ struct FSkyPipelineConfig
 
 struct FIndirectDrawCommand
 {
-    D3D12_VERTEX_BUFFER_VIEW VertexBufferView{};
+    std::array<D3D12_VERTEX_BUFFER_VIEW, 5> VertexBufferViews{};
     D3D12_INDEX_BUFFER_VIEW IndexBufferView{};
     D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = 0;
     D3D12_DRAW_INDEXED_ARGUMENTS DrawArguments{};
     uint32_t Padding = 0;
 };
 
-static_assert(sizeof(FIndirectDrawCommand) == 64, "Indirect command layout must be 64 bytes.");
+static_assert(sizeof(FIndirectDrawCommand) == 128, "Indirect command layout must be 128 bytes.");
+static_assert(offsetof(FIndirectDrawCommand, ConstantBufferAddress) == 96, "Indirect command constant buffer offset mismatch.");
+static_assert(offsetof(FIndirectDrawCommand, DrawArguments) == 104, "Indirect command draw arguments offset mismatch.");
+static_assert(offsetof(FIndirectDrawCommand, DrawArguments.IndexCountPerInstance) == 104, "Indirect command index count offset mismatch.");
+static_assert(offsetof(FIndirectDrawCommand, DrawArguments.InstanceCount) == 108, "Indirect command instance count offset mismatch.");
+static_assert(offsetof(FIndirectDrawCommand, DrawArguments.StartIndexLocation) == 112, "Indirect command start index offset mismatch.");
 
 struct FMeshletDrawData
 {

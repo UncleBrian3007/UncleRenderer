@@ -10,8 +10,8 @@ RWByteAddressBuffer DebugPrintStats : register(u2);
 
 #include "DebugPrintCommon.hlsl"
 
-static const uint kCommandStride = 64;
-static const uint kInstanceCountOffset = 44;
+static const uint kCommandStride = 128;
+static const uint kInstanceCountOffset = 108;
 
 bool IsSphereVisible(float3 center, float radius)
 {

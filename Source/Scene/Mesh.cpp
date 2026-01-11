@@ -40,7 +40,7 @@ namespace
 
 #if WITH_MESHOPTIMIZER
     bool BuildMeshletGroup(
-        std::vector<FMesh::FVertex>& Vertices,
+        FMesh::FVertexStreams& Streams,
         std::vector<uint32_t>& Indices,
         uint32_t IndexStart,
         uint32_t IndexCount,
@@ -51,45 +51,74 @@ namespace
     {
         OutGroup = {};
 
-        if (Vertices.empty() || IndexCount < 3 || IndexStart + IndexCount > Indices.size())
+        const size_t VertexCount = Streams.Positions.size();
+        if (VertexCount == 0 || IndexCount < 3 || IndexStart + IndexCount > Indices.size())
         {
             return false;
         }
 
         std::vector<uint32_t> LocalIndices(Indices.begin() + IndexStart, Indices.begin() + IndexStart + IndexCount);
-        std::vector<FMesh::FVertex> LocalVertices = Vertices;
+        FMesh::FVertexStreams LocalStreams = Streams;
 
-        std::vector<unsigned int> Remap(LocalVertices.size());
-        const meshopt_Stream VertexStream = { LocalVertices.data(), sizeof(FMesh::FVertex), sizeof(FMesh::FVertex) };
+        auto EnsureSize = [](auto& Vec, size_t Count, const auto& DefaultValue)
+        {
+            if (Vec.size() != Count)
+            {
+                Vec.resize(Count, DefaultValue);
+            }
+        };
+
+        EnsureSize(LocalStreams.Normals, VertexCount, FFloat3(0.0f, 0.0f, 1.0f));
+        EnsureSize(LocalStreams.UVs, VertexCount, FFloat2(0.0f, 0.0f));
+        EnsureSize(LocalStreams.Tangents, VertexCount, FFloat4(0.0f, 0.0f, 0.0f, 1.0f));
+        EnsureSize(LocalStreams.Colors, VertexCount, FFloat4(1.0f, 1.0f, 1.0f, 1.0f));
+
+        std::vector<meshopt_Stream> VertexStreams;
+        VertexStreams.push_back({ LocalStreams.Positions.data(), sizeof(FFloat3), sizeof(FFloat3) });
+        VertexStreams.push_back({ LocalStreams.Normals.data(), sizeof(FFloat3), sizeof(FFloat3) });
+        VertexStreams.push_back({ LocalStreams.UVs.data(), sizeof(FFloat2), sizeof(FFloat2) });
+        VertexStreams.push_back({ LocalStreams.Tangents.data(), sizeof(FFloat4), sizeof(FFloat4) });
+        VertexStreams.push_back({ LocalStreams.Colors.data(), sizeof(FFloat4), sizeof(FFloat4) });
+
+        std::vector<unsigned int> Remap(LocalStreams.Positions.size());
         const size_t UniqueVertexCount = meshopt_generateVertexRemapMulti(
             Remap.data(),
             LocalIndices.data(),
             LocalIndices.size(),
-            LocalVertices.size(),
-            &VertexStream,
-            1);
+            LocalStreams.Positions.size(),
+            VertexStreams.data(),
+            VertexStreams.size());
 
         meshopt_remapIndexBuffer(LocalIndices.data(), LocalIndices.data(), LocalIndices.size(), Remap.data());
-        meshopt_remapVertexBuffer(LocalVertices.data(), LocalVertices.data(), LocalVertices.size(), sizeof(FMesh::FVertex), Remap.data());
-        LocalVertices.resize(UniqueVertexCount);
+        meshopt_remapVertexBuffer(LocalStreams.Positions.data(), LocalStreams.Positions.data(), LocalStreams.Positions.size(), sizeof(FFloat3), Remap.data());
+        meshopt_remapVertexBuffer(LocalStreams.Normals.data(), LocalStreams.Normals.data(), LocalStreams.Normals.size(), sizeof(FFloat3), Remap.data());
+        meshopt_remapVertexBuffer(LocalStreams.UVs.data(), LocalStreams.UVs.data(), LocalStreams.UVs.size(), sizeof(FFloat2), Remap.data());
+        meshopt_remapVertexBuffer(LocalStreams.Tangents.data(), LocalStreams.Tangents.data(), LocalStreams.Tangents.size(), sizeof(FFloat4), Remap.data());
+        meshopt_remapVertexBuffer(LocalStreams.Colors.data(), LocalStreams.Colors.data(), LocalStreams.Colors.size(), sizeof(FFloat4), Remap.data());
+
+        LocalStreams.Positions.resize(UniqueVertexCount);
+        LocalStreams.Normals.resize(UniqueVertexCount);
+        LocalStreams.UVs.resize(UniqueVertexCount);
+        LocalStreams.Tangents.resize(UniqueVertexCount);
+        LocalStreams.Colors.resize(UniqueVertexCount);
 
         const bool bCanReplaceSource = IndexStart == 0 && IndexCount == Indices.size();
         _ASSERT(bCanReplaceSource);
         if (bCanReplaceSource)
         {
             Indices.swap(LocalIndices);
-            Vertices.swap(LocalVertices);
+            Streams = LocalStreams;
         }
 
         const std::vector<uint32_t>& BuildIndices = bCanReplaceSource ? Indices : LocalIndices;
-        const std::vector<FMesh::FVertex>& BuildVertices = bCanReplaceSource ? Vertices : LocalVertices;
+        const std::vector<FFloat3>& BuildPositions = bCanReplaceSource ? Streams.Positions : LocalStreams.Positions;
 
         const size_t MaxMeshlets = meshopt_buildMeshletsBound(IndexCount, MaxVertices, MaxTriangles);
         std::vector<meshopt_Meshlet> TempMeshlets(MaxMeshlets);
         std::vector<unsigned int> TempMeshletVertices(MaxMeshlets * MaxVertices);
         std::vector<unsigned char> TempMeshletTriangles(MaxMeshlets * MaxTriangles * 3);
 
-        const float* Positions = &BuildVertices[0].Position.x;
+        const float* Positions = &BuildPositions[0].x;
         const size_t MeshletCount = meshopt_buildMeshlets(
             TempMeshlets.data(),
             TempMeshletVertices.data(),
@@ -97,8 +126,8 @@ namespace
             BuildIndices.data(),
             IndexCount,
             Positions,
-            BuildVertices.size(),
-            sizeof(FMesh::FVertex),
+            BuildPositions.size(),
+            sizeof(FFloat3),
             MaxVertices,
             MaxTriangles,
             ConeWeight);
@@ -162,8 +191,8 @@ namespace
                 &OutGroup.MeshletTriangles[Meshlet.TriangleOffset],
                 Meshlet.TriangleCount,
                 Positions,
-                BuildVertices.size(),
-                sizeof(FMesh::FVertex));
+                BuildPositions.size(),
+                sizeof(FFloat3));
 
             FMesh::FMeshletBounds OutBounds;
             OutBounds.Center = { Bounds.center[0], Bounds.center[1], Bounds.center[2] };
@@ -192,43 +221,44 @@ FMesh FMesh::CreateCube(float Size)
     const FFloat4 TangentPosZ{ 1.0f, 0.0f, 0.0f, 1.0f };
     const FFloat4 TangentNegZ{ -1.0f, 0.0f, 0.0f, 1.0f };
 
-    std::vector<FVertex> Vertices = {
-        // +X
-        { { HalfSize, -HalfSize, -HalfSize }, { 1.0f, 0.0f, 0.0f }, { 0.0f, 1.0f }, TangentPosX },
-        { { HalfSize, -HalfSize,  HalfSize }, { 1.0f, 0.0f, 0.0f }, { 1.0f, 1.0f }, TangentPosX },
-        { { HalfSize,  HalfSize,  HalfSize }, { 1.0f, 0.0f, 0.0f }, { 1.0f, 0.0f }, TangentPosX },
-        { { HalfSize,  HalfSize, -HalfSize }, { 1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f }, TangentPosX },
-
-        // -X
-        { { -HalfSize, -HalfSize,  HalfSize }, { -1.0f, 0.0f, 0.0f }, { 0.0f, 1.0f }, TangentNegX },
-        { { -HalfSize, -HalfSize, -HalfSize }, { -1.0f, 0.0f, 0.0f }, { 1.0f, 1.0f }, TangentNegX },
-        { { -HalfSize,  HalfSize, -HalfSize }, { -1.0f, 0.0f, 0.0f }, { 1.0f, 0.0f }, TangentNegX },
-        { { -HalfSize,  HalfSize,  HalfSize }, { -1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f }, TangentNegX },
-
-        // +Y
-        { { -HalfSize,  HalfSize, -HalfSize }, { 0.0f, 1.0f, 0.0f }, { 0.0f, 1.0f }, TangentPosY },
-        { {  HalfSize,  HalfSize, -HalfSize }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 1.0f }, TangentPosY },
-        { {  HalfSize,  HalfSize,  HalfSize }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 0.0f }, TangentPosY },
-        { { -HalfSize,  HalfSize,  HalfSize }, { 0.0f, 1.0f, 0.0f }, { 0.0f, 0.0f }, TangentPosY },
-
-        // -Y
-        { { -HalfSize, -HalfSize,  HalfSize }, { 0.0f, -1.0f, 0.0f }, { 0.0f, 1.0f }, TangentNegY },
-        { {  HalfSize, -HalfSize,  HalfSize }, { 0.0f, -1.0f, 0.0f }, { 1.0f, 1.0f }, TangentNegY },
-        { {  HalfSize, -HalfSize, -HalfSize }, { 0.0f, -1.0f, 0.0f }, { 1.0f, 0.0f }, TangentNegY },
-        { { -HalfSize, -HalfSize, -HalfSize }, { 0.0f, -1.0f, 0.0f }, { 0.0f, 0.0f }, TangentNegY },
-
-        // +Z
-        { { -HalfSize, -HalfSize, HalfSize }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 1.0f }, TangentPosZ },
-        { { -HalfSize,  HalfSize, HalfSize }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f }, TangentPosZ },
-        { {  HalfSize,  HalfSize, HalfSize }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f }, TangentPosZ },
-        { {  HalfSize, -HalfSize, HalfSize }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 1.0f }, TangentPosZ },
-
-        // -Z
-        { {  HalfSize, -HalfSize, -HalfSize }, { 0.0f, 0.0f, -1.0f }, { 0.0f, 1.0f }, TangentNegZ },
-        { {  HalfSize,  HalfSize, -HalfSize }, { 0.0f, 0.0f, -1.0f }, { 0.0f, 0.0f }, TangentNegZ },
-        { { -HalfSize,  HalfSize, -HalfSize }, { 0.0f, 0.0f, -1.0f }, { 1.0f, 0.0f }, TangentNegZ },
-        { { -HalfSize, -HalfSize, -HalfSize }, { 0.0f, 0.0f, -1.0f }, { 1.0f, 1.0f }, TangentNegZ },
+    FVertexStreams Streams;
+    Streams.Positions = {
+        { HalfSize, -HalfSize, -HalfSize }, { HalfSize, -HalfSize,  HalfSize }, { HalfSize,  HalfSize,  HalfSize }, { HalfSize,  HalfSize, -HalfSize },
+        { -HalfSize, -HalfSize,  HalfSize }, { -HalfSize, -HalfSize, -HalfSize }, { -HalfSize,  HalfSize, -HalfSize }, { -HalfSize,  HalfSize,  HalfSize },
+        { -HalfSize,  HalfSize, -HalfSize }, {  HalfSize,  HalfSize, -HalfSize }, {  HalfSize,  HalfSize,  HalfSize }, { -HalfSize,  HalfSize,  HalfSize },
+        { -HalfSize, -HalfSize,  HalfSize }, {  HalfSize, -HalfSize,  HalfSize }, {  HalfSize, -HalfSize, -HalfSize }, { -HalfSize, -HalfSize, -HalfSize },
+        { -HalfSize, -HalfSize, HalfSize }, { -HalfSize,  HalfSize, HalfSize }, {  HalfSize,  HalfSize, HalfSize }, {  HalfSize, -HalfSize, HalfSize },
+        {  HalfSize, -HalfSize, -HalfSize }, {  HalfSize,  HalfSize, -HalfSize }, { -HalfSize,  HalfSize, -HalfSize }, { -HalfSize, -HalfSize, -HalfSize },
     };
+
+    Streams.Normals = {
+        { 1.0f, 0.0f, 0.0f }, { 1.0f, 0.0f, 0.0f }, { 1.0f, 0.0f, 0.0f }, { 1.0f, 0.0f, 0.0f },
+        { -1.0f, 0.0f, 0.0f }, { -1.0f, 0.0f, 0.0f }, { -1.0f, 0.0f, 0.0f }, { -1.0f, 0.0f, 0.0f },
+        { 0.0f, 1.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, 1.0f, 0.0f },
+        { 0.0f, -1.0f, 0.0f }, { 0.0f, -1.0f, 0.0f }, { 0.0f, -1.0f, 0.0f }, { 0.0f, -1.0f, 0.0f },
+        { 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, 1.0f },
+        { 0.0f, 0.0f, -1.0f }, { 0.0f, 0.0f, -1.0f }, { 0.0f, 0.0f, -1.0f }, { 0.0f, 0.0f, -1.0f },
+    };
+
+    Streams.UVs = {
+        { 0.0f, 1.0f }, { 1.0f, 1.0f }, { 1.0f, 0.0f }, { 0.0f, 0.0f },
+        { 0.0f, 1.0f }, { 1.0f, 1.0f }, { 1.0f, 0.0f }, { 0.0f, 0.0f },
+        { 0.0f, 1.0f }, { 1.0f, 1.0f }, { 1.0f, 0.0f }, { 0.0f, 0.0f },
+        { 0.0f, 1.0f }, { 1.0f, 1.0f }, { 1.0f, 0.0f }, { 0.0f, 0.0f },
+        { 0.0f, 1.0f }, { 0.0f, 0.0f }, { 1.0f, 0.0f }, { 1.0f, 1.0f },
+        { 0.0f, 1.0f }, { 0.0f, 0.0f }, { 1.0f, 0.0f }, { 1.0f, 1.0f },
+    };
+
+    Streams.Tangents = {
+        TangentPosX, TangentPosX, TangentPosX, TangentPosX,
+        TangentNegX, TangentNegX, TangentNegX, TangentNegX,
+        TangentPosY, TangentPosY, TangentPosY, TangentPosY,
+        TangentNegY, TangentNegY, TangentNegY, TangentNegY,
+        TangentPosZ, TangentPosZ, TangentPosZ, TangentPosZ,
+        TangentNegZ, TangentNegZ, TangentNegZ, TangentNegZ,
+    };
+
+    Streams.Colors.assign(24, FFloat4(1.0f, 1.0f, 1.0f, 1.0f));
 
     std::vector<uint32_t> Indices = {
         // +X
@@ -246,7 +276,7 @@ FMesh FMesh::CreateCube(float Size)
     };
 
     FPrimitive Primitive;
-    Primitive.Vertices = std::move(Vertices);
+    Primitive.VertexStreams = std::move(Streams);
     Primitive.Indices = std::move(Indices);
     Mesh.AddPrimitive(std::move(Primitive));
     Mesh.SetMeshletIndexingAllowed(true);
@@ -262,8 +292,13 @@ FMesh FMesh::CreateSphere(float Radius, uint32_t SliceCount, uint32_t StackCount
     SliceCount = std::max(3u, SliceCount);
     StackCount = std::max(2u, StackCount);
 
-    std::vector<FVertex> Vertices;
-    Vertices.reserve((SliceCount + 1) * (StackCount + 1));
+    FVertexStreams Streams;
+    const size_t VertexCapacity = static_cast<size_t>((SliceCount + 1) * (StackCount + 1));
+    Streams.Positions.reserve(VertexCapacity);
+    Streams.Normals.reserve(VertexCapacity);
+    Streams.UVs.reserve(VertexCapacity);
+    Streams.Tangents.reserve(VertexCapacity);
+    Streams.Colors.reserve(VertexCapacity);
 
     const float TwoPi = DirectX::XM_2PI;
     const float Pi = DirectX::XM_PI;
@@ -286,14 +321,15 @@ FMesh FMesh::CreateSphere(float Radius, uint32_t SliceCount, uint32_t StackCount
             const float Y = Radius * CosPhi;
             const float Z = Radius * SinPhi * SinTheta;
 
-            FVertex Vertex = {};
-            Vertex.Position = { X, Y, Z };
+            Streams.Positions.push_back({ X, Y, Z });
 
             const FFloat3 Normal = { SinPhi * CosTheta, CosPhi, SinPhi * SinTheta };
             const DirectX::XMVECTOR NormalVec = DirectX::XMLoadFloat3(&Normal);
-            DirectX::XMStoreFloat3(&Vertex.Normal, DirectX::XMVector3Normalize(NormalVec));
+            FFloat3 NormalNormalized;
+            DirectX::XMStoreFloat3(&NormalNormalized, DirectX::XMVector3Normalize(NormalVec));
+            Streams.Normals.push_back(NormalNormalized);
 
-            Vertex.UV = { U, V };
+            Streams.UVs.push_back({ U, V });
 
             FFloat3 Tangent = { -SinTheta, 0.0f, CosTheta };
             if (std::abs(SinPhi) > 1e-4f)
@@ -307,9 +343,11 @@ FMesh FMesh::CreateSphere(float Radius, uint32_t SliceCount, uint32_t StackCount
             }
 
             const DirectX::XMVECTOR TangentVec = DirectX::XMVector3Normalize(DirectX::XMLoadFloat3(&Tangent));
-            DirectX::XMStoreFloat4(&Vertex.Tangent, DirectX::XMVectorSetW(TangentVec, 1.0f));
+            FFloat4 TangentPacked;
+            DirectX::XMStoreFloat4(&TangentPacked, DirectX::XMVectorSetW(TangentVec, 1.0f));
+            Streams.Tangents.push_back(TangentPacked);
 
-            Vertices.push_back(Vertex);
+            Streams.Colors.push_back(FFloat4(1.0f, 1.0f, 1.0f, 1.0f));
         }
     }
 
@@ -334,7 +372,7 @@ FMesh FMesh::CreateSphere(float Radius, uint32_t SliceCount, uint32_t StackCount
     }
 
     FPrimitive Primitive;
-    Primitive.Vertices = std::move(Vertices);
+    Primitive.VertexStreams = std::move(Streams);
     Primitive.Indices = std::move(Indices);
     Mesh.AddPrimitive(std::move(Primitive));
     Mesh.SetMeshletIndexingAllowed(true);
@@ -349,22 +387,28 @@ void FMesh::GenerateNormalsIfMissing()
 
     for (FPrimitive& Primitive : Primitives)
     {
-        if (Primitive.Vertices.empty() || Primitive.Indices.size() < 3)
+        const size_t VertexCount = Primitive.VertexStreams.Positions.size();
+        if (VertexCount == 0 || Primitive.Indices.size() < 3)
         {
             continue;
         }
 
-        const bool bAllNormalsValid = std::all_of(Primitive.Vertices.begin(), Primitive.Vertices.end(), [](const FVertex& Vertex)
+        if (Primitive.VertexStreams.Normals.size() != VertexCount)
         {
-            return IsNormalValid(Vertex.Normal);
-        });
+            Primitive.VertexStreams.Normals.resize(VertexCount, FFloat3(0.0f, 0.0f, 1.0f));
+        }
+
+        const bool bAllNormalsValid = std::all_of(
+            Primitive.VertexStreams.Normals.begin(),
+            Primitive.VertexStreams.Normals.end(),
+            [](const FFloat3& Normal) { return IsNormalValid(Normal); });
 
         if (bAllNormalsValid)
         {
             continue;
         }
 
-        std::vector<XMVECTOR> NormalAccum(Primitive.Vertices.size(), XMVectorZero());
+        std::vector<XMVECTOR> NormalAccum(VertexCount, XMVectorZero());
 
         for (size_t i = 0; i + 2 < Primitive.Indices.size(); i += 3)
         {
@@ -372,9 +416,14 @@ void FMesh::GenerateNormalsIfMissing()
             const uint32_t Index1 = Primitive.Indices[i + 1];
             const uint32_t Index2 = Primitive.Indices[i + 2];
 
-            const XMVECTOR P0 = XMLoadFloat3(&Primitive.Vertices[Index0].Position);
-            const XMVECTOR P1 = XMLoadFloat3(&Primitive.Vertices[Index1].Position);
-            const XMVECTOR P2 = XMLoadFloat3(&Primitive.Vertices[Index2].Position);
+            if (Index0 >= VertexCount || Index1 >= VertexCount || Index2 >= VertexCount)
+            {
+                continue;
+            }
+
+            const XMVECTOR P0 = XMLoadFloat3(&Primitive.VertexStreams.Positions[Index0]);
+            const XMVECTOR P1 = XMLoadFloat3(&Primitive.VertexStreams.Positions[Index1]);
+            const XMVECTOR P2 = XMLoadFloat3(&Primitive.VertexStreams.Positions[Index2]);
 
             const XMVECTOR Edge1 = XMVectorSubtract(P1, P0);
             const XMVECTOR Edge2 = XMVectorSubtract(P2, P0);
@@ -385,7 +434,7 @@ void FMesh::GenerateNormalsIfMissing()
             NormalAccum[Index2] = XMVectorAdd(NormalAccum[Index2], FaceNormal);
         }
 
-        for (size_t i = 0; i < Primitive.Vertices.size(); ++i)
+        for (size_t i = 0; i < VertexCount; ++i)
         {
             XMVECTOR Normal = NormalAccum[i];
             if (XMVector3LessOrEqual(XMVector3LengthSq(Normal), XMVectorReplicate(1e-8f)))
@@ -393,7 +442,7 @@ void FMesh::GenerateNormalsIfMissing()
                 Normal = XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
             }
             Normal = XMVector3Normalize(Normal);
-            XMStoreFloat3(&Primitive.Vertices[i].Normal, Normal);
+            XMStoreFloat3(&Primitive.VertexStreams.Normals[i], Normal);
         }
     }
 }
@@ -404,23 +453,37 @@ void FMesh::GenerateTangentsIfMissing()
 
     for (FPrimitive& Primitive : Primitives)
     {
-        if (Primitive.Vertices.empty() || Primitive.Indices.size() < 3)
+        const size_t VertexCount = Primitive.VertexStreams.Positions.size();
+        if (VertexCount == 0 || Primitive.Indices.size() < 3)
         {
             continue;
         }
 
-        const bool bAllTangentsValid = std::all_of(Primitive.Vertices.begin(), Primitive.Vertices.end(), [](const FVertex& Vertex)
+        if (Primitive.VertexStreams.Normals.size() != VertexCount)
         {
-            return IsTangentValid(Vertex.Tangent);
-        });
+            Primitive.VertexStreams.Normals.resize(VertexCount, FFloat3(0.0f, 0.0f, 1.0f));
+        }
+        if (Primitive.VertexStreams.UVs.size() != VertexCount)
+        {
+            Primitive.VertexStreams.UVs.resize(VertexCount, FFloat2(0.0f, 0.0f));
+        }
+        if (Primitive.VertexStreams.Tangents.size() != VertexCount)
+        {
+            Primitive.VertexStreams.Tangents.resize(VertexCount, FFloat4(0.0f, 0.0f, 0.0f, 1.0f));
+        }
+
+        const bool bAllTangentsValid = std::all_of(
+            Primitive.VertexStreams.Tangents.begin(),
+            Primitive.VertexStreams.Tangents.end(),
+            [](const FFloat4& Tangent) { return IsTangentValid(Tangent); });
 
         if (bAllTangentsValid)
         {
             continue;
         }
 
-        std::vector<XMVECTOR> TangentAccum(Primitive.Vertices.size(), XMVectorZero());
-        std::vector<XMVECTOR> BitangentAccum(Primitive.Vertices.size(), XMVectorZero());
+        std::vector<XMVECTOR> TangentAccum(VertexCount, XMVectorZero());
+        std::vector<XMVECTOR> BitangentAccum(VertexCount, XMVectorZero());
 
         for (size_t i = 0; i + 2 < Primitive.Indices.size(); i += 3)
         {
@@ -428,13 +491,18 @@ void FMesh::GenerateTangentsIfMissing()
             const uint32_t Index1 = Primitive.Indices[i + 1];
             const uint32_t Index2 = Primitive.Indices[i + 2];
 
-            const XMVECTOR P0 = XMLoadFloat3(&Primitive.Vertices[Index0].Position);
-            const XMVECTOR P1 = XMLoadFloat3(&Primitive.Vertices[Index1].Position);
-            const XMVECTOR P2 = XMLoadFloat3(&Primitive.Vertices[Index2].Position);
+            if (Index0 >= VertexCount || Index1 >= VertexCount || Index2 >= VertexCount)
+            {
+                continue;
+            }
 
-            const XMVECTOR UV0 = XMLoadFloat2(&Primitive.Vertices[Index0].UV);
-            const XMVECTOR UV1 = XMLoadFloat2(&Primitive.Vertices[Index1].UV);
-            const XMVECTOR UV2 = XMLoadFloat2(&Primitive.Vertices[Index2].UV);
+            const XMVECTOR P0 = XMLoadFloat3(&Primitive.VertexStreams.Positions[Index0]);
+            const XMVECTOR P1 = XMLoadFloat3(&Primitive.VertexStreams.Positions[Index1]);
+            const XMVECTOR P2 = XMLoadFloat3(&Primitive.VertexStreams.Positions[Index2]);
+
+            const XMVECTOR UV0 = XMLoadFloat2(&Primitive.VertexStreams.UVs[Index0]);
+            const XMVECTOR UV1 = XMLoadFloat2(&Primitive.VertexStreams.UVs[Index1]);
+            const XMVECTOR UV2 = XMLoadFloat2(&Primitive.VertexStreams.UVs[Index2]);
 
             const XMVECTOR Edge1 = XMVectorSubtract(P1, P0);
             const XMVECTOR Edge2 = XMVectorSubtract(P2, P0);
@@ -462,9 +530,9 @@ void FMesh::GenerateTangentsIfMissing()
             BitangentAccum[Index2] = XMVectorAdd(BitangentAccum[Index2], Bitangent);
         }
 
-        for (size_t i = 0; i < Primitive.Vertices.size(); ++i)
+        for (size_t i = 0; i < VertexCount; ++i)
         {
-            XMVECTOR Normal = XMLoadFloat3(&Primitive.Vertices[i].Normal);
+            XMVECTOR Normal = XMLoadFloat3(&Primitive.VertexStreams.Normals[i]);
             if (XMVector3LessOrEqual(XMVector3LengthSq(Normal), XMVectorReplicate(1e-8f)))
             {
                 Normal = XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
@@ -479,7 +547,7 @@ void FMesh::GenerateTangentsIfMissing()
             {
                 Tangent = BuildOrthonormalTangent(Normal);
                 Bitangent = XMVector3Cross(Normal, Tangent);
-                XMStoreFloat4(&Primitive.Vertices[i].Tangent, XMVectorSetW(Tangent, 1.0f));
+                XMStoreFloat4(&Primitive.VertexStreams.Tangents[i], XMVectorSetW(Tangent, 1.0f));
                 continue;
             }
 
@@ -487,7 +555,7 @@ void FMesh::GenerateTangentsIfMissing()
             Bitangent = XMVector3Normalize(Bitangent);
 
             const float Handedness = XMVectorGetX(XMVector3Dot(XMVector3Cross(Normal, Tangent), Bitangent)) < 0.0f ? -1.0f : 1.0f;
-            XMStoreFloat4(&Primitive.Vertices[i].Tangent, XMVectorSetW(Tangent, Handedness));
+            XMStoreFloat4(&Primitive.VertexStreams.Tangents[i], XMVectorSetW(Tangent, Handedness));
         }
     }
 }
@@ -519,8 +587,8 @@ void FMesh::BuildMeshletGroups(const std::vector<size_t>& PrimitiveIndices, uint
         if (PrimitiveIndex < Primitives.size())
         {
             FPrimitive& Primitive = Primitives[PrimitiveIndex];
-            if (!Primitive.Indices.empty() && !Primitive.Vertices.empty()
-                && BuildMeshletGroup(Primitive.Vertices, Primitive.Indices, 0, static_cast<uint32_t>(Primitive.Indices.size()),
+            if (!Primitive.Indices.empty() && !Primitive.VertexStreams.Positions.empty()
+                && BuildMeshletGroup(Primitive.VertexStreams, Primitive.Indices, 0, static_cast<uint32_t>(Primitive.Indices.size()),
                     MaxVertices, MaxTriangles, ConeWeight, Group))
             {
                 MeshletGroups.push_back(std::move(Group));

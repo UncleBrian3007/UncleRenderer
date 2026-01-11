@@ -8,19 +8,19 @@
 class FMesh
 {
 public:
-    struct FVertex
+    struct FVertexStreams
     {
-        FFloat3 Position;
-        FFloat3 Normal;
-        FFloat2 UV;
-        FFloat4 Tangent;
-        FFloat4 Color{ 1.0f, 1.0f, 1.0f, 1.0f };
+        std::vector<FFloat3> Positions;
+        std::vector<FFloat3> Normals;
+        std::vector<FFloat2> UVs;
+        std::vector<FFloat4> Tangents;
+        std::vector<FFloat4> Colors;
     };
 
     struct FPrimitive
     {
-        std::vector<FVertex> Vertices;
         std::vector<uint32_t> Indices;
+        FVertexStreams VertexStreams;
     };
 
     struct FMeshlet

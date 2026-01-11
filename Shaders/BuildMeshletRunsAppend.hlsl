@@ -7,10 +7,10 @@ ByteAddressBuffer CommandTemplates : register(t3);
 RWByteAddressBuffer OutputCommands : register(u0);
 RWStructuredBuffer<uint> RunCounts : register(u1);
 
-static const uint kCommandStride = 64;
-static const uint kIndexCountOffset = 40;
-static const uint kInstanceCountOffset = 44;
-static const uint kStartIndexOffset = 48;
+static const uint kCommandStride = 128;
+static const uint kIndexCountOffset = 104;
+static const uint kInstanceCountOffset = 108;
+static const uint kStartIndexOffset = 112;
 
 uint4 ReadMeshletDrawData(uint index)
 {
@@ -27,11 +27,11 @@ void CopyTemplate(uint srcIndex, uint dstIndex)
     uint srcBase = srcIndex * kCommandStride;
     uint dstBase = dstIndex * kCommandStride;
     [unroll]
-	for (uint i = 0; i < 4; ++i)
-	{
-		uint4 values = CommandTemplates.Load4(srcBase + i * 16);
-		OutputCommands.Store4(dstBase + i * 16, values);
-	}
+    for (uint i = 0; i < kCommandStride / 16; ++i)
+    {
+        uint4 values = CommandTemplates.Load4(srcBase + i * 16);
+        OutputCommands.Store4(dstBase + i * 16, values);
+    }
 }
 
 [numthreads(64, 1, 1)]

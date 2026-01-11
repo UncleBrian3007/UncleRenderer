@@ -1172,7 +1172,7 @@ bool FRenderer::PrepareGpuDrivenDrawData(FGpuDrivenPreparedData& OutData)
                 const FMesh::FMeshletBounds& BoundsData = Model.MeshletBounds[MeshletIndex];
 
                 FIndirectDrawCommand Command;
-                Command.VertexBufferView = Model.Geometry.VertexBufferView;
+                Command.VertexBufferViews = Model.Geometry.VertexBufferViews;
                 Command.IndexBufferView = Model.Geometry.IndexBufferView;
                 Command.ConstantBufferAddress = ConstantBufferBase + SceneConstantBufferStride * SortedIndex;
                 Command.DrawArguments.IndexCountPerInstance = Meshlet.IndexCount;
@@ -1214,7 +1214,7 @@ bool FRenderer::PrepareGpuDrivenDrawData(FGpuDrivenPreparedData& OutData)
         else
         {
             FIndirectDrawCommand Command;
-            Command.VertexBufferView = Model.Geometry.VertexBufferView;
+            Command.VertexBufferViews = Model.Geometry.VertexBufferViews;
             Command.IndexBufferView = Model.Geometry.IndexBufferView;
             Command.ConstantBufferAddress = ConstantBufferBase + SceneConstantBufferStride * SortedIndex;
             Command.DrawArguments.IndexCountPerInstance = Model.DrawIndexCount;
@@ -2103,13 +2103,21 @@ bool FRenderer::CreateIndirectCommandSignature(FDX12Device* Device, ID3D12RootSi
         return false;
     }
 
-    D3D12_INDIRECT_ARGUMENT_DESC IndirectArgs[4] = {};
+    D3D12_INDIRECT_ARGUMENT_DESC IndirectArgs[8] = {};
     IndirectArgs[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_VERTEX_BUFFER_VIEW;
     IndirectArgs[0].VertexBuffer.Slot = 0;
-    IndirectArgs[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_INDEX_BUFFER_VIEW;
-    IndirectArgs[2].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT_BUFFER_VIEW;
-    IndirectArgs[2].ConstantBufferView.RootParameterIndex = 0;
-    IndirectArgs[3].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+    IndirectArgs[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_VERTEX_BUFFER_VIEW;
+    IndirectArgs[1].VertexBuffer.Slot = 1;
+    IndirectArgs[2].Type = D3D12_INDIRECT_ARGUMENT_TYPE_VERTEX_BUFFER_VIEW;
+    IndirectArgs[2].VertexBuffer.Slot = 2;
+    IndirectArgs[3].Type = D3D12_INDIRECT_ARGUMENT_TYPE_VERTEX_BUFFER_VIEW;
+    IndirectArgs[3].VertexBuffer.Slot = 3;
+    IndirectArgs[4].Type = D3D12_INDIRECT_ARGUMENT_TYPE_VERTEX_BUFFER_VIEW;
+    IndirectArgs[4].VertexBuffer.Slot = 4;
+    IndirectArgs[5].Type = D3D12_INDIRECT_ARGUMENT_TYPE_INDEX_BUFFER_VIEW;
+    IndirectArgs[6].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT_BUFFER_VIEW;
+    IndirectArgs[6].ConstantBufferView.RootParameterIndex = 0;
+    IndirectArgs[7].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
 
     D3D12_COMMAND_SIGNATURE_DESC CommandDesc = {};
     CommandDesc.pArgumentDescs = IndirectArgs;
