@@ -181,7 +181,6 @@ namespace RendererUtils
         float Radius = 1.0f,
         uint32_t SliceCount = 32,
         uint32_t StackCount = 16);
-    bool CreateDefaultSceneGeometry(FDX12Device* Device, FMeshGeometryBuffers& OutGeometry, FFloat3& OutCenter, float& OutRadius, FGltfMaterialTextures* OutTexturePaths = nullptr);
     bool CreateSceneModelsFromJson(
         FDX12Device* Device,
         const std::wstring& SceneFilePath,

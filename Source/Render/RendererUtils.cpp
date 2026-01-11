@@ -12,6 +12,7 @@
 #include "ShaderCompiler.h"
 #include "../RHI/DX12Device.h"
 #include "../RHI/DX12Commons.h"
+#include "../RHI/DX12CommandContext.h"
 #include <vector>
 #include <cstring>
 #include <algorithm>
@@ -45,28 +46,44 @@ namespace
 
     void ComputeMeshBounds(const FMesh& Mesh, FFloat3& OutCenter, float& OutRadius, FFloat3& OutMin, FFloat3& OutMax)
     {
-        const auto& Vertices = Mesh.GetVertices();
-        if (Vertices.empty())
+        const auto& Primitives = Mesh.GetPrimitives();
+        bool bHasVertex = false;
+        FFloat3 Min{};
+        FFloat3 Max{};
+
+        for (const FMesh::FPrimitive& Primitive : Primitives)
+        {
+            if (Primitive.Vertices.empty())
+            {
+                continue;
+            }
+
+            if (!bHasVertex)
+            {
+                Min = Primitive.Vertices.front().Position;
+                Max = Primitive.Vertices.front().Position;
+                bHasVertex = true;
+            }
+
+            for (const auto& Vertex : Primitive.Vertices)
+            {
+                Min.x = std::min(Min.x, Vertex.Position.x);
+                Min.y = std::min(Min.y, Vertex.Position.y);
+                Min.z = std::min(Min.z, Vertex.Position.z);
+
+                Max.x = std::max(Max.x, Vertex.Position.x);
+                Max.y = std::max(Max.y, Vertex.Position.y);
+                Max.z = std::max(Max.z, Vertex.Position.z);
+            }
+        }
+
+        if (!bHasVertex)
         {
             OutCenter = FFloat3(0.0f, 0.0f, 0.0f);
             OutRadius = 1.0f;
             OutMin = FFloat3(0.0f, 0.0f, 0.0f);
             OutMax = FFloat3(0.0f, 0.0f, 0.0f);
             return;
-        }
-
-        FFloat3 Min = Vertices.front().Position;
-        FFloat3 Max = Vertices.front().Position;
-
-        for (const auto& Vertex : Vertices)
-        {
-            Min.x = std::min(Min.x, Vertex.Position.x);
-            Min.y = std::min(Min.y, Vertex.Position.y);
-            Min.z = std::min(Min.z, Vertex.Position.z);
-
-            Max.x = std::max(Max.x, Vertex.Position.x);
-            Max.y = std::max(Max.y, Vertex.Position.y);
-            Max.z = std::max(Max.z, Vertex.Position.z);
         }
 
         OutCenter = FFloat3(
@@ -79,6 +96,185 @@ namespace
         OutRadius = std::max(OutRadius, 1.0f);
         OutMin = Min;
         OutMax = Max;
+    }
+
+    struct FUploadBatch
+    {
+        FDX12CommandContext Context;
+        std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> UploadBuffers;
+        bool bInitialized = false;
+
+        void Begin(FDX12Device* Device)
+        {
+            Context.Initialize(Device, Device->GetGraphicsQueue(), 1);
+            Context.BeginFrame(0);
+            bInitialized = true;
+        }
+
+        void AddUploadBuffer(Microsoft::WRL::ComPtr<ID3D12Resource>&& Buffer)
+        {
+            UploadBuffers.push_back(std::move(Buffer));
+        }
+
+        void ExecuteAndFlush()
+        {
+            Context.CloseAndExecute();
+            Context.GetQueue()->Flush();
+            UploadBuffers.clear();
+        }
+    };
+
+    bool CreatePrimitiveGeometry(
+        FDX12Device* Device,
+        const FMesh::FPrimitive& Primitive,
+        FMeshGeometryBuffers& OutGeometry,
+        bool bCreateIndexBuffer = true,
+        FUploadBatch* UploadBatch = nullptr)
+    {
+        if (Device == nullptr)
+        {
+            return false;
+        }
+
+        if (Primitive.Vertices.empty() || Primitive.Indices.empty())
+        {
+            return false;
+        }
+
+        OutGeometry.IndexCount = static_cast<uint32_t>(Primitive.Indices.size());
+
+        const UINT VertexBufferSize = static_cast<UINT>(Primitive.Vertices.size() * sizeof(FMesh::FVertex));
+        const UINT IndexBufferSize = static_cast<UINT>(Primitive.Indices.size() * sizeof(uint32_t));
+
+        D3D12_HEAP_PROPERTIES DefaultHeap = {};
+        DefaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
+        DefaultHeap.CreationNodeMask = 1;
+        DefaultHeap.VisibleNodeMask = 1;
+
+        D3D12_HEAP_PROPERTIES UploadHeap = {};
+        UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+        UploadHeap.CreationNodeMask = 1;
+        UploadHeap.VisibleNodeMask = 1;
+
+        D3D12_RESOURCE_DESC BufferDesc = {};
+        BufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        BufferDesc.Height = 1;
+        BufferDesc.DepthOrArraySize = 1;
+        BufferDesc.MipLevels = 1;
+        BufferDesc.Format = DXGI_FORMAT_UNKNOWN;
+        BufferDesc.SampleDesc.Count = 1;
+        BufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+        BufferDesc.Width = VertexBufferSize;
+        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+            &DefaultHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &BufferDesc,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            nullptr,
+            IID_PPV_ARGS(OutGeometry.VertexBuffer.GetAddressOf())));
+
+        OutGeometry.VertexBufferView.BufferLocation = OutGeometry.VertexBuffer->GetGPUVirtualAddress();
+        OutGeometry.VertexBufferView.StrideInBytes = sizeof(FMesh::FVertex);
+        OutGeometry.VertexBufferView.SizeInBytes = VertexBufferSize;
+
+        Microsoft::WRL::ComPtr<ID3D12Resource> VertexUploadBuffer;
+        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+            &UploadHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &BufferDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(VertexUploadBuffer.ReleaseAndGetAddressOf())));
+
+        void* VertexData = nullptr;
+        D3D12_RANGE EmptyRange = { 0, 0 };
+        HR_CHECK(VertexUploadBuffer->Map(0, &EmptyRange, &VertexData));
+        memcpy(VertexData, Primitive.Vertices.data(), VertexBufferSize);
+        VertexUploadBuffer->Unmap(0, nullptr);
+
+        if (bCreateIndexBuffer)
+        {
+            BufferDesc.Width = IndexBufferSize;
+            HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+                &DefaultHeap,
+                D3D12_HEAP_FLAG_NONE,
+                &BufferDesc,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                nullptr,
+                IID_PPV_ARGS(OutGeometry.IndexBuffer.GetAddressOf())));
+
+            OutGeometry.IndexBufferView.BufferLocation = OutGeometry.IndexBuffer->GetGPUVirtualAddress();
+            OutGeometry.IndexBufferView.Format = DXGI_FORMAT_R32_UINT;
+            OutGeometry.IndexBufferView.SizeInBytes = IndexBufferSize;
+
+            Microsoft::WRL::ComPtr<ID3D12Resource> IndexUploadBuffer;
+            HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+                &UploadHeap,
+                D3D12_HEAP_FLAG_NONE,
+                &BufferDesc,
+                D3D12_RESOURCE_STATE_GENERIC_READ,
+                nullptr,
+                IID_PPV_ARGS(IndexUploadBuffer.ReleaseAndGetAddressOf())));
+
+            void* IndexData = nullptr;
+            HR_CHECK(IndexUploadBuffer->Map(0, &EmptyRange, &IndexData));
+            memcpy(IndexData, Primitive.Indices.data(), IndexBufferSize);
+            IndexUploadBuffer->Unmap(0, nullptr);
+
+            if (UploadBatch && !UploadBatch->bInitialized)
+            {
+                UploadBatch->Begin(Device);
+            }
+
+            FUploadBatch LocalBatch;
+            FUploadBatch* ActiveBatch = UploadBatch;
+            if (!ActiveBatch)
+            {
+                LocalBatch.Begin(Device);
+                ActiveBatch = &LocalBatch;
+            }
+
+            ID3D12GraphicsCommandList* CommandList = ActiveBatch->Context.GetCommandList();
+            CommandList->CopyBufferRegion(OutGeometry.VertexBuffer.Get(), 0, VertexUploadBuffer.Get(), 0, VertexBufferSize);
+            ActiveBatch->Context.TransitionResource(OutGeometry.VertexBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
+            CommandList->CopyBufferRegion(OutGeometry.IndexBuffer.Get(), 0, IndexUploadBuffer.Get(), 0, IndexBufferSize);
+            ActiveBatch->Context.TransitionResource(OutGeometry.IndexBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_INDEX_BUFFER);
+            ActiveBatch->AddUploadBuffer(std::move(VertexUploadBuffer));
+            ActiveBatch->AddUploadBuffer(std::move(IndexUploadBuffer));
+
+            if (!UploadBatch)
+            {
+                ActiveBatch->ExecuteAndFlush();
+            }
+
+            return true;
+        }
+
+        if (UploadBatch && !UploadBatch->bInitialized)
+        {
+            UploadBatch->Begin(Device);
+        }
+
+        FUploadBatch LocalBatch;
+        FUploadBatch* ActiveBatch = UploadBatch;
+        if (!ActiveBatch)
+        {
+            LocalBatch.Begin(Device);
+            ActiveBatch = &LocalBatch;
+        }
+
+        ID3D12GraphicsCommandList* CommandList = ActiveBatch->Context.GetCommandList();
+        CommandList->CopyBufferRegion(OutGeometry.VertexBuffer.Get(), 0, VertexUploadBuffer.Get(), 0, VertexBufferSize);
+        ActiveBatch->Context.TransitionResource(OutGeometry.VertexBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
+        ActiveBatch->AddUploadBuffer(std::move(VertexUploadBuffer));
+
+        if (!UploadBatch)
+        {
+            ActiveBatch->ExecuteAndFlush();
+        }
+
+        return true;
     }
 
 }
@@ -159,70 +355,13 @@ std::string RendererUtils::ResourceStateToString(D3D12_RESOURCE_STATES State)
 
 bool RendererUtils::CreateMeshGeometry(FDX12Device* Device, const FMesh& Mesh, FMeshGeometryBuffers& OutGeometry)
 {
-    if (Device == nullptr)
+    const std::vector<FMesh::FPrimitive>& Primitives = Mesh.GetPrimitives();
+    if (Primitives.size() != 1)
     {
         return false;
     }
 
-    const std::vector<uint32_t>& DrawIndices = Mesh.GetIndices();
-
-    OutGeometry.IndexCount = static_cast<uint32_t>(DrawIndices.size());
-
-    const UINT VertexBufferSize = static_cast<UINT>(Mesh.GetVertices().size() * sizeof(FMesh::FVertex));
-    const UINT IndexBufferSize = static_cast<UINT>(DrawIndices.size() * sizeof(uint32_t));
-
-    D3D12_HEAP_PROPERTIES UploadHeap = {};
-    UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
-    UploadHeap.CreationNodeMask = 1;
-    UploadHeap.VisibleNodeMask = 1;
-
-    D3D12_RESOURCE_DESC BufferDesc = {};
-    BufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    BufferDesc.Height = 1;
-    BufferDesc.DepthOrArraySize = 1;
-    BufferDesc.MipLevels = 1;
-    BufferDesc.Format = DXGI_FORMAT_UNKNOWN;
-    BufferDesc.SampleDesc.Count = 1;
-    BufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-    BufferDesc.Width = VertexBufferSize;
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &UploadHeap,
-        D3D12_HEAP_FLAG_NONE,
-        &BufferDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        nullptr,
-        IID_PPV_ARGS(OutGeometry.VertexBuffer.GetAddressOf())));
-
-    OutGeometry.VertexBufferView.BufferLocation = OutGeometry.VertexBuffer->GetGPUVirtualAddress();
-    OutGeometry.VertexBufferView.StrideInBytes = sizeof(FMesh::FVertex);
-    OutGeometry.VertexBufferView.SizeInBytes = VertexBufferSize;
-
-    void* VertexData = nullptr;
-    D3D12_RANGE EmptyRange = { 0, 0 };
-    HR_CHECK(OutGeometry.VertexBuffer->Map(0, &EmptyRange, &VertexData));
-    memcpy(VertexData, Mesh.GetVertices().data(), VertexBufferSize);
-    OutGeometry.VertexBuffer->Unmap(0, nullptr);
-
-    BufferDesc.Width = IndexBufferSize;
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &UploadHeap,
-        D3D12_HEAP_FLAG_NONE,
-        &BufferDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        nullptr,
-        IID_PPV_ARGS(OutGeometry.IndexBuffer.GetAddressOf())));
-
-    OutGeometry.IndexBufferView.BufferLocation = OutGeometry.IndexBuffer->GetGPUVirtualAddress();
-    OutGeometry.IndexBufferView.Format = DXGI_FORMAT_R32_UINT;
-    OutGeometry.IndexBufferView.SizeInBytes = IndexBufferSize;
-
-    void* IndexData = nullptr;
-    HR_CHECK(OutGeometry.IndexBuffer->Map(0, &EmptyRange, &IndexData));
-    memcpy(IndexData, DrawIndices.data(), IndexBufferSize);
-    OutGeometry.IndexBuffer->Unmap(0, nullptr);
-
-    return true;
+    return CreatePrimitiveGeometry(Device, Primitives.front(), OutGeometry);
 }
 
 bool RendererUtils::CreateCubeGeometry(FDX12Device* Device, FCubeGeometryBuffers& OutGeometry, float Size)
@@ -235,43 +374,6 @@ bool RendererUtils::CreateSphereGeometry(FDX12Device* Device, FMeshGeometryBuffe
 {
     const FMesh Sphere = FMesh::CreateSphere(Radius, SliceCount, StackCount);
     return CreateMeshGeometry(Device, Sphere, OutGeometry);
-}
-
-bool RendererUtils::CreateDefaultSceneGeometry(FDX12Device* Device, FMeshGeometryBuffers& OutGeometry, FFloat3& OutCenter, float& OutRadius, FGltfMaterialTextures* OutTexturePaths)
-{
-    FGltfScene Scene;
-    if (FGltfLoader::LoadSceneFromFile(L"Assets/Duck/Duck.gltf", Scene) && !Scene.Meshes.empty())
-    {
-        const FMesh& FirstMesh = Scene.Meshes.front();
-        FFloat3 LocalMin{};
-        FFloat3 LocalMax{};
-        ComputeMeshBounds(FirstMesh, OutCenter, OutRadius, LocalMin, LocalMax);
-
-        if (OutTexturePaths)
-        {
-            OutTexturePaths->PerPrimitive.clear();
-            if (!Scene.MeshPrimitiveSections.empty())
-            {
-                for (const FGltfPrimitiveSection& Section : Scene.MeshPrimitiveSections.front())
-                {
-                    OutTexturePaths->PerPrimitive.push_back(Section.Material);
-                }
-            }
-        }
-
-        return CreateMeshGeometry(Device, FirstMesh, OutGeometry);
-    }
-
-    if (OutTexturePaths)
-    {
-        OutTexturePaths->PerPrimitive.clear();
-    }
-
-    const FMesh Cube = FMesh::CreateCube();
-    FFloat3 LocalMin{};
-    FFloat3 LocalMax{};
-    ComputeMeshBounds(Cube, OutCenter, OutRadius, LocalMin, LocalMax);
-    return CreateMeshGeometry(Device, Cube, OutGeometry);
 }
 
 namespace
@@ -296,61 +398,11 @@ namespace
         return (std::max)((std::max)(ScaleX, ScaleY), ScaleZ);
     }
 
-    bool CreateIndexBufferForSection(
-        FDX12Device* Device,
-        const std::vector<uint32_t>& Indices,
-        uint32_t IndexStart,
-        uint32_t IndexCount,
-        FMeshGeometryBuffers& InOutGeometry)
-    {
-        if (!Device || IndexCount == 0 || IndexStart + IndexCount > Indices.size())
-        {
-            return false;
-        }
-
-        const UINT IndexBufferSize = static_cast<UINT>(IndexCount * sizeof(uint32_t));
-
-        D3D12_HEAP_PROPERTIES UploadHeap = {};
-        UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
-        UploadHeap.CreationNodeMask = 1;
-        UploadHeap.VisibleNodeMask = 1;
-
-        D3D12_RESOURCE_DESC BufferDesc = {};
-        BufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        BufferDesc.Width = IndexBufferSize;
-        BufferDesc.Height = 1;
-        BufferDesc.DepthOrArraySize = 1;
-        BufferDesc.MipLevels = 1;
-        BufferDesc.Format = DXGI_FORMAT_UNKNOWN;
-        BufferDesc.SampleDesc.Count = 1;
-        BufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-            &UploadHeap,
-            D3D12_HEAP_FLAG_NONE,
-            &BufferDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ,
-            nullptr,
-            IID_PPV_ARGS(InOutGeometry.IndexBuffer.ReleaseAndGetAddressOf())));
-
-        InOutGeometry.IndexBufferView.BufferLocation = InOutGeometry.IndexBuffer->GetGPUVirtualAddress();
-        InOutGeometry.IndexBufferView.Format = DXGI_FORMAT_R32_UINT;
-        InOutGeometry.IndexBufferView.SizeInBytes = IndexBufferSize;
-        InOutGeometry.IndexCount = IndexCount;
-
-        void* IndexData = nullptr;
-        D3D12_RANGE EmptyRange = { 0, 0 };
-        HR_CHECK(InOutGeometry.IndexBuffer->Map(0, &EmptyRange, &IndexData));
-        memcpy(IndexData, Indices.data() + IndexStart, IndexBufferSize);
-        InOutGeometry.IndexBuffer->Unmap(0, nullptr);
-
-        return true;
-    }
-
     bool CreateIndexBufferFromIndices(
         FDX12Device* Device,
         const std::vector<uint32_t>& Indices,
-        FMeshGeometryBuffers& InOutGeometry)
+        FMeshGeometryBuffers& InOutGeometry,
+        FUploadBatch* UploadBatch = nullptr)
     {
         if (!Device || Indices.empty())
         {
@@ -359,6 +411,11 @@ namespace
 
         const UINT IndexBufferSize = static_cast<UINT>(Indices.size() * sizeof(uint32_t));
 
+        D3D12_HEAP_PROPERTIES DefaultHeap = {};
+        DefaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
+        DefaultHeap.CreationNodeMask = 1;
+        DefaultHeap.VisibleNodeMask = 1;
+
         D3D12_HEAP_PROPERTIES UploadHeap = {};
         UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
         UploadHeap.CreationNodeMask = 1;
@@ -375,12 +432,21 @@ namespace
         BufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
         HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+            &DefaultHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &BufferDesc,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            nullptr,
+            IID_PPV_ARGS(InOutGeometry.IndexBuffer.ReleaseAndGetAddressOf())));
+
+        Microsoft::WRL::ComPtr<ID3D12Resource> UploadBuffer;
+        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
             &UploadHeap,
             D3D12_HEAP_FLAG_NONE,
             &BufferDesc,
             D3D12_RESOURCE_STATE_GENERIC_READ,
             nullptr,
-            IID_PPV_ARGS(InOutGeometry.IndexBuffer.ReleaseAndGetAddressOf())));
+            IID_PPV_ARGS(UploadBuffer.ReleaseAndGetAddressOf())));
 
         InOutGeometry.IndexBufferView.BufferLocation = InOutGeometry.IndexBuffer->GetGPUVirtualAddress();
         InOutGeometry.IndexBufferView.Format = DXGI_FORMAT_R32_UINT;
@@ -389,9 +455,32 @@ namespace
 
         void* IndexData = nullptr;
         D3D12_RANGE EmptyRange = { 0, 0 };
-        HR_CHECK(InOutGeometry.IndexBuffer->Map(0, &EmptyRange, &IndexData));
+        HR_CHECK(UploadBuffer->Map(0, &EmptyRange, &IndexData));
         memcpy(IndexData, Indices.data(), IndexBufferSize);
-        InOutGeometry.IndexBuffer->Unmap(0, nullptr);
+        UploadBuffer->Unmap(0, nullptr);
+
+        if (UploadBatch && !UploadBatch->bInitialized)
+        {
+            UploadBatch->Begin(Device);
+        }
+
+        FUploadBatch LocalBatch;
+        FUploadBatch* ActiveBatch = UploadBatch;
+        if (!ActiveBatch)
+        {
+            LocalBatch.Begin(Device);
+            ActiveBatch = &LocalBatch;
+        }
+
+        ID3D12GraphicsCommandList* CommandList = ActiveBatch->Context.GetCommandList();
+        CommandList->CopyBufferRegion(InOutGeometry.IndexBuffer.Get(), 0, UploadBuffer.Get(), 0, IndexBufferSize);
+        ActiveBatch->Context.TransitionResource(InOutGeometry.IndexBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_INDEX_BUFFER);
+        ActiveBatch->AddUploadBuffer(std::move(UploadBuffer));
+
+        if (!UploadBatch)
+        {
+            ActiveBatch->ExecuteAndFlush();
+        }
 
         return true;
     }
@@ -438,6 +527,8 @@ bool RendererUtils::CreateSceneModelsFromJson(
     DirectX::XMFLOAT3 SceneMin{ std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max() };
     DirectX::XMFLOAT3 SceneMax{ std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest() };
 
+    FUploadBatch UploadBatch;
+
     for (const FSceneModelDesc& Model : Models)
     {
         std::filesystem::path MeshPath(Model.MeshPath);
@@ -460,7 +551,6 @@ bool RendererUtils::CreateSceneModelsFromJson(
             continue;
         }
 
-        std::vector<FMeshGeometryBuffers> MeshGeometries(LoadedScene.Meshes.size());
         std::vector<FFloat3> MeshCenters(LoadedScene.Meshes.size());
         std::vector<float> MeshRadii(LoadedScene.Meshes.size());
         std::vector<FFloat3> MeshMins(LoadedScene.Meshes.size());
@@ -470,18 +560,6 @@ bool RendererUtils::CreateSceneModelsFromJson(
         {
             const FMesh& Mesh = LoadedScene.Meshes[MeshIndex];
             ComputeMeshBounds(Mesh, MeshCenters[MeshIndex], MeshRadii[MeshIndex], MeshMins[MeshIndex], MeshMaxs[MeshIndex]);
-
-            if (!CreateMeshGeometry(Device, Mesh, MeshGeometries[MeshIndex]))
-            {
-                LogError("Failed to create geometry for scene mesh: " + PathToUtf8String(MeshPath));
-                MeshGeometries.clear();
-                break;
-            }
-        }
-
-        if (MeshGeometries.empty())
-        {
-            continue;
         }
 
         if (LoadedScene.Nodes.empty())
@@ -568,11 +646,14 @@ bool RendererUtils::CreateSceneModelsFromJson(
                 PrimitiveSections = &LoadedScene.MeshPrimitiveSections[MeshIndex];
             }
 
+            const FMesh& Mesh = LoadedScene.Meshes[MeshIndex];
+            const std::vector<FMesh::FPrimitive>& MeshPrimitives = Mesh.GetPrimitives();
+
             if (!PrimitiveSections || PrimitiveSections->empty())
             {
                 FGltfPrimitiveSection Section;
                 Section.IndexStart = 0;
-                Section.IndexCount = MeshGeometries[MeshIndex].IndexCount;
+                Section.IndexCount = MeshPrimitives.empty() ? 0 : static_cast<uint32_t>(MeshPrimitives.front().Indices.size());
                 DefaultSections.push_back(Section);
                 PrimitiveSections = &DefaultSections;
             }
@@ -582,8 +663,7 @@ bool RendererUtils::CreateSceneModelsFromJson(
             {
                 const FGltfPrimitiveSection& Section = (*PrimitiveSections)[SectionIndex];
 
-                FSceneModelResource ModelResource = {};
-                ModelResource.Geometry = MeshGeometries[MeshIndex];
+                FSceneModelResource ModelResource;
                 ModelResource.DrawIndexStart = Section.IndexStart;
                 ModelResource.DrawIndexCount = Section.IndexCount;
                 ModelResource.BaseIndexCount = Section.IndexCount;
@@ -638,11 +718,22 @@ bool RendererUtils::CreateSceneModelsFromJson(
                 ModelResource.EmissiveTransformOffsetScale = BuildOffsetScale(Material.EmissiveTransform);
                 ModelResource.EmissiveTransformRotation = BuildRotationConstants(Material.EmissiveTransform);
 
-                const FMesh& Mesh = LoadedScene.Meshes[MeshIndex];
-                const FMesh::FMeshletGroup* MeshletGroup = Mesh.GetMeshletGroup(SectionIndex);
-                if (Mesh.IsMeshletIndexingAllowed() && MeshletGroup && !MeshletGroup->MeshletIndices.empty())
+                if (SectionIndex >= MeshPrimitives.size())
                 {
-                    if (CreateIndexBufferFromIndices(Device, MeshletGroup->MeshletIndices, ModelResource.Geometry))
+                    continue;
+                }
+
+                const FMesh::FMeshletGroup* MeshletGroup = Mesh.GetMeshletGroup(SectionIndex);
+                const bool bUseMeshletIndices = Mesh.IsMeshletIndexingAllowed() && MeshletGroup && !MeshletGroup->MeshletIndices.empty();
+                if (!CreatePrimitiveGeometry(Device, MeshPrimitives[SectionIndex], ModelResource.Geometry, !bUseMeshletIndices, &UploadBatch))
+                {
+                    LogError("Failed to create primitive geometry for scene mesh: " + PathToUtf8String(MeshPath));
+                    continue;
+                }
+
+                if (bUseMeshletIndices)
+                {
+                    if (CreateIndexBufferFromIndices(Device, MeshletGroup->MeshletIndices, ModelResource.Geometry, &UploadBatch))
                     {
                         ModelResource.bUseMeshletCulling = true;
                         ModelResource.Meshlets = MeshletGroup->Meshlets;
@@ -655,7 +746,9 @@ bool RendererUtils::CreateSceneModelsFromJson(
                 }
                 else
                 {
-                    CreateIndexBufferForSection(Device, Mesh.GetIndices(), Section.IndexStart, Section.IndexCount, ModelResource.Geometry);
+                    ModelResource.DrawIndexStart = 0;
+                    ModelResource.DrawIndexCount = static_cast<uint32_t>(MeshPrimitives[SectionIndex].Indices.size());
+                    ModelResource.BaseIndexCount = ModelResource.DrawIndexCount;
                 }
 
                 UpdateSceneBounds(ModelResource.Center, ModelResource.Radius, SceneMin, SceneMax);
@@ -663,6 +756,12 @@ bool RendererUtils::CreateSceneModelsFromJson(
                 OutModels.push_back(std::move(ModelResource));
             }
         }
+
+    }
+
+    if (UploadBatch.bInitialized)
+    {
+        UploadBatch.ExecuteAndFlush();
     }
 
     if (OutModels.empty())
@@ -1133,18 +1232,18 @@ bool RendererUtils::CreateSkyAtmospherePipeline(
         return false;
     }
 
-    D3D12_ROOT_PARAMETER1 RootParam = {};
-    // RootParam: Sky constants (b0), used in Shaders/SkyAtmosphere.hlsl VSMain and PSMain
-    RootParam.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    RootParam.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParam.Descriptor.ShaderRegister = 0;
-    RootParam.Descriptor.RegisterSpace = 0;
-    RootParam.Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+    D3D12_ROOT_PARAMETER1 RootParams[1] = {};
+    // RootParams[0]: Sky constants (b0), used in Shaders/SkyAtmosphere.hlsl VSMain and PSMain
+    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[0].Descriptor.ShaderRegister = 0;
+    RootParams[0].Descriptor.RegisterSpace = 0;
+    RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
 
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootDesc = {};
     RootDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-    RootDesc.Desc_1_1.NumParameters = 1;
-    RootDesc.Desc_1_1.pParameters = &RootParam;
+    RootDesc.Desc_1_1.NumParameters = _countof(RootParams);
+    RootDesc.Desc_1_1.pParameters = RootParams;
     RootDesc.Desc_1_1.NumStaticSamplers = 0;
     RootDesc.Desc_1_1.pStaticSamplers = nullptr;
     RootDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;

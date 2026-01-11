@@ -27,11 +27,11 @@ void CopyTemplate(uint srcIndex, uint dstIndex)
     uint srcBase = srcIndex * kCommandStride;
     uint dstBase = dstIndex * kCommandStride;
     [unroll]
-    for (uint i = 0; i < 16; ++i)
-    {
-        uint value = CommandTemplates.Load(srcBase + i * 4);
-        OutputCommands.Store(dstBase + i * 4, value);
-    }
+	for (uint i = 0; i < 4; ++i)
+	{
+		uint4 values = CommandTemplates.Load4(srcBase + i * 16);
+		OutputCommands.Store4(dstBase + i * 16, values);
+	}
 }
 
 [numthreads(64, 1, 1)]

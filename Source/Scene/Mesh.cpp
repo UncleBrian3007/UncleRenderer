@@ -40,8 +40,8 @@ namespace
 
 #if WITH_MESHOPTIMIZER
     bool BuildMeshletGroup(
-        const std::vector<FMesh::FVertex>& Vertices,
-        const std::vector<uint32_t>& Indices,
+        std::vector<FMesh::FVertex>& Vertices,
+        std::vector<uint32_t>& Indices,
         uint32_t IndexStart,
         uint32_t IndexCount,
         uint32_t MaxVertices,
@@ -56,20 +56,48 @@ namespace
             return false;
         }
 
+        std::vector<uint32_t> LocalIndices(Indices.begin() + IndexStart, Indices.begin() + IndexStart + IndexCount);
+        std::vector<FMesh::FVertex> LocalVertices = Vertices;
+
+        std::vector<unsigned int> Remap(LocalVertices.size());
+        const meshopt_Stream VertexStream = { LocalVertices.data(), sizeof(FMesh::FVertex), sizeof(FMesh::FVertex) };
+        const size_t UniqueVertexCount = meshopt_generateVertexRemapMulti(
+            Remap.data(),
+            LocalIndices.data(),
+            LocalIndices.size(),
+            LocalVertices.size(),
+            &VertexStream,
+            1);
+
+        meshopt_remapIndexBuffer(LocalIndices.data(), LocalIndices.data(), LocalIndices.size(), Remap.data());
+        meshopt_remapVertexBuffer(LocalVertices.data(), LocalVertices.data(), LocalVertices.size(), sizeof(FMesh::FVertex), Remap.data());
+        LocalVertices.resize(UniqueVertexCount);
+
+        const bool bCanReplaceSource = IndexStart == 0 && IndexCount == Indices.size();
+        _ASSERT(bCanReplaceSource);
+        if (bCanReplaceSource)
+        {
+            Indices.swap(LocalIndices);
+            Vertices.swap(LocalVertices);
+        }
+
+        const std::vector<uint32_t>& BuildIndices = bCanReplaceSource ? Indices : LocalIndices;
+        const std::vector<FMesh::FVertex>& BuildVertices = bCanReplaceSource ? Vertices : LocalVertices;
+
         const size_t MaxMeshlets = meshopt_buildMeshletsBound(IndexCount, MaxVertices, MaxTriangles);
         std::vector<meshopt_Meshlet> TempMeshlets(MaxMeshlets);
         std::vector<unsigned int> TempMeshletVertices(MaxMeshlets * MaxVertices);
         std::vector<unsigned char> TempMeshletTriangles(MaxMeshlets * MaxTriangles * 3);
 
-        const float* Positions = &Vertices[0].Position.x;
+        const float* Positions = &BuildVertices[0].Position.x;
         const size_t MeshletCount = meshopt_buildMeshlets(
             TempMeshlets.data(),
             TempMeshletVertices.data(),
             TempMeshletTriangles.data(),
-            Indices.data() + IndexStart,
+            BuildIndices.data(),
             IndexCount,
             Positions,
-            Vertices.size(),
+            BuildVertices.size(),
             sizeof(FMesh::FVertex),
             MaxVertices,
             MaxTriangles,
@@ -134,7 +162,7 @@ namespace
                 &OutGroup.MeshletTriangles[Meshlet.TriangleOffset],
                 Meshlet.TriangleCount,
                 Positions,
-                Vertices.size(),
+                BuildVertices.size(),
                 sizeof(FMesh::FVertex));
 
             FMesh::FMeshletBounds OutBounds{};
@@ -217,8 +245,10 @@ FMesh FMesh::CreateCube(float Size)
         20, 21, 22, 20, 22, 23,
     };
 
-    Mesh.SetVertices(Vertices);
-    Mesh.SetIndices(Indices);
+    FPrimitive Primitive;
+    Primitive.Vertices = std::move(Vertices);
+    Primitive.Indices = std::move(Indices);
+    Mesh.AddPrimitive(std::move(Primitive));
     Mesh.SetMeshletIndexingAllowed(true);
     Mesh.BuildMeshlets();
 
@@ -303,8 +333,10 @@ FMesh FMesh::CreateSphere(float Radius, uint32_t SliceCount, uint32_t StackCount
         }
     }
 
-    Mesh.SetVertices(Vertices);
-    Mesh.SetIndices(Indices);
+    FPrimitive Primitive;
+    Primitive.Vertices = std::move(Vertices);
+    Primitive.Indices = std::move(Indices);
+    Mesh.AddPrimitive(std::move(Primitive));
     Mesh.SetMeshletIndexingAllowed(true);
     Mesh.BuildMeshlets();
 
@@ -315,51 +347,54 @@ void FMesh::GenerateNormalsIfMissing()
 {
     using namespace DirectX;
 
-    if (Vertices.empty() || Indices.size() < 3)
+    for (FPrimitive& Primitive : Primitives)
     {
-        return;
-    }
-
-    const bool bAllNormalsValid = std::all_of(Vertices.begin(), Vertices.end(), [](const FVertex& Vertex)
-    {
-        return IsNormalValid(Vertex.Normal);
-    });
-
-    if (bAllNormalsValid)
-    {
-        return;
-    }
-
-    std::vector<XMVECTOR> NormalAccum(Vertices.size(), XMVectorZero());
-
-    for (size_t i = 0; i + 2 < Indices.size(); i += 3)
-    {
-        const uint32_t Index0 = Indices[i];
-        const uint32_t Index1 = Indices[i + 1];
-        const uint32_t Index2 = Indices[i + 2];
-
-        const XMVECTOR P0 = XMLoadFloat3(&Vertices[Index0].Position);
-        const XMVECTOR P1 = XMLoadFloat3(&Vertices[Index1].Position);
-        const XMVECTOR P2 = XMLoadFloat3(&Vertices[Index2].Position);
-
-        const XMVECTOR Edge1 = XMVectorSubtract(P1, P0);
-        const XMVECTOR Edge2 = XMVectorSubtract(P2, P0);
-        const XMVECTOR FaceNormal = XMVector3Cross(Edge1, Edge2);
-
-        NormalAccum[Index0] = XMVectorAdd(NormalAccum[Index0], FaceNormal);
-        NormalAccum[Index1] = XMVectorAdd(NormalAccum[Index1], FaceNormal);
-        NormalAccum[Index2] = XMVectorAdd(NormalAccum[Index2], FaceNormal);
-    }
-
-    for (size_t i = 0; i < Vertices.size(); ++i)
-    {
-        XMVECTOR Normal = NormalAccum[i];
-        if (XMVector3LessOrEqual(XMVector3LengthSq(Normal), XMVectorReplicate(1e-8f)))
+        if (Primitive.Vertices.empty() || Primitive.Indices.size() < 3)
         {
-            Normal = XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
+            continue;
         }
-        Normal = XMVector3Normalize(Normal);
-        XMStoreFloat3(&Vertices[i].Normal, Normal);
+
+        const bool bAllNormalsValid = std::all_of(Primitive.Vertices.begin(), Primitive.Vertices.end(), [](const FVertex& Vertex)
+        {
+            return IsNormalValid(Vertex.Normal);
+        });
+
+        if (bAllNormalsValid)
+        {
+            continue;
+        }
+
+        std::vector<XMVECTOR> NormalAccum(Primitive.Vertices.size(), XMVectorZero());
+
+        for (size_t i = 0; i + 2 < Primitive.Indices.size(); i += 3)
+        {
+            const uint32_t Index0 = Primitive.Indices[i];
+            const uint32_t Index1 = Primitive.Indices[i + 1];
+            const uint32_t Index2 = Primitive.Indices[i + 2];
+
+            const XMVECTOR P0 = XMLoadFloat3(&Primitive.Vertices[Index0].Position);
+            const XMVECTOR P1 = XMLoadFloat3(&Primitive.Vertices[Index1].Position);
+            const XMVECTOR P2 = XMLoadFloat3(&Primitive.Vertices[Index2].Position);
+
+            const XMVECTOR Edge1 = XMVectorSubtract(P1, P0);
+            const XMVECTOR Edge2 = XMVectorSubtract(P2, P0);
+            const XMVECTOR FaceNormal = XMVector3Cross(Edge1, Edge2);
+
+            NormalAccum[Index0] = XMVectorAdd(NormalAccum[Index0], FaceNormal);
+            NormalAccum[Index1] = XMVectorAdd(NormalAccum[Index1], FaceNormal);
+            NormalAccum[Index2] = XMVectorAdd(NormalAccum[Index2], FaceNormal);
+        }
+
+        for (size_t i = 0; i < Primitive.Vertices.size(); ++i)
+        {
+            XMVECTOR Normal = NormalAccum[i];
+            if (XMVector3LessOrEqual(XMVector3LengthSq(Normal), XMVectorReplicate(1e-8f)))
+            {
+                Normal = XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
+            }
+            Normal = XMVector3Normalize(Normal);
+            XMStoreFloat3(&Primitive.Vertices[i].Normal, Normal);
+        }
     }
 }
 
@@ -367,145 +402,133 @@ void FMesh::GenerateTangentsIfMissing()
 {
     using namespace DirectX;
 
-    if (Vertices.empty() || Indices.size() < 3)
+    for (FPrimitive& Primitive : Primitives)
     {
-        return;
-    }
-
-    const bool bAllTangentsValid = std::all_of(Vertices.begin(), Vertices.end(), [](const FVertex& Vertex)
-    {
-        return IsTangentValid(Vertex.Tangent);
-    });
-
-    if (bAllTangentsValid)
-    {
-        return;
-    }
-
-    std::vector<XMVECTOR> TangentAccum(Vertices.size(), XMVectorZero());
-    std::vector<XMVECTOR> BitangentAccum(Vertices.size(), XMVectorZero());
-
-    for (size_t i = 0; i + 2 < Indices.size(); i += 3)
-    {
-        const uint32_t Index0 = Indices[i];
-        const uint32_t Index1 = Indices[i + 1];
-        const uint32_t Index2 = Indices[i + 2];
-
-        const XMVECTOR P0 = XMLoadFloat3(&Vertices[Index0].Position);
-        const XMVECTOR P1 = XMLoadFloat3(&Vertices[Index1].Position);
-        const XMVECTOR P2 = XMLoadFloat3(&Vertices[Index2].Position);
-
-        const XMVECTOR UV0 = XMLoadFloat2(&Vertices[Index0].UV);
-        const XMVECTOR UV1 = XMLoadFloat2(&Vertices[Index1].UV);
-        const XMVECTOR UV2 = XMLoadFloat2(&Vertices[Index2].UV);
-
-        const XMVECTOR Edge1 = XMVectorSubtract(P1, P0);
-        const XMVECTOR Edge2 = XMVectorSubtract(P2, P0);
-        const XMVECTOR DeltaUV1 = XMVectorSubtract(UV1, UV0);
-        const XMVECTOR DeltaUV2 = XMVectorSubtract(UV2, UV0);
-
-        const float Determinant = XMVectorGetX(DeltaUV1) * XMVectorGetY(DeltaUV2) - XMVectorGetY(DeltaUV1) * XMVectorGetX(DeltaUV2);
-        if (std::abs(Determinant) < 1e-8f)
+        if (Primitive.Vertices.empty() || Primitive.Indices.size() < 3)
         {
             continue;
         }
 
-        const float InvDet = 1.0f / Determinant;
-        const XMVECTOR Tangent = XMVectorScale(
-            XMVectorSubtract(XMVectorScale(Edge1, XMVectorGetY(DeltaUV2)), XMVectorScale(Edge2, XMVectorGetY(DeltaUV1))), InvDet);
-        const XMVECTOR Bitangent = XMVectorScale(
-            XMVectorSubtract(XMVectorScale(Edge2, XMVectorGetX(DeltaUV1)), XMVectorScale(Edge1, XMVectorGetX(DeltaUV2))), InvDet);
-
-        TangentAccum[Index0] = XMVectorAdd(TangentAccum[Index0], Tangent);
-        TangentAccum[Index1] = XMVectorAdd(TangentAccum[Index1], Tangent);
-        TangentAccum[Index2] = XMVectorAdd(TangentAccum[Index2], Tangent);
-
-        BitangentAccum[Index0] = XMVectorAdd(BitangentAccum[Index0], Bitangent);
-        BitangentAccum[Index1] = XMVectorAdd(BitangentAccum[Index1], Bitangent);
-        BitangentAccum[Index2] = XMVectorAdd(BitangentAccum[Index2], Bitangent);
-    }
-
-    for (size_t i = 0; i < Vertices.size(); ++i)
-    {
-        XMVECTOR Normal = XMLoadFloat3(&Vertices[i].Normal);
-        if (XMVector3LessOrEqual(XMVector3LengthSq(Normal), XMVectorReplicate(1e-8f)))
+        const bool bAllTangentsValid = std::all_of(Primitive.Vertices.begin(), Primitive.Vertices.end(), [](const FVertex& Vertex)
         {
-            Normal = XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
-        }
-        Normal = XMVector3Normalize(Normal);
+            return IsTangentValid(Vertex.Tangent);
+        });
 
-        XMVECTOR Tangent = TangentAccum[i];
-        XMVECTOR Bitangent = BitangentAccum[i];
-
-        if (XMVector3LessOrEqual(XMVector3LengthSq(Tangent), XMVectorReplicate(1e-8f)) ||
-            XMVector3LessOrEqual(XMVector3LengthSq(Bitangent), XMVectorReplicate(1e-8f)))
+        if (bAllTangentsValid)
         {
-            Tangent = BuildOrthonormalTangent(Normal);
-            Bitangent = XMVector3Cross(Normal, Tangent);
-            XMStoreFloat4(&Vertices[i].Tangent, XMVectorSetW(Tangent, 1.0f));
             continue;
         }
 
-        Tangent = XMVector3Normalize(XMVectorSubtract(Tangent, XMVectorScale(Normal, XMVectorGetX(XMVector3Dot(Normal, Tangent)))));
-        Bitangent = XMVector3Normalize(Bitangent);
+        std::vector<XMVECTOR> TangentAccum(Primitive.Vertices.size(), XMVectorZero());
+        std::vector<XMVECTOR> BitangentAccum(Primitive.Vertices.size(), XMVectorZero());
 
-        const float Handedness = XMVectorGetX(XMVector3Dot(XMVector3Cross(Normal, Tangent), Bitangent)) < 0.0f ? -1.0f : 1.0f;
-        XMStoreFloat4(&Vertices[i].Tangent, XMVectorSetW(Tangent, Handedness));
+        for (size_t i = 0; i + 2 < Primitive.Indices.size(); i += 3)
+        {
+            const uint32_t Index0 = Primitive.Indices[i];
+            const uint32_t Index1 = Primitive.Indices[i + 1];
+            const uint32_t Index2 = Primitive.Indices[i + 2];
+
+            const XMVECTOR P0 = XMLoadFloat3(&Primitive.Vertices[Index0].Position);
+            const XMVECTOR P1 = XMLoadFloat3(&Primitive.Vertices[Index1].Position);
+            const XMVECTOR P2 = XMLoadFloat3(&Primitive.Vertices[Index2].Position);
+
+            const XMVECTOR UV0 = XMLoadFloat2(&Primitive.Vertices[Index0].UV);
+            const XMVECTOR UV1 = XMLoadFloat2(&Primitive.Vertices[Index1].UV);
+            const XMVECTOR UV2 = XMLoadFloat2(&Primitive.Vertices[Index2].UV);
+
+            const XMVECTOR Edge1 = XMVectorSubtract(P1, P0);
+            const XMVECTOR Edge2 = XMVectorSubtract(P2, P0);
+            const XMVECTOR DeltaUV1 = XMVectorSubtract(UV1, UV0);
+            const XMVECTOR DeltaUV2 = XMVectorSubtract(UV2, UV0);
+
+            const float Determinant = XMVectorGetX(DeltaUV1) * XMVectorGetY(DeltaUV2) - XMVectorGetY(DeltaUV1) * XMVectorGetX(DeltaUV2);
+            if (std::abs(Determinant) < 1e-8f)
+            {
+                continue;
+            }
+
+            const float InvDet = 1.0f / Determinant;
+            const XMVECTOR Tangent = XMVectorScale(
+                XMVectorSubtract(XMVectorScale(Edge1, XMVectorGetY(DeltaUV2)), XMVectorScale(Edge2, XMVectorGetY(DeltaUV1))), InvDet);
+            const XMVECTOR Bitangent = XMVectorScale(
+                XMVectorSubtract(XMVectorScale(Edge2, XMVectorGetX(DeltaUV1)), XMVectorScale(Edge1, XMVectorGetX(DeltaUV2))), InvDet);
+
+            TangentAccum[Index0] = XMVectorAdd(TangentAccum[Index0], Tangent);
+            TangentAccum[Index1] = XMVectorAdd(TangentAccum[Index1], Tangent);
+            TangentAccum[Index2] = XMVectorAdd(TangentAccum[Index2], Tangent);
+
+            BitangentAccum[Index0] = XMVectorAdd(BitangentAccum[Index0], Bitangent);
+            BitangentAccum[Index1] = XMVectorAdd(BitangentAccum[Index1], Bitangent);
+            BitangentAccum[Index2] = XMVectorAdd(BitangentAccum[Index2], Bitangent);
+        }
+
+        for (size_t i = 0; i < Primitive.Vertices.size(); ++i)
+        {
+            XMVECTOR Normal = XMLoadFloat3(&Primitive.Vertices[i].Normal);
+            if (XMVector3LessOrEqual(XMVector3LengthSq(Normal), XMVectorReplicate(1e-8f)))
+            {
+                Normal = XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
+            }
+            Normal = XMVector3Normalize(Normal);
+
+            XMVECTOR Tangent = TangentAccum[i];
+            XMVECTOR Bitangent = BitangentAccum[i];
+
+            if (XMVector3LessOrEqual(XMVector3LengthSq(Tangent), XMVectorReplicate(1e-8f)) ||
+                XMVector3LessOrEqual(XMVector3LengthSq(Bitangent), XMVectorReplicate(1e-8f)))
+            {
+                Tangent = BuildOrthonormalTangent(Normal);
+                Bitangent = XMVector3Cross(Normal, Tangent);
+                XMStoreFloat4(&Primitive.Vertices[i].Tangent, XMVectorSetW(Tangent, 1.0f));
+                continue;
+            }
+
+            Tangent = XMVector3Normalize(XMVectorSubtract(Tangent, XMVectorScale(Normal, XMVectorGetX(XMVector3Dot(Normal, Tangent)))));
+            Bitangent = XMVector3Normalize(Bitangent);
+
+            const float Handedness = XMVectorGetX(XMVector3Dot(XMVector3Cross(Normal, Tangent), Bitangent)) < 0.0f ? -1.0f : 1.0f;
+            XMStoreFloat4(&Primitive.Vertices[i].Tangent, XMVectorSetW(Tangent, Handedness));
+        }
     }
 }
 
 void FMesh::BuildMeshlets(uint32_t MaxVertices, uint32_t MaxTriangles, float ConeWeight)
 {
-    Meshlets.clear();
-    MeshletVertices.clear();
-    MeshletTriangles.clear();
-    MeshletIndices.clear();
-    MeshletBounds.clear();
-    MeshletGroups.clear();
-
-    if (Vertices.empty() || Indices.size() < 3)
+    std::vector<size_t> PrimitiveIndices(Primitives.size());
+    for (size_t Index = 0; Index < Primitives.size(); ++Index)
     {
-        return;
+        PrimitiveIndices[Index] = Index;
     }
-
-#if WITH_MESHOPTIMIZER
-    FMeshletGroup Group;
-    if (!BuildMeshletGroup(Vertices, Indices, 0, static_cast<uint32_t>(Indices.size()), MaxVertices, MaxTriangles, ConeWeight, Group))
-    {
-        return;
-    }
-
-    Meshlets = Group.Meshlets;
-    MeshletVertices = Group.MeshletVertices;
-    MeshletTriangles = Group.MeshletTriangles;
-    MeshletIndices = Group.MeshletIndices;
-    MeshletBounds = Group.MeshletBounds;
-    MeshletGroups.push_back(std::move(Group));
-#endif
+    BuildMeshletGroups(PrimitiveIndices, MaxVertices, MaxTriangles, ConeWeight);
 }
 
-void FMesh::BuildMeshletGroups(const std::vector<std::pair<uint32_t, uint32_t>>& IndexRanges, uint32_t MaxVertices, uint32_t MaxTriangles, float ConeWeight)
+void FMesh::BuildMeshletGroups(const std::vector<size_t>& PrimitiveIndices, uint32_t MaxVertices, uint32_t MaxTriangles, float ConeWeight)
 {
-    Meshlets.clear();
-    MeshletVertices.clear();
-    MeshletTriangles.clear();
-    MeshletIndices.clear();
-    MeshletBounds.clear();
     MeshletGroups.clear();
 
-    if (Vertices.empty() || Indices.size() < 3 || IndexRanges.empty())
+    if (Primitives.empty() || PrimitiveIndices.empty())
     {
         return;
     }
 
 #if WITH_MESHOPTIMIZER
-    MeshletGroups.reserve(IndexRanges.size());
-    for (const auto& Range : IndexRanges)
+    MeshletGroups.reserve(PrimitiveIndices.size());
+    for (size_t PrimitiveIndex : PrimitiveIndices)
     {
         FMeshletGroup Group;
-        if (BuildMeshletGroup(Vertices, Indices, Range.first, Range.second, MaxVertices, MaxTriangles, ConeWeight, Group))
+        if (PrimitiveIndex < Primitives.size())
         {
-            MeshletGroups.push_back(std::move(Group));
+            FPrimitive& Primitive = Primitives[PrimitiveIndex];
+            if (!Primitive.Indices.empty() && !Primitive.Vertices.empty()
+                && BuildMeshletGroup(Primitive.Vertices, Primitive.Indices, 0, static_cast<uint32_t>(Primitive.Indices.size()),
+                    MaxVertices, MaxTriangles, ConeWeight, Group))
+            {
+                MeshletGroups.push_back(std::move(Group));
+            }
+            else
+            {
+                MeshletGroups.emplace_back();
+            }
         }
         else
         {
@@ -513,14 +536,6 @@ void FMesh::BuildMeshletGroups(const std::vector<std::pair<uint32_t, uint32_t>>&
         }
     }
 
-    if (MeshletGroups.size() == 1)
-    {
-        Meshlets = MeshletGroups[0].Meshlets;
-        MeshletVertices = MeshletGroups[0].MeshletVertices;
-        MeshletTriangles = MeshletGroups[0].MeshletTriangles;
-        MeshletIndices = MeshletGroups[0].MeshletIndices;
-        MeshletBounds = MeshletGroups[0].MeshletBounds;
-    }
 #endif
 }
 
@@ -537,7 +552,14 @@ bool FMesh::HasMeshlets() const
 {
     if (!MeshletGroups.empty())
     {
-        return !MeshletGroups[0].MeshletIndices.empty();
+        for (const FMeshletGroup& Group : MeshletGroups)
+        {
+            if (!Group.MeshletIndices.empty())
+            {
+                return true;
+            }
+        }
+        return false;
     }
-    return !Meshlets.empty() && !MeshletIndices.empty();
+    return false;
 }

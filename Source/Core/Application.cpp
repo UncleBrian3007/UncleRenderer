@@ -1422,14 +1422,24 @@ void FApplication::RenderUI()
 
     size_t TotalModels = 0;
     size_t CulledModels = 0;
+    size_t TotalMeshlets = 0;
+    const std::vector<FSceneModelResource>* Models = ActiveRenderer ? ActiveRenderer->GetSceneModels() : nullptr;
+    if (Models)
+    {
+        for (const FSceneModelResource& Model : *Models)
+        {
+            TotalMeshlets += Model.Meshlets.size();
+        }
+    }
+
     const bool bHasModelStats = ActiveRenderer && ActiveRenderer->GetSceneModelStats(TotalModels, CulledModels);
     if (bHasModelStats)
     {
-        ImGui::Text("Models (Total/Culled): %zu / %zu", TotalModels, CulledModels);
+        ImGui::Text("Models (Total/Culled): %zu / %zu | Meshlets: %zu", TotalModels, CulledModels, TotalMeshlets);
     }
     else
     {
-        ImGui::Text("Models (Total/Culled): N/A");
+        ImGui::Text("Models (Total/Culled): N/A | Meshlets: %zu", TotalMeshlets);
     }
 
     if (ImGui::CollapsingHeader("Details", ImGuiTreeNodeFlags_DefaultOpen))

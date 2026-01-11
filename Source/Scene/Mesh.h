@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <utility>
 #include <vector>
 #include "../Math/MathTypes.h"
@@ -14,6 +15,12 @@ public:
         FFloat2 UV;
         FFloat4 Tangent;
         FFloat4 Color{ 1.0f, 1.0f, 1.0f, 1.0f };
+    };
+
+    struct FPrimitive
+    {
+        std::vector<FVertex> Vertices;
+        std::vector<uint32_t> Indices;
     };
 
     struct FMeshlet
@@ -45,16 +52,10 @@ public:
         std::vector<FMeshletBounds> MeshletBounds;
     };
 
-    void SetVertices(const std::vector<FVertex>& InVertices) { Vertices = InVertices; }
-    void SetIndices(const std::vector<uint32_t>& InIndices) { Indices = InIndices; }
+    void SetPrimitives(const std::vector<FPrimitive>& InPrimitives) { Primitives = InPrimitives; }
+    void AddPrimitive(FPrimitive&& InPrimitive) { Primitives.push_back(std::move(InPrimitive)); }
 
-    const std::vector<FVertex>& GetVertices() const { return Vertices; }
-    const std::vector<uint32_t>& GetIndices() const { return Indices; }
-    const std::vector<FMeshlet>& GetMeshlets() const { return Meshlets; }
-    const std::vector<uint32_t>& GetMeshletVertices() const { return MeshletVertices; }
-    const std::vector<uint8_t>& GetMeshletTriangles() const { return MeshletTriangles; }
-    const std::vector<uint32_t>& GetMeshletIndices() const { return MeshletIndices; }
-    const std::vector<FMeshletBounds>& GetMeshletBounds() const { return MeshletBounds; }
+    const std::vector<FPrimitive>& GetPrimitives() const { return Primitives; }
     const FMeshletGroup* GetMeshletGroup(size_t Index) const;
     size_t GetMeshletGroupCount() const { return MeshletGroups.size(); }
     bool HasMeshlets() const;
@@ -69,16 +70,10 @@ public:
     void GenerateNormalsIfMissing();
     void GenerateTangentsIfMissing();
     void BuildMeshlets(uint32_t MaxVertices = 64, uint32_t MaxTriangles = 124, float ConeWeight = 0.0f);
-    void BuildMeshletGroups(const std::vector<std::pair<uint32_t, uint32_t>>& IndexRanges, uint32_t MaxVertices = 64, uint32_t MaxTriangles = 124, float ConeWeight = 0.0f);
+    void BuildMeshletGroups(const std::vector<size_t>& PrimitiveIndices, uint32_t MaxVertices = 64, uint32_t MaxTriangles = 124, float ConeWeight = 0.0f);
 
 private:
-    std::vector<FVertex> Vertices;
-    std::vector<uint32_t> Indices;
-    std::vector<FMeshlet> Meshlets;
-    std::vector<uint32_t> MeshletVertices;
-    std::vector<uint8_t> MeshletTriangles;
-    std::vector<uint32_t> MeshletIndices;
-    std::vector<FMeshletBounds> MeshletBounds;
+    std::vector<FPrimitive> Primitives;
     std::vector<FMeshletGroup> MeshletGroups;
     bool bAllowMeshletIndexing = false;
 };

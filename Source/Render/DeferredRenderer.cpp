@@ -318,39 +318,8 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     const std::wstring SceneFilePath = Config.SceneFile.empty() ? L"Assets/Scenes/Scene.json" : Config.SceneFile;
     if (!RendererUtils::CreateSceneModelsFromJson(Device, SceneFilePath, SceneModels, SceneCenter, SceneRadius))
     {
-        LogWarning("Falling back to default geometry; scene JSON could not be loaded.");
-
-        FSceneModelResource DefaultModel;
-        FGltfMaterialTextures DefaultTextures;
-        if (!RendererUtils::CreateDefaultSceneGeometry(Device, DefaultModel.Geometry, SceneCenter, SceneRadius, &DefaultTextures))
-        {
-            LogError("Deferred renderer initialization failed: default scene geometry creation failed");
-            return false;
-        }
-
-        const DirectX::XMMATRIX DefaultWorld = DirectX::XMMatrixTranslation(-SceneCenter.x, -SceneCenter.y, -SceneCenter.z);
-        DirectX::XMStoreFloat4x4(&DefaultModel.WorldMatrix, DefaultWorld);
-        DefaultModel.Center = SceneCenter;
-        DefaultModel.Name = "DefaultMesh";
-        DefaultModel.BoundsMin = DirectX::XMFLOAT3(SceneCenter.x - SceneRadius, SceneCenter.y - SceneRadius, SceneCenter.z - SceneRadius);
-        DefaultModel.BoundsMax = DirectX::XMFLOAT3(SceneCenter.x + SceneRadius, SceneCenter.y + SceneRadius, SceneCenter.z + SceneRadius);
-        DefaultModel.ObjectId = 1;
-        DefaultModel.DrawIndexStart = 0;
-        DefaultModel.DrawIndexCount = DefaultModel.Geometry.IndexCount;
-        DefaultModel.BaseIndexCount = DefaultModel.DrawIndexCount;
-        const FGltfMaterialTextureSet DefaultTextureSet = DefaultTextures.PerPrimitive.empty() ? FGltfMaterialTextureSet{} : DefaultTextures.PerPrimitive.front();
-        DefaultModel.BaseColorTexturePath = DefaultTextureSet.BaseColor;
-        DefaultModel.MetallicRoughnessTexturePath = DefaultTextureSet.MetallicRoughness;
-        DefaultModel.NormalTexturePath = DefaultTextureSet.Normal;
-        DefaultModel.BaseColorFactor = { 1.0f, 1.0f, 1.0f };
-        DefaultModel.BaseColorAlpha = 1.0f;
-        DefaultModel.MetallicFactor = 0.0f;
-        DefaultModel.RoughnessFactor = 1.0f;
-        DefaultModel.EmissiveFactor = { 0.0f, 0.0f, 0.0f };
-        DefaultModel.AlphaCutoff = 0.5f;
-        DefaultModel.AlphaMode = 0;
-        DefaultModel.bHasNormalMap = !DefaultTextureSet.Normal.empty();
-        SceneModels.push_back(std::move(DefaultModel));
+        LogError("scene JSON could not be loaded.");
+        return false;
     }
 
     SceneWorldMatrix = SceneModels.front().WorldMatrix;

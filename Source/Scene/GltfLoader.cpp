@@ -529,15 +529,12 @@ namespace
 
     struct FMeshData
     {
-        std::vector<FMesh::FVertex> Vertices;
-        std::vector<uint32_t> Indices;
-        struct FPrimitiveInfo
+        struct FPrimitiveData
         {
-            uint32_t IndexStart = 0;
-            uint32_t IndexCount = 0;
+            FMesh::FPrimitive Primitive;
             int64_t MaterialIndex = -1;
         };
-        std::vector<FPrimitiveInfo> Primitives;
+        std::vector<FPrimitiveData> Primitives;
     };
 
     DirectX::XMFLOAT4X4 ToFloat4x4(const FMatrix4& M)
@@ -716,7 +713,7 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
         return false;
     }
 
-    const auto AppendPrimitiveToMesh = [&](const FJsonValue* Primitive, FMeshData& MeshData, FMeshData::FPrimitiveInfo& OutPrimitive) -> bool
+    const auto AppendPrimitiveToMesh = [&](const FJsonValue* Primitive, FMeshData::FPrimitiveData& OutPrimitive) -> bool
     {
         if (!Primitive || !Primitive->IsObject())
         {
@@ -805,8 +802,7 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
             return false;
         }
 
-        const uint32_t VertexOffset = static_cast<uint32_t>(MeshData.Vertices.size());
-        MeshData.Vertices.reserve(MeshData.Vertices.size() + static_cast<size_t>(PositionCount));
+        OutPrimitive.Primitive.Vertices.reserve(static_cast<size_t>(PositionCount));
 
         for (int64_t i = 0; i < PositionCount; ++i)
         {
@@ -888,7 +884,7 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
                 Vertex.Color = { Color[0], Color[1], Color[2], Alpha };
             }
 
-            MeshData.Vertices.push_back(Vertex);
+            OutPrimitive.Primitive.Vertices.push_back(Vertex);
         }
 
         std::vector<uint32_t> RawIndices;
@@ -927,10 +923,8 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
             }
             }
 
-            RawIndices.push_back(Index + VertexOffset);
+            RawIndices.push_back(Index);
         }
-
-        const size_t IndexStart = MeshData.Indices.size();
 
         switch (PrimitiveMode)
         {
@@ -940,7 +934,7 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
             {
                 return false;
             }
-            MeshData.Indices.insert(MeshData.Indices.end(), RawIndices.begin(), RawIndices.end());
+            OutPrimitive.Primitive.Indices.insert(OutPrimitive.Primitive.Indices.end(), RawIndices.begin(), RawIndices.end());
             break;
         }
         case 5: // TRIANGLE_STRIP
@@ -957,15 +951,15 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
                 const uint32_t i2 = RawIndices[i];
                 if (bEven)
                 {
-                    MeshData.Indices.push_back(i0);
-                    MeshData.Indices.push_back(i1);
-                    MeshData.Indices.push_back(i2);
+                    OutPrimitive.Primitive.Indices.push_back(i0);
+                    OutPrimitive.Primitive.Indices.push_back(i1);
+                    OutPrimitive.Primitive.Indices.push_back(i2);
                 }
                 else
                 {
-                    MeshData.Indices.push_back(i1);
-                    MeshData.Indices.push_back(i0);
-                    MeshData.Indices.push_back(i2);
+                    OutPrimitive.Primitive.Indices.push_back(i1);
+                    OutPrimitive.Primitive.Indices.push_back(i0);
+                    OutPrimitive.Primitive.Indices.push_back(i2);
                 }
             }
             break;
@@ -978,9 +972,9 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
             }
             for (size_t i = 2; i < RawIndices.size(); ++i)
             {
-                MeshData.Indices.push_back(RawIndices[0]);
-                MeshData.Indices.push_back(RawIndices[i - 1]);
-                MeshData.Indices.push_back(RawIndices[i]);
+                OutPrimitive.Primitive.Indices.push_back(RawIndices[0]);
+                OutPrimitive.Primitive.Indices.push_back(RawIndices[i - 1]);
+                OutPrimitive.Primitive.Indices.push_back(RawIndices[i]);
             }
             break;
         }
@@ -988,14 +982,10 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
             return false;
         }
 
-        const size_t IndexEnd = MeshData.Indices.size();
-        if (IndexEnd <= IndexStart)
+        if (OutPrimitive.Primitive.Indices.empty())
         {
             return false;
         }
-
-        OutPrimitive.IndexStart = static_cast<uint32_t>(IndexStart);
-        OutPrimitive.IndexCount = static_cast<uint32_t>(IndexEnd - IndexStart);
 
         return true;
     };
@@ -1016,14 +1006,14 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
         {
             const int64_t MaterialIndex = GetIntField(&PrimitiveValue, "material", -1);
 
-            FMeshData::FPrimitiveInfo PrimitiveInfo;
-            PrimitiveInfo.MaterialIndex = MaterialIndex;
-            if (!AppendPrimitiveToMesh(&PrimitiveValue, MeshDatas[MeshIndex], PrimitiveInfo))
+            FMeshData::FPrimitiveData PrimitiveData;
+            PrimitiveData.MaterialIndex = MaterialIndex;
+            if (!AppendPrimitiveToMesh(&PrimitiveValue, PrimitiveData))
             {
                 return false;
             }
 
-            MeshDatas[MeshIndex].Primitives.push_back(PrimitiveInfo);
+            MeshDatas[MeshIndex].Primitives.push_back(std::move(PrimitiveData));
         }
     }
 
@@ -1104,14 +1094,16 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
     std::vector<std::vector<FGltfPrimitiveSection>> MeshPrimitiveSections(MeshDatas.size());
     for (size_t MeshIndex = 0; MeshIndex < MeshDatas.size(); ++MeshIndex)
     {
-        const std::vector<FMeshData::FPrimitiveInfo>& Primitives = MeshDatas[MeshIndex].Primitives;
+        const std::vector<FMeshData::FPrimitiveData>& Primitives = MeshDatas[MeshIndex].Primitives;
         std::vector<FGltfPrimitiveSection>& Sections = MeshPrimitiveSections[MeshIndex];
         Sections.reserve(Primitives.size());
-        for (const FMeshData::FPrimitiveInfo& PrimitiveInfo : Primitives)
+        uint32_t RunningIndexStart = 0;
+        for (const FMeshData::FPrimitiveData& PrimitiveInfo : Primitives)
         {
             FGltfPrimitiveSection Section;
-            Section.IndexStart = PrimitiveInfo.IndexStart;
-            Section.IndexCount = PrimitiveInfo.IndexCount;
+            Section.IndexStart = RunningIndexStart;
+            Section.IndexCount = static_cast<uint32_t>(PrimitiveInfo.Primitive.Indices.size());
+            RunningIndexStart += Section.IndexCount;
             if (bHasMaterialData && PrimitiveInfo.MaterialIndex >= 0
                 && PrimitiveInfo.MaterialIndex < static_cast<int64_t>(MaterialTextureSets.size()))
             {
@@ -1156,26 +1148,19 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
     for (const FMeshData& MeshData : MeshDatas)
     {
         FMesh Mesh;
-        Mesh.SetVertices(MeshData.Vertices);
-        Mesh.SetIndices(MeshData.Indices);
-        Mesh.GenerateNormalsIfMissing();
-        Mesh.GenerateTangentsIfMissing();
-        std::vector<std::pair<uint32_t, uint32_t>> PrimitiveRanges;
-        PrimitiveRanges.reserve(MeshData.Primitives.size());
-        for (const FMeshData::FPrimitiveInfo& PrimitiveInfo : MeshData.Primitives)
+        std::vector<FMesh::FPrimitive> MeshPrimitives;
+        MeshPrimitives.reserve(MeshData.Primitives.size());
+        for (const FMeshData::FPrimitiveData& PrimitiveInfo : MeshData.Primitives)
         {
-            PrimitiveRanges.emplace_back(PrimitiveInfo.IndexStart, PrimitiveInfo.IndexCount);
+            MeshPrimitives.push_back(PrimitiveInfo.Primitive);
         }
 
-        Mesh.SetMeshletIndexingAllowed(!PrimitiveRanges.empty());
-        if (PrimitiveRanges.size() <= 1)
-        {
-            Mesh.BuildMeshlets();
-        }
-        else
-        {
-            Mesh.BuildMeshletGroups(PrimitiveRanges);
-        }
+        Mesh.SetPrimitives(MeshPrimitives);
+        Mesh.GenerateNormalsIfMissing();
+        Mesh.GenerateTangentsIfMissing();
+
+        Mesh.SetMeshletIndexingAllowed(!MeshPrimitives.empty());
+        Mesh.BuildMeshlets();
         OutScene.Meshes.push_back(std::move(Mesh));
     }
 
