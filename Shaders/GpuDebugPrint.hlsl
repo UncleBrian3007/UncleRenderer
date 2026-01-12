@@ -1,11 +1,17 @@
-#define DEBUG_PRINT_READ_ONLY
-#include "DebugPrintCommon.hlsl"
+#include "GpuDebugPrintCommon.hlsl"
 
 cbuffer DebugPrintConstants : register(b0)
 {
     float2 ScreenSize;
     uint FirstChar;
     uint CharCount;
+};
+
+cbuffer DebugPrintBindlessConstants : register(b1)
+{
+    uint GlyphBufferIndex;
+    uint FontAtlasIndex;
+    uint DebugPrintBufferIndex;
 };
 
 struct DebugGlyph
@@ -18,9 +24,6 @@ struct DebugGlyph
     float Padding;
 };
 
-StructuredBuffer<DebugGlyph> Glyphs : register(t0);
-Texture2D FontAtlas : register(t1);
-ByteAddressBuffer DebugPrintBuffer : register(t2);
 SamplerState FontSampler : register(s0);
 
 struct VSOutput
@@ -46,6 +49,8 @@ VSOutput VSMain(uint vertexId : SV_VertexID)
     output.UV = float2(0.0f, 0.0f);
     output.Color = float4(1.0f, 1.0f, 1.0f, 1.0f);
 
+    StructuredBuffer<DebugGlyph> Glyphs = ResourceDescriptorHeap[GlyphBufferIndex];
+    ByteAddressBuffer DebugPrintBuffer = ResourceDescriptorHeap[DebugPrintBufferIndex];
     const uint totalChars = DebugPrintBuffer.Load(0);
     const uint charIndex = vertexId / 6;
     if (charIndex >= totalChars)
@@ -119,6 +124,7 @@ VSOutput VSMain(uint vertexId : SV_VertexID)
 
 float4 PSMain(VSOutput input) : SV_Target
 {
+    Texture2D FontAtlas = ResourceDescriptorHeap[FontAtlasIndex];
     float alpha = FontAtlas.Sample(FontSampler, input.UV).r;
     return float4(input.Color.rgb, input.Color.a * alpha);
 }

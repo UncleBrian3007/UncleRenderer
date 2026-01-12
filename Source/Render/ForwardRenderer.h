@@ -106,10 +106,10 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ObjectIdPipeline;
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SceneTextures;
     Microsoft::WRL::ComPtr<ID3D12Resource> SceneTexture;
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> TextureDescriptorHeap;
-    std::vector<uint32_t> SceneTextureBindlessIndices;
+    uint32_t ShadowMapBindlessIndex = UINT32_MAX;
+    uint32_t EnvironmentCubeBindlessIndex = UINT32_MAX;
+    uint32_t BrdfLutBindlessIndex = UINT32_MAX;
     FMeshGeometryBuffers SkyGeometry;
     float SkySphereRadius = 1000.0f;
 
-    D3D12_GPU_DESCRIPTOR_HANDLE SceneTextureGpuHandle{};
 };

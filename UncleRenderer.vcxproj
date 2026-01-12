@@ -250,10 +250,7 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     </None>
   </ItemGroup>
   <ItemGroup>
-    <None Include="Shaders\CullIndirectArgs.hlsl">
-      <FileType>Document</FileType>
-    </None>
-    <None Include="Shaders\DebugPrintCommon.hlsl">
+    <None Include="Shaders\GpuDebugPrintCommon.hlsl">
       <FileType>Document</FileType>
     </None>
     <None Include="Shaders\GpuDebugPrint.hlsl">

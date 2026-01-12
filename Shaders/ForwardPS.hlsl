@@ -27,14 +27,16 @@ struct VSOutput
 #define USE_ALPHA_MASK 0
 #endif
 
-
-Texture2D AlbedoTexture : register(t0);
-Texture2D MetallicRoughnessTexture : register(t1);
-Texture2D NormalTexture : register(t2);
-Texture2D EmissiveTexture : register(t3);
-Texture2D ShadowMap : register(t4);
-TextureCube EnvironmentMap : register(t5);
-Texture2D BrdfLut : register(t6);
+cbuffer ForwardBindlessConstants : register(b1)
+{
+    uint AlbedoTextureIndex;
+    uint MetallicRoughnessTextureIndex;
+    uint NormalTextureIndex;
+    uint EmissiveTextureIndex;
+    uint ShadowMapIndex;
+    uint EnvironmentMapIndex;
+    uint BrdfLutIndex;
+};
 SamplerState AlbedoSampler : register(s0);
 SamplerComparisonState ShadowSampler : register(s1);
 SamplerState IblSampler : register(s2);
@@ -53,6 +55,7 @@ float3 ComputeWorldNormal(VSOutput Input, float2 normalUV)
     float3 vertexNormal = normalize(Input.Normal);
 
 #if USE_NORMAL_MAP
+    Texture2D NormalTexture = ResourceDescriptorHeap[NormalTextureIndex];
     float3 tangent = normalize(Input.Tangent.xyz - vertexNormal * dot(vertexNormal, Input.Tangent.xyz));
     float3 bitangent = normalize(cross(vertexNormal, tangent)) * Input.Tangent.w;
 
@@ -72,6 +75,13 @@ float3 ComputeWorldNormal(VSOutput Input, float2 normalUV)
 
 float4 PSMain(VSOutput Input) : SV_Target
 {
+    Texture2D AlbedoTexture = ResourceDescriptorHeap[AlbedoTextureIndex];
+    Texture2D MetallicRoughnessTexture = ResourceDescriptorHeap[MetallicRoughnessTextureIndex];
+    Texture2D NormalTexture = ResourceDescriptorHeap[NormalTextureIndex];
+    Texture2D EmissiveTexture = ResourceDescriptorHeap[EmissiveTextureIndex];
+    Texture2D ShadowMap = ResourceDescriptorHeap[ShadowMapIndex];
+    TextureCube EnvironmentMap = ResourceDescriptorHeap[EnvironmentMapIndex];
+    Texture2D BrdfLut = ResourceDescriptorHeap[BrdfLutIndex];
     float2 baseUV = ApplyTextureTransform(Input.UV, BaseColorTransformOffsetScale, BaseColorTransformRotation);
     float2 normalUV = ApplyTextureTransform(Input.UV, NormalTransformOffsetScale, NormalTransformRotation);
     float2 emissiveUV = ApplyTextureTransform(Input.UV, EmissiveTransformOffsetScale, EmissiveTransformRotation);

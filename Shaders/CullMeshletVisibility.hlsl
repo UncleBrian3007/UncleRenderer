@@ -1,14 +1,15 @@
 #include "CullingConstants.hlsl"
 
-StructuredBuffer<float4> ModelBounds : register(t0);
-Texture2D<float> HZBTexture : register(t1);
-StructuredBuffer<float4> MeshletConeAxisCutoff : register(t2);
-StructuredBuffer<float4> MeshletConeApex : register(t3);
-RWStructuredBuffer<uint> VisibleMeshlets : register(u0);
-RWByteAddressBuffer DebugPrintBuffer : register(u1);
-RWByteAddressBuffer DebugPrintStats : register(u2);
-
-#include "DebugPrintCommon.hlsl"
+cbuffer CullingBindlessConstants : register(b1)
+{
+    uint ModelBoundsIndex;
+    uint HZBTextureIndex;
+    uint MeshletConeAxisIndex;
+    uint MeshletConeApexIndex;
+    uint VisibleMeshletsIndex;
+    uint DebugPrintBufferIndex;
+    uint DebugPrintStatsIndex;
+};
 
 bool IsSphereVisible(float3 center, float radius)
 {
@@ -28,7 +29,8 @@ bool IsSphereVisible(float3 center, float radius)
 bool IsConeVisible_SphereExpanded(
     float3 center,
     float radius,
-    uint index)
+    uint index,
+    StructuredBuffer<float4> MeshletConeAxisCutoff)
 {
     float4 axisCutoff = MeshletConeAxisCutoff[index];
 
@@ -56,7 +58,7 @@ float4 ProjectToClip(float3 position)
     return mul(float4(position, 1.0f), ViewProjection);
 }
 
-bool IsOccluded(float3 center, float radius)
+bool IsOccluded(float3 center, float radius, Texture2D<float> HZBTexture)
 {
     float3 boundsMin = center - radius;
     float3 boundsMax = center + radius;
@@ -145,6 +147,10 @@ void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     if (index >= IndirectCommandCount)
         return;
 
+    StructuredBuffer<float4> ModelBounds = ResourceDescriptorHeap[ModelBoundsIndex];
+    StructuredBuffer<float4> MeshletConeAxisCutoff = ResourceDescriptorHeap[MeshletConeAxisIndex];
+    RWStructuredBuffer<uint> VisibleMeshlets = ResourceDescriptorHeap[VisibleMeshletsIndex];
+
     float4 sphere = ModelBounds[index];
     float3 center = sphere.xyz;
     float radius = sphere.w;
@@ -155,14 +161,15 @@ void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     if (visible)
     {
-        coneVisible = IsConeVisible_SphereExpanded(center, radius, index);
+        coneVisible = IsConeVisible_SphereExpanded(center, radius, index, MeshletConeAxisCutoff);
         visible = coneVisible;
     }
 
     bool occluded = false;
     if (visible && HZBEnabled != 0)
     {
-        occluded = IsOccluded(center, radius);
+        Texture2D<float> HZBTexture = ResourceDescriptorHeap[HZBTextureIndex];
+        occluded = IsOccluded(center, radius, HZBTexture);
         visible = !occluded;
     }
 
@@ -170,6 +177,7 @@ void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     if (DebugPrintEnabled != 0 && !visible)
     {
+        RWByteAddressBuffer DebugPrintStats = ResourceDescriptorHeap[DebugPrintStatsIndex];
         if (!frustumVisible)
         {
             DebugPrintStats.InterlockedAdd(0, 1);

@@ -421,7 +421,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
     FDeferredFrameResources Resources;
     ImportFrameResources(Graph, Resources);
 
-    ConfigureHZBOcclusion(FrameState.bUseHZBOcclusion, DescriptorHeap.Get(), HZBSrvHandle, HZBWidth, HZBHeight, HZBMipCount);
+    ConfigureHZBOcclusion(FrameState.bUseHZBOcclusion, HZBSrvBindlessIndex, HZBWidth, HZBHeight, HZBMipCount);
 
     AddGpuCullingPass(Graph, Camera, FrameState, Resources.HZBHandle);
     AddShadowPass(Graph, Camera, FrameState, Resources.ShadowHandle);
@@ -492,7 +492,7 @@ void FDeferredRenderer::PrepareFrameState(const FCamera& Camera, FDeferredFrameS
         bHZBReady = false;
     }
 
-    OutState.bUseHZBOcclusion = bHZBEnabled && bHZBReady && HZBSrvHandle.ptr != 0;
+    OutState.bUseHZBOcclusion = bHZBEnabled && bHZBReady && HZBSrvBindlessIndex != UINT32_MAX;
     OutState.bCasActive = bCasEnabled && CasPipeline && CasRootSignature;
     OutState.LightViewProjection = RendererUtils::BuildDirectionalLightViewProjection(SceneCenter, SceneRadius, LightDirection);
 }
@@ -601,7 +601,7 @@ void FDeferredRenderer::AddGpuCullingPass(FRenderGraph& Graph, const FCamera& Ca
     Graph.AddPass<FGpuCullingPassData>("GPU Culling", [this, &Camera, HZBHandle, FrameState](FGpuCullingPassData& Data, FRGPassBuilder& Builder)
     {
         Data.bEnabled = bEnableIndirectDraw && CullingPipeline && CullingRootSignature && GetIndirectCommandBuffer()
-            && ModelBoundsBuffer && MeshletConeAxisBuffer && MeshletConeApexBuffer;
+            && ModelBoundsBuffer && MeshletConeAxisBuffer && MeshletConeApexBuffer && Device && Device->GetBindlessDescriptorHeap();
         Data.Camera = &Camera;
         if (Data.bEnabled)
         {
@@ -653,7 +653,7 @@ void FDeferredRenderer::AddShadowPass(FRenderGraph& Graph, const FCamera& Camera
         FScopedPixEvent ShadowEvent(LocalCommandList, L"ShadowMap");
         Cmd.ClearDepth(ShadowDSVHandle, 1.0f);
 
-        ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
+        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
         LocalCommandList->SetPipelineState(ShadowPipeline.Get());
         LocalCommandList->SetGraphicsRootSignature(BasePassRootSignature.Get());
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
@@ -697,7 +697,8 @@ void FDeferredRenderer::AddShadowPass(FRenderGraph& Graph, const FCamera& Camera
             LocalCommandList->SetGraphicsRootConstantBufferView(
                 0,
                 ConstantBufferAddress + ConstantBufferOffset);
-            LocalCommandList->SetGraphicsRootDescriptorTable(1, DescriptorHeap->GetGPUDescriptorHandleForHeapStart());
+            const uint32_t BindlessIndices[] = { 0u, 0u, 0u, 0u };
+            LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
 
             if (AreModelPixEventsEnabled())
             {
@@ -746,7 +747,7 @@ void FDeferredRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Came
 
         Cmd.ClearDepth(GetDSVHandle());
 
-        ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
+        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
         LocalCommandList->SetPipelineState(DepthPrepassPipeline.Get());
         LocalCommandList->SetGraphicsRootSignature(BasePassRootSignature.Get());
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
@@ -786,7 +787,8 @@ void FDeferredRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Came
             LocalCommandList->SetGraphicsRootConstantBufferView(
                 0,
                 ConstantBufferAddress + ConstantBufferOffset);
-            LocalCommandList->SetGraphicsRootDescriptorTable(1, DescriptorHeap->GetGPUDescriptorHandleForHeapStart());
+            const uint32_t BindlessIndices[] = { 0u, 0u, 0u, 0u };
+            LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
 
             if (AreModelPixEventsEnabled())
             {
@@ -854,9 +856,8 @@ void FDeferredRenderer::AddBasePass(FRenderGraph& Graph, const FCamera& Camera, 
 
         LocalCommandList->SetGraphicsRootSignature(BasePassRootSignature.Get());
 
-        ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
+        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
-        LocalCommandList->SetGraphicsRootDescriptorTable(1, DescriptorHeap->GetGPUDescriptorHandleForHeapStart());
 
         LocalCommandList->RSSetViewports(1, &Viewport);
         LocalCommandList->RSSetScissorRects(1, &ScissorRect);
@@ -888,7 +889,7 @@ void FDeferredRenderer::AddBasePass(FRenderGraph& Graph, const FCamera& Camera, 
                 const FIndirectDrawRange& Range = IndirectDrawRanges[RangeIndex];
                 ID3D12PipelineState* Pipeline = SelectPipelineByKey(Range.PipelineKey);
                 LocalCommandList->SetPipelineState(Pipeline);
-                LocalCommandList->SetGraphicsRootDescriptorTable(1, Range.TextureHandle);
+                LocalCommandList->SetGraphicsRoot32BitConstants(1, static_cast<UINT>(Range.MaterialBindlessIndices.size()), Range.MaterialBindlessIndices.data(), 0);
 
                 const uint64_t Offset = static_cast<uint64_t>(Range.Start) * sizeof(FIndirectDrawCommand);
                 const uint64_t CountOffset = RangeIndex * sizeof(uint32_t);
@@ -921,7 +922,14 @@ void FDeferredRenderer::AddBasePass(FRenderGraph& Graph, const FCamera& Camera, 
 
                 const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
                 LocalCommandList->SetGraphicsRootConstantBufferView(0, ConstantBufferAddress + ConstantBufferOffset);
-                LocalCommandList->SetGraphicsRootDescriptorTable(1, Model.TextureHandle);
+                const uint32_t BindlessIndices[] =
+                {
+                    Model.BaseColorBindlessIndex,
+                    Model.MetallicRoughnessBindlessIndex,
+                    Model.NormalBindlessIndex,
+                    Model.EmissiveBindlessIndex
+                };
+                LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
 
                 const bool bUseNormalMap = Model.bHasNormalMap;
                 const bool bUseMetallicRoughnessMap = !Model.MetallicRoughnessTexturePath.empty();
@@ -1084,11 +1092,10 @@ void FDeferredRenderer::AddHZBPass(FRenderGraph& Graph, const FDeferredFrameStat
         uint32_t MipCount = 0;
         uint32_t SourceWidth = 0;
         uint32_t SourceHeight = 0;
-        D3D12_GPU_DESCRIPTOR_HANDLE DepthSrv{};
-        D3D12_GPU_DESCRIPTOR_HANDLE HZBSrv{};
-        std::vector<D3D12_GPU_DESCRIPTOR_HANDLE> HZBSrvMips;
-        std::vector<D3D12_GPU_DESCRIPTOR_HANDLE> HZBUavs;
-        D3D12_GPU_DESCRIPTOR_HANDLE HZBNullUav{};
+        uint32_t DepthBindlessIndex = UINT32_MAX;
+        std::vector<uint32_t> HZBSrvMips;
+        std::vector<uint32_t> HZBUavs;
+        uint32_t HZBNullUav = UINT32_MAX;
     };
 
     if (!bHZBEnabled || !FrameState.bDoDepthPrepass)
@@ -1105,18 +1112,17 @@ void FDeferredRenderer::AddHZBPass(FRenderGraph& Graph, const FDeferredFrameStat
         const D3D12_RESOURCE_DESC DepthDesc = DepthBuffer ? DepthBuffer->GetDesc() : D3D12_RESOURCE_DESC{};
         Data.SourceWidth = static_cast<uint32>(DepthDesc.Width);
         Data.SourceHeight = DepthDesc.Height;
-        const uint32_t DepthIndex = GetFrameIndex() % static_cast<uint32_t>(DepthBufferHandles.size());
-        Data.DepthSrv = DepthBufferHandles.empty() ? D3D12_GPU_DESCRIPTOR_HANDLE{} : DepthBufferHandles[DepthIndex];
-        Data.HZBSrv = HZBSrvHandle;
-        Data.HZBSrvMips = HZBSrvMipHandles;
-        Data.HZBUavs = HZBUavHandles;
-        Data.HZBNullUav = HZBNullUavHandle;
+        const uint32_t DepthIndex = GetFrameIndex() % static_cast<uint32_t>(DepthBindlessIndices.size());
+        Data.DepthBindlessIndex = DepthBindlessIndices.empty() ? UINT32_MAX : DepthBindlessIndices[DepthIndex];
+        Data.HZBSrvMips = HZBSrvMipBindlessIndices;
+        Data.HZBUavs = HZBUavBindlessIndices;
+        Data.HZBNullUav = HZBNullUavBindlessIndex;
 
         Builder.ReadTexture(DepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.WriteTexture(HZBHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     }, [this](const FHZBPassData& Data, FDX12CommandContext& Cmd)
     {
-        if (!HZBRootSignature || Data.MipCount == 0)
+        if (!HZBRootSignature || Data.MipCount == 0 || !Device || !Device->GetBindlessDescriptorHeap())
         {
             return;
         }
@@ -1125,7 +1131,12 @@ void FDeferredRenderer::AddHZBPass(FRenderGraph& Graph, const FDeferredFrameStat
 
         FScopedPixEvent HZBEvent(LocalCommandList, L"BuildHZB");
 
-        ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
+        if (Data.DepthBindlessIndex == UINT32_MAX || Data.HZBNullUav == UINT32_MAX)
+        {
+            return;
+        }
+
+        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         LocalCommandList->SetComputeRootSignature(HZBRootSignature.Get());
 
@@ -1182,11 +1193,11 @@ void FDeferredRenderer::AddHZBPass(FRenderGraph& Graph, const FDeferredFrameStat
             Constants.DestHeight3 = DestHeight3;
             Constants.SourceMip = 0u;
 
-            D3D12_GPU_DESCRIPTOR_HANDLE SourceHandle = Data.DepthSrv;
+            uint32_t SourceBindlessIndex = Data.DepthBindlessIndex;
             if (MipIndex > 0)
             {
                 const uint32_t SourceMipIndex = MipIndex - 1;
-                SourceHandle = (SourceMipIndex < Data.HZBSrvMips.size()) ? Data.HZBSrvMips[SourceMipIndex] : D3D12_GPU_DESCRIPTOR_HANDLE{};
+                SourceBindlessIndex = (SourceMipIndex < Data.HZBSrvMips.size()) ? Data.HZBSrvMips[SourceMipIndex] : UINT32_MAX;
 
                 if (SourceMipIndex < MipStates.size() && MipStates[SourceMipIndex] != D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
                 {
@@ -1207,18 +1218,19 @@ void FDeferredRenderer::AddHZBPass(FRenderGraph& Graph, const FDeferredFrameStat
                     MipStates[SourceMipIndex] = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
                 }
             }
-            const D3D12_GPU_DESCRIPTOR_HANDLE DestHandle0 = (MipIndex < Data.HZBUavs.size()) ? Data.HZBUavs[MipIndex] : D3D12_GPU_DESCRIPTOR_HANDLE{};
-            const D3D12_GPU_DESCRIPTOR_HANDLE DestHandle1 = (bHasSecondMip && (MipIndex + 1) < Data.HZBUavs.size())
+            const uint32_t DestIndex0 = (MipIndex < Data.HZBUavs.size()) ? Data.HZBUavs[MipIndex] : UINT32_MAX;
+            const uint32_t DestIndex1 = (bHasSecondMip && (MipIndex + 1) < Data.HZBUavs.size())
                 ? Data.HZBUavs[MipIndex + 1]
                 : Data.HZBNullUav;
-            const D3D12_GPU_DESCRIPTOR_HANDLE DestHandle2 = (bHasThirdMip && (MipIndex + 2) < Data.HZBUavs.size())
+            const uint32_t DestIndex2 = (bHasThirdMip && (MipIndex + 2) < Data.HZBUavs.size())
                 ? Data.HZBUavs[MipIndex + 2]
                 : Data.HZBNullUav;
-            const D3D12_GPU_DESCRIPTOR_HANDLE DestHandle3 = (bHasFourthMip && (MipIndex + 3) < Data.HZBUavs.size())
+            const uint32_t DestIndex3 = (bHasFourthMip && (MipIndex + 3) < Data.HZBUavs.size())
                 ? Data.HZBUavs[MipIndex + 3]
                 : Data.HZBNullUav;
 
-            if (SourceHandle.ptr == 0 || DestHandle0.ptr == 0 || DestHandle1.ptr == 0 || DestHandle2.ptr == 0 || DestHandle3.ptr == 0)
+            if (SourceBindlessIndex == UINT32_MAX || DestIndex0 == UINT32_MAX || DestIndex1 == UINT32_MAX
+                || DestIndex2 == UINT32_MAX || DestIndex3 == UINT32_MAX)
             {
                 break;
             }
@@ -1231,11 +1243,8 @@ void FDeferredRenderer::AddHZBPass(FRenderGraph& Graph, const FDeferredFrameStat
 
             LocalCommandList->SetPipelineState(SelectedPipeline);
             LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(Constants) / sizeof(uint32_t), &Constants, 0);
-            LocalCommandList->SetComputeRootDescriptorTable(1, SourceHandle);
-            LocalCommandList->SetComputeRootDescriptorTable(2, DestHandle0);
-            LocalCommandList->SetComputeRootDescriptorTable(3, DestHandle1);
-            LocalCommandList->SetComputeRootDescriptorTable(4, DestHandle2);
-            LocalCommandList->SetComputeRootDescriptorTable(5, DestHandle3);
+            const uint32_t HZBBindlessIndices[] = { SourceBindlessIndex, DestIndex0, DestIndex1, DestIndex2, DestIndex3 };
+            LocalCommandList->SetComputeRoot32BitConstants(1, _countof(HZBBindlessIndices), HZBBindlessIndices, 0);
 
             const uint32_t GroupX = (Constants.DestWidth + 7) / 8;
             const uint32_t GroupY = (Constants.DestHeight + 7) / 8;
@@ -1449,24 +1458,44 @@ void FDeferredRenderer::AddLightingPass(FRenderGraph& Graph, const FDeferredFram
 
         FScopedPixEvent LightingEvent(LocalCommandList, L"Lighting");
 
-        ID3D12DescriptorHeap* Heaps[] = { DescriptorHeap.Get() };
+        if (!Device || !Device->GetBindlessDescriptorHeap())
+        {
+            return;
+        }
+
+        const uint32_t DepthIndex = GetFrameIndex() % static_cast<uint32_t>(DepthBindlessIndices.size());
+        const uint32_t DepthBindlessIndex = DepthBindlessIndices.empty() ? UINT32_MAX : DepthBindlessIndices[DepthIndex];
+        if (DepthBindlessIndex == UINT32_MAX || GtaoBindlessIndex == UINT32_MAX || ShadowMapBindlessIndex == UINT32_MAX
+            || EnvironmentCubeBindlessIndex == UINT32_MAX || BrdfLutBindlessIndex == UINT32_MAX
+            || GBufferBindlessIndices[0] == UINT32_MAX || GBufferBindlessIndices[1] == UINT32_MAX || GBufferBindlessIndices[2] == UINT32_MAX)
+        {
+            return;
+        }
+
+        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         Cmd.SetRenderTarget(LightingRTVHandle, nullptr);
 
         LocalCommandList->SetPipelineState(LightingPipeline.Get());
         LocalCommandList->SetGraphicsRootSignature(LightingRootSignature.Get());
-        LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
 
         LocalCommandList->RSSetViewports(1, &Viewport);
         LocalCommandList->RSSetScissorRects(1, &ScissorRect);
 
         LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         LocalCommandList->SetGraphicsRootConstantBufferView(0, GetSceneConstantBufferAddress());
-        LocalCommandList->SetGraphicsRootDescriptorTable(1, GBufferGpuHandles[0]);
-        const uint32_t DepthIndex = GetFrameIndex() % static_cast<uint32_t>(DepthBufferHandles.size());
-        const D3D12_GPU_DESCRIPTOR_HANDLE DepthHandle = DepthBufferHandles.empty() ? D3D12_GPU_DESCRIPTOR_HANDLE{} : DepthBufferHandles[DepthIndex];
-        LocalCommandList->SetGraphicsRootDescriptorTable(2, DepthHandle);
-        LocalCommandList->SetGraphicsRootDescriptorTable(3, GtaoSrvHandle);
+        const uint32_t LightingBindlessIndices[] =
+        {
+            GBufferBindlessIndices[0],
+            GBufferBindlessIndices[1],
+            GBufferBindlessIndices[2],
+            ShadowMapBindlessIndex,
+            EnvironmentCubeBindlessIndex,
+            BrdfLutBindlessIndex,
+            DepthBindlessIndex,
+            GtaoBindlessIndex
+        };
+        LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(LightingBindlessIndices), LightingBindlessIndices, 0);
 
         LocalCommandList->DrawInstanced(3, 1, 0, 0);
     });
@@ -1674,7 +1703,6 @@ void FDeferredRenderer::AddTonemapPass(FRenderGraph& Graph, const FDeferredFrame
     struct FTonemapPassData
     {
         D3D12_CPU_DESCRIPTOR_HANDLE OutputHandle{};
-        D3D12_GPU_DESCRIPTOR_HANDLE InputHandle{};
         uint32_t InputBindlessIndex = UINT32_MAX;
         bool bUseCas = false;
         bool bUseAutoExposure = false;
@@ -1689,7 +1717,6 @@ void FDeferredRenderer::AddTonemapPass(FRenderGraph& Graph, const FDeferredFrame
         Data.bUseAutoExposure = bAutoExposureEnabled;
         Data.bUseTaa = FrameState.bTaaActive;
         Data.LuminanceIndex = LuminanceWriteIndex;
-        Data.InputHandle = Data.bUseTaa ? TaaSrvHandles[FrameState.TaaWriteIndex] : LightingBufferHandle;
         Data.InputBindlessIndex = Data.bUseTaa ? TaaSrvBindlessIndices[FrameState.TaaWriteIndex] : LightingBufferBindlessIndex;
         if (Data.bUseTaa)
         {
@@ -1760,7 +1787,6 @@ void FDeferredRenderer::AddCasPass(FRenderGraph& Graph, const FDeferredFrameStat
     {
         bool bEnabled = false;
         D3D12_CPU_DESCRIPTOR_HANDLE OutputHandle{};
-        D3D12_GPU_DESCRIPTOR_HANDLE InputHandle{};
         DirectX::XMFLOAT2 TexelDelta{};
         float Sharpness = 0.0f;
     };
@@ -1773,7 +1799,6 @@ void FDeferredRenderer::AddCasPass(FRenderGraph& Graph, const FDeferredFrameStat
             return;
         }
         Data.OutputHandle = RtvHandle;
-        Data.InputHandle = TonemapOutputHandle;
         Data.TexelDelta = DirectX::XMFLOAT2(1.0f / Viewport.Width, 1.0f / Viewport.Height);
         Data.Sharpness = CasSharpness;
         Builder.ReadTexture(TonemapOutputResource, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -1827,7 +1852,8 @@ void FDeferredRenderer::AddDebugPrintPass(FRenderGraph& Graph, const D3D12_CPU_D
 
     Graph.AddPass<FDebugPrintPassData>("GpuDebugPrint", [this, RtvHandle](FDebugPrintPassData& Data, FRGPassBuilder& Builder)
     {
-        Data.bEnabled = bEnableGpuDebugPrint && GpuDebugPrintPipeline && GpuDebugPrintRootSignature && GpuDebugPrintDescriptorHeap;
+        Data.bEnabled = bEnableGpuDebugPrint && GpuDebugPrintPipeline && GpuDebugPrintRootSignature
+            && Device && Device->GetBindlessDescriptorHeap();
         Data.OutputHandle = RtvHandle;
         if (Data.bEnabled)
         {
@@ -1870,14 +1896,6 @@ void FDeferredRenderer::FinalizeFrameState(const FDeferredFrameState& FrameState
 
 bool FDeferredRenderer::CreateBasePassRootSignature(FDX12Device* Device)
 {
-    D3D12_DESCRIPTOR_RANGE1 DescriptorRange = {};
-    DescriptorRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    DescriptorRange.NumDescriptors = 4;
-    DescriptorRange.BaseShaderRegister = 0;
-    DescriptorRange.RegisterSpace = 0;
-    DescriptorRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
-    DescriptorRange.OffsetInDescriptorsFromTableStart = 0;
-
     D3D12_ROOT_PARAMETER1 RootParams[2] = {};
     // RootParams[0]: Scene constant buffer (b0), used in Shaders/DeferredBasePass.hlsl VSMain and PSMain
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
@@ -1886,11 +1904,12 @@ bool FDeferredRenderer::CreateBasePassRootSignature(FDX12Device* Device)
     RootParams[0].Descriptor.RegisterSpace = 0;
     RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
 
-    // RootParams[1]: Base pass material texture SRV table (t0..t3), used in Shaders/DeferredBasePass.hlsl PSMain
-    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    // RootParams[1]: Base pass bindless indices (b1), used in Shaders/DeferredBasePass.hlsl PSMain
+    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    RootParams[1].DescriptorTable.NumDescriptorRanges = 1;
-    RootParams[1].DescriptorTable.pDescriptorRanges = &DescriptorRange;
+    RootParams[1].Constants.ShaderRegister = 1;
+    RootParams[1].Constants.RegisterSpace = 0;
+    RootParams[1].Constants.Num32BitValues = 4;
 
     D3D12_STATIC_SAMPLER_DESC SamplerDesc = {};
     SamplerDesc.Filter = D3D12_FILTER_ANISOTROPIC;
@@ -1913,7 +1932,8 @@ bool FDeferredRenderer::CreateBasePassRootSignature(FDX12Device* Device)
     RootSigDesc.Desc_1_1.pParameters = RootParams;
     RootSigDesc.Desc_1_1.NumStaticSamplers = 1;
     RootSigDesc.Desc_1_1.pStaticSamplers = &SamplerDesc;
-    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+        | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
 
     ComPtr<ID3DBlob> SerializedSig;
     ComPtr<ID3DBlob> ErrorBlob;
@@ -1930,34 +1950,7 @@ bool FDeferredRenderer::CreateBasePassRootSignature(FDX12Device* Device)
 
 bool FDeferredRenderer::CreateLightingRootSignature(FDX12Device* Device)
 {
-    D3D12_DESCRIPTOR_RANGE1 DescriptorRanges[6] = {};
-    for (int i = 0; i < 6; ++i)
-    {
-        DescriptorRanges[i].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        DescriptorRanges[i].NumDescriptors = 1;
-        DescriptorRanges[i].BaseShaderRegister = static_cast<UINT>(i);
-        DescriptorRanges[i].RegisterSpace = 0;
-        DescriptorRanges[i].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
-        DescriptorRanges[i].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-    }
-
-    D3D12_DESCRIPTOR_RANGE1 DepthRange = {};
-    DepthRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    DepthRange.NumDescriptors = 1;
-    DepthRange.BaseShaderRegister = 6;
-    DepthRange.RegisterSpace = 0;
-    DepthRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
-    DepthRange.OffsetInDescriptorsFromTableStart = 0;
-
-    D3D12_DESCRIPTOR_RANGE1 GtaoRange = {};
-    GtaoRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    GtaoRange.NumDescriptors = 1;
-    GtaoRange.BaseShaderRegister = 7;
-    GtaoRange.RegisterSpace = 0;
-    GtaoRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
-    GtaoRange.OffsetInDescriptorsFromTableStart = 0;
-
-    D3D12_ROOT_PARAMETER1 RootParams[4] = {};
+    D3D12_ROOT_PARAMETER1 RootParams[2] = {};
     // RootParams[0]: Lighting constants (b0), used in Shaders/DeferredLighting.hlsl PSMain
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
@@ -1965,23 +1958,12 @@ bool FDeferredRenderer::CreateLightingRootSignature(FDX12Device* Device)
     RootParams[0].Descriptor.RegisterSpace = 0;
     RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
 
-    // RootParams[1]: GBuffer/IBL/shadow SRV table (t0..t5), used in Shaders/DeferredLighting.hlsl PSMain
-    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    // RootParams[1]: Lighting bindless indices (b1), used in Shaders/DeferredLighting.hlsl PSMain
+    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    RootParams[1].DescriptorTable.NumDescriptorRanges = _countof(DescriptorRanges);
-    RootParams[1].DescriptorTable.pDescriptorRanges = DescriptorRanges;
-
-    // RootParams[2]: Depth SRV table (t6), used in Shaders/DeferredLighting.hlsl PSMain
-    RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    RootParams[2].DescriptorTable.NumDescriptorRanges = 1;
-    RootParams[2].DescriptorTable.pDescriptorRanges = &DepthRange;
-
-    // RootParams[3]: GTAO SRV table (t7), used in Shaders/DeferredLighting.hlsl PSMain
-    RootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    RootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    RootParams[3].DescriptorTable.NumDescriptorRanges = 1;
-    RootParams[3].DescriptorTable.pDescriptorRanges = &GtaoRange;
+    RootParams[1].Constants.ShaderRegister = 1;
+    RootParams[1].Constants.RegisterSpace = 0;
+    RootParams[1].Constants.Num32BitValues = 8;
 
     D3D12_STATIC_SAMPLER_DESC Samplers[3] = {};
     Samplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
@@ -2026,7 +2008,8 @@ bool FDeferredRenderer::CreateLightingRootSignature(FDX12Device* Device)
     RootSigDesc.Desc_1_1.pParameters = RootParams;
     RootSigDesc.Desc_1_1.NumStaticSamplers = _countof(Samplers);
     RootSigDesc.Desc_1_1.pStaticSamplers = Samplers;
-    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+        | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
 
     ComPtr<ID3DBlob> SerializedSig;
     ComPtr<ID3DBlob> ErrorBlob;
@@ -2502,44 +2485,7 @@ bool FDeferredRenderer::CreateGtaoPipeline(FDX12Device* Device)
 
 bool FDeferredRenderer::CreateHZBRootSignature(FDX12Device* Device)
 {
-    D3D12_DESCRIPTOR_RANGE1 DescriptorRanges[5] = {};
-
-    DescriptorRanges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    DescriptorRanges[0].NumDescriptors = 1;
-    DescriptorRanges[0].BaseShaderRegister = 0;
-    DescriptorRanges[0].RegisterSpace = 0;
-    DescriptorRanges[0].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
-    DescriptorRanges[0].OffsetInDescriptorsFromTableStart = 0;
-
-    DescriptorRanges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-    DescriptorRanges[1].NumDescriptors = 1;
-    DescriptorRanges[1].BaseShaderRegister = 0;
-    DescriptorRanges[1].RegisterSpace = 0;
-    DescriptorRanges[1].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
-    DescriptorRanges[1].OffsetInDescriptorsFromTableStart = 0;
-
-    DescriptorRanges[2].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-    DescriptorRanges[2].NumDescriptors = 1;
-    DescriptorRanges[2].BaseShaderRegister = 1;
-    DescriptorRanges[2].RegisterSpace = 0;
-    DescriptorRanges[2].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
-    DescriptorRanges[2].OffsetInDescriptorsFromTableStart = 0;
-
-    DescriptorRanges[3].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-    DescriptorRanges[3].NumDescriptors = 1;
-    DescriptorRanges[3].BaseShaderRegister = 2;
-    DescriptorRanges[3].RegisterSpace = 0;
-    DescriptorRanges[3].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
-    DescriptorRanges[3].OffsetInDescriptorsFromTableStart = 0;
-
-    DescriptorRanges[4].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-    DescriptorRanges[4].NumDescriptors = 1;
-    DescriptorRanges[4].BaseShaderRegister = 3;
-    DescriptorRanges[4].RegisterSpace = 0;
-    DescriptorRanges[4].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
-    DescriptorRanges[4].OffsetInDescriptorsFromTableStart = 0;
-
-    D3D12_ROOT_PARAMETER1 RootParams[6] = {};
+    D3D12_ROOT_PARAMETER1 RootParams[2] = {};
 
     // RootParams[0]: HZB constants (mip counts, dimensions, source mip), used in Shaders/BuildHZB.hlsl BuildHZB
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
@@ -2548,35 +2494,12 @@ bool FDeferredRenderer::CreateHZBRootSignature(FDX12Device* Device)
     RootParams[0].Constants.RegisterSpace = 0;
     RootParams[0].Constants.ShaderRegister = 0;
 
-    // RootParams[1]: HZB source texture SRV (t0), used in Shaders/BuildHZB.hlsl BuildHZB
-    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    // RootParams[1]: HZB bindless indices (b1), used in Shaders/BuildHZB.hlsl BuildHZB
+    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[1].DescriptorTable.NumDescriptorRanges = 1;
-    RootParams[1].DescriptorTable.pDescriptorRanges = &DescriptorRanges[0];
-
-    // RootParams[2]: HZB output UAV 0 (u0), used in Shaders/BuildHZB.hlsl BuildHZB
-    RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[2].DescriptorTable.NumDescriptorRanges = 1;
-    RootParams[2].DescriptorTable.pDescriptorRanges = &DescriptorRanges[1];
-
-    // RootParams[3]: HZB output UAV 1 (u1), used in Shaders/BuildHZB.hlsl BuildHZB
-    RootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    RootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[3].DescriptorTable.NumDescriptorRanges = 1;
-    RootParams[3].DescriptorTable.pDescriptorRanges = &DescriptorRanges[2];
-
-    // RootParams[4]: HZB output UAV 2 (u2), used in Shaders/BuildHZB.hlsl BuildHZB
-    RootParams[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    RootParams[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[4].DescriptorTable.NumDescriptorRanges = 1;
-    RootParams[4].DescriptorTable.pDescriptorRanges = &DescriptorRanges[3];
-
-    // RootParams[5]: HZB output UAV 3 (u3), used in Shaders/BuildHZB.hlsl BuildHZB
-    RootParams[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    RootParams[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[5].DescriptorTable.NumDescriptorRanges = 1;
-    RootParams[5].DescriptorTable.pDescriptorRanges = &DescriptorRanges[4];
+    RootParams[1].Constants.Num32BitValues = 5;
+    RootParams[1].Constants.RegisterSpace = 0;
+    RootParams[1].Constants.ShaderRegister = 1;
 
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
     RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
@@ -2584,7 +2507,7 @@ bool FDeferredRenderer::CreateHZBRootSignature(FDX12Device* Device)
     RootSigDesc.Desc_1_1.pParameters = RootParams;
     RootSigDesc.Desc_1_1.NumStaticSamplers = 0;
     RootSigDesc.Desc_1_1.pStaticSamplers = nullptr;
-    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
 
     ComPtr<ID3DBlob> SerializedSig;
     ComPtr<ID3DBlob> ErrorBlob;
@@ -3515,25 +3438,10 @@ bool FDeferredRenderer::CreateHZBResources(FDX12Device* Device, uint32_t Width, 
 
 bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
 {
-    const UINT TextureCount = static_cast<UINT>(SceneTextures.size());
-    const UINT MipCount = HZBMipCount == 0 ? 1u : static_cast<UINT>(HZBMipCount);
-    const UINT HZBDescriptorCount = 3 + (MipCount * 2);
-    const UINT TaaDescriptorCount = static_cast<UINT>(TaaHistoryTextures.size()) * 2;
-    const UINT DepthDescriptorCount = GetFramesInFlight();
-
-    D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
-    HeapDesc.NumDescriptors = TextureCount * 4 + 15 + HZBDescriptorCount + TaaDescriptorCount + DepthDescriptorCount;
-    HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(DescriptorHeap.GetAddressOf())));
-    if (DescriptorHeap)
+    if (!Device)
     {
-        DescriptorHeap->SetName(L"DescriptorHeap");
+        return false;
     }
-
-    const UINT DescriptorSize = Device->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-    D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle = DescriptorHeap->GetCPUDescriptorHandleForHeapStart();
-    D3D12_GPU_DESCRIPTOR_HANDLE GpuHandle = DescriptorHeap->GetGPUDescriptorHandleForHeapStart();
 
     const auto CreateSceneTextureSrv = [&](ID3D12Resource* Texture) -> uint32_t
     {
@@ -3553,32 +3461,15 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         SceneSrvDesc.Texture2D.MostDetailedMip = 0;
         SceneSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
 
-        Device->GetDevice()->CreateShaderResourceView(Resource, &SceneSrvDesc, CpuHandle);
         return Device->CreateBindlessSrv(Resource, SceneSrvDesc);
     };
 
     for (size_t Index = 0; Index < SceneTextures.size(); ++Index)
     {
         SceneModels[Index].BaseColorBindlessIndex = CreateSceneTextureSrv(SceneTextures[Index].BaseColor.Get());
-        SceneModels[Index].TextureHandle = GpuHandle;
-
-        CpuHandle.ptr += DescriptorSize;
-        GpuHandle.ptr += DescriptorSize;
-
         SceneModels[Index].MetallicRoughnessBindlessIndex = CreateSceneTextureSrv(SceneTextures[Index].MetallicRoughness.Get());
-
-        CpuHandle.ptr += DescriptorSize;
-        GpuHandle.ptr += DescriptorSize;
-
         SceneModels[Index].NormalBindlessIndex = CreateSceneTextureSrv(SceneTextures[Index].Normal.Get());
-
-        CpuHandle.ptr += DescriptorSize;
-        GpuHandle.ptr += DescriptorSize;
-
         SceneModels[Index].EmissiveBindlessIndex = CreateSceneTextureSrv(SceneTextures[Index].Emissive.Get());
-
-        CpuHandle.ptr += DescriptorSize;
-        GpuHandle.ptr += DescriptorSize;
     }
 
     ID3D12Resource* Buffers[3] = { GBufferA.Get(), GBufferB.Get(), GBufferC.Get() };
@@ -3589,11 +3480,7 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         SrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         SrvDesc.Format = GBufferFormats[i];
         SrvDesc.Texture2D.MipLevels = 1;
-        Device->GetDevice()->CreateShaderResourceView(Buffers[i], &SrvDesc, CpuHandle);
-        GBufferGpuHandles[i] = GpuHandle;
         GBufferBindlessIndices[i] = Device->CreateBindlessSrv(Buffers[i], SrvDesc);
-        CpuHandle.ptr += DescriptorSize;
-        GpuHandle.ptr += DescriptorSize;
     }
 
     D3D12_SHADER_RESOURCE_VIEW_DESC ShadowSrvDesc = {};
@@ -3601,12 +3488,7 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
     ShadowSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     ShadowSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
     ShadowSrvDesc.Texture2D.MipLevels = 1;
-    Device->GetDevice()->CreateShaderResourceView(ShadowMap.Get(), &ShadowSrvDesc, CpuHandle);
-    ShadowMapHandle = GpuHandle;
     ShadowMapBindlessIndex = Device->CreateBindlessSrv(ShadowMap.Get(), ShadowSrvDesc);
-
-    CpuHandle.ptr += DescriptorSize;
-    GpuHandle.ptr += DescriptorSize;
 
     {
         D3D12_SHADER_RESOURCE_VIEW_DESC EnvSrvDesc = {};
@@ -3616,12 +3498,7 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         EnvSrvDesc.TextureCube.MipLevels = EnvironmentCubeTexture->GetDesc().MipLevels;
         EnvSrvDesc.TextureCube.MostDetailedMip = 0;
         EnvSrvDesc.TextureCube.ResourceMinLODClamp = 0.0f;
-        Device->GetDevice()->CreateShaderResourceView(EnvironmentCubeTexture.Get(), &EnvSrvDesc, CpuHandle);
-        EnvironmentCubeHandle = GpuHandle;
         EnvironmentCubeBindlessIndex = Device->CreateBindlessSrv(EnvironmentCubeTexture.Get(), EnvSrvDesc);
-
-        CpuHandle.ptr += DescriptorSize;
-        GpuHandle.ptr += DescriptorSize;
     }
 
     {
@@ -3632,12 +3509,7 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         BrdfSrvDesc.Texture2D.MipLevels = BrdfLutTexture->GetDesc().MipLevels;
         BrdfSrvDesc.Texture2D.MostDetailedMip = 0;
         BrdfSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
-        Device->GetDevice()->CreateShaderResourceView(BrdfLutTexture.Get(), &BrdfSrvDesc, CpuHandle);
-        BrdfLutHandle = GpuHandle;
         BrdfLutBindlessIndex = Device->CreateBindlessSrv(BrdfLutTexture.Get(), BrdfSrvDesc);
-
-        CpuHandle.ptr += DescriptorSize;
-        GpuHandle.ptr += DescriptorSize;
     }
 
     {
@@ -3646,12 +3518,7 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         LinearDepthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         LinearDepthSrvDesc.Format = DXGI_FORMAT_R16_FLOAT;
         LinearDepthSrvDesc.Texture2D.MipLevels = 1;
-        Device->GetDevice()->CreateShaderResourceView(LinearDepthTexture.Get(), &LinearDepthSrvDesc, CpuHandle);
-        LinearDepthSrvHandle = GpuHandle;
         LinearDepthBindlessIndex = Device->CreateBindlessSrv(LinearDepthTexture.Get(), LinearDepthSrvDesc);
-
-        CpuHandle.ptr += DescriptorSize;
-        GpuHandle.ptr += DescriptorSize;
     }
 
     {
@@ -3660,12 +3527,7 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         HilbertSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         HilbertSrvDesc.Format = DXGI_FORMAT_R16_UINT;
         HilbertSrvDesc.Texture2D.MipLevels = 1;
-        Device->GetDevice()->CreateShaderResourceView(HilbertLutTexture.Get(), &HilbertSrvDesc, CpuHandle);
-        HilbertLutSrvHandle = GpuHandle;
         HilbertLutBindlessIndex = Device->CreateBindlessSrv(HilbertLutTexture.Get(), HilbertSrvDesc);
-
-        CpuHandle.ptr += DescriptorSize;
-        GpuHandle.ptr += DescriptorSize;
     }
 
     {
@@ -3674,12 +3536,7 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         GtaoSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         GtaoSrvDesc.Format = DXGI_FORMAT_R8_UNORM;
         GtaoSrvDesc.Texture2D.MipLevels = 1;
-        Device->GetDevice()->CreateShaderResourceView(GtaoTexture.Get(), &GtaoSrvDesc, CpuHandle);
-        GtaoSrvHandle = GpuHandle;
         GtaoBindlessIndex = Device->CreateBindlessSrv(GtaoTexture.Get(), GtaoSrvDesc);
-
-        CpuHandle.ptr += DescriptorSize;
-        GpuHandle.ptr += DescriptorSize;
     }
 
     {
@@ -3688,12 +3545,7 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         LightingSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         LightingSrvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
         LightingSrvDesc.Texture2D.MipLevels = 1;
-        Device->GetDevice()->CreateShaderResourceView(LightingBuffer.Get(), &LightingSrvDesc, CpuHandle);
-        LightingBufferHandle = GpuHandle;
         LightingBufferBindlessIndex = Device->CreateBindlessSrv(LightingBuffer.Get(), LightingSrvDesc);
-
-        CpuHandle.ptr += DescriptorSize;
-        GpuHandle.ptr += DescriptorSize;
     }
 
     {
@@ -3702,12 +3554,7 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         TonemapSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         TonemapSrvDesc.Format = BackBufferFormat;
         TonemapSrvDesc.Texture2D.MipLevels = 1;
-        Device->GetDevice()->CreateShaderResourceView(TonemapOutput.Get(), &TonemapSrvDesc, CpuHandle);
-        TonemapOutputHandle = GpuHandle;
         TonemapOutputBindlessIndex = Device->CreateBindlessSrv(TonemapOutput.Get(), TonemapSrvDesc);
-
-        CpuHandle.ptr += DescriptorSize;
-        GpuHandle.ptr += DescriptorSize;
     }
 
     for (uint32_t Index = 0; Index < LuminanceTextures.size(); ++Index)
@@ -3717,30 +3564,16 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         LuminanceSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         LuminanceSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
         LuminanceSrvDesc.Texture2D.MipLevels = 1;
-        Device->GetDevice()->CreateShaderResourceView(LuminanceTextures[Index].Get(), &LuminanceSrvDesc, CpuHandle);
-        LuminanceSrvHandles[Index] = GpuHandle;
         LuminanceSrvBindlessIndices[Index] = Device->CreateBindlessSrv(LuminanceTextures[Index].Get(), LuminanceSrvDesc);
-
-        CpuHandle.ptr += DescriptorSize;
-        GpuHandle.ptr += DescriptorSize;
 
         D3D12_UNORDERED_ACCESS_VIEW_DESC LuminanceUavDesc = {};
         LuminanceUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
         LuminanceUavDesc.Format = DXGI_FORMAT_R32_FLOAT;
         LuminanceUavDesc.Texture2D.MipSlice = 0;
         LuminanceUavDesc.Texture2D.PlaneSlice = 0;
-        Device->GetDevice()->CreateUnorderedAccessView(LuminanceTextures[Index].Get(), nullptr, &LuminanceUavDesc, CpuHandle);
-        LuminanceUavHandles[Index] = GpuHandle;
         LuminanceUavBindlessIndices[Index] = Device->CreateBindlessUav(LuminanceTextures[Index].Get(), nullptr, LuminanceUavDesc);
-
-        CpuHandle.ptr += DescriptorSize;
-        GpuHandle.ptr += DescriptorSize;
     }
 
-    TaaSrvHandles.clear();
-    TaaUavHandles.clear();
-    TaaSrvHandles.resize(TaaHistoryTextures.size());
-    TaaUavHandles.resize(TaaHistoryTextures.size());
     TaaSrvBindlessIndices.clear();
     TaaUavBindlessIndices.clear();
     TaaSrvBindlessIndices.resize(TaaHistoryTextures.size(), UINT32_MAX);
@@ -3753,31 +3586,19 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         TaaSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         TaaSrvDesc.Format = LightingBufferFormat;
         TaaSrvDesc.Texture2D.MipLevels = 1;
-        Device->GetDevice()->CreateShaderResourceView(TaaHistoryTextures[Index].Get(), &TaaSrvDesc, CpuHandle);
-        TaaSrvHandles[Index] = GpuHandle;
         TaaSrvBindlessIndices[Index] = Device->CreateBindlessSrv(TaaHistoryTextures[Index].Get(), TaaSrvDesc);
-
-        CpuHandle.ptr += DescriptorSize;
-        GpuHandle.ptr += DescriptorSize;
 
         D3D12_UNORDERED_ACCESS_VIEW_DESC TaaUavDesc = {};
         TaaUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
         TaaUavDesc.Format = LightingBufferFormat;
         TaaUavDesc.Texture2D.MipSlice = 0;
         TaaUavDesc.Texture2D.PlaneSlice = 0;
-        Device->GetDevice()->CreateUnorderedAccessView(TaaHistoryTextures[Index].Get(), nullptr, &TaaUavDesc, CpuHandle);
-        TaaUavHandles[Index] = GpuHandle;
         TaaUavBindlessIndices[Index] = Device->CreateBindlessUav(TaaHistoryTextures[Index].Get(), nullptr, TaaUavDesc);
-
-        CpuHandle.ptr += DescriptorSize;
-        GpuHandle.ptr += DescriptorSize;
     }
 
-    DepthBufferHandles.clear();
-    DepthBufferHandles.resize(GetFramesInFlight());
     DepthBindlessIndices.clear();
     DepthBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
-    for (uint32_t Index = 0; Index < DepthBufferHandles.size(); ++Index)
+    for (uint32_t Index = 0; Index < DepthBindlessIndices.size(); ++Index)
     {
         D3D12_SHADER_RESOURCE_VIEW_DESC DepthSrvDesc = {};
         DepthSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
@@ -3787,12 +3608,7 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         DepthSrvDesc.Texture2D.MostDetailedMip = 0;
         DepthSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
         ID3D12Resource* DepthBuffer = DepthResourcesPerFrame.empty() ? nullptr : DepthResourcesPerFrame[Index].DepthBuffer.Get();
-        Device->GetDevice()->CreateShaderResourceView(DepthBuffer, &DepthSrvDesc, CpuHandle);
-        DepthBufferHandles[Index] = GpuHandle;
         DepthBindlessIndices[Index] = Device->CreateBindlessSrv(DepthBuffer, DepthSrvDesc);
-
-        CpuHandle.ptr += DescriptorSize;
-        GpuHandle.ptr += DescriptorSize;
     }
 
     {
@@ -3803,16 +3619,9 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         HZBSrvDesc.Texture2D.MipLevels = HZBMipCount;
         HZBSrvDesc.Texture2D.MostDetailedMip = 0;
         HZBSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
-        Device->GetDevice()->CreateShaderResourceView(HierarchicalZBuffer.Get(), &HZBSrvDesc, CpuHandle);
-        HZBSrvHandle = GpuHandle;
         HZBSrvBindlessIndex = Device->CreateBindlessSrv(HierarchicalZBuffer.Get(), HZBSrvDesc);
-
-        CpuHandle.ptr += DescriptorSize;
-        GpuHandle.ptr += DescriptorSize;
     }
 
-    HZBSrvMipHandles.clear();
-    HZBSrvMipHandles.reserve(HZBMipCount);
     HZBSrvMipBindlessIndices.clear();
     HZBSrvMipBindlessIndices.reserve(HZBMipCount);
     for (uint32_t Mip = 0; Mip < HZBMipCount; ++Mip)
@@ -3825,16 +3634,9 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         HZBMipSrvDesc.Texture2D.MostDetailedMip = Mip;
         HZBMipSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
 
-        Device->GetDevice()->CreateShaderResourceView(HierarchicalZBuffer.Get(), &HZBMipSrvDesc, CpuHandle);
-        HZBSrvMipHandles.push_back(GpuHandle);
         HZBSrvMipBindlessIndices.push_back(Device->CreateBindlessSrv(HierarchicalZBuffer.Get(), HZBMipSrvDesc));
-
-        CpuHandle.ptr += DescriptorSize;
-        GpuHandle.ptr += DescriptorSize;
     }
 
-    HZBUavHandles.clear();
-    HZBUavHandles.reserve(HZBMipCount);
     HZBUavBindlessIndices.clear();
     HZBUavBindlessIndices.reserve(HZBMipCount);
     for (uint32_t Mip = 0; Mip < HZBMipCount; ++Mip)
@@ -3845,12 +3647,7 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         UavDesc.Texture2D.MipSlice = Mip;
         UavDesc.Texture2D.PlaneSlice = 0;
 
-        Device->GetDevice()->CreateUnorderedAccessView(HierarchicalZBuffer.Get(), nullptr, &UavDesc, CpuHandle);
-        HZBUavHandles.push_back(GpuHandle);
         HZBUavBindlessIndices.push_back(Device->CreateBindlessUav(HierarchicalZBuffer.Get(), nullptr, UavDesc));
-
-        CpuHandle.ptr += DescriptorSize;
-        GpuHandle.ptr += DescriptorSize;
     }
 
     {
@@ -3860,12 +3657,7 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         NullUavDesc.Texture2D.MipSlice = 0;
         NullUavDesc.Texture2D.PlaneSlice = 0;
 
-        Device->GetDevice()->CreateUnorderedAccessView(HZBNullUavResource.Get(), nullptr, &NullUavDesc, CpuHandle);
-        HZBNullUavHandle = GpuHandle;
         HZBNullUavBindlessIndex = Device->CreateBindlessUav(HZBNullUavResource.Get(), nullptr, NullUavDesc);
-
-        CpuHandle.ptr += DescriptorSize;
-        GpuHandle.ptr += DescriptorSize;
     }
 
     return true;

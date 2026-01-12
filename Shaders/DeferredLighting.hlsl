@@ -8,14 +8,17 @@ struct VSOutput
 };
 
 
-Texture2D GBufferA : register(t0);
-Texture2D GBufferB : register(t1);
-Texture2D GBufferC : register(t2);
-Texture2D ShadowMap : register(t3);
-TextureCube EnvironmentMap : register(t4);
-Texture2D BrdfLut : register(t5);
-Texture2D DepthBuffer : register(t6);
-Texture2D GtaoTexture : register(t7);
+cbuffer LightingBindlessConstants : register(b1)
+{
+    uint GBufferAIndex;
+    uint GBufferBIndex;
+    uint GBufferCIndex;
+    uint ShadowMapIndex;
+    uint EnvironmentMapIndex;
+    uint BrdfLutIndex;
+    uint DepthBufferIndex;
+    uint GtaoTextureIndex;
+};
 SamplerState GBufferSampler : register(s0);
 SamplerComparisonState ShadowSampler : register(s1);
 SamplerState IblSampler : register(s2);
@@ -50,6 +53,15 @@ float3 ReconstructViewPosition(float2 uv, float depth)
 
 float4 PSMain(VSOutput Input) : SV_Target
 {
+    Texture2D GBufferA = ResourceDescriptorHeap[GBufferAIndex];
+    Texture2D GBufferB = ResourceDescriptorHeap[GBufferBIndex];
+    Texture2D GBufferC = ResourceDescriptorHeap[GBufferCIndex];
+    Texture2D ShadowMap = ResourceDescriptorHeap[ShadowMapIndex];
+    TextureCube EnvironmentMap = ResourceDescriptorHeap[EnvironmentMapIndex];
+    Texture2D BrdfLut = ResourceDescriptorHeap[BrdfLutIndex];
+    Texture2D DepthBuffer = ResourceDescriptorHeap[DepthBufferIndex];
+    Texture2D GtaoTexture = ResourceDescriptorHeap[GtaoTextureIndex];
+
     float4 normalEncoded = GBufferA.Sample(GBufferSampler, Input.UV);
     float3 normal = normalize(normalEncoded.xyz * 2.0f - 1.0f);
     float4 smr = GBufferB.Sample(GBufferSampler, Input.UV);

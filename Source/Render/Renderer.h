@@ -100,7 +100,7 @@ protected:
         D3D12_CPU_DESCRIPTOR_HANDLE& OutShadowDsvHandle,
         D3D12_RESOURCE_STATES& OutShadowState);
     void DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamera& Camera);
-    void ConfigureHZBOcclusion(bool bEnabled, ID3D12DescriptorHeap* DescriptorHeap, D3D12_GPU_DESCRIPTOR_HANDLE Handle, uint32_t Width, uint32_t Height, uint32_t MipCount);
+    void ConfigureHZBOcclusion(bool bEnabled, uint32_t HZBBindlessIndex, uint32_t Width, uint32_t Height, uint32_t MipCount);
     void PrepareGpuDebugPrint(FDX12CommandContext& CmdContext);
     void DispatchGpuDebugPrintStats(FDX12CommandContext& CmdContext);
     bool CreateGpuDebugPrintResources(FDX12Device* Device);
@@ -162,7 +162,7 @@ protected:
         uint32_t Start = 0;
         uint32_t Count = 0;
         uint32_t PipelineKey = 0;
-        D3D12_GPU_DESCRIPTOR_HANDLE TextureHandle{};
+        std::array<uint32_t, 4> MaterialBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX } };
         std::wstring Name;
     };
 
@@ -204,17 +204,25 @@ protected:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> GpuDebugPrintPipeline;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> GpuDebugPrintStatsRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> GpuDebugPrintStatsPipeline;
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> GpuDebugPrintDescriptorHeap;
     Microsoft::WRL::ComPtr<ID3D12Resource> GpuDebugPrintFontTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> GpuDebugPrintGlyphBuffer;
-    D3D12_GPU_DESCRIPTOR_HANDLE GpuDebugPrintGlyphHandle{};
-    D3D12_GPU_DESCRIPTOR_HANDLE GpuDebugPrintFontHandle{};
-    D3D12_GPU_DESCRIPTOR_HANDLE GpuDebugPrintBufferHandle{};
-    D3D12_GPU_DESCRIPTOR_HANDLE GpuDebugPrintStatsHandle{};
     uint32_t GpuDebugPrintGlyphBindlessIndex = UINT32_MAX;
     uint32_t GpuDebugPrintFontBindlessIndex = UINT32_MAX;
     uint32_t GpuDebugPrintBufferBindlessIndex = UINT32_MAX;
     uint32_t GpuDebugPrintStatsBindlessIndex = UINT32_MAX;
+    uint32_t GpuDebugPrintBufferUavBindlessIndex = UINT32_MAX;
+    uint32_t GpuDebugPrintStatsUavBindlessIndex = UINT32_MAX;
+    uint32_t ModelBoundsBindlessIndex = UINT32_MAX;
+    uint32_t MeshletDrawDataBindlessIndex = UINT32_MAX;
+    uint32_t MeshletRangeOffsetBindlessIndex = UINT32_MAX;
+    uint32_t MeshletConeAxisBindlessIndex = UINT32_MAX;
+    uint32_t MeshletConeApexBindlessIndex = UINT32_MAX;
+    uint32_t HZBCullingBindlessIndex = UINT32_MAX;
+    std::vector<uint32_t> IndirectCommandUavBindlessIndices;
+    std::vector<uint32_t> IndirectCommandTemplateBindlessIndices;
+    std::vector<uint32_t> MeshletVisibilitySrvBindlessIndices;
+    std::vector<uint32_t> MeshletVisibilityUavBindlessIndices;
+    std::vector<uint32_t> MeshletRunCountUavBindlessIndices;
     uint32_t GpuDebugPrintAtlasWidth = 0;
     uint32_t GpuDebugPrintAtlasHeight = 0;
     uint32_t GpuDebugPrintFirstChar = 32;
@@ -263,8 +271,6 @@ protected:
     uint32_t ObjectIdRowPitch = 0;
     uint32_t IndirectCommandCount = 0;
     std::vector<FIndirectDrawRange> IndirectDrawRanges;
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> CullingDescriptorHeap;
-    D3D12_GPU_DESCRIPTOR_HANDLE HZBCullingHandle{};
     uint32_t HZBCullingWidth = 0;
     uint32_t HZBCullingHeight = 0;
     uint32_t HZBCullingMipCount = 0;

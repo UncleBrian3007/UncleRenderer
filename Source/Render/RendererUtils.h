@@ -157,7 +157,6 @@ struct FSceneModelResource
     std::wstring NormalTexturePath;
     std::wstring EmissiveTexturePath;
     bool bHasNormalMap = true;
-    D3D12_GPU_DESCRIPTOR_HANDLE TextureHandle{};
     uint32_t BaseColorBindlessIndex = UINT32_MAX;
     uint32_t MetallicRoughnessBindlessIndex = UINT32_MAX;
     uint32_t NormalBindlessIndex = UINT32_MAX;

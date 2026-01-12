@@ -1,18 +1,21 @@
 #include "CullingConstants.hlsl"
 
-StructuredBuffer<uint> VisibleMeshlets : register(t0);
-StructuredBuffer<uint4> MeshletDrawData : register(t1);
-StructuredBuffer<uint> RangeOffsets : register(t2);
-ByteAddressBuffer CommandTemplates : register(t3);
-RWByteAddressBuffer OutputCommands : register(u0);
-RWStructuredBuffer<uint> RunCounts : register(u1);
+cbuffer MeshletRunBindlessConstants : register(b1)
+{
+    uint VisibleMeshletsIndex;
+    uint MeshletDrawDataIndex;
+    uint RangeOffsetsIndex;
+    uint CommandTemplatesIndex;
+    uint OutputCommandsIndex;
+    uint RunCountsIndex;
+};
 
 static const uint kCommandStride = 128;
 static const uint kIndexCountOffset = 104;
 static const uint kInstanceCountOffset = 108;
 static const uint kStartIndexOffset = 112;
 
-uint4 ReadMeshletDrawData(uint index)
+uint4 ReadMeshletDrawData(uint index, StructuredBuffer<uint4> MeshletDrawData)
 {
     return MeshletDrawData[index];
 }
@@ -22,7 +25,7 @@ bool IsSameRun(uint4 a, uint4 b)
     return a.z == b.z && a.w == b.w;
 }
 
-void CopyTemplate(uint srcIndex, uint dstIndex)
+void CopyTemplate(uint srcIndex, uint dstIndex, ByteAddressBuffer CommandTemplates, RWByteAddressBuffer OutputCommands)
 {
     uint srcBase = srcIndex * kCommandStride;
     uint dstBase = dstIndex * kCommandStride;
@@ -41,16 +44,23 @@ void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     if (index >= IndirectCommandCount)
         return;
 
+    StructuredBuffer<uint> VisibleMeshlets = ResourceDescriptorHeap[VisibleMeshletsIndex];
+    StructuredBuffer<uint4> MeshletDrawData = ResourceDescriptorHeap[MeshletDrawDataIndex];
+    StructuredBuffer<uint> RangeOffsets = ResourceDescriptorHeap[RangeOffsetsIndex];
+    ByteAddressBuffer CommandTemplates = ResourceDescriptorHeap[CommandTemplatesIndex];
+    RWByteAddressBuffer OutputCommands = ResourceDescriptorHeap[OutputCommandsIndex];
+    RWStructuredBuffer<uint> RunCounts = ResourceDescriptorHeap[RunCountsIndex];
+
     if (VisibleMeshlets[index] == 0)
         return;
 
-    uint4 current = ReadMeshletDrawData(index);
+    uint4 current = ReadMeshletDrawData(index, MeshletDrawData);
     bool isStart = true;
     if (index > 0)
     {
         if (VisibleMeshlets[index - 1] != 0)
         {
-            uint4 previous = ReadMeshletDrawData(index - 1);
+            uint4 previous = ReadMeshletDrawData(index - 1, MeshletDrawData);
             if (IsSameRun(current, previous))
             {
                 isStart = false;
@@ -70,7 +80,7 @@ void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
             break;
         }
 
-        uint4 nextData = ReadMeshletDrawData(runEnd + 1);
+        uint4 nextData = ReadMeshletDrawData(runEnd + 1, MeshletDrawData);
         if (!IsSameRun(current, nextData))
         {
             break;
@@ -86,7 +96,7 @@ void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     InterlockedAdd(RunCounts[rangeIndex], 1, runOffset);
 
     uint outputIndex = RangeOffsets[rangeIndex] + runOffset;
-    CopyTemplate(index, outputIndex);
+    CopyTemplate(index, outputIndex, CommandTemplates, OutputCommands);
 
     uint baseOffset = outputIndex * kCommandStride;
     OutputCommands.Store(baseOffset + kIndexCountOffset, runIndexCount);

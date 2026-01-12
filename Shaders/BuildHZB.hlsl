@@ -17,11 +17,14 @@ cbuffer HZBConstants : register(b0)
     uint SourceMip;
 };
 
-Texture2D<float> SourceTexture : register(t0);
-RWTexture2D<float> DestTexture0 : register(u0);
-RWTexture2D<float> DestTexture1 : register(u1);
-RWTexture2D<float> DestTexture2 : register(u2);
-RWTexture2D<float> DestTexture3 : register(u3);
+cbuffer HZBBindlessConstants : register(b1)
+{
+    uint SourceTextureIndex;
+    uint DestTexture0Index;
+    uint DestTexture1Index;
+    uint DestTexture2Index;
+    uint DestTexture3Index;
+};
 
 groupshared float SharedDepth[8][8];
 #if HZB_MIPS_PER_DISPATCH >= 2
@@ -31,7 +34,7 @@ groupshared float SharedDepth1[4][4];
 groupshared float SharedDepth2[2][2];
 #endif
 
-float SampleDepth(uint2 coord)
+float SampleDepth(uint2 coord, Texture2D<float> SourceTexture)
 {
     const uint x = min(coord.x, SourceWidth - 1);
     const uint y = min(coord.y, SourceHeight - 1);
@@ -44,15 +47,21 @@ void BuildHZB(
     uint3 groupThreadId : SV_GroupThreadID,
     uint3 groupId : SV_GroupID)
 {
+    Texture2D<float> SourceTexture = ResourceDescriptorHeap[SourceTextureIndex];
+    RWTexture2D<float> DestTexture0 = ResourceDescriptorHeap[DestTexture0Index];
+    RWTexture2D<float> DestTexture1 = ResourceDescriptorHeap[DestTexture1Index];
+    RWTexture2D<float> DestTexture2 = ResourceDescriptorHeap[DestTexture2Index];
+    RWTexture2D<float> DestTexture3 = ResourceDescriptorHeap[DestTexture3Index];
+
     float minDepth = 1.0f;
     if (dispatchThreadId.x < DestWidth && dispatchThreadId.y < DestHeight)
     {
         const uint2 baseCoord = dispatchThreadId.xy * 2;
 
-        const float d0 = SampleDepth(baseCoord);
-        const float d1 = SampleDepth(baseCoord + uint2(1, 0));
-        const float d2 = SampleDepth(baseCoord + uint2(0, 1));
-        const float d3 = SampleDepth(baseCoord + uint2(1, 1));
+        const float d0 = SampleDepth(baseCoord, SourceTexture);
+        const float d1 = SampleDepth(baseCoord + uint2(1, 0), SourceTexture);
+        const float d2 = SampleDepth(baseCoord + uint2(0, 1), SourceTexture);
+        const float d3 = SampleDepth(baseCoord + uint2(1, 1), SourceTexture);
 
         minDepth = min(min(d0, d1), min(d2, d3));
         DestTexture0[dispatchThreadId.xy] = minDepth;

@@ -385,10 +385,7 @@
     <None Include="Shaders\SceneConstants.hlsl">
       <Filter>Shaders</Filter>
     </None>
-    <None Include="Shaders\CullIndirectArgs.hlsl">
-      <Filter>Shaders</Filter>
-    </None>
-    <None Include="Shaders\DebugPrintCommon.hlsl">
+    <None Include="Shaders\GpuDebugPrintCommon.hlsl">
       <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\GpuDebugPrint.hlsl">

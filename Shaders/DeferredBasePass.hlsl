@@ -36,14 +36,13 @@ struct VSOutput
 #endif
 
 
-Texture2D AlbedoTexture : register(t0);
-#if USE_METALLIC_ROUGHNESS_MAP
-Texture2D MetallicRoughnessTexture : register(t1);
-#endif
-Texture2D NormalTexture : register(t2);
-#if USE_EMISSIVE_MAP
-Texture2D EmissiveTexture : register(t3);
-#endif
+cbuffer BasePassBindlessConstants : register(b1)
+{
+    uint AlbedoTextureIndex;
+    uint MetallicRoughnessTextureIndex;
+    uint NormalTextureIndex;
+    uint EmissiveTextureIndex;
+};
 SamplerState AlbedoSampler : register(s0);
 
 float2 ApplyTextureTransform(float2 uv, float4 offsetScale, float4 rotation)
@@ -82,6 +81,7 @@ float3 ComputeViewNormal(VSOutput Input, float2 normalUV)
     float3 vertexNormal = normalize(Input.Normal);
 
 #if USE_NORMAL_MAP
+    Texture2D NormalTexture = ResourceDescriptorHeap[NormalTextureIndex];
     float3 tangent = normalize(Input.Tangent.xyz - vertexNormal * dot(vertexNormal, Input.Tangent.xyz));
     float3 bitangent = normalize(cross(vertexNormal, tangent)) * Input.Tangent.w;
 
@@ -104,6 +104,9 @@ float3 ComputeViewNormal(VSOutput Input, float2 normalUV)
 PSOutput PSMain(VSOutput Input)
 {
     PSOutput Output;
+    Texture2D AlbedoTexture = ResourceDescriptorHeap[AlbedoTextureIndex];
+    Texture2D MetallicRoughnessTexture = ResourceDescriptorHeap[MetallicRoughnessTextureIndex];
+    Texture2D EmissiveTexture = ResourceDescriptorHeap[EmissiveTextureIndex];
 
     float2 baseUV = ApplyTextureTransform(Input.UV, BaseColorTransformOffsetScale, BaseColorTransformRotation);
     float2 mrUV = ApplyTextureTransform(Input.UV, MetallicRoughnessTransformOffsetScale, MetallicRoughnessTransformRotation);

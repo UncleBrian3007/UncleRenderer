@@ -475,14 +475,14 @@ bool FRenderer::CreateShadowResources(
     return true;
 }
 
-void FRenderer::ConfigureHZBOcclusion(bool bEnabled, ID3D12DescriptorHeap* DescriptorHeap, D3D12_GPU_DESCRIPTOR_HANDLE Handle, uint32_t Width, uint32_t Height, uint32_t MipCount)
+void FRenderer::ConfigureHZBOcclusion(bool bEnabled, uint32_t HZBBindlessIndex, uint32_t Width, uint32_t Height, uint32_t MipCount)
 {
-    CullingDescriptorHeap = DescriptorHeap;
-    HZBCullingHandle = Handle;
+    HZBCullingBindlessIndex = HZBBindlessIndex;
     HZBCullingWidth = Width;
     HZBCullingHeight = Height;
     HZBCullingMipCount = MipCount;
-	bHZBOcclusionEnabled = bEnabled && HZBCullingWidth > 0 && HZBCullingHeight > 0 && HZBCullingMipCount > 0;
+	bHZBOcclusionEnabled = bEnabled && HZBCullingBindlessIndex != UINT32_MAX
+        && HZBCullingWidth > 0 && HZBCullingHeight > 0 && HZBCullingMipCount > 0;
 }
 
 void FRenderer::DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamera& Camera)
@@ -493,7 +493,7 @@ void FRenderer::DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamer
     ID3D12Resource* TemplateBuffer = IndirectCommandTemplateBuffers.empty() ? nullptr : IndirectCommandTemplateBuffers[CurrentFrameIndex].Get();
     if (!CullingPipeline || !CullingRootSignature || !MeshletRunAppendPipeline || !MeshletRunClearPipeline || !MeshletRunRootSignature
         || !IndirectBuffer || !ModelBoundsBuffer || !VisibilityBuffer || !RunCountBuffer || !MeshletDrawDataBuffer || !MeshletRangeOffsetBuffer
-        || !TemplateBuffer || IndirectCommandCount == 0 || IndirectDrawRanges.empty())
+        || !TemplateBuffer || IndirectCommandCount == 0 || IndirectDrawRanges.empty() || !Device || !Device->GetBindlessDescriptorHeap())
     {
         return;
     }
@@ -534,6 +534,22 @@ void FRenderer::DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamer
 
     ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
     FScopedPixEvent CullingEvent(CommandList, L"GpuCulling");
+
+    if (ModelBoundsBindlessIndex == UINT32_MAX || MeshletDrawDataBindlessIndex == UINT32_MAX || MeshletRangeOffsetBindlessIndex == UINT32_MAX
+        || MeshletVisibilitySrvBindlessIndices.empty() || MeshletVisibilityUavBindlessIndices.empty() || MeshletRunCountUavBindlessIndices.empty()
+        || IndirectCommandUavBindlessIndices.empty() || IndirectCommandTemplateBindlessIndices.empty() || MeshletConeAxisBindlessIndex == UINT32_MAX
+        || MeshletConeApexBindlessIndex == UINT32_MAX || GpuDebugPrintBufferUavBindlessIndex == UINT32_MAX || GpuDebugPrintStatsUavBindlessIndex == UINT32_MAX
+        || (bHZBOcclusionEnabled && HZBCullingBindlessIndex == UINT32_MAX))
+    {
+        return;
+    }
+
+    const uint32_t FrameIndex = CurrentFrameIndex;
+    const uint32_t VisibilitySrvIndex = MeshletVisibilitySrvBindlessIndices[FrameIndex];
+    const uint32_t VisibilityUavIndex = MeshletVisibilityUavBindlessIndices[FrameIndex];
+    const uint32_t RunCountUavIndex = MeshletRunCountUavBindlessIndices[FrameIndex];
+    const uint32_t IndirectUavIndex = IndirectCommandUavBindlessIndices[FrameIndex];
+    const uint32_t TemplateSrvIndex = IndirectCommandTemplateBindlessIndices[FrameIndex];
 
     D3D12_RESOURCE_STATES& IndirectState = GetIndirectCommandState();
     if (IndirectState != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
@@ -580,10 +596,33 @@ void FRenderer::DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamer
         std::memcpy(CullingConstantsMapped, Constants.data(), sizeof(Constants));
     }
 
+    ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
+    CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+
+    struct FMeshletRunBindlessConstants
+    {
+        uint32_t VisibleMeshletsIndex;
+        uint32_t MeshletDrawDataIndex;
+        uint32_t RangeOffsetsIndex;
+        uint32_t CommandTemplatesIndex;
+        uint32_t OutputCommandsIndex;
+        uint32_t RunCountsIndex;
+    };
+
+    const FMeshletRunBindlessConstants RunBindlessConstants =
+    {
+        VisibilitySrvIndex,
+        MeshletDrawDataBindlessIndex,
+        MeshletRangeOffsetBindlessIndex,
+        TemplateSrvIndex,
+        IndirectUavIndex,
+        RunCountUavIndex
+    };
+
     CommandList->SetPipelineState(MeshletRunClearPipeline.Get());
     CommandList->SetComputeRootSignature(MeshletRunRootSignature.Get());
     CommandList->SetComputeRootConstantBufferView(0, GetCullingConstantBufferAddress());
-    CommandList->SetComputeRootUnorderedAccessView(5, RunCountBuffer->GetGPUVirtualAddress());
+    CommandList->SetComputeRoot32BitConstants(1, sizeof(RunBindlessConstants) / sizeof(uint32_t), &RunBindlessConstants, 0);
     const uint32_t RangeDispatchCount = (static_cast<uint32_t>(IndirectDrawRanges.size()) + 63) / 64;
     CommandList->Dispatch(RangeDispatchCount, 1, 1);
 
@@ -592,21 +631,32 @@ void FRenderer::DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamer
     RunCountBarrier.UAV.pResource = RunCountBuffer;
     CommandList->ResourceBarrier(1, &RunCountBarrier);
 
+    struct FGpuCullingBindlessConstants
+    {
+        uint32_t ModelBoundsIndex;
+        uint32_t HZBTextureIndex;
+        uint32_t MeshletConeAxisIndex;
+        uint32_t MeshletConeApexIndex;
+        uint32_t VisibleMeshletsIndex;
+        uint32_t DebugPrintBufferIndex;
+        uint32_t DebugPrintStatsIndex;
+    };
+
+    const FGpuCullingBindlessConstants CullingBindlessConstants =
+    {
+        ModelBoundsBindlessIndex,
+        HZBCullingBindlessIndex,
+        MeshletConeAxisBindlessIndex,
+        MeshletConeApexBindlessIndex,
+        VisibilityUavIndex,
+        GpuDebugPrintBufferUavBindlessIndex,
+        GpuDebugPrintStatsUavBindlessIndex
+    };
+
     CommandList->SetPipelineState(CullingPipeline.Get());
     CommandList->SetComputeRootSignature(CullingRootSignature.Get());
     CommandList->SetComputeRootConstantBufferView(0, GetCullingConstantBufferAddress());
-    CommandList->SetComputeRootShaderResourceView(1, ModelBoundsBuffer->GetGPUVirtualAddress());
-    CommandList->SetComputeRootShaderResourceView(2, MeshletConeAxisBuffer ? MeshletConeAxisBuffer->GetGPUVirtualAddress() : 0);
-    CommandList->SetComputeRootShaderResourceView(3, MeshletConeApexBuffer ? MeshletConeApexBuffer->GetGPUVirtualAddress() : 0);
-    CommandList->SetComputeRootUnorderedAccessView(4, VisibilityBuffer->GetGPUVirtualAddress());
-    CommandList->SetComputeRootUnorderedAccessView(5, GpuDebugPrintBuffer->GetGPUVirtualAddress());
-    CommandList->SetComputeRootUnorderedAccessView(6, GpuDebugPrintStatsBuffer->GetGPUVirtualAddress());
-    if (CullingDescriptorHeap)
-    {
-        ID3D12DescriptorHeap* Heaps[] = { CullingDescriptorHeap.Get() };
-        CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
-        CommandList->SetComputeRootDescriptorTable(7, HZBCullingHandle);
-    }
+    CommandList->SetComputeRoot32BitConstants(1, sizeof(CullingBindlessConstants) / sizeof(uint32_t), &CullingBindlessConstants, 0);
 
     const uint32_t DispatchCount = (IndirectCommandCount + 63) / 64;
     CommandList->Dispatch(DispatchCount, 1, 1);
@@ -626,12 +676,7 @@ void FRenderer::DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamer
     CommandList->SetPipelineState(MeshletRunAppendPipeline.Get());
     CommandList->SetComputeRootSignature(MeshletRunRootSignature.Get());
     CommandList->SetComputeRootConstantBufferView(0, GetCullingConstantBufferAddress());
-    CommandList->SetComputeRootShaderResourceView(1, VisibilityBuffer->GetGPUVirtualAddress());
-    CommandList->SetComputeRootShaderResourceView(2, MeshletDrawDataBuffer->GetGPUVirtualAddress());
-    CommandList->SetComputeRootShaderResourceView(3, MeshletRangeOffsetBuffer->GetGPUVirtualAddress());
-    CommandList->SetComputeRootShaderResourceView(4, TemplateBuffer->GetGPUVirtualAddress());
-    CommandList->SetComputeRootUnorderedAccessView(5, RunCountBuffer->GetGPUVirtualAddress());
-    CommandList->SetComputeRootUnorderedAccessView(6, IndirectBuffer->GetGPUVirtualAddress());
+    CommandList->SetComputeRoot32BitConstants(1, sizeof(RunBindlessConstants) / sizeof(uint32_t), &RunBindlessConstants, 0);
     CommandList->Dispatch(DispatchCount, 1, 1);
 
     D3D12_RESOURCE_BARRIER Barrier = {};
@@ -744,16 +789,6 @@ bool FRenderer::CreateGpuDebugPrintResources(FDX12Device* Device)
     GpuDebugPrintCharCount = FontResources.CharCount;
     GpuDebugPrintFontSize = FontResources.FontSize;
 
-    D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
-    HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    HeapDesc.NumDescriptors = 4;
-    HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(GpuDebugPrintDescriptorHeap.ReleaseAndGetAddressOf())));
-
-    const UINT DescriptorSize = Device->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-    D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle = GpuDebugPrintDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
-    D3D12_GPU_DESCRIPTOR_HANDLE GpuHandle = GpuDebugPrintDescriptorHeap->GetGPUDescriptorHandleForHeapStart();
-
     D3D12_SHADER_RESOURCE_VIEW_DESC GlyphSrvDesc = {};
     GlyphSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
     GlyphSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -762,12 +797,7 @@ bool FRenderer::CreateGpuDebugPrintResources(FDX12Device* Device)
     GlyphSrvDesc.Buffer.NumElements = 128;
     GlyphSrvDesc.Buffer.StructureByteStride = sizeof(FDebugPrintGlyph);
     GlyphSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-    Device->GetDevice()->CreateShaderResourceView(GpuDebugPrintGlyphBuffer.Get(), &GlyphSrvDesc, CpuHandle);
-    GpuDebugPrintGlyphHandle = GpuHandle;
     GpuDebugPrintGlyphBindlessIndex = Device->CreateBindlessSrv(GpuDebugPrintGlyphBuffer.Get(), GlyphSrvDesc);
-
-    CpuHandle.ptr += DescriptorSize;
-    GpuHandle.ptr += DescriptorSize;
 
     D3D12_SHADER_RESOURCE_VIEW_DESC FontSrvDesc = {};
     FontSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
@@ -775,12 +805,7 @@ bool FRenderer::CreateGpuDebugPrintResources(FDX12Device* Device)
     FontSrvDesc.Format = DXGI_FORMAT_R8_UNORM;
     FontSrvDesc.Texture2D.MostDetailedMip = 0;
     FontSrvDesc.Texture2D.MipLevels = 1;
-    Device->GetDevice()->CreateShaderResourceView(GpuDebugPrintFontTexture.Get(), &FontSrvDesc, CpuHandle);
-    GpuDebugPrintFontHandle = GpuHandle;
     GpuDebugPrintFontBindlessIndex = Device->CreateBindlessSrv(GpuDebugPrintFontTexture.Get(), FontSrvDesc);
-
-    CpuHandle.ptr += DescriptorSize;
-    GpuHandle.ptr += DescriptorSize;
 
     D3D12_SHADER_RESOURCE_VIEW_DESC BufferSrvDesc = {};
     BufferSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
@@ -790,12 +815,7 @@ bool FRenderer::CreateGpuDebugPrintResources(FDX12Device* Device)
     BufferSrvDesc.Buffer.NumElements = static_cast<UINT>(GpuDebugPrintBufferSize / 4);
     BufferSrvDesc.Buffer.StructureByteStride = 0;
     BufferSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
-    Device->GetDevice()->CreateShaderResourceView(GpuDebugPrintBuffer.Get(), &BufferSrvDesc, CpuHandle);
-    GpuDebugPrintBufferHandle = GpuHandle;
     GpuDebugPrintBufferBindlessIndex = Device->CreateBindlessSrv(GpuDebugPrintBuffer.Get(), BufferSrvDesc);
-
-    CpuHandle.ptr += DescriptorSize;
-    GpuHandle.ptr += DescriptorSize;
 
     D3D12_SHADER_RESOURCE_VIEW_DESC StatsSrvDesc = {};
     StatsSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
@@ -805,9 +825,27 @@ bool FRenderer::CreateGpuDebugPrintResources(FDX12Device* Device)
     StatsSrvDesc.Buffer.NumElements = 3;
     StatsSrvDesc.Buffer.StructureByteStride = 0;
     StatsSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
-    Device->GetDevice()->CreateShaderResourceView(GpuDebugPrintStatsBuffer.Get(), &StatsSrvDesc, CpuHandle);
-    GpuDebugPrintStatsHandle = GpuHandle;
     GpuDebugPrintStatsBindlessIndex = Device->CreateBindlessSrv(GpuDebugPrintStatsBuffer.Get(), StatsSrvDesc);
+
+    D3D12_UNORDERED_ACCESS_VIEW_DESC DebugBufferUavDesc = {};
+    DebugBufferUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    DebugBufferUavDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+    DebugBufferUavDesc.Buffer.FirstElement = 0;
+    DebugBufferUavDesc.Buffer.NumElements = static_cast<UINT>(GpuDebugPrintBufferSize / 4);
+    DebugBufferUavDesc.Buffer.StructureByteStride = 0;
+    DebugBufferUavDesc.Buffer.CounterOffsetInBytes = 0;
+    DebugBufferUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+    GpuDebugPrintBufferUavBindlessIndex = Device->CreateBindlessUav(GpuDebugPrintBuffer.Get(), nullptr, DebugBufferUavDesc);
+
+    D3D12_UNORDERED_ACCESS_VIEW_DESC StatsUavDesc = {};
+    StatsUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    StatsUavDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+    StatsUavDesc.Buffer.FirstElement = 0;
+    StatsUavDesc.Buffer.NumElements = 3;
+    StatsUavDesc.Buffer.StructureByteStride = 0;
+    StatsUavDesc.Buffer.CounterOffsetInBytes = 0;
+    StatsUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+    GpuDebugPrintStatsUavBindlessIndex = Device->CreateBindlessUav(GpuDebugPrintStatsBuffer.Get(), nullptr, StatsUavDesc);
 
     return true;
 }
@@ -819,14 +857,7 @@ bool FRenderer::CreateGpuDebugPrintPipeline(FDX12Device* Device, DXGI_FORMAT Bac
         return false;
     }
 
-    D3D12_DESCRIPTOR_RANGE Range = {};
-    Range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    Range.NumDescriptors = 4;
-    Range.BaseShaderRegister = 0;
-    Range.RegisterSpace = 0;
-    Range.OffsetInDescriptorsFromTableStart = 0;
-
-    D3D12_ROOT_PARAMETER Params[2] = {};
+    D3D12_ROOT_PARAMETER1 Params[2] = {};
     // Params[0]: Debug print draw constants (screen size, font range)
     Params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     Params[0].Constants.ShaderRegister = 0;
@@ -834,10 +865,11 @@ bool FRenderer::CreateGpuDebugPrintPipeline(FDX12Device* Device, DXGI_FORMAT Bac
     Params[0].Constants.Num32BitValues = 4;
     Params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // Params[1]: Debug print SRV table (glyph buffer, font atlas, print buffer, stats buffer)
-    Params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    Params[1].DescriptorTable.NumDescriptorRanges = 1;
-    Params[1].DescriptorTable.pDescriptorRanges = &Range;
+    // Params[1]: Debug print bindless indices (glyph buffer, font atlas, print buffer)
+    Params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    Params[1].Constants.ShaderRegister = 1;
+    Params[1].Constants.RegisterSpace = 0;
+    Params[1].Constants.Num32BitValues = 3;
     Params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     D3D12_STATIC_SAMPLER_DESC Sampler = {};
@@ -849,16 +881,21 @@ bool FRenderer::CreateGpuDebugPrintPipeline(FDX12Device* Device, DXGI_FORMAT Bac
     Sampler.RegisterSpace = 0;
     Sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    D3D12_ROOT_SIGNATURE_DESC RootDesc = {};
+    D3D12_ROOT_SIGNATURE_DESC1 RootDesc = {};
     RootDesc.NumParameters = _countof(Params);
     RootDesc.pParameters = Params;
     RootDesc.NumStaticSamplers = 1;
     RootDesc.pStaticSamplers = &Sampler;
-    RootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+    RootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+        | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC VersionedRootDesc = {};
+    VersionedRootDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    VersionedRootDesc.Desc_1_1 = RootDesc;
 
     ComPtr<ID3DBlob> SerializedSig;
     ComPtr<ID3DBlob> ErrorBlob;
-    HR_CHECK(D3D12SerializeRootSignature(&RootDesc, D3D_ROOT_SIGNATURE_VERSION_1, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
+    HR_CHECK(D3D12SerializeVersionedRootSignature(&VersionedRootDesc, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
     HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(GpuDebugPrintRootSignature.GetAddressOf())));
 
     FShaderCompiler Compiler;
@@ -919,32 +956,18 @@ bool FRenderer::CreateGpuDebugPrintStatsPipeline(FDX12Device* Device)
         return false;
     }
 
-    D3D12_DESCRIPTOR_RANGE1 Range = {};
-    Range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    Range.NumDescriptors = 1;
-    Range.BaseShaderRegister = 0;
-    Range.RegisterSpace = 0;
-    Range.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
-    Range.OffsetInDescriptorsFromTableStart = 0;
-
-    D3D12_ROOT_PARAMETER1 RootParams[2] = {};
-    // RootParams[0]: Stats buffer SRV table (t0), used in Shaders/GpuDebugPrintStats.hlsl CSMain
-    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    RootParams[0].DescriptorTable.NumDescriptorRanges = 1;
-    RootParams[0].DescriptorTable.pDescriptorRanges = &Range;
+    D3D12_ROOT_PARAMETER1 RootParams[1] = {};
+    // RootParams[0]: Stats bindless indices (stats buffer SRV, debug print buffer UAV), used in Shaders/GpuDebugPrintStats.hlsl CSMain
+    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[0].Constants.ShaderRegister = 0;
+    RootParams[0].Constants.RegisterSpace = 0;
+    RootParams[0].Constants.Num32BitValues = 2;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    // RootParams[1]: Debug print buffer UAV (u0), used in Shaders/GpuDebugPrintStats.hlsl CSMain
-    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    RootParams[1].Descriptor.ShaderRegister = 0;
-    RootParams[1].Descriptor.RegisterSpace = 0;
-    RootParams[1].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
-    RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     D3D12_ROOT_SIGNATURE_DESC1 RootDesc = {};
     RootDesc.NumParameters = _countof(RootParams);
     RootDesc.pParameters = RootParams;
-    RootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+    RootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
 
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC VersionedRootDesc = {};
     VersionedRootDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
@@ -975,7 +998,7 @@ bool FRenderer::CreateGpuDebugPrintStatsPipeline(FDX12Device* Device)
 
 void FRenderer::DispatchGpuDebugPrintStats(FDX12CommandContext& CmdContext)
 {
-    if (!bEnableGpuDebugPrint || !GpuDebugPrintStatsPipeline || !GpuDebugPrintStatsRootSignature || !GpuDebugPrintDescriptorHeap)
+    if (!bEnableGpuDebugPrint || !GpuDebugPrintStatsPipeline || !GpuDebugPrintStatsRootSignature || !Device || !Device->GetBindlessDescriptorHeap())
     {
         return;
     }
@@ -1007,24 +1030,34 @@ void FRenderer::DispatchGpuDebugPrintStats(FDX12CommandContext& CmdContext)
         GpuDebugPrintState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     }
 
-    ID3D12DescriptorHeap* Heaps[] = { GpuDebugPrintDescriptorHeap.Get() };
+    if (GpuDebugPrintStatsBindlessIndex == UINT32_MAX || GpuDebugPrintBufferUavBindlessIndex == UINT32_MAX)
+    {
+        return;
+    }
+
+    ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
     CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
     CommandList->SetPipelineState(GpuDebugPrintStatsPipeline.Get());
     CommandList->SetComputeRootSignature(GpuDebugPrintStatsRootSignature.Get());
-    CommandList->SetComputeRootDescriptorTable(0, GpuDebugPrintStatsHandle);
-    CommandList->SetComputeRootUnorderedAccessView(1, GpuDebugPrintBuffer->GetGPUVirtualAddress());
+    const uint32_t BindlessIndices[] = { GpuDebugPrintStatsBindlessIndex, GpuDebugPrintBufferUavBindlessIndex };
+    CommandList->SetComputeRoot32BitConstants(0, _countof(BindlessIndices), BindlessIndices, 0);
     CommandList->Dispatch(1, 1, 1);
 }
 
 void FRenderer::RenderGpuDebugPrint(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& OutputHandle)
 {
-    if (!bEnableGpuDebugPrint || !GpuDebugPrintPipeline || !GpuDebugPrintRootSignature || !GpuDebugPrintDescriptorHeap)
+    if (!bEnableGpuDebugPrint || !GpuDebugPrintPipeline || !GpuDebugPrintRootSignature || !Device || !Device->GetBindlessDescriptorHeap())
     {
         return;
     }
 
     ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
     FScopedPixEvent DebugEvent(CommandList, L"GpuDebugPrint");
+
+    if (GpuDebugPrintGlyphBindlessIndex == UINT32_MAX || GpuDebugPrintFontBindlessIndex == UINT32_MAX || GpuDebugPrintBufferBindlessIndex == UINT32_MAX)
+    {
+        return;
+    }
 
     if (GpuDebugPrintState != D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
     {
@@ -1047,6 +1080,13 @@ void FRenderer::RenderGpuDebugPrint(FDX12CommandContext& CmdContext, const D3D12
         uint32_t CharCount;
     };
 
+    struct FDebugPrintBindlessConstants
+    {
+        uint32_t GlyphBufferIndex;
+        uint32_t FontAtlasIndex;
+        uint32_t DebugPrintBufferIndex;
+    };
+
     const FDebugPrintConstants Constants =
     {
         DirectX::XMFLOAT2(Viewport.Width, Viewport.Height),
@@ -1054,7 +1094,14 @@ void FRenderer::RenderGpuDebugPrint(FDX12CommandContext& CmdContext, const D3D12
         GpuDebugPrintCharCount
     };
 
-    ID3D12DescriptorHeap* Heaps[] = { GpuDebugPrintDescriptorHeap.Get() };
+    const FDebugPrintBindlessConstants BindlessConstants =
+    {
+        GpuDebugPrintGlyphBindlessIndex,
+        GpuDebugPrintFontBindlessIndex,
+        GpuDebugPrintBufferBindlessIndex
+    };
+
+    ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
     CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
     CommandList->SetPipelineState(GpuDebugPrintPipeline.Get());
     CommandList->SetGraphicsRootSignature(GpuDebugPrintRootSignature.Get());
@@ -1062,7 +1109,7 @@ void FRenderer::RenderGpuDebugPrint(FDX12CommandContext& CmdContext, const D3D12
     CommandList->RSSetScissorRects(1, &ScissorRect);
     CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     CommandList->SetGraphicsRoot32BitConstants(0, sizeof(Constants) / sizeof(uint32_t), &Constants, 0);
-    CommandList->SetGraphicsRootDescriptorTable(1, GpuDebugPrintGlyphHandle);
+    CommandList->SetGraphicsRoot32BitConstants(1, sizeof(BindlessConstants) / sizeof(uint32_t), &BindlessConstants, 0);
     CommandList->DrawInstanced(6 * GpuDebugPrintMaxEntries, 1, 0, 0);
 
     if (GpuDebugPrintState != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
@@ -1108,7 +1155,21 @@ bool FRenderer::PrepareGpuDrivenDrawData(FGpuDrivenPreparedData& OutData)
         {
             return KeyA < KeyB;
         }
-        return SceneModels[A].TextureHandle.ptr < SceneModels[B].TextureHandle.ptr;
+        const std::array<uint32_t, 4> IndicesA =
+        {
+            SceneModels[A].BaseColorBindlessIndex,
+            SceneModels[A].MetallicRoughnessBindlessIndex,
+            SceneModels[A].NormalBindlessIndex,
+            SceneModels[A].EmissiveBindlessIndex
+        };
+        const std::array<uint32_t, 4> IndicesB =
+        {
+            SceneModels[B].BaseColorBindlessIndex,
+            SceneModels[B].MetallicRoughnessBindlessIndex,
+            SceneModels[B].NormalBindlessIndex,
+            SceneModels[B].EmissiveBindlessIndex
+        };
+        return IndicesA < IndicesB;
     });
 
     size_t TotalCommandCount = 0;
@@ -1143,15 +1204,22 @@ bool FRenderer::PrepareGpuDrivenDrawData(FGpuDrivenPreparedData& OutData)
         const FSceneModelResource& Model = SceneModels[SortedIndex];
         const uint32_t PipelineKey = PipelineKeys[SortedIndex];
 
+        const std::array<uint32_t, 4> MaterialIndices =
+        {
+            Model.BaseColorBindlessIndex,
+            Model.MetallicRoughnessBindlessIndex,
+            Model.NormalBindlessIndex,
+            Model.EmissiveBindlessIndex
+        };
         if (IndirectDrawRanges.empty()
             || IndirectDrawRanges.back().PipelineKey != PipelineKey
-            || IndirectDrawRanges.back().TextureHandle.ptr != Model.TextureHandle.ptr)
+            || IndirectDrawRanges.back().MaterialBindlessIndices != MaterialIndices)
         {
             FIndirectDrawRange Range;
             Range.Start = static_cast<uint32_t>(OutData.Commands.size());
             Range.Count = 0;
             Range.PipelineKey = PipelineKey;
-            Range.TextureHandle = Model.TextureHandle;
+            Range.MaterialBindlessIndices = MaterialIndices;
             if (!Model.Name.empty())
             {
                 Range.Name.assign(Model.Name.begin(), Model.Name.end());
@@ -1317,6 +1385,16 @@ bool FRenderer::CreatePerFrameIndirectBuffers(FDX12Device* Device, const FGpuDri
     MeshletRunCountBuffers.resize(GetFramesInFlight());
     MeshletVisibilityStates.resize(GetFramesInFlight(), D3D12_RESOURCE_STATE_COMMON);
     MeshletRunCountStates.resize(GetFramesInFlight(), D3D12_RESOURCE_STATE_COMMON);
+    IndirectCommandUavBindlessIndices.clear();
+    IndirectCommandTemplateBindlessIndices.clear();
+    MeshletVisibilitySrvBindlessIndices.clear();
+    MeshletVisibilityUavBindlessIndices.clear();
+    MeshletRunCountUavBindlessIndices.clear();
+    IndirectCommandUavBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
+    IndirectCommandTemplateBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
+    MeshletVisibilitySrvBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
+    MeshletVisibilityUavBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
+    MeshletRunCountUavBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
 
     for (uint32_t FrameIndex = 0; FrameIndex < GetFramesInFlight(); ++FrameIndex)
     {
@@ -1332,6 +1410,15 @@ bool FRenderer::CreatePerFrameIndirectBuffers(FDX12Device* Device, const FGpuDri
             const std::wstring Name = L"IndirectCommandBuffer_Frame" + std::to_wstring(FrameIndex);
             IndirectCommandBuffers[FrameIndex]->SetName(Name.c_str());
         }
+        D3D12_UNORDERED_ACCESS_VIEW_DESC IndirectUavDesc = {};
+        IndirectUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        IndirectUavDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+        IndirectUavDesc.Buffer.FirstElement = 0;
+        IndirectUavDesc.Buffer.NumElements = static_cast<UINT>(CommandBufferSize / 4);
+        IndirectUavDesc.Buffer.StructureByteStride = 0;
+        IndirectUavDesc.Buffer.CounterOffsetInBytes = 0;
+        IndirectUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+        IndirectCommandUavBindlessIndices[FrameIndex] = Device->CreateBindlessUav(IndirectCommandBuffers[FrameIndex].Get(), nullptr, IndirectUavDesc);
 
         HR_CHECK(Device->GetDevice()->CreateCommittedResource(
             &DefaultHeap,
@@ -1345,6 +1432,15 @@ bool FRenderer::CreatePerFrameIndirectBuffers(FDX12Device* Device, const FGpuDri
             const std::wstring Name = L"IndirectCommandTemplateBuffer_Frame" + std::to_wstring(FrameIndex);
             IndirectCommandTemplateBuffers[FrameIndex]->SetName(Name.c_str());
         }
+        D3D12_SHADER_RESOURCE_VIEW_DESC TemplateSrvDesc = {};
+        TemplateSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        TemplateSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        TemplateSrvDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+        TemplateSrvDesc.Buffer.FirstElement = 0;
+        TemplateSrvDesc.Buffer.NumElements = static_cast<UINT>(CommandBufferSize / 4);
+        TemplateSrvDesc.Buffer.StructureByteStride = 0;
+        TemplateSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+        IndirectCommandTemplateBindlessIndices[FrameIndex] = Device->CreateBindlessSrv(IndirectCommandTemplateBuffers[FrameIndex].Get(), TemplateSrvDesc);
 
         D3D12_RESOURCE_DESC VisibilityDesc = BufferDesc;
         VisibilityDesc.Width = sizeof(uint32_t) * IndirectCommandCount;
@@ -1361,6 +1457,25 @@ bool FRenderer::CreatePerFrameIndirectBuffers(FDX12Device* Device, const FGpuDri
             const std::wstring Name = L"MeshletVisibilityBuffer_Frame" + std::to_wstring(FrameIndex);
             MeshletVisibilityBuffers[FrameIndex]->SetName(Name.c_str());
         }
+        D3D12_SHADER_RESOURCE_VIEW_DESC VisibilitySrvDesc = {};
+        VisibilitySrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        VisibilitySrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        VisibilitySrvDesc.Format = DXGI_FORMAT_UNKNOWN;
+        VisibilitySrvDesc.Buffer.FirstElement = 0;
+        VisibilitySrvDesc.Buffer.NumElements = IndirectCommandCount;
+        VisibilitySrvDesc.Buffer.StructureByteStride = sizeof(uint32_t);
+        VisibilitySrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+        MeshletVisibilitySrvBindlessIndices[FrameIndex] = Device->CreateBindlessSrv(MeshletVisibilityBuffers[FrameIndex].Get(), VisibilitySrvDesc);
+
+        D3D12_UNORDERED_ACCESS_VIEW_DESC VisibilityUavDesc = {};
+        VisibilityUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        VisibilityUavDesc.Format = DXGI_FORMAT_UNKNOWN;
+        VisibilityUavDesc.Buffer.FirstElement = 0;
+        VisibilityUavDesc.Buffer.NumElements = IndirectCommandCount;
+        VisibilityUavDesc.Buffer.StructureByteStride = sizeof(uint32_t);
+        VisibilityUavDesc.Buffer.CounterOffsetInBytes = 0;
+        VisibilityUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
+        MeshletVisibilityUavBindlessIndices[FrameIndex] = Device->CreateBindlessUav(MeshletVisibilityBuffers[FrameIndex].Get(), nullptr, VisibilityUavDesc);
 
         D3D12_RESOURCE_DESC RunCountDesc = BufferDesc;
         RunCountDesc.Width = sizeof(uint32_t) * Data.RangeOffsets.size();
@@ -1377,6 +1492,15 @@ bool FRenderer::CreatePerFrameIndirectBuffers(FDX12Device* Device, const FGpuDri
             const std::wstring Name = L"MeshletRunCountBuffer_Frame" + std::to_wstring(FrameIndex);
             MeshletRunCountBuffers[FrameIndex]->SetName(Name.c_str());
         }
+        D3D12_UNORDERED_ACCESS_VIEW_DESC RunCountUavDesc = {};
+        RunCountUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        RunCountUavDesc.Format = DXGI_FORMAT_UNKNOWN;
+        RunCountUavDesc.Buffer.FirstElement = 0;
+        RunCountUavDesc.Buffer.NumElements = static_cast<UINT>(Data.RangeOffsets.size());
+        RunCountUavDesc.Buffer.StructureByteStride = sizeof(uint32_t);
+        RunCountUavDesc.Buffer.CounterOffsetInBytes = 0;
+        RunCountUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
+        MeshletRunCountUavBindlessIndices[FrameIndex] = Device->CreateBindlessUav(MeshletRunCountBuffers[FrameIndex].Get(), nullptr, RunCountUavDesc);
     }
 
     return true;
@@ -1653,6 +1777,50 @@ bool FRenderer::CreateSharedGpuDrivenBuffers(FDX12Device* Device, const FGpuDriv
         return false;
     }
 
+    D3D12_SHADER_RESOURCE_VIEW_DESC BoundsSrvDesc = {};
+    BoundsSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    BoundsSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    BoundsSrvDesc.Format = DXGI_FORMAT_UNKNOWN;
+    BoundsSrvDesc.Buffer.FirstElement = 0;
+    BoundsSrvDesc.Buffer.NumElements = static_cast<UINT>(Data.Bounds.size());
+    BoundsSrvDesc.Buffer.StructureByteStride = sizeof(DirectX::XMFLOAT4);
+    BoundsSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+    ModelBoundsBindlessIndex = Device->CreateBindlessSrv(ModelBoundsBuffer.Get(), BoundsSrvDesc);
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC DrawDataSrvDesc = {};
+    DrawDataSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    DrawDataSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    DrawDataSrvDesc.Format = DXGI_FORMAT_UNKNOWN;
+    DrawDataSrvDesc.Buffer.FirstElement = 0;
+    DrawDataSrvDesc.Buffer.NumElements = static_cast<UINT>(Data.MeshletDrawData.size());
+    DrawDataSrvDesc.Buffer.StructureByteStride = sizeof(FMeshletDrawData);
+    DrawDataSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+    MeshletDrawDataBindlessIndex = Device->CreateBindlessSrv(MeshletDrawDataBuffer.Get(), DrawDataSrvDesc);
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC RangeOffsetSrvDesc = {};
+    RangeOffsetSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    RangeOffsetSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    RangeOffsetSrvDesc.Format = DXGI_FORMAT_UNKNOWN;
+    RangeOffsetSrvDesc.Buffer.FirstElement = 0;
+    RangeOffsetSrvDesc.Buffer.NumElements = static_cast<UINT>(Data.RangeOffsets.size());
+    RangeOffsetSrvDesc.Buffer.StructureByteStride = sizeof(uint32_t);
+    RangeOffsetSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+    MeshletRangeOffsetBindlessIndex = Device->CreateBindlessSrv(MeshletRangeOffsetBuffer.Get(), RangeOffsetSrvDesc);
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC ConeAxisSrvDesc = {};
+    ConeAxisSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    ConeAxisSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    ConeAxisSrvDesc.Format = DXGI_FORMAT_UNKNOWN;
+    ConeAxisSrvDesc.Buffer.FirstElement = 0;
+    ConeAxisSrvDesc.Buffer.NumElements = static_cast<UINT>(Data.ConeAxisCutoff.size());
+    ConeAxisSrvDesc.Buffer.StructureByteStride = sizeof(DirectX::XMFLOAT4);
+    ConeAxisSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+    MeshletConeAxisBindlessIndex = Device->CreateBindlessSrv(MeshletConeAxisBuffer.Get(), ConeAxisSrvDesc);
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC ConeApexSrvDesc = ConeAxisSrvDesc;
+    ConeApexSrvDesc.Buffer.NumElements = static_cast<UINT>(Data.ConeApex.size());
+    MeshletConeApexBindlessIndex = Device->CreateBindlessSrv(MeshletConeApexBuffer.Get(), ConeApexSrvDesc);
+
     return true;
 }
 
@@ -1917,7 +2085,7 @@ bool FRenderer::CreateCullingPipelines(FDX12Device* Device)
         return false;
     }
 
-    D3D12_ROOT_PARAMETER1 RootParams[8] = {};
+    D3D12_ROOT_PARAMETER1 RootParams[2] = {};
     // RootParams[0]: CullingConstants CBV (b0), used in Shaders/CullMeshletVisibility.hlsl CSMain
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     RootParams[0].Descriptor.ShaderRegister = 0;
@@ -1925,66 +2093,17 @@ bool FRenderer::CreateCullingPipelines(FDX12Device* Device)
     RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // RootParams[1]: ModelBounds SRV (t0), used in Shaders/CullMeshletVisibility.hlsl CSMain
-    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    RootParams[1].Descriptor.ShaderRegister = 0;
-    RootParams[1].Descriptor.RegisterSpace = 0;
-    RootParams[1].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+    // RootParams[1]: Culling bindless indices (b1), used in Shaders/CullMeshletVisibility.hlsl CSMain
+    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[1].Constants.ShaderRegister = 1;
+    RootParams[1].Constants.RegisterSpace = 0;
+    RootParams[1].Constants.Num32BitValues = 7;
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    // RootParams[2]: MeshletConeAxisCutoff SRV (t2), used in Shaders/CullMeshletVisibility.hlsl CSMain
-    RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    RootParams[2].Descriptor.ShaderRegister = 2;
-    RootParams[2].Descriptor.RegisterSpace = 0;
-    RootParams[2].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
-    RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    // RootParams[3]: MeshletConeApex SRV (t3), used in Shaders/CullMeshletVisibility.hlsl CSMain
-    RootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    RootParams[3].Descriptor.ShaderRegister = 3;
-    RootParams[3].Descriptor.RegisterSpace = 0;
-    RootParams[3].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
-    RootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    // RootParams[4]: VisibleMeshlets UAV (u0), used in Shaders/CullMeshletVisibility.hlsl CSMain
-    RootParams[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    RootParams[4].Descriptor.ShaderRegister = 0;
-    RootParams[4].Descriptor.RegisterSpace = 0;
-    RootParams[4].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
-    RootParams[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    // RootParams[5]: DebugPrintBuffer UAV (u1), used in Shaders/CullMeshletVisibility.hlsl CSMain
-    RootParams[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    RootParams[5].Descriptor.ShaderRegister = 1;
-    RootParams[5].Descriptor.RegisterSpace = 0;
-    RootParams[5].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
-    RootParams[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    // RootParams[6]: DebugPrintStats UAV (u2), used in Shaders/CullMeshletVisibility.hlsl CSMain
-    RootParams[6].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    RootParams[6].Descriptor.ShaderRegister = 2;
-    RootParams[6].Descriptor.RegisterSpace = 0;
-    RootParams[6].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
-    RootParams[6].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    D3D12_DESCRIPTOR_RANGE1 HZBRange = {};
-    HZBRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    HZBRange.NumDescriptors = 1;
-    HZBRange.BaseShaderRegister = 1;
-    HZBRange.RegisterSpace = 0;
-    HZBRange.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
-    HZBRange.OffsetInDescriptorsFromTableStart = 0;
-
-    // RootParams[7]: HZB SRV table (t1), used in Shaders/CullMeshletVisibility.hlsl CSMain
-    RootParams[7].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    RootParams[7].DescriptorTable.NumDescriptorRanges = 1;
-    RootParams[7].DescriptorTable.pDescriptorRanges = &HZBRange;
-    RootParams[7].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     D3D12_ROOT_SIGNATURE_DESC1 RootDesc = {};
     RootDesc.NumParameters = _countof(RootParams);
     RootDesc.pParameters = RootParams;
-    RootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+    RootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
 
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC VersionedRootDesc = {};
     VersionedRootDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
@@ -1997,7 +2116,9 @@ bool FRenderer::CreateCullingPipelines(FDX12Device* Device)
 
     FShaderCompiler Compiler;
     std::vector<uint8_t> CsByteCode;
-    if (!Compiler.CompileFromFile(L"Shaders/CullMeshletVisibility.hlsl", L"CSMain", L"cs_6_0", CsByteCode))
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring CSTarget = RendererUtils::BuildShaderTarget(L"cs", ShaderModel);
+    if (!Compiler.CompileFromFile(L"Shaders/CullMeshletVisibility.hlsl", L"CSMain", CSTarget, CsByteCode))
     {
         LogError("Failed to compile culling compute shader");
         return false;
@@ -2009,7 +2130,7 @@ bool FRenderer::CreateCullingPipelines(FDX12Device* Device)
     HR_CHECK(Device->GetDevice()->CreateComputePipelineState(&CsDesc, IID_PPV_ARGS(CullingPipeline.GetAddressOf())));
 
     // Meshlet run root signature and pipelines
-    D3D12_ROOT_PARAMETER1 RunRootParams[7] = {};
+    D3D12_ROOT_PARAMETER1 RunRootParams[2] = {};
     // RunRootParams[0]: CullingConstants CBV (b0), used in Shaders/ClearMeshletRunCounts.hlsl CSMain and Shaders/BuildMeshletRunsAppend.hlsl CSMain
     RunRootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     RunRootParams[0].Descriptor.ShaderRegister = 0;
@@ -2017,52 +2138,17 @@ bool FRenderer::CreateCullingPipelines(FDX12Device* Device)
     RunRootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
     RunRootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    // RunRootParams[1]: VisibleMeshlets SRV (t0), used in Shaders/BuildMeshletRunsAppend.hlsl CSMain
-    RunRootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    RunRootParams[1].Descriptor.ShaderRegister = 0;
-    RunRootParams[1].Descriptor.RegisterSpace = 0;
-    RunRootParams[1].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+    // RunRootParams[1]: Meshlet run bindless indices (b1), used in Shaders/ClearMeshletRunCounts.hlsl CSMain and Shaders/BuildMeshletRunsAppend.hlsl CSMain
+    RunRootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RunRootParams[1].Constants.ShaderRegister = 1;
+    RunRootParams[1].Constants.RegisterSpace = 0;
+    RunRootParams[1].Constants.Num32BitValues = 6;
     RunRootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    // RunRootParams[2]: MeshletDrawData SRV (t1), used in Shaders/BuildMeshletRunsAppend.hlsl CSMain
-    RunRootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    RunRootParams[2].Descriptor.ShaderRegister = 1;
-    RunRootParams[2].Descriptor.RegisterSpace = 0;
-    RunRootParams[2].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
-    RunRootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    // RunRootParams[3]: RangeOffsets SRV (t2), used in Shaders/BuildMeshletRunsAppend.hlsl CSMain
-    RunRootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    RunRootParams[3].Descriptor.ShaderRegister = 2;
-    RunRootParams[3].Descriptor.RegisterSpace = 0;
-    RunRootParams[3].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
-    RunRootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    // RunRootParams[4]: CommandTemplates SRV (t3), used in Shaders/BuildMeshletRunsAppend.hlsl CSMain
-    RunRootParams[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    RunRootParams[4].Descriptor.ShaderRegister = 3;
-    RunRootParams[4].Descriptor.RegisterSpace = 0;
-    RunRootParams[4].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
-    RunRootParams[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    // RunRootParams[5]: RunCounts UAV (u1), used in Shaders/ClearMeshletRunCounts.hlsl CSMain and Shaders/BuildMeshletRunsAppend.hlsl CSMain
-    RunRootParams[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    RunRootParams[5].Descriptor.ShaderRegister = 1;
-    RunRootParams[5].Descriptor.RegisterSpace = 0;
-    RunRootParams[5].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
-    RunRootParams[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    // RunRootParams[6]: OutputCommands UAV (u0), used in Shaders/BuildMeshletRunsAppend.hlsl CSMain
-    RunRootParams[6].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    RunRootParams[6].Descriptor.ShaderRegister = 0;
-    RunRootParams[6].Descriptor.RegisterSpace = 0;
-    RunRootParams[6].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
-    RunRootParams[6].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     D3D12_ROOT_SIGNATURE_DESC1 RunRootDesc = {};
     RunRootDesc.NumParameters = _countof(RunRootParams);
     RunRootDesc.pParameters = RunRootParams;
-    RunRootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+    RunRootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
 
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC RunVersionedDesc = {};
     RunVersionedDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
@@ -2074,7 +2160,7 @@ bool FRenderer::CreateCullingPipelines(FDX12Device* Device)
     HR_CHECK(Device->GetDevice()->CreateRootSignature(0, RunSerializedSig->GetBufferPointer(), RunSerializedSig->GetBufferSize(), IID_PPV_ARGS(MeshletRunRootSignature.GetAddressOf())));
 
     std::vector<uint8_t> ClearByteCode;
-    if (!Compiler.CompileFromFile(L"Shaders/ClearMeshletRunCounts.hlsl", L"CSMain", L"cs_6_0", ClearByteCode))
+    if (!Compiler.CompileFromFile(L"Shaders/ClearMeshletRunCounts.hlsl", L"CSMain", CSTarget, ClearByteCode))
     {
         LogError("Failed to compile meshlet run clear compute shader");
         return false;
@@ -2086,7 +2172,7 @@ bool FRenderer::CreateCullingPipelines(FDX12Device* Device)
     HR_CHECK(Device->GetDevice()->CreateComputePipelineState(&ClearDesc, IID_PPV_ARGS(MeshletRunClearPipeline.GetAddressOf())));
 
     std::vector<uint8_t> RunByteCode;
-    if (!Compiler.CompileFromFile(L"Shaders/BuildMeshletRunsAppend.hlsl", L"CSMain", L"cs_6_0", RunByteCode))
+    if (!Compiler.CompileFromFile(L"Shaders/BuildMeshletRunsAppend.hlsl", L"CSMain", CSTarget, RunByteCode))
     {
         LogError("Failed to compile meshlet run append compute shader");
         return false;
