@@ -246,6 +246,11 @@ namespace
                 D3D12_RESOURCE_STATE_COPY_DEST,
                 nullptr,
                 IID_PPV_ARGS(OutGeometry.VertexBuffers[StreamIndex].ReleaseAndGetAddressOf())));
+            if (OutGeometry.VertexBuffers[StreamIndex])
+            {
+                const std::wstring BufferName = L"PrimitiveVertexBuffer_" + std::to_wstring(StreamIndex);
+                OutGeometry.VertexBuffers[StreamIndex]->SetName(BufferName.c_str());
+            }
 
             HR_CHECK(Device->GetDevice()->CreateCommittedResource(
                 &UploadHeap,
@@ -277,6 +282,10 @@ namespace
                 D3D12_RESOURCE_STATE_COPY_DEST,
                 nullptr,
                 IID_PPV_ARGS(OutGeometry.IndexBuffer.GetAddressOf())));
+            if (OutGeometry.IndexBuffer)
+            {
+                OutGeometry.IndexBuffer->SetName(L"PrimitiveIndexBuffer");
+            }
 
             OutGeometry.IndexBufferView.BufferLocation = OutGeometry.IndexBuffer->GetGPUVirtualAddress();
             OutGeometry.IndexBufferView.Format = DXGI_FORMAT_R32_UINT;
@@ -322,14 +331,14 @@ namespace
             ActiveBatch->Context.TransitionResource(
                 OutGeometry.VertexBuffers[StreamIndex].Get(),
                 D3D12_RESOURCE_STATE_COPY_DEST,
-                D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
+                D3D12_RESOURCE_STATE_GENERIC_READ);
             ActiveBatch->AddUploadBuffer(std::move(UploadBuffers[StreamIndex]));
         }
 
         if (bCreateIndexBuffer && IndexUploadBuffer)
         {
             CommandList->CopyBufferRegion(OutGeometry.IndexBuffer.Get(), 0, IndexUploadBuffer.Get(), 0, IndexBufferSize);
-            ActiveBatch->Context.TransitionResource(OutGeometry.IndexBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_INDEX_BUFFER);
+            ActiveBatch->Context.TransitionResource(OutGeometry.IndexBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ);
             ActiveBatch->AddUploadBuffer(std::move(IndexUploadBuffer));
         }
 
@@ -503,6 +512,11 @@ namespace
             nullptr,
             IID_PPV_ARGS(InOutGeometry.IndexBuffer.ReleaseAndGetAddressOf())));
 
+		if (InOutGeometry.IndexBuffer)
+		{
+            InOutGeometry.IndexBuffer->SetName(L"PrimitiveIndexBuffer");
+		}
+
         Microsoft::WRL::ComPtr<ID3D12Resource> UploadBuffer;
         HR_CHECK(Device->GetDevice()->CreateCommittedResource(
             &UploadHeap,
@@ -538,7 +552,7 @@ namespace
 
         ID3D12GraphicsCommandList* CommandList = ActiveBatch->Context.GetCommandList();
         CommandList->CopyBufferRegion(InOutGeometry.IndexBuffer.Get(), 0, UploadBuffer.Get(), 0, IndexBufferSize);
-        ActiveBatch->Context.TransitionResource(InOutGeometry.IndexBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_INDEX_BUFFER);
+        ActiveBatch->Context.TransitionResource(InOutGeometry.IndexBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ);
         ActiveBatch->AddUploadBuffer(std::move(UploadBuffer));
 
         if (!UploadBatch)
@@ -813,6 +827,41 @@ bool RendererUtils::CreateSceneModelsFromJson(
                     ModelResource.DrawIndexStart = 0;
                     ModelResource.DrawIndexCount = static_cast<uint32_t>(MeshPrimitives[SectionIndex].Indices.size());
                     ModelResource.BaseIndexCount = ModelResource.DrawIndexCount;
+                }
+
+                if (Device && Device->GetBindlessDescriptorHeap())
+                {
+                    const auto CreateStructuredBufferSrv = [&](ID3D12Resource* Buffer, uint32_t Stride) -> uint32_t
+                    {
+                        if (!Buffer || Stride == 0)
+                        {
+                            return UINT32_MAX;
+                        }
+
+                        const D3D12_RESOURCE_DESC BufferDesc = Buffer->GetDesc();
+                        const uint64_t ElementCount = BufferDesc.Width / Stride;
+                        if (ElementCount == 0)
+                        {
+                            return UINT32_MAX;
+                        }
+
+                        D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc = {};
+                        SrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+                        SrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                        SrvDesc.Format = DXGI_FORMAT_UNKNOWN;
+                        SrvDesc.Buffer.FirstElement = 0;
+                        SrvDesc.Buffer.NumElements = static_cast<UINT>(ElementCount);
+                        SrvDesc.Buffer.StructureByteStride = Stride;
+                        SrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+                        return Device->CreateBindlessSrv(Buffer, SrvDesc);
+                    };
+
+                    ModelResource.VertexBufferBindlessIndices[0] = CreateStructuredBufferSrv(ModelResource.Geometry.VertexBuffers[0].Get(), sizeof(FFloat3));
+                    ModelResource.VertexBufferBindlessIndices[1] = CreateStructuredBufferSrv(ModelResource.Geometry.VertexBuffers[1].Get(), sizeof(FFloat3));
+                    ModelResource.VertexBufferBindlessIndices[2] = CreateStructuredBufferSrv(ModelResource.Geometry.VertexBuffers[2].Get(), sizeof(FFloat2));
+                    ModelResource.VertexBufferBindlessIndices[3] = CreateStructuredBufferSrv(ModelResource.Geometry.VertexBuffers[3].Get(), sizeof(FFloat4));
+                    ModelResource.VertexBufferBindlessIndices[4] = CreateStructuredBufferSrv(ModelResource.Geometry.VertexBuffers[4].Get(), sizeof(FFloat4));
+                    ModelResource.IndexBufferBindlessIndex = CreateStructuredBufferSrv(ModelResource.Geometry.IndexBuffer.Get(), sizeof(uint32_t));
                 }
 
                 UpdateSceneBounds(ModelResource.Center, ModelResource.Radius, SceneMin, SceneMax);
@@ -1456,6 +1505,16 @@ void RendererUtils::UpdateSceneConstants(
     Constants.EnvMapMipCount = EnvMapMipCount;
     Constants.TaaJitter = TaaJitter;
     Constants.GtaoTemporalIndex = GtaoTemporalIndex;
+    Constants.VertexBufferBindlessIndices = DirectX::XMUINT4(
+        Model.VertexBufferBindlessIndices[0],
+        Model.VertexBufferBindlessIndices[1],
+        Model.VertexBufferBindlessIndices[2],
+        Model.VertexBufferBindlessIndices[3]);
+    Constants.ExtraBindlessIndices = DirectX::XMUINT4(
+        Model.VertexBufferBindlessIndices[4],
+        Model.IndexBufferBindlessIndex,
+        0u,
+        0u);
     Constants.GtaoRadius = GtaoRadius;
     Constants.GtaoIntensity = bGtaoEnabled ? GtaoIntensity : 0.0f;
     Constants.GtaoPower = GtaoPower;

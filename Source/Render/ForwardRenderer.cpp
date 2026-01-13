@@ -361,9 +361,6 @@ void FForwardRenderer::AddShadowPass(FRenderGraph& Graph, const FCamera& Camera,
             const FSceneModelResource& Model = SceneModels[ModelIndex];
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
 
-            LocalCommandList->IASetVertexBuffers(0, Model.Geometry.VertexBufferCount, Model.Geometry.VertexBufferViews.data());
-            LocalCommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
-
             const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
             LocalCommandList->SetGraphicsRootConstantBufferView(
                 0,
@@ -457,9 +454,6 @@ void FForwardRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Camer
 
             UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset, Data.LightViewProjection);
 
-            LocalCommandList->IASetVertexBuffers(0, Model.Geometry.VertexBufferCount, Model.Geometry.VertexBufferViews.data());
-            LocalCommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
-
             const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
             LocalCommandList->SetGraphicsRootConstantBufferView(
                 0,
@@ -482,11 +476,11 @@ void FForwardRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Camer
                     ? L"Model"
                     : std::wstring(Model.Name.begin(), Model.Name.end());
                 FScopedPixEvent ModelEvent(LocalCommandList, ModelLabel.c_str());
-                LocalCommandList->DrawIndexedInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0, 0);
+                LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0);
             }
             else
             {
-                LocalCommandList->DrawIndexedInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0, 0);
+                LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0);
             }
         }
     });
@@ -600,6 +594,7 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
 
         LocalCommandList->RSSetViewports(1, &Viewport);
         LocalCommandList->RSSetScissorRects(1, &ScissorRect);
+		LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
         for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
         {
@@ -612,8 +607,6 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
         ID3D12Resource* RunCountBuffer = GetMeshletRunCountBuffer();
         if (bEnableIndirectDraw && IndirectCommandSignature && IndirectBuffer && RunCountBuffer && !IndirectDrawRanges.empty())
         {
-            LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
             auto SelectPipelineByKey = [&](uint32_t Key)
             {
                 const bool UseNormal = (Key & 1u) != 0;
@@ -724,10 +717,6 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                 const FSceneModelResource& Model = SceneModels[ModelIndex];
                 const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
 
-                LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-                LocalCommandList->IASetVertexBuffers(0, Model.Geometry.VertexBufferCount, Model.Geometry.VertexBufferViews.data());
-                LocalCommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
-
                 const bool bUseBaseColorMap = !Model.BaseColorTexturePath.empty();
                 const bool bUseMetallicRoughnessMap = !Model.MetallicRoughnessTexturePath.empty();
                 const bool bUseEmissiveMap = !Model.EmissiveTexturePath.empty();
@@ -814,11 +803,11 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                         ? L"Model"
                         : std::wstring(Model.Name.begin(), Model.Name.end());
                     FScopedPixEvent ModelEvent(LocalCommandList, ModelLabel.c_str());
-                    LocalCommandList->DrawIndexedInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0, 0);
+                    LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0);
                 }
                 else
                 {
-                    LocalCommandList->DrawIndexedInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0, 0);
+                    LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0);
                 }
             }
         }
@@ -1278,18 +1267,9 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
         return false;
     }
 
-    D3D12_INPUT_ELEMENT_DESC InputLayout[] =
-    {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,   D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 1, 0,   D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    2, 0,   D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TANGENT",  0, DXGI_FORMAT_R32G32B32A32_FLOAT, 3, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 4, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-    };
-
     D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
     PsoDesc.pRootSignature = RootSignature.Get();
-    PsoDesc.InputLayout = { InputLayout, _countof(InputLayout) };
+    PsoDesc.InputLayout = { nullptr, 0 };
     PsoDesc.VS = { VSByteCode.data(), VSByteCode.size() };
     PsoDesc.PS = { PSByteCode.data(), PSByteCode.size() };
     PsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;

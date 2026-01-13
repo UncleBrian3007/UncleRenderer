@@ -76,6 +76,8 @@ struct FSceneConstants
     DirectX::XMFLOAT4 NormalTransformRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT4 EmissiveTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
     DirectX::XMFLOAT4 EmissiveTransformRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
+    DirectX::XMUINT4 VertexBufferBindlessIndices{ 0, 0, 0, 0 };
+    DirectX::XMUINT4 ExtraBindlessIndices{ 0, 0, 0, 0 };
     float EnvMapMipCount = 1.0f;
     DirectX::XMFLOAT3 PaddingEnvMap{ 0.0f, 0.0f, 0.0f };
     float GtaoRadius = 0.75f;
@@ -114,19 +116,17 @@ struct FSkyPipelineConfig
 
 struct FIndirectDrawCommand
 {
-    std::array<D3D12_VERTEX_BUFFER_VIEW, 5> VertexBufferViews{};
-    D3D12_INDEX_BUFFER_VIEW IndexBufferView{};
     D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = 0;
-    D3D12_DRAW_INDEXED_ARGUMENTS DrawArguments{};
-    uint32_t Padding = 0;
+    D3D12_DRAW_ARGUMENTS DrawArguments{};
+    uint32_t Padding[2]{};
 };
 
-static_assert(sizeof(FIndirectDrawCommand) == 128, "Indirect command layout must be 128 bytes.");
-static_assert(offsetof(FIndirectDrawCommand, ConstantBufferAddress) == 96, "Indirect command constant buffer offset mismatch.");
-static_assert(offsetof(FIndirectDrawCommand, DrawArguments) == 104, "Indirect command draw arguments offset mismatch.");
-static_assert(offsetof(FIndirectDrawCommand, DrawArguments.IndexCountPerInstance) == 104, "Indirect command index count offset mismatch.");
-static_assert(offsetof(FIndirectDrawCommand, DrawArguments.InstanceCount) == 108, "Indirect command instance count offset mismatch.");
-static_assert(offsetof(FIndirectDrawCommand, DrawArguments.StartIndexLocation) == 112, "Indirect command start index offset mismatch.");
+static_assert(sizeof(FIndirectDrawCommand) == 32, "Indirect command layout must be 32 bytes.");
+static_assert(offsetof(FIndirectDrawCommand, ConstantBufferAddress) == 0, "Indirect command constant buffer offset mismatch.");
+static_assert(offsetof(FIndirectDrawCommand, DrawArguments) == 8, "Indirect command draw arguments offset mismatch.");
+static_assert(offsetof(FIndirectDrawCommand, DrawArguments.VertexCountPerInstance) == 8, "Indirect command vertex count offset mismatch.");
+static_assert(offsetof(FIndirectDrawCommand, DrawArguments.InstanceCount) == 12, "Indirect command instance count offset mismatch.");
+static_assert(offsetof(FIndirectDrawCommand, DrawArguments.StartVertexLocation) == 16, "Indirect command start vertex offset mismatch.");
 
 struct FMeshletDrawData
 {
@@ -157,6 +157,8 @@ struct FSceneModelResource
     std::wstring NormalTexturePath;
     std::wstring EmissiveTexturePath;
     bool bHasNormalMap = true;
+    std::array<uint32_t, 5> VertexBufferBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX } };
+    uint32_t IndexBufferBindlessIndex = UINT32_MAX;
     uint32_t BaseColorBindlessIndex = UINT32_MAX;
     uint32_t MetallicRoughnessBindlessIndex = UINT32_MAX;
     uint32_t NormalBindlessIndex = UINT32_MAX;

@@ -10,10 +10,10 @@ cbuffer MeshletRunBindlessConstants : register(b1)
     uint RunCountsIndex;
 };
 
-static const uint kCommandStride = 128;
-static const uint kIndexCountOffset = 104;
-static const uint kInstanceCountOffset = 108;
-static const uint kStartIndexOffset = 112;
+static const uint kCommandStride = 32;
+static const uint kIndexCountOffset = 8;
+static const uint kInstanceCountOffset = 12;
+static const uint kStartIndexOffset = 16;
 
 uint4 ReadMeshletDrawData(uint index, StructuredBuffer<uint4> MeshletDrawData)
 {
