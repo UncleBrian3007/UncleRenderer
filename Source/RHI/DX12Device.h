@@ -25,6 +25,7 @@ public:
     IDXGIAdapter4*       GetAdapter() const { return Adapter.Get(); }
     bool                 IsTearingSupported() const { return bAllowTearing; }
     bool                 QueryLocalVideoMemory(DXGI_QUERY_VIDEO_MEMORY_INFO& OutInfo) const;
+    bool                 IsShaderModelForIndirectDrawSupported() const { return bIndirectDrawSupported; }
 
 private:
     bool CreateFactory();
@@ -48,5 +49,6 @@ private:
     std::unique_ptr<FDX12CommandQueue> GraphicsQueue;
 
     bool bAllowTearing = false;
+    bool bIndirectDrawSupported = true;
     D3D_SHADER_MODEL ShaderModel = D3D_SHADER_MODEL_6_6;
 };

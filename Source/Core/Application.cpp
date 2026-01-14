@@ -219,6 +219,13 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
         return false;
     }
 
+    if (RendererConfig.bEnableIndirectDraw && !Device->IsShaderModelForIndirectDrawSupported())
+    {
+        RendererConfig.bEnableIndirectDraw = false;
+        bIndirectDrawEnabled = false;
+        LogWarning("Indirect draw disabled because the device does not support Shader Model 6.8.");
+    }
+
     const uint32 SwapChainBufferCount = (std::max)(2u, RendererConfig.FramesInFlight);
 
     LogInfo("Initializing swap chain...");
@@ -1627,10 +1634,11 @@ void FApplication::RenderUI()
             }
         }
 
+        const bool bIndirectDrawSupported = Device && Device->IsShaderModelForIndirectDrawSupported();
         bool bIndirectDraw = bIndirectDrawEnabled;
         if (ImGui::Checkbox("Indirect Draw", &bIndirectDraw))
         {
-            bIndirectDrawEnabled = bIndirectDraw;
+            bIndirectDrawEnabled = bIndirectDrawSupported && bIndirectDraw;
             RendererConfig.bEnableIndirectDraw = bIndirectDrawEnabled;
 
             if (DeferredRenderer)
@@ -1641,6 +1649,11 @@ void FApplication::RenderUI()
             if (ForwardRenderer)
             {
                 ForwardRenderer->SetIndirectDrawEnabled(bIndirectDrawEnabled);
+            }
+
+            if (bIndirectDraw && !bIndirectDrawSupported)
+            {
+                LogWarning("Indirect draw requires Shader Model 6.8 and remains disabled.");
             }
         }
 

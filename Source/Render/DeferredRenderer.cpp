@@ -655,8 +655,8 @@ void FDeferredRenderer::AddShadowPass(FRenderGraph& Graph, const FCamera& Camera
 
         ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
         LocalCommandList->SetPipelineState(ShadowPipeline.Get());
-        LocalCommandList->SetGraphicsRootSignature(BasePassRootSignature.Get());
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        LocalCommandList->SetGraphicsRootSignature(BasePassRootSignature.Get());
 
         LocalCommandList->RSSetViewports(1, &ShadowViewport);
         LocalCommandList->RSSetScissorRects(1, &ShadowScissor);
@@ -749,8 +749,8 @@ void FDeferredRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Came
 
         ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
         LocalCommandList->SetPipelineState(DepthPrepassPipeline.Get());
-        LocalCommandList->SetGraphicsRootSignature(BasePassRootSignature.Get());
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        LocalCommandList->SetGraphicsRootSignature(BasePassRootSignature.Get());
 
         LocalCommandList->RSSetViewports(1, &Viewport);
         LocalCommandList->RSSetScissorRects(1, &ScissorRect);
@@ -851,10 +851,9 @@ void FDeferredRenderer::AddBasePass(FRenderGraph& Graph, const FCamera& Camera, 
         const float SceneClear[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
         Cmd.ClearRenderTarget(LightingRTVHandle, SceneClear);
 
-        LocalCommandList->SetGraphicsRootSignature(BasePassRootSignature.Get());
-
         ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        LocalCommandList->SetGraphicsRootSignature(BasePassRootSignature.Get());
 
         LocalCommandList->RSSetViewports(1, &Viewport);
         LocalCommandList->RSSetScissorRects(1, &ScissorRect);
@@ -986,6 +985,8 @@ void FDeferredRenderer::AddObjectIdPass(FRenderGraph& Graph, const FCamera& Came
         FScopedPixEvent ObjectIdEvent(LocalCommandList, L"ObjectIdPass");
 
         LocalCommandList->SetPipelineState(ObjectIdPipeline.Get());
+        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
+        LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         LocalCommandList->SetGraphicsRootSignature(BasePassRootSignature.Get());
         LocalCommandList->RSSetViewports(1, &Viewport);
         LocalCommandList->RSSetScissorRects(1, &ScissorRect);

@@ -46,6 +46,7 @@ namespace
         case D3D_SHADER_MODEL_6_5: return "6.5";
         case D3D_SHADER_MODEL_6_6: return "6.6";
         case D3D_SHADER_MODEL_6_7: return "6.7";
+        case D3D_SHADER_MODEL_6_8: return "6.8";
         default: return "Unknown";
         }
     }
@@ -210,10 +211,13 @@ uint32_t FDX12Device::CreateBindlessUav(ID3D12Resource* Resource, ID3D12Resource
 
 bool FDX12Device::DetermineShaderModel()
 {
-    const D3D_SHADER_MODEL RequiredShaderModel = D3D_SHADER_MODEL_6_6;
+    const D3D_SHADER_MODEL MinimumShaderModel = D3D_SHADER_MODEL_6_6;
+    const D3D_SHADER_MODEL PreferredShaderModel = D3D_SHADER_MODEL_6_8;
     static const D3D_SHADER_MODEL Candidates[] =
     {
-        RequiredShaderModel,
+        PreferredShaderModel,
+        D3D_SHADER_MODEL_6_7,
+        D3D_SHADER_MODEL_6_6,
         D3D_SHADER_MODEL_6_5,
         D3D_SHADER_MODEL_6_4,
         D3D_SHADER_MODEL_6_3,
@@ -237,14 +241,20 @@ bool FDX12Device::DetermineShaderModel()
     }
 
     std::ostringstream Oss;
-    Oss << "Required shader model: " << ShaderModelToString(RequiredShaderModel)
+    Oss << "Preferred shader model: " << ShaderModelToString(PreferredShaderModel)
         << ", device supports up to: " << ShaderModelToString(ShaderModel);
     LogInfo(Oss.str());
 
-    if (ShaderModel < RequiredShaderModel)
+    if (ShaderModel < MinimumShaderModel)
     {
-        LogError("Shader Model 6.6 is required for bindless ResourceDescriptorHeap indexing. Exiting.");
+        LogError("Shader Model 6.6 is required for bindless descriptor heap usage. Device only supports lower versions. Exiting.");
         return false;
+    }
+
+    bIndirectDrawSupported = ShaderModel >= PreferredShaderModel;
+    if (!bIndirectDrawSupported)
+    {
+        LogWarning("Shader Model 6.8 is required for indirect draw; indirect draw will be disabled.");
     }
 
     return true;

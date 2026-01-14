@@ -3,6 +3,7 @@
 struct VSInput
 {
     uint VertexId : SV_VertexID;
+	uint StartVertexLocation : SV_StartVertexLocation;
 };
 
 struct VSOutput
@@ -60,7 +61,7 @@ VSOutput VSMain(VSInput Input)
     StructuredBuffer<float4> ColorBuffer = ResourceDescriptorHeap[ExtraBindlessIndices.x];
     StructuredBuffer<uint> IndexBuffer = ResourceDescriptorHeap[ExtraBindlessIndices.y];
 
-    uint vertexIndex = IndexBuffer[Input.VertexId];
+    uint vertexIndex = IndexBuffer[Input.VertexId + Input.StartVertexLocation];
     float3 position = PositionBuffer[vertexIndex];
     float3 normal = NormalBuffer[vertexIndex];
     float2 uv = TexCoordBuffer[vertexIndex];

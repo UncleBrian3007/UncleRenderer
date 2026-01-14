@@ -179,7 +179,6 @@ struct FSceneModelResource
     std::vector<FMesh::FMeshlet> Meshlets;
     std::vector<FMesh::FMeshletBounds> MeshletBounds;
     std::vector<uint32_t> MeshletIndices;
-    std::vector<uint32_t> MeshletVisibleIndices;
 };
 
 namespace RendererUtils

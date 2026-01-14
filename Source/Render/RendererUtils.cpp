@@ -1194,66 +1194,6 @@ void RendererUtils::UpdateCullingVisibility(
         FSceneModelResource& Model = Models[ModelIndex];
         const bool bModelVisible = RendererUtils::IsAabbInCameraFrustum(Planes, Model.BoundsMin, Model.BoundsMax);
         OutVisibility[ModelIndex] = bModelVisible;
-
-        if (!bAllowMeshletCulling || !Model.bUseMeshletCulling || !bModelVisible || Model.Meshlets.empty() || Model.MeshletBounds.empty())
-        {
-            Model.DrawIndexCount = Model.BaseIndexCount;
-            Model.DrawIndexStart = 0;
-            Model.Geometry.IndexCount = Model.BaseIndexCount;
-            continue;
-        }
-
-        using namespace DirectX;
-        const XMMATRIX World = XMLoadFloat4x4(&Model.WorldMatrix);
-        const float ModelScale = ComputeMaxScale(Model.WorldMatrix);
-
-        Model.MeshletVisibleIndices.clear();
-        Model.MeshletVisibleIndices.reserve(Model.MeshletIndices.size());
-
-        const size_t MeshletCount = std::min(Model.Meshlets.size(), Model.MeshletBounds.size());
-        for (size_t MeshletIndex = 0; MeshletIndex < MeshletCount; ++MeshletIndex)
-        {
-            const FMesh::FMeshletBounds& Bounds = Model.MeshletBounds[MeshletIndex];
-            const XMVECTOR LocalCenter = XMLoadFloat3(&Bounds.Center);
-            XMVECTOR WorldCenter = XMVector3TransformCoord(LocalCenter, World);
-            DirectX::XMFLOAT3 WorldCenterFloat{};
-            XMStoreFloat3(&WorldCenterFloat, WorldCenter);
-
-            const float WorldRadius = Bounds.Radius * ModelScale;
-            if (!IsSphereInCameraFrustum(Planes, WorldCenterFloat, WorldRadius))
-            {
-                continue;
-            }
-
-            const FMesh::FMeshlet& Meshlet = Model.Meshlets[MeshletIndex];
-            const uint32_t IndexStart = Meshlet.IndexOffset;
-            const uint32_t IndexCount = Meshlet.IndexCount;
-            if (IndexStart + IndexCount > Model.MeshletIndices.size())
-            {
-                continue;
-            }
-
-            Model.MeshletVisibleIndices.insert(
-                Model.MeshletVisibleIndices.end(),
-                Model.MeshletIndices.begin() + IndexStart,
-                Model.MeshletIndices.begin() + IndexStart + IndexCount);
-        }
-
-        Model.DrawIndexStart = 0;
-        Model.DrawIndexCount = static_cast<uint32_t>(Model.MeshletVisibleIndices.size());
-        Model.Geometry.IndexCount = Model.DrawIndexCount;
-
-        if (!Model.MeshletVisibleIndices.empty())
-        {
-            void* IndexData = nullptr;
-            D3D12_RANGE EmptyRange = { 0, 0 };
-            if (SUCCEEDED(Model.Geometry.IndexBuffer->Map(0, &EmptyRange, &IndexData)))
-            {
-                const size_t CopySize = Model.MeshletVisibleIndices.size() * sizeof(uint32_t);
-                memcpy(IndexData, Model.MeshletVisibleIndices.data(), CopySize);
-                Model.Geometry.IndexBuffer->Unmap(0, nullptr);
-            }
-        }
     }
 }
 
