@@ -26,11 +26,14 @@ public:
     bool                 IsTearingSupported() const { return bAllowTearing; }
     bool                 QueryLocalVideoMemory(DXGI_QUERY_VIDEO_MEMORY_INFO& OutInfo) const;
     bool                 IsShaderModelForIndirectDrawSupported() const { return bIndirectDrawSupported; }
+    bool                 IsRayTracingSupported() const { return bSupportsRayTracing; }
+    bool                 CreateRayTracingDevice(class FRayTracingDevice& OutDevice) const;
 
 private:
     bool CreateFactory();
     bool PickAdapter();
     bool CreateDevice();
+    bool QueryRayTracingSupport();
     bool CreateBindlessDescriptorHeap();
     bool CreateCommandQueues();
     bool CheckTearingSupport();
@@ -50,5 +53,6 @@ private:
 
     bool bAllowTearing = false;
     bool bIndirectDrawSupported = true;
+    bool bSupportsRayTracing = false;
     D3D_SHADER_MODEL ShaderModel = D3D_SHADER_MODEL_6_6;
 };

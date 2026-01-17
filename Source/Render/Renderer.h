@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "RendererUtils.h"
+#include "../RHI/RayTracing.h"
 
 struct FSceneModelResource;
 class FTextureLoader;
@@ -42,6 +43,9 @@ public:
 
     virtual void SetDepthPrepassEnabled(bool bEnabled) { bDepthPrepassEnabled = bEnabled; }
     virtual bool IsDepthPrepassEnabled() const { return bDepthPrepassEnabled; }
+
+    virtual void SetRayTracedShadowsEnabled(bool bEnabled) { bRayTracedShadowsEnabled = bEnabled; }
+    virtual bool IsRayTracedShadowsEnabled() const { return bRayTracedShadowsEnabled; }
 
     void SetFrameIndex(uint32_t FrameIndex);
     uint32_t GetFrameIndex() const { return CurrentFrameIndex; }
@@ -103,6 +107,8 @@ protected:
     void ConfigureHZBOcclusion(bool bEnabled, uint32_t HZBBindlessIndex, uint32_t Width, uint32_t Height, uint32_t MipCount);
     void PrepareGpuDebugPrint(FDX12CommandContext& CmdContext);
     void DispatchGpuDebugPrintStats(FDX12CommandContext& CmdContext);
+    void BuildRayTracingTlas(FDX12CommandContext& CmdContext);
+    bool CreateRayTracingPipeline(FDX12Device* Device);
     bool CreateGpuDebugPrintResources(FDX12Device* Device);
     bool CreateGpuDebugPrintPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateGpuDebugPrintStatsPipeline(FDX12Device* Device);
@@ -239,6 +245,21 @@ protected:
     std::vector<D3D12_RESOURCE_STATES> IndirectCommandStates;
     std::vector<D3D12_RESOURCE_STATES> MeshletVisibilityStates;
     std::vector<D3D12_RESOURCE_STATES> MeshletRunCountStates;
+    FRayTracingPipelineState RayTracingPipeline;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> RayTracingGlobalRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> RayTracingLocalRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> RayTracingUavHeap;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RayTracingShaderTable;
+    uint32_t RayTracingShaderRecordSize = 0;
+    uint32_t RayTracingShaderTableSize = 0;
+    bool bRayTracingPipelineReady = false;
+    uint32_t ShadowMaskBindlessIndex = UINT32_MAX;
+    ID3D12Resource* ShadowMaskResource = nullptr;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> TlasScratchBuffers;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> TlasResultBuffers;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> TlasInstanceBuffers;
+    std::vector<bool> TlasBuilt;
+    uint32_t TlasInstanceCapacity = 0;
     D3D12_RESOURCE_STATES GpuDebugPrintState = D3D12_RESOURCE_STATE_COMMON;
     D3D12_RESOURCE_STATES GpuDebugPrintStatsState = D3D12_RESOURCE_STATE_COMMON;
 
@@ -249,6 +270,7 @@ protected:
     uint32_t ShadowMapWidth = 0;
     uint32_t ShadowMapHeight = 0;
     bool bShadowsEnabled = true;
+    bool bRayTracedShadowsEnabled = false;
     bool bLogResourceBarriers = false;
     bool bEnableGraphDump = false;
     bool bEnableGpuTiming = false;

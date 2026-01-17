@@ -48,6 +48,7 @@ struct FSceneConstants
     DirectX::XMFLOAT4X4 View;
     DirectX::XMFLOAT4X4 ViewInverse;
     DirectX::XMFLOAT4X4 Projection;
+    DirectX::XMFLOAT4X4 ViewProjectionInverse;
     DirectX::XMFLOAT3 BaseColor;
     float LightIntensity = 1.0f;
     DirectX::XMFLOAT3 LightDirection;
@@ -179,6 +180,10 @@ struct FSceneModelResource
     std::vector<FMesh::FMeshlet> Meshlets;
     std::vector<FMesh::FMeshletBounds> MeshletBounds;
     std::vector<uint32_t> MeshletIndices;
+    Microsoft::WRL::ComPtr<ID3D12Resource> BlasScratchBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> BlasResultBuffer;
+    D3D12_RAYTRACING_GEOMETRY_DESC BlasGeometryDesc{};
+    bool bHasRayTracingBlas = false;
 };
 
 namespace RendererUtils

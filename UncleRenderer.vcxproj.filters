@@ -95,6 +95,9 @@
     <ClCompile Include="Source\RHI\DX12SwapChain.cpp">
       <Filter>Source Files\RHI</Filter>
     </ClCompile>
+    <ClCompile Include="Source\RHI\RayTracing.cpp">
+      <Filter>Source Files\RHI</Filter>
+    </ClCompile>
     <ClCompile Include="Source\Render\DeferredRenderer.cpp">
       <Filter>Source Files\Render</Filter>
     </ClCompile>
@@ -251,6 +254,9 @@
       <Filter>Header Files\RHI</Filter>
     </ClInclude>
     <ClInclude Include="Source\RHI\DX12SwapChain.h">
+      <Filter>Header Files\RHI</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\RHI\RayTracing.h">
       <Filter>Header Files\RHI</Filter>
     </ClInclude>
     <ClInclude Include="Source\Render\DeferredRenderer.h">
@@ -423,6 +429,9 @@
       <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\CullMeshletVisibility.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\ShadowRays.hlsl">
       <Filter>Shaders</Filter>
     </None>
   </ItemGroup>

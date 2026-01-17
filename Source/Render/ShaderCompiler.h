@@ -27,6 +27,11 @@ public:
         const std::wstring& Target,
         std::vector<uint8_t>& OutByteCode,
         const std::vector<std::wstring>& Defines = {});
+    bool CompileLibraryFromFile(
+        const std::wstring& FilePath,
+        const std::wstring& Target,
+        std::vector<uint8_t>& OutByteCode,
+        const std::vector<std::wstring>& Defines = {});
 
     /**
      * Compile multiple shaders in parallel using the task system.

@@ -4,6 +4,7 @@ cbuffer SceneConstants : register(b0)
     row_major float4x4 View;
     row_major float4x4 ViewInverse;
     row_major float4x4 Projection;
+    row_major float4x4 ViewProjectionInverse;
     float3 BaseColor;
     float LightIntensity;
     float3 LightDirection;

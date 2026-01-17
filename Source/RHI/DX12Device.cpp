@@ -1,4 +1,5 @@
 #include "DX12Device.h"
+#include "RayTracing.h"
 #include "../Core/Logger.h"
 #include <string>
 #include <sstream>
@@ -50,6 +51,17 @@ namespace
         default: return "Unknown";
         }
     }
+
+    std::string RaytracingTierToString(D3D12_RAYTRACING_TIER Tier)
+    {
+        switch (Tier)
+        {
+        case D3D12_RAYTRACING_TIER_NOT_SUPPORTED: return "Not Supported";
+        case D3D12_RAYTRACING_TIER_1_0: return "1.0";
+        case D3D12_RAYTRACING_TIER_1_1: return "1.1";
+        default: return "Unknown";
+        }
+    }
 }
 
 FDX12Device::FDX12Device()
@@ -70,11 +82,32 @@ bool FDX12Device::Initialize()
     if (!CreateFactory()) { LogError("Failed to create DXGI factory"); return false; }
     if (!PickAdapter())   { LogError("No suitable adapter found"); return false; }
     if (!CreateDevice())  { LogError("Failed to create D3D12 device"); return false; }
+    if (!QueryRayTracingSupport()) { LogError("Failed to query DXR support"); return false; }
     if (!CreateBindlessDescriptorHeap()) { LogError("Failed to create bindless descriptor heap"); return false; }
     if (!DetermineShaderModel()) { LogError("Failed to determine shader model"); return false; }
     if (!CreateCommandQueues()) { LogError("Failed to create command queues"); return false; }
 
     LogInfo("DX12 device initialization complete");
+    return true;
+}
+
+bool FDX12Device::QueryRayTracingSupport()
+{
+    bSupportsRayTracing = false;
+
+    D3D12_FEATURE_DATA_D3D12_OPTIONS5 Options5 = {};
+    if (FAILED(Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &Options5, sizeof(Options5))))
+    {
+        LogWarning("Failed to query D3D12 options5; DXR support disabled.");
+        return true;
+    }
+
+    bSupportsRayTracing = Options5.RaytracingTier != D3D12_RAYTRACING_TIER_NOT_SUPPORTED;
+
+    std::ostringstream Oss;
+    Oss << "DXR support: " << (bSupportsRayTracing ? "Enabled" : "Disabled")
+        << " (Tier " << RaytracingTierToString(Options5.RaytracingTier) << ")";
+    LogInfo(Oss.str());
     return true;
 }
 
@@ -158,6 +191,17 @@ bool FDX12Device::CreateBindlessDescriptorHeap()
     BindlessDescriptorNextIndex.store(0);
 
     return true;
+}
+
+bool FDX12Device::CreateRayTracingDevice(FRayTracingDevice& OutDevice) const
+{
+    if (!bSupportsRayTracing)
+    {
+        LogWarning("Ray tracing device creation skipped: DXR is not supported.");
+        return false;
+    }
+
+    return OutDevice.Initialize(Device.Get());
 }
 
 uint32_t FDX12Device::AllocateBindlessDescriptorIndex()

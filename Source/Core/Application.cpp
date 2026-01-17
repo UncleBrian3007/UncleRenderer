@@ -155,6 +155,7 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     bFrameOverlapEnabled = RendererConfig.bEnableFrameOverlap;
     bDepthPrepassEnabled = RendererConfig.bUseDepthPrepass;
     bShadowsEnabled = RendererConfig.bEnableShadows;
+    bRayTracedShadowsEnabled = RendererConfig.bEnableRayTracedShadows;
     bGpuTimingEnabled = RendererConfig.bEnableGpuTiming;
     bGpuDebugPrintEnabled = RendererConfig.bEnableGpuDebugPrint;
     ShadowBias = RendererConfig.ShadowBias;
@@ -217,6 +218,13 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     {
         LogError("Failed to initialize D3D12 device");
         return false;
+    }
+
+    if (bRayTracedShadowsEnabled && !Device->IsRayTracingSupported())
+    {
+        bRayTracedShadowsEnabled = false;
+        RendererConfig.bEnableRayTracedShadows = false;
+        LogWarning("Ray traced shadows requested, but DXR is not supported. Falling back to raster shadows.");
     }
 
     if (RendererConfig.bEnableIndirectDraw && !Device->IsShaderModelForIndirectDrawSupported())
@@ -933,6 +941,7 @@ bool FApplication::ReloadScene(const std::wstring& ScenePath)
     ReloadConfig.SceneFile = ScenePath;
     ReloadConfig.bUseDepthPrepass = bDepthPrepassEnabled;
     ReloadConfig.bEnableShadows = bShadowsEnabled;
+    ReloadConfig.bEnableRayTracedShadows = bRayTracedShadowsEnabled;
     ReloadConfig.ShadowBias = ShadowBias;
     ReloadConfig.bEnableHZB = bHZBEnabled;
     ReloadConfig.bEnableGtao = bGtaoEnabled;
@@ -1056,6 +1065,7 @@ void FApplication::StartAsyncSceneReload(const std::wstring& ScenePath)
     AsyncConfig.SceneFile = ScenePath;
     AsyncConfig.bUseDepthPrepass = bDepthPrepassEnabled;
     AsyncConfig.bEnableShadows = bShadowsEnabled;
+    AsyncConfig.bEnableRayTracedShadows = bRayTracedShadowsEnabled;
     AsyncConfig.ShadowBias = ShadowBias;
     AsyncConfig.bEnableTonemap = bTonemapEnabled;
     AsyncConfig.TonemapExposure = TonemapExposure;
@@ -1671,6 +1681,33 @@ void FApplication::RenderUI()
             if (ForwardRenderer)
             {
                 ForwardRenderer->SetShadowsEnabled(bShadowsEnabled);
+            }
+        }
+
+        const bool bRayTracingSupported = Device && Device->IsRayTracingSupported();
+        bool bRayTracedShadows = bRayTracedShadowsEnabled;
+        if (ImGui::Checkbox("Ray Traced Shadows", &bRayTracedShadows))
+        {
+            if (bRayTracedShadows && !bRayTracingSupported)
+            {
+                bRayTracedShadowsEnabled = false;
+                RendererConfig.bEnableRayTracedShadows = false;
+                LogWarning("Ray traced shadows requested, but DXR is not supported. Falling back to raster shadows.");
+            }
+            else
+            {
+                bRayTracedShadowsEnabled = bRayTracedShadows;
+                RendererConfig.bEnableRayTracedShadows = bRayTracedShadowsEnabled;
+            }
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetRayTracedShadowsEnabled(bRayTracedShadowsEnabled);
+            }
+
+            if (ForwardRenderer)
+            {
+                ForwardRenderer->SetRayTracedShadowsEnabled(bRayTracedShadowsEnabled);
             }
         }
 

@@ -124,6 +124,7 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <ClCompile Include="Source\RHI\DX12Fence.cpp" />
     <ClCompile Include="Source\RHI\DX12Resource.cpp" />
     <ClCompile Include="Source\RHI\DX12SwapChain.cpp" />
+    <ClCompile Include="Source\RHI\RayTracing.cpp" />
     <ClCompile Include="Source\Core\RendererConfig.cpp" />
     <ClCompile Include="Source\Render\DeferredRenderer.cpp" />
     <ClCompile Include="Source\Render\DebugPrintFont.cpp" />
@@ -178,6 +179,7 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <ClInclude Include="Source\RHI\DX12Fence.h" />
     <ClInclude Include="Source\RHI\DX12Resource.h" />
     <ClInclude Include="Source\RHI\DX12SwapChain.h" />
+    <ClInclude Include="Source\RHI\RayTracing.h" />
     <ClInclude Include="Source\Render\DeferredRenderer.h" />
     <ClInclude Include="Source\Render\DebugPrintFont.h" />
     <ClInclude Include="Source\Render\RendererUtils.h" />
@@ -288,6 +290,11 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
       <FileType>Document</FileType>
     </None>
     <None Include="Shaders\CullMeshletVisibility.hlsl">
+      <FileType>Document</FileType>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Shaders\ShadowRays.hlsl">
       <FileType>Document</FileType>
     </None>
   </ItemGroup>

@@ -13,6 +13,8 @@
 #include "../RHI/DX12Device.h"
 #include "../RHI/DX12Commons.h"
 #include "../RHI/DX12CommandContext.h"
+#include "../RHI/DX12CommandQueue.h"
+#include "../RHI/RayTracing.h"
 #include <vector>
 #include <cstring>
 #include <algorithm>
@@ -580,6 +582,179 @@ namespace
         return true;
     }
 
+    uint64_t AlignRayTracingBufferSize(uint64_t Size)
+    {
+        const uint64_t Alignment = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT;
+        return (Size + Alignment - 1) & ~(Alignment - 1);
+    }
+
+    bool CreateRayTracingBuffer(
+        FDX12Device* Device,
+        uint64_t SizeInBytes,
+        D3D12_RESOURCE_FLAGS Flags,
+        D3D12_RESOURCE_STATES InitialState,
+        Microsoft::WRL::ComPtr<ID3D12Resource>& OutResource,
+        const wchar_t* Name)
+    {
+        if (!Device || SizeInBytes == 0)
+        {
+            return false;
+        }
+
+        D3D12_HEAP_PROPERTIES HeapProps = {};
+        HeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+        D3D12_RESOURCE_DESC Desc = {};
+        Desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        Desc.Width = AlignRayTracingBufferSize(SizeInBytes);
+        Desc.Height = 1;
+        Desc.DepthOrArraySize = 1;
+        Desc.MipLevels = 1;
+        Desc.SampleDesc.Count = 1;
+        Desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        Desc.Flags = Flags;
+
+        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+            &HeapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &Desc,
+            InitialState,
+            nullptr,
+            IID_PPV_ARGS(OutResource.ReleaseAndGetAddressOf())));
+
+        if (OutResource && Name)
+        {
+            OutResource->SetName(Name);
+        }
+
+        return OutResource != nullptr;
+    }
+
+    bool BuildSceneModelBlas(FDX12Device* Device, std::vector<FSceneModelResource>& Models)
+    {
+        if (!Device || !Device->IsRayTracingSupported())
+        {
+            return true;
+        }
+
+        FRayTracingDevice RayTracingDevice;
+        if (!Device->CreateRayTracingDevice(RayTracingDevice))
+        {
+            LogWarning("Ray tracing device unavailable; BLAS build skipped.");
+            return true;
+        }
+
+        ComPtr<ID3D12CommandAllocator> Allocator;
+        HR_CHECK(Device->GetDevice()->CreateCommandAllocator(
+            D3D12_COMMAND_LIST_TYPE_DIRECT,
+            IID_PPV_ARGS(Allocator.ReleaseAndGetAddressOf())));
+
+        ComPtr<ID3D12GraphicsCommandList> CommandList;
+        HR_CHECK(Device->GetDevice()->CreateCommandList(
+            0,
+            D3D12_COMMAND_LIST_TYPE_DIRECT,
+            Allocator.Get(),
+            nullptr,
+            IID_PPV_ARGS(CommandList.ReleaseAndGetAddressOf())));
+
+        ComPtr<ID3D12GraphicsCommandList4> CommandList4;
+        if (FAILED(CommandList.As(&CommandList4)))
+        {
+            LogWarning("Ray tracing command list interface not available; BLAS build skipped.");
+            return true;
+        }
+
+        for (FSceneModelResource& Model : Models)
+        {
+            if (!Model.Geometry.VertexBuffers[0] || !Model.Geometry.IndexBuffer)
+            {
+                continue;
+            }
+
+            const uint32_t VertexStride = Model.Geometry.VertexBufferViews[0].StrideInBytes;
+            const uint32_t VertexCount = VertexStride > 0
+                ? (Model.Geometry.VertexBufferViews[0].SizeInBytes / VertexStride)
+                : 0;
+            const uint32_t IndexCount = Model.Geometry.IndexCount;
+            if (VertexCount == 0 || IndexCount == 0)
+            {
+                continue;
+            }
+
+            D3D12_RAYTRACING_GEOMETRY_DESC GeometryDesc = {};
+            GeometryDesc.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+            GeometryDesc.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+            GeometryDesc.Triangles.VertexBuffer.StartAddress = Model.Geometry.VertexBuffers[0]->GetGPUVirtualAddress();
+            GeometryDesc.Triangles.VertexBuffer.StrideInBytes = VertexStride;
+            GeometryDesc.Triangles.VertexCount = VertexCount;
+            GeometryDesc.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
+            GeometryDesc.Triangles.IndexBuffer = Model.Geometry.IndexBuffer->GetGPUVirtualAddress();
+            GeometryDesc.Triangles.IndexCount = IndexCount;
+            GeometryDesc.Triangles.IndexFormat = DXGI_FORMAT_R32_UINT;
+
+            D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS Inputs = {};
+            Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+            Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+            Inputs.NumDescs = 1;
+            Inputs.pGeometryDescs = &GeometryDesc;
+            Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+
+            D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO PrebuildInfo = {};
+            RayTracingDevice.GetDevice()->GetRaytracingAccelerationStructurePrebuildInfo(&Inputs, &PrebuildInfo);
+
+            if (PrebuildInfo.ResultDataMaxSizeInBytes == 0 || PrebuildInfo.ScratchDataSizeInBytes == 0)
+            {
+                continue;
+            }
+
+            if (!CreateRayTracingBuffer(
+                    Device,
+                    PrebuildInfo.ResultDataMaxSizeInBytes,
+                    D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                    D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+                    Model.BlasResultBuffer,
+                    L"BLAS_Result")
+                || !CreateRayTracingBuffer(
+                    Device,
+                    PrebuildInfo.ScratchDataSizeInBytes,
+                    D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    Model.BlasScratchBuffer,
+                    L"BLAS_Scratch"))
+            {
+                LogWarning("Failed to allocate BLAS buffers for model: " + Model.Name);
+                continue;
+            }
+
+            D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC BuildDesc = {};
+            BuildDesc.Inputs = Inputs;
+            BuildDesc.DestAccelerationStructureData = Model.BlasResultBuffer->GetGPUVirtualAddress();
+            BuildDesc.ScratchAccelerationStructureData = Model.BlasScratchBuffer->GetGPUVirtualAddress();
+
+            CommandList4->BuildRaytracingAccelerationStructure(&BuildDesc, 0, nullptr);
+
+            D3D12_RESOURCE_BARRIER Barrier = {};
+            Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+            Barrier.UAV.pResource = Model.BlasResultBuffer.Get();
+            CommandList4->ResourceBarrier(1, &Barrier);
+
+            Model.BlasGeometryDesc = GeometryDesc;
+            Model.bHasRayTracingBlas = true;
+        }
+
+        HR_CHECK(CommandList->Close());
+
+        ID3D12CommandList* Lists[] = { CommandList.Get() };
+        FDX12CommandQueue* Queue = Device->GetGraphicsQueue();
+        if (Queue)
+        {
+            Queue->ExecuteCommandLists(1, Lists);
+            const uint64_t FenceValue = Queue->Signal();
+            Queue->Wait(FenceValue);
+        }
+
+        return true;
+    }
 }
 
 bool RendererUtils::CreateSceneModelsFromJson(
@@ -876,6 +1051,8 @@ bool RendererUtils::CreateSceneModelsFromJson(
     {
         UploadBatch.ExecuteAndFlush();
     }
+
+    BuildSceneModelBlas(Device, OutModels);
 
     if (OutModels.empty())
     {
@@ -1427,6 +1604,8 @@ void RendererUtils::UpdateSceneConstants(
     XMStoreFloat4x4(&Constants.View, View);
     XMStoreFloat4x4(&Constants.ViewInverse, ViewInverse);
     XMStoreFloat4x4(&Constants.Projection, Projection);
+    const XMMATRIX ViewProjection = View * Projection;
+    XMStoreFloat4x4(&Constants.ViewProjectionInverse, XMMatrixInverse(nullptr, ViewProjection));
     Constants.BaseColor = BaseColorFactor;
     Constants.LightIntensity = LightIntensity;
     XMStoreFloat3(&Constants.LightDirection, XMVector3Normalize(LightDirection));

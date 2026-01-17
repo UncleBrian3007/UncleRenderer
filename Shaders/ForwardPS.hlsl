@@ -34,6 +34,8 @@ cbuffer ForwardBindlessConstants : register(b1)
     uint NormalTextureIndex;
     uint EmissiveTextureIndex;
     uint ShadowMapIndex;
+    uint ShadowMaskIndex;
+    uint ShadowMaskEnabled;
     uint EnvironmentMapIndex;
     uint BrdfLutIndex;
 };
@@ -80,6 +82,7 @@ float4 PSMain(VSOutput Input) : SV_Target
     Texture2D NormalTexture = ResourceDescriptorHeap[NormalTextureIndex];
     Texture2D EmissiveTexture = ResourceDescriptorHeap[EmissiveTextureIndex];
     Texture2D ShadowMap = ResourceDescriptorHeap[ShadowMapIndex];
+    Texture2D ShadowMaskTexture = ResourceDescriptorHeap[ShadowMaskIndex];
     TextureCube EnvironmentMap = ResourceDescriptorHeap[EnvironmentMapIndex];
     Texture2D BrdfLut = ResourceDescriptorHeap[BrdfLutIndex];
     float2 baseUV = ApplyTextureTransform(Input.UV, BaseColorTransformOffsetScale, BaseColorTransformRotation);
@@ -121,7 +124,12 @@ float4 PSMain(VSOutput Input) : SV_Target
     float2 shadowUV = shadowCoord.xy * float2(0.5f, -0.5f) + 0.5f;
     float shadowDepth = shadowCoord.z;
     float shadow = 1.0f;
-    if (ShadowStrength > 0.0f && all(shadowUV >= 0.0f) && all(shadowUV <= 1.0f))
+    if (ShadowStrength > 0.0f && ShadowMaskEnabled > 0)
+    {
+        float shadowMask = ShadowMaskTexture.Sample(AlbedoSampler, Input.UV).r;
+        shadow = lerp(1.0f, shadowMask, ShadowStrength);
+    }
+    else if (ShadowStrength > 0.0f && all(shadowUV >= 0.0f) && all(shadowUV <= 1.0f))
     {
         float2 halfTexel = 0.5f / ShadowMapSize;
         float shadowCompare = shadowDepth - ShadowBias;

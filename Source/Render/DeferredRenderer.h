@@ -111,6 +111,7 @@ private:
     struct FDeferredFrameResources
     {
         FRGResourceHandle ShadowHandle{};
+        FRGResourceHandle ShadowMaskHandle{};
         FRGResourceHandle DepthHandle{};
         FRGResourceHandle ObjectIdHandle{};
         std::array<FRGResourceHandle, 3> GBufferHandles{};
@@ -162,6 +163,7 @@ private:
     void ImportFrameResources(FRenderGraph& Graph, FDeferredFrameResources& OutResources);
     void AddGpuCullingPass(FRenderGraph& Graph, const FCamera& Camera, const FDeferredFrameState& FrameState, FRGResourceHandle HZBHandle);
     void AddShadowPass(FRenderGraph& Graph, const FCamera& Camera, const FDeferredFrameState& FrameState, FRGResourceHandle ShadowHandle);
+    void AddRayTracingShadowPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle DepthHandle, FRGResourceHandle GBufferHandle, FRGResourceHandle& ShadowMaskHandle);
     void AddDepthPrepass(FRenderGraph& Graph, const FCamera& Camera, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle);
     void AddBasePass(FRenderGraph& Graph, const FCamera& Camera, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle LightingHandle);
     void AddObjectIdPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle ObjectIdHandle, FRGResourceHandle DepthHandle);

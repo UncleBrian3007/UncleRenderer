@@ -83,6 +83,7 @@ private:
     bool bDepthPrepassEnabled = false;
     bool bFrameOverlapEnabled = false;
     bool bShadowsEnabled = true;
+    bool bRayTracedShadowsEnabled = false;
     bool bHZBEnabled = true;
     bool bGpuTimingEnabled = false;
     bool bGpuDebugPrintEnabled = false;

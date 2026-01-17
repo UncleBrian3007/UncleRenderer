@@ -123,6 +123,11 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
         OutConfig.bEnableShadows = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
 
+    if (LowerKey == "enableraytracedshadows" || LowerKey == "raytracedshadows" || LowerKey == "raytraceshadows")
+    {
+        OutConfig.bEnableRayTracedShadows = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+
     if (LowerKey == "shadowbias")
     {
         try

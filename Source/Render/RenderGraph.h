@@ -57,6 +57,7 @@ public:
         ID3D12Resource* Resource,
         D3D12_RESOURCE_STATES* StatePtr,
         const FRGTextureDesc& Desc);
+    ID3D12Resource* GetTextureResource(const FRGResourceHandle& Handle) const;
 
     template <typename PassData, typename SetupFunc, typename ExecuteFunc>
     void AddPass(const std::string& Name, SetupFunc&& Setup, ExecuteFunc&& Execute)
@@ -151,6 +152,9 @@ private:
         Microsoft::WRL::ComPtr<ID3D12Resource> Resource;
         D3D12_RESOURCE_STATES CurrentState = D3D12_RESOURCE_STATE_COMMON;
         bool bInUse = false;
+        uint32 FirstUseFrame = UINT32_MAX;
+        uint32 LastUseFrame = UINT32_MAX;
+        uint64 LastFenceValue = 0;
     };
 
     static std::vector<FPooledTexture> TexturePool;
@@ -194,6 +198,8 @@ private:
     bool bEnableResourceLifetimeLog = false;
     bool bEnableBarrierLogs = false;
     bool bEnableGpuTiming = false;
+    uint32 CurrentFrameIndex = 0;
+    uint64 CurrentFrameFenceValue = 0;
 };
 
 class FRGPassBuilder

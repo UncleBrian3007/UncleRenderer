@@ -163,6 +163,17 @@ FRGResourceHandle FRenderGraph::RegisterTexture(const std::string& Name, const F
     return Handle;
 }
 
+ID3D12Resource* FRenderGraph::GetTextureResource(const FRGResourceHandle& Handle) const
+{
+    if (!Handle || Handle.Id >= Textures.size())
+    {
+        return nullptr;
+    }
+
+    const FRGTextureResource& Resource = Textures[Handle.Id];
+    return Resource.Resource;
+}
+
 void FRenderGraph::RegisterUsage(PassEntry& Entry, const FRGResourceHandle& Handle, D3D12_RESOURCE_STATES RequiredState, ERGResourceAccess Access)
 {
     if (!Handle)
@@ -218,6 +229,9 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
         LogError("RenderGraph Execute called without a valid device");
         return;
     }
+
+    CurrentFrameIndex = CmdContext.GetCurrentFrameIndex();
+    CurrentFrameFenceValue = CmdContext.GetFrameFenceValue(CurrentFrameIndex);
 
     ProcessPendingGpuTimings(CmdContext, CmdContext.GetCurrentFrameIndex());
 
@@ -523,9 +537,14 @@ bool FRenderGraph::AcquireTransientTexture(FRGTextureResource& Texture, D3D12_RE
         return false;
     }
 
+    const FDX12CommandQueue* Queue = Device->GetGraphicsQueue();
+    const uint64 CompletedFenceValue = Queue ? Queue->GetCompletedFenceValue() : 0;
+
     const auto Matches = [&](const FPooledTexture& Candidate)
     {
+        const bool bFenceComplete = Candidate.LastFenceValue == 0 || CompletedFenceValue >= Candidate.LastFenceValue;
         return !Candidate.bInUse &&
+            bFenceComplete &&
             Candidate.Desc.Width == Texture.Desc.Width &&
             Candidate.Desc.Height == Texture.Desc.Height &&
             Candidate.Desc.Format == Texture.Desc.Format &&
@@ -536,6 +555,7 @@ bool FRenderGraph::AcquireTransientTexture(FRGTextureResource& Texture, D3D12_RE
     if (Found != TexturePool.end())
     {
         Found->bInUse = true;
+        Found->FirstUseFrame = CurrentFrameIndex;
         Texture.Resource = Found->Resource.Get();
         Texture.CurrentState = Found->CurrentState;
         Texture.PoolIndex = static_cast<int32>(Found - TexturePool.begin());
@@ -601,6 +621,7 @@ bool FRenderGraph::AcquireTransientTexture(FRGTextureResource& Texture, D3D12_RE
     Pooled.Resource = NewResource;
     Pooled.CurrentState = InitialState;
     Pooled.bInUse = true;
+    Pooled.FirstUseFrame = CurrentFrameIndex;
 
     TexturePool.push_back(Pooled);
     Texture.Resource = NewResource.Get();
@@ -620,6 +641,8 @@ void FRenderGraph::ReleaseTransientTexture(FRGTextureResource& Texture)
     FPooledTexture& Pooled = TexturePool[Texture.PoolIndex];
     Pooled.CurrentState = Texture.CurrentState;
     Pooled.bInUse = false;
+    Pooled.LastUseFrame = CurrentFrameIndex;
+    Pooled.LastFenceValue = CurrentFrameFenceValue;
     Texture.Resource = nullptr;
     Texture.PoolIndex = -1;
 }
