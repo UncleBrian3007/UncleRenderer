@@ -245,6 +245,7 @@ protected:
     std::vector<D3D12_RESOURCE_STATES> IndirectCommandStates;
     std::vector<D3D12_RESOURCE_STATES> MeshletVisibilityStates;
     std::vector<D3D12_RESOURCE_STATES> MeshletRunCountStates;
+    FRayTracingDevice RayTracingDevice;
     FRayTracingPipelineState RayTracingPipeline;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> RayTracingGlobalRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> RayTracingLocalRootSignature;

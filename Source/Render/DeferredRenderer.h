@@ -191,7 +191,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> LinearDepthPipeline;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> GtaoRootSignature;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2> GtaoPipelines;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> LightingPipeline;
+    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2> LightingPipelines;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> HZBPipelines;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> AutoExposurePipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> TaaPipeline;

@@ -70,6 +70,7 @@ void FDX12CommandContext::BeginFrame(uint32 FrameIndex)
 
     HR_CHECK(CommandAllocators[CurrentAllocatorIndex]->Reset());
     HR_CHECK(CommandList->Reset(CommandAllocators[CurrentAllocatorIndex].Get(), nullptr));
+    CommandList4.Reset();
 }
 
 void FDX12CommandContext::TransitionResource(ID3D12Resource* Resource, D3D12_RESOURCE_STATES Before, D3D12_RESOURCE_STATES After)
@@ -139,4 +140,17 @@ uint64 FDX12CommandContext::GetFrameFenceValue(uint32 FrameIndex) const
     }
 
     return 0;
+}
+
+ID3D12GraphicsCommandList4* FDX12CommandContext::GetCommandList4()
+{
+    if (!CommandList4 && CommandList)
+    {
+        if (FAILED(CommandList->QueryInterface(IID_PPV_ARGS(CommandList4.ReleaseAndGetAddressOf()))))
+        {
+            return nullptr;
+        }
+    }
+
+    return CommandList4.Get();
 }

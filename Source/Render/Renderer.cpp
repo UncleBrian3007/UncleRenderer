@@ -21,7 +21,7 @@ namespace
 {
     uint32_t AlignShaderRecordSize(uint32_t Size)
     {
-        const uint32_t Alignment = D3D12_RAYTRACING_SHADER_RECORD_BYTE_ALIGNMENT;
+        const uint32_t Alignment = D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT;
         return (Size + Alignment - 1u) & ~(Alignment - 1u);
     }
 }
@@ -1215,8 +1215,7 @@ bool FRenderer::CreateRayTracingPipeline(FDX12Device* Device)
     StateObjectDesc.NumSubobjects = SubobjectIndex;
     StateObjectDesc.pSubobjects = Subobjects;
 
-    FRayTracingDevice RayTracingDevice;
-    if (!Device->CreateRayTracingDevice(RayTracingDevice))
+    if (!RayTracingDevice.IsValid() && !Device->CreateRayTracingDevice(RayTracingDevice))
     {
         return false;
     }
@@ -1312,20 +1311,13 @@ void FRenderer::BuildRayTracingTlas(FDX12CommandContext& CmdContext)
         return;
     }
 
-    FRayTracingDevice RayTracingDevice;
-    if (!Device->CreateRayTracingDevice(RayTracingDevice))
+    if (!RayTracingDevice.IsValid() && !Device->CreateRayTracingDevice(RayTracingDevice))
     {
         return;
     }
 
-    ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
-    if (!CommandList)
-    {
-        return;
-    }
-
-    ComPtr<ID3D12GraphicsCommandList4> CommandList4;
-    if (FAILED(CommandList->QueryInterface(IID_PPV_ARGS(CommandList4.ReleaseAndGetAddressOf()))))
+    ID3D12GraphicsCommandList4* CommandList4 = CmdContext.GetCommandList4();
+    if (!CommandList4)
     {
         return;
     }
@@ -1388,25 +1380,28 @@ void FRenderer::BuildRayTracingTlas(FDX12CommandContext& CmdContext)
     }
 
     const uint64_t InstanceBufferSize = sizeof(D3D12_RAYTRACING_INSTANCE_DESC) * TlasInstanceCapacity;
-    D3D12_HEAP_PROPERTIES UploadHeap = {};
-    UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    if (!TlasInstanceBuffers[FrameIndex] || TlasInstanceBuffers[FrameIndex]->GetDesc().Width < InstanceBufferSize)
+    {
+        D3D12_HEAP_PROPERTIES UploadHeap = {};
+        UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
 
-    D3D12_RESOURCE_DESC InstanceBufferDesc = {};
-    InstanceBufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    InstanceBufferDesc.Width = InstanceBufferSize;
-    InstanceBufferDesc.Height = 1;
-    InstanceBufferDesc.DepthOrArraySize = 1;
-    InstanceBufferDesc.MipLevels = 1;
-    InstanceBufferDesc.SampleDesc.Count = 1;
-    InstanceBufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        D3D12_RESOURCE_DESC InstanceBufferDesc = {};
+        InstanceBufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        InstanceBufferDesc.Width = InstanceBufferSize;
+        InstanceBufferDesc.Height = 1;
+        InstanceBufferDesc.DepthOrArraySize = 1;
+        InstanceBufferDesc.MipLevels = 1;
+        InstanceBufferDesc.SampleDesc.Count = 1;
+        InstanceBufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &UploadHeap,
-        D3D12_HEAP_FLAG_NONE,
-        &InstanceBufferDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        nullptr,
-        IID_PPV_ARGS(TlasInstanceBuffers[FrameIndex].ReleaseAndGetAddressOf())));
+        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+            &UploadHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &InstanceBufferDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(TlasInstanceBuffers[FrameIndex].ReleaseAndGetAddressOf())));
+    }
 
     if (TlasInstanceBuffers[FrameIndex])
     {
@@ -1479,7 +1474,7 @@ void FRenderer::BuildRayTracingTlas(FDX12CommandContext& CmdContext)
         BuildDesc.SourceAccelerationStructureData = TlasResultBuffers[FrameIndex]->GetGPUVirtualAddress();
     }
 
-	FScopedPixEvent TlasEvent(CommandList, L"Build TLAS");
+	FScopedPixEvent TlasEvent(CommandList4, L"Build TLAS");
     CommandList4->BuildRaytracingAccelerationStructure(&BuildDesc, 0, nullptr);
 
     D3D12_RESOURCE_BARRIER Barrier = {};

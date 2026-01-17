@@ -225,7 +225,10 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
     ImportFrameResources(Graph, Resources);
 
     AddGpuCullingPass(Graph, Camera, Resources.DepthHandle);
-    AddShadowPass(Graph, Camera, FrameState, Resources.ShadowHandle);
+    if (!bRayTracedShadowsEnabled || !bRayTracingPipelineReady)
+    {
+        AddShadowPass(Graph, Camera, FrameState, Resources.ShadowHandle);
+    }
     AddDepthPrepass(Graph, Camera, FrameState, Resources.DepthHandle, Resources.ShadowHandle);
     AddRayTracingShadowPass(Graph, Camera, Resources.DepthHandle, FRGResourceHandle{}, Resources.ShadowMaskHandle);
     AddSkyPass(Graph, Camera, FrameState, Resources.DepthHandle, RtvHandle);
@@ -345,9 +348,8 @@ void FForwardRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCamer
             return;
         }
 
-        ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
-        ComPtr<ID3D12GraphicsCommandList4> CommandList4;
-        if (!CommandList || FAILED(CommandList->QueryInterface(IID_PPV_ARGS(CommandList4.ReleaseAndGetAddressOf()))))
+        ID3D12GraphicsCommandList4* CommandList4 = CmdContext.GetCommandList4();
+        if (!CommandList4)
         {
             return;
         }

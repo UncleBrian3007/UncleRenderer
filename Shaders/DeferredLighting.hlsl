@@ -15,7 +15,6 @@ cbuffer LightingBindlessConstants : register(b1)
     uint GBufferCIndex;
     uint ShadowMapIndex;
     uint ShadowMaskIndex;
-    uint ShadowMaskEnabled;
     uint EnvironmentMapIndex;
     uint BrdfLutIndex;
     uint DepthBufferIndex;
@@ -86,12 +85,14 @@ float4 PSMain(VSOutput Input) : SV_Target
     float2 shadowUV = shadowCoord.xy * float2(0.5f, -0.5f) + 0.5f;
     float shadowDepth = shadowCoord.z;
     float shadow = 1.0f;
-    if (ShadowStrength > 0.0f && ShadowMaskEnabled > 0)
+#if USE_SHADOW_MASK
+    if (ShadowStrength > 0.0f)
     {
         float shadowMask = ShadowMaskTexture.Sample(GBufferSampler, Input.UV).r;
         shadow = lerp(1.0f, shadowMask, ShadowStrength);
     }
-    else if (ShadowStrength > 0.0f && all(shadowUV >= 0.0f) && all(shadowUV <= 1.0f))
+#else
+    if (ShadowStrength > 0.0f && all(shadowUV >= 0.0f) && all(shadowUV <= 1.0f))
     {
         float2 shadowTexel = 1.0f / ShadowMapSize;
         float shadowCompare = shadowDepth - ShadowBias;
@@ -102,6 +103,7 @@ float4 PSMain(VSOutput Input) : SV_Target
             ShadowMap.SampleCmpLevelZero(ShadowSampler, shadowUV + shadowTexel, shadowCompare));
         shadow = lerp(1.0f, shadow, ShadowStrength);
     }
+#endif
 
     float3 lighting = EvaluatePBR(albedo, metallic, roughness, F0, normal, V, L) * LightIntensity * LightColor * shadow;
 

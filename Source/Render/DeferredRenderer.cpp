@@ -431,7 +431,10 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
     ConfigureHZBOcclusion(FrameState.bUseHZBOcclusion, HZBSrvBindlessIndex, HZBWidth, HZBHeight, HZBMipCount);
 
     AddGpuCullingPass(Graph, Camera, FrameState, Resources.HZBHandle);
-    AddShadowPass(Graph, Camera, FrameState, Resources.ShadowHandle);
+    if (!bRayTracedShadowsEnabled || !bRayTracingPipelineReady)
+    {
+        AddShadowPass(Graph, Camera, FrameState, Resources.ShadowHandle);
+    }
     AddDepthPrepass(Graph, Camera, FrameState, Resources.DepthHandle);
     AddBasePass(Graph, Camera, FrameState, Resources.GBufferHandles, Resources.DepthHandle, Resources.LightingHandle);
     AddRayTracingShadowPass(Graph, Camera, Resources.DepthHandle, Resources.GBufferHandles[0], Resources.ShadowMaskHandle);
@@ -667,14 +670,13 @@ void FDeferredRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCame
             return;
         }
 
-        ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
-        ComPtr<ID3D12GraphicsCommandList4> CommandList4;
-        if (!CommandList || FAILED(CommandList->QueryInterface(IID_PPV_ARGS(CommandList4.ReleaseAndGetAddressOf()))))
+        ID3D12GraphicsCommandList4* CommandList4 = CmdContext.GetCommandList4();
+        if (!CommandList4)
         {
             return;
         }
 
-		FScopedPixEvent RayTracingEvent(CommandList, L"Ray Tracing Shadow Mask Pass");
+		FScopedPixEvent RayTracingEvent(CommandList4, L"Ray Tracing Shadow Mask Pass");
 
         const UINT DescriptorStride = Device->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
         const D3D12_CPU_DESCRIPTOR_HANDLE CpuStart = RayTracingUavHeap->GetCPUDescriptorHandleForHeapStart();
@@ -1654,7 +1656,8 @@ void FDeferredRenderer::AddLightingPass(FRenderGraph& Graph, const FDeferredFram
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         Cmd.SetRenderTarget(LightingRTVHandle, nullptr);
 
-        LocalCommandList->SetPipelineState(LightingPipeline.Get());
+        const bool bUseShadowMask = bShadowsEnabled && bRayTracedShadowsEnabled && bRayTracingPipelineReady && ShadowMaskBindlessIndex != UINT32_MAX;
+        LocalCommandList->SetPipelineState(LightingPipelines[bUseShadowMask ? 1 : 0].Get());
         LocalCommandList->SetGraphicsRootSignature(LightingRootSignature.Get());
 
         LocalCommandList->RSSetViewports(1, &Viewport);
@@ -1662,8 +1665,7 @@ void FDeferredRenderer::AddLightingPass(FRenderGraph& Graph, const FDeferredFram
 
         LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         LocalCommandList->SetGraphicsRootConstantBufferView(0, GetSceneConstantBufferAddress());
-        const uint32_t ShadowMaskEnabled = (bRayTracedShadowsEnabled && ShadowMaskBindlessIndex != UINT32_MAX) ? 1u : 0u;
-        const uint32_t ResolvedShadowMaskIndex = ShadowMaskEnabled ? ShadowMaskBindlessIndex : ShadowMapBindlessIndex;
+        const uint32_t ResolvedShadowMaskIndex = bUseShadowMask ? ShadowMaskBindlessIndex : ShadowMapBindlessIndex;
         const uint32_t LightingBindlessIndices[] =
         {
             GBufferBindlessIndices[0],
@@ -1671,7 +1673,6 @@ void FDeferredRenderer::AddLightingPass(FRenderGraph& Graph, const FDeferredFram
             GBufferBindlessIndices[2],
             ShadowMapBindlessIndex,
             ResolvedShadowMaskIndex,
-            ShadowMaskEnabled,
             EnvironmentCubeBindlessIndex,
             BrdfLutBindlessIndex,
             DepthBindlessIndex,
@@ -2145,7 +2146,7 @@ bool FDeferredRenderer::CreateLightingRootSignature(FDX12Device* Device)
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     RootParams[1].Constants.ShaderRegister = 1;
     RootParams[1].Constants.RegisterSpace = 0;
-    RootParams[1].Constants.Num32BitValues = 10;
+    RootParams[1].Constants.Num32BitValues = 9;
 
     D3D12_STATIC_SAMPLER_DESC Samplers[3] = {};
     Samplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
@@ -2487,7 +2488,7 @@ bool FDeferredRenderer::CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT 
 {
     FShaderCompiler Compiler;
     std::vector<uint8_t> VSByteCode;
-    std::vector<uint8_t> PSByteCode;
+    std::vector<uint8_t> PSByteCodes[2];
 
     const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
     const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
@@ -2498,7 +2499,14 @@ bool FDeferredRenderer::CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT 
         return false;
     }
 
-    if (!Compiler.CompileFromFile(L"Shaders/DeferredLighting.hlsl", L"PSMain", PSTarget, PSByteCode))
+    const std::vector<std::wstring> DefaultDefines;
+    const std::vector<std::wstring> ShadowMaskDefines = { L"USE_SHADOW_MASK=1" };
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredLighting.hlsl", L"PSMain", PSTarget, PSByteCodes[0], DefaultDefines))
+    {
+        return false;
+    }
+
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredLighting.hlsl", L"PSMain", PSTarget, PSByteCodes[1], ShadowMaskDefines))
     {
         return false;
     }
@@ -2506,7 +2514,7 @@ bool FDeferredRenderer::CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
     PsoDesc.pRootSignature = LightingRootSignature.Get();
     PsoDesc.VS = { VSByteCode.data(), VSByteCode.size() };
-    PsoDesc.PS = { PSByteCode.data(), PSByteCode.size() };
+    PsoDesc.PS = { PSByteCodes[0].data(), PSByteCodes[0].size() };
     PsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     PsoDesc.SampleDesc.Count = 1;
     PsoDesc.SampleMask = UINT_MAX;
@@ -2534,7 +2542,9 @@ bool FDeferredRenderer::CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT 
     PsoDesc.RTVFormats[0] = LightingBufferFormat;
     PsoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
 
-    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(LightingPipeline.GetAddressOf())));
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(LightingPipelines[0].GetAddressOf())));
+    PsoDesc.PS = { PSByteCodes[1].data(), PSByteCodes[1].size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(LightingPipelines[1].GetAddressOf())));
     return true;
 }
 

@@ -31,6 +31,7 @@ public:
     uint32 GetCurrentFrameIndex() const { return CurrentAllocatorIndex; }
 
     ID3D12GraphicsCommandList* GetCommandList() const { return CommandList.Get(); }
+    ID3D12GraphicsCommandList4* GetCommandList4();
 
 private:
     FDX12Device*             Device;
@@ -40,4 +41,5 @@ private:
     uint32                            FrameCount;
     uint32                            CurrentAllocatorIndex;
     ComPtr<ID3D12GraphicsCommandList> CommandList;
+    ComPtr<ID3D12GraphicsCommandList4> CommandList4;
 };
