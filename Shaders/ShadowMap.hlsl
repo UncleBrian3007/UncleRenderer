@@ -6,7 +6,7 @@
 
 struct VSInput
 {
-    float3 Position : POSITION;
+    uint VertexId : SV_VertexID;
 };
 
 
@@ -15,19 +15,32 @@ struct VSOutput
     float4 Position : SV_Position;
 };
 
-float4 GetWorldPosition(float3 position)
-{
-#if USE_SKINNING
-    return mul(float4(position, 1.0), World);
-#else
-    return mul(float4(position, 1.0), World);
-#endif
-}
-
 VSOutput VSMain(VSInput Input)
 {
     VSOutput Output;
-    float4 WorldPos = GetWorldPosition(Input.Position);
+    StructuredBuffer<float3> PositionBuffer = ResourceDescriptorHeap[VertexBufferBindlessIndices.x];
+    StructuredBuffer<uint> IndexBuffer = ResourceDescriptorHeap[ExtraBindlessIndices.y];
+#if USE_SKINNING
+    StructuredBuffer<uint4> JointBuffer = ResourceDescriptorHeap[SkinningBindlessIndices.x];
+    StructuredBuffer<float4> WeightBuffer = ResourceDescriptorHeap[SkinningBindlessIndices.y];
+    StructuredBuffer<row_major float4x4> BoneMatrices = ResourceDescriptorHeap[SkinningBindlessIndices.z];
+#endif
+
+    uint vertexIndex = IndexBuffer[Input.VertexId];
+    float3 position = PositionBuffer[vertexIndex];
+
+#if USE_SKINNING
+    uint4 joints = JointBuffer[vertexIndex];
+    float4 weights = WeightBuffer[vertexIndex];
+    row_major float4x4 skinMatrix =
+        weights.x * BoneMatrices[joints.x] +
+        weights.y * BoneMatrices[joints.y] +
+        weights.z * BoneMatrices[joints.z] +
+        weights.w * BoneMatrices[joints.w];
+    position = mul(float4(position, 1.0), skinMatrix).xyz;
+#endif
+
+    float4 WorldPos = mul(float4(position, 1.0), World);
     Output.Position = mul(WorldPos, LightViewProjection);
     return Output;
 }

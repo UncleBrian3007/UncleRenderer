@@ -903,9 +903,8 @@ void FDeferredRenderer::AddShadowPass(FRenderGraph& Graph, const FCamera& Camera
             const FSceneModelResource& Model = SceneModels[ModelIndex];
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
 
-            SetShadowPipeline(Model.bUseSkinning);
-            LocalCommandList->IASetVertexBuffers(0, Model.Geometry.VertexBufferCount, Model.Geometry.VertexBufferViews.data());
-            LocalCommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
+            const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0;
+            SetShadowPipeline(bUseSkinning);
 
             const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
             LocalCommandList->SetGraphicsRootConstantBufferView(
@@ -920,11 +919,11 @@ void FDeferredRenderer::AddShadowPass(FRenderGraph& Graph, const FCamera& Camera
                     ? L"Model"
                     : std::wstring(Model.Name.begin(), Model.Name.end());
                 FScopedPixEvent ModelEvent(LocalCommandList, ModelLabel.c_str());
-                LocalCommandList->DrawIndexedInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0, 0);
+                LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0);
             }
             else
             {
-                LocalCommandList->DrawIndexedInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0, 0);
+                LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0);
             }
         }
 

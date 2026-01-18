@@ -364,14 +364,9 @@ bool FRenderer::CreateShadowPipeline(
         return false;
     }
 
-    D3D12_INPUT_ELEMENT_DESC InputLayout[] =
-    {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,   D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-    };
-
     D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
     PsoDesc.pRootSignature = RootSignature;
-    PsoDesc.InputLayout = { InputLayout, _countof(InputLayout) };
+    PsoDesc.InputLayout = { nullptr, 0 };
     PsoDesc.VS = { VSByteCode.data(), VSByteCode.size() };
     PsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     PsoDesc.SampleDesc.Count = 1;
