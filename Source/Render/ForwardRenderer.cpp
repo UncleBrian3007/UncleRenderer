@@ -232,6 +232,7 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
 
     FForwardFrameState FrameState;
     PrepareFrameState(Camera, FrameState);
+    UpdateRayTracingBlasRefit(CmdContext);
     BuildRayTracingTlas(CmdContext);
 
     FRenderGraph Graph;

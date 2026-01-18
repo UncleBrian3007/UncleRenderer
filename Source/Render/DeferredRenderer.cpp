@@ -436,6 +436,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
     FDeferredFrameState FrameState;
     PrepareFrameState(Camera, FrameState);
+    UpdateRayTracingBlasRefit(CmdContext);
     BuildRayTracingTlas(CmdContext);
 
     FRenderGraph Graph;

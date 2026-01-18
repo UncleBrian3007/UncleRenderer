@@ -745,6 +745,10 @@ namespace
             Inputs.NumDescs = 1;
             Inputs.pGeometryDescs = &GeometryDesc;
             Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+            if (Model.bUseSkinning)
+            {
+                Inputs.Flags |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE;
+            }
 
             D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO PrebuildInfo = {};
             RayTracingDevice.GetDevice()->GetRaytracingAccelerationStructurePrebuildInfo(&Inputs, &PrebuildInfo);

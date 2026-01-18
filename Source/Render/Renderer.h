@@ -111,6 +111,7 @@ protected:
     void ConfigureHZBOcclusion(bool bEnabled, uint32_t HZBBindlessIndex, uint32_t Width, uint32_t Height, uint32_t MipCount);
     void PrepareGpuDebugPrint(FDX12CommandContext& CmdContext);
     void DispatchGpuDebugPrintStats(FDX12CommandContext& CmdContext);
+    void UpdateRayTracingBlasRefit(FDX12CommandContext& CmdContext);
     void BuildRayTracingTlas(FDX12CommandContext& CmdContext);
     bool CreateRayTracingPipeline(FDX12Device* Device);
     bool CreateGpuDebugPrintResources(FDX12Device* Device);

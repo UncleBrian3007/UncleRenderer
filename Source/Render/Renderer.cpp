@@ -1298,6 +1298,87 @@ bool FRenderer::CreateRayTracingPipeline(FDX12Device* Device)
     return true;
 }
 
+void FRenderer::UpdateRayTracingBlasRefit(FDX12CommandContext& CmdContext)
+{
+    if (!bRayTracedShadowsEnabled)
+    {
+        return;
+    }
+
+    if (!Device || !Device->IsRayTracingSupported() || !bRayTracingPipelineReady)
+    {
+        return;
+    }
+
+    if (!RayTracingDevice.IsValid() && !Device->CreateRayTracingDevice(RayTracingDevice))
+    {
+        return;
+    }
+
+    ID3D12GraphicsCommandList4* CommandList4 = CmdContext.GetCommandList4();
+    if (!CommandList4)
+    {
+        return;
+    }
+
+    bool bHasUpdates = false;
+    D3D12_RESOURCE_BARRIER SkinningBarrier = {};
+    SkinningBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+    SkinningBarrier.UAV.pResource = nullptr;
+    CommandList4->ResourceBarrier(1, &SkinningBarrier);
+
+    for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+    {
+        FSceneModelResource& Model = SceneModels[ModelIndex];
+        if (!Model.bHasRayTracingBlas || !Model.BlasResultBuffer || !Model.BlasScratchBuffer)
+        {
+            continue;
+        }
+
+        const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0;
+        if (!bUseSkinning)
+        {
+            continue;
+        }
+
+        if (!SceneModelVisibility.empty() && !SceneModelVisibility[ModelIndex])
+        {
+            continue;
+        }
+
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS Inputs = {};
+        Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+        Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+        Inputs.NumDescs = 1;
+        Inputs.pGeometryDescs = &Model.BlasGeometryDesc;
+        Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE
+            | D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE
+            | D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE;
+
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC BuildDesc = {};
+        BuildDesc.Inputs = Inputs;
+        BuildDesc.DestAccelerationStructureData = Model.BlasResultBuffer->GetGPUVirtualAddress();
+        BuildDesc.SourceAccelerationStructureData = Model.BlasResultBuffer->GetGPUVirtualAddress();
+        BuildDesc.ScratchAccelerationStructureData = Model.BlasScratchBuffer->GetGPUVirtualAddress();
+
+        CommandList4->BuildRaytracingAccelerationStructure(&BuildDesc, 0, nullptr);
+
+        D3D12_RESOURCE_BARRIER Barrier = {};
+        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+        Barrier.UAV.pResource = Model.BlasResultBuffer.Get();
+        CommandList4->ResourceBarrier(1, &Barrier);
+        bHasUpdates = true;
+    }
+
+    if (bHasUpdates)
+    {
+        D3D12_RESOURCE_BARRIER Barrier = {};
+        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+        Barrier.UAV.pResource = nullptr;
+        CommandList4->ResourceBarrier(1, &Barrier);
+    }
+}
+
 void FRenderer::BuildRayTracingTlas(FDX12CommandContext& CmdContext)
 {
     if (!bRayTracedShadowsEnabled)
@@ -1325,9 +1406,15 @@ void FRenderer::BuildRayTracingTlas(FDX12CommandContext& CmdContext)
     Instances.reserve(SceneModels.size());
 
     uint32_t InstanceId = 0;
-    for (const FSceneModelResource& Model : SceneModels)
+    for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
     {
+        const FSceneModelResource& Model = SceneModels[ModelIndex];
         if (!Model.bHasRayTracingBlas || !Model.BlasResultBuffer)
+        {
+            continue;
+        }
+
+        if (!SceneModelVisibility.empty() && !SceneModelVisibility[ModelIndex])
         {
             continue;
         }
