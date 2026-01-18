@@ -15,6 +15,8 @@ public:
         std::vector<FFloat2> UVs;
         std::vector<FFloat4> Tangents;
         std::vector<FFloat4> Colors;
+        std::vector<FUInt4> Joints;
+        std::vector<FFloat4> Weights;
     };
 
     struct FPrimitive

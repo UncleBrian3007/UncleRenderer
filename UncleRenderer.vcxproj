@@ -109,6 +109,7 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="Source\Scene\GltfAnimation.cpp" />
     <ClCompile Include="Source\Scene\SceneJsonLoader.cpp" />
     <ClCompile Include="Source\Scene\GltfLoader.cpp" />
     <ClCompile Include="Source\Core\EngineTime.cpp" />
@@ -190,6 +191,7 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <ClInclude Include="Source\Render\RenderPass.h" />
     <ClInclude Include="Source\Render\ShaderCompiler.h" />
     <ClInclude Include="Source\Scene\Camera.h" />
+    <ClInclude Include="Source\Scene\GltfAnimation.h" />
     <ClInclude Include="Source\Scene\GltfLoader.h" />
     <ClInclude Include="Source\Scene\Material.h" />
     <ClInclude Include="Source\Scene\Mesh.h" />

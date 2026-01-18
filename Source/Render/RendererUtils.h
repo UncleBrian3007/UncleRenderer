@@ -11,6 +11,7 @@
 #include <cstddef>
 #include "../Math/MathTypes.h"
 #include "../Scene/Mesh.h"
+#include "../Scene/GltfAnimation.h"
 
 class FDX12Device;
 class FCamera;
@@ -19,9 +20,9 @@ struct FGltfMaterialTextures;
 
 struct FMeshGeometryBuffers
 {
-    std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 5> VertexBuffers;
+    std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 7> VertexBuffers;
     Microsoft::WRL::ComPtr<ID3D12Resource> IndexBuffer;
-    std::array<D3D12_VERTEX_BUFFER_VIEW, 5> VertexBufferViews{};
+    std::array<D3D12_VERTEX_BUFFER_VIEW, 7> VertexBufferViews{};
     D3D12_INDEX_BUFFER_VIEW IndexBufferView{};
     uint32_t VertexBufferCount = 0;
     uint32_t IndexCount = 0;
@@ -79,6 +80,7 @@ struct FSceneConstants
     DirectX::XMFLOAT4 EmissiveTransformRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
     DirectX::XMUINT4 VertexBufferBindlessIndices{ 0, 0, 0, 0 };
     DirectX::XMUINT4 ExtraBindlessIndices{ 0, 0, 0, 0 };
+    DirectX::XMUINT4 SkinningBindlessIndices{ 0, 0, 0, 0 };
     float EnvMapMipCount = 1.0f;
     DirectX::XMFLOAT3 PaddingEnvMap{ 0.0f, 0.0f, 0.0f };
     float GtaoRadius = 0.75f;
@@ -158,7 +160,7 @@ struct FSceneModelResource
     std::wstring NormalTexturePath;
     std::wstring EmissiveTexturePath;
     bool bHasNormalMap = true;
-    std::array<uint32_t, 5> VertexBufferBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX } };
+    std::array<uint32_t, 7> VertexBufferBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX } };
     uint32_t IndexBufferBindlessIndex = UINT32_MAX;
     uint32_t BaseColorBindlessIndex = UINT32_MAX;
     uint32_t MetallicRoughnessBindlessIndex = UINT32_MAX;
@@ -177,6 +179,14 @@ struct FSceneModelResource
     DirectX::XMFLOAT3 BoundsMax{ 0.0f, 0.0f, 0.0f };
     uint32_t ObjectId = 0;
     bool bUseMeshletCulling = false;
+    DirectX::XMFLOAT4X4 ModelTransform{};
+    int GltfSceneIndex = -1;
+    int GltfNodeIndex = -1;
+    int GltfSkinIndex = -1;
+    uint32_t BoneMatrixBindlessIndex = UINT32_MAX;
+    uint32_t BoneMatrixCount = 0;
+    Microsoft::WRL::ComPtr<ID3D12Resource> BoneMatrixBuffer;
+    uint8_t* BoneMatrixBufferMapped = nullptr;
     std::vector<FMesh::FMeshlet> Meshlets;
     std::vector<FMesh::FMeshletBounds> MeshletBounds;
     std::vector<uint32_t> MeshletIndices;
@@ -203,7 +213,8 @@ namespace RendererUtils
         const std::wstring& SceneFilePath,
         std::vector<FSceneModelResource>& OutModels,
         DirectX::XMFLOAT3& OutSceneCenter,
-        float& OutSceneRadius);
+        float& OutSceneRadius,
+        std::vector<FGltfScene>* OutGltfScenes = nullptr);
     bool CreateDepthResources(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT Format, FDepthResources& OutDepthResources);
     bool CreateObjectIdResources(
         FDX12Device* Device,
@@ -285,6 +296,12 @@ namespace RendererUtils
         uint32_t GtaoStepCount,
         uint8_t* ConstantBufferMapped,
         uint64_t ConstantBufferOffset = 0);
+    void UpdateGltfSceneAnimation(
+        std::vector<FSceneModelResource>& Models,
+        const std::vector<FGltfScene>& Scenes,
+        std::vector<FGltfAnimationPose>& ScenePoses,
+        std::vector<float>& SceneTimes,
+        float DeltaTime);
     void UpdateSkyConstants(
         const FCamera& Camera,
         const DirectX::XMMATRIX& WorldMatrix,

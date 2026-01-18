@@ -312,10 +312,17 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     }
 
     const std::wstring SceneFilePath = Config.SceneFile.empty() ? L"Assets/Scenes/Scene.json" : Config.SceneFile;
-    if (!RendererUtils::CreateSceneModelsFromJson(Device, SceneFilePath, SceneModels, SceneCenter, SceneRadius))
+    if (!RendererUtils::CreateSceneModelsFromJson(Device, SceneFilePath, SceneModels, SceneCenter, SceneRadius, &GltfScenes))
     {
         LogError("scene JSON could not be loaded.");
         return false;
+    }
+
+    GltfScenePoses.resize(GltfScenes.size());
+    GltfSceneTimes.assign(GltfScenes.size(), 0.0f);
+    for (size_t Index = 0; Index < GltfScenes.size(); ++Index)
+    {
+        InitializeGltfAnimationPose(GltfScenes[Index], GltfScenePoses[Index]);
     }
 
     SceneWorldMatrix = SceneModels.front().WorldMatrix;
@@ -416,6 +423,8 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
 
 void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle, const FCamera& Camera, float DeltaTime)
 {
+    RendererUtils::UpdateGltfSceneAnimation(SceneModels, GltfScenes, GltfScenePoses, GltfSceneTimes, DeltaTime);
+
     PrepareGpuDebugPrint(CmdContext);
 
     FDeferredFrameState FrameState;
@@ -935,7 +944,6 @@ void FDeferredRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Came
         Cmd.ClearDepth(GetDSVHandle());
 
         ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
-        LocalCommandList->SetPipelineState(DepthPrepassPipeline.Get());
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         LocalCommandList->SetGraphicsRootSignature(BasePassRootSignature.Get());
 
@@ -953,6 +961,7 @@ void FDeferredRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Came
             UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset);
         }
 
+        ID3D12PipelineState* CurrentPipeline = nullptr;
         for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
         {
             if (!SceneModelVisibility.empty() && !SceneModelVisibility[ModelIndex])
@@ -966,6 +975,14 @@ void FDeferredRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Came
                 continue;
             }
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
+
+            const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0;
+            ID3D12PipelineState* DesiredPipeline = bUseSkinning ? DepthPrepassPipelineSkinned.Get() : DepthPrepassPipeline.Get();
+            if (DesiredPipeline != CurrentPipeline)
+            {
+                CurrentPipeline = DesiredPipeline;
+                LocalCommandList->SetPipelineState(CurrentPipeline);
+            }
 
             const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
             LocalCommandList->SetGraphicsRootConstantBufferView(
@@ -1062,7 +1079,9 @@ void FDeferredRenderer::AddBasePass(FRenderGraph& Graph, const FCamera& Camera, 
         {
             auto SelectPipelineByKey = [&](uint32_t Key)
             {
-                return BasePassPipelines[Key].Get();
+                const bool bUseSkinning = (Key & (1u << 5)) != 0;
+                const uint32_t MaterialKey = Key & 0x1Fu;
+                return bUseSkinning ? BasePassPipelinesSkinned[MaterialKey].Get() : BasePassPipelines[MaterialKey].Get();
             };
 
             for (size_t RangeIndex = 0; RangeIndex < IndirectDrawRanges.size(); ++RangeIndex)
@@ -1114,6 +1133,7 @@ void FDeferredRenderer::AddBasePass(FRenderGraph& Graph, const FCamera& Camera, 
                 const bool bUseBaseColorMap = !Model.BaseColorTexturePath.empty();
                 const bool bUseEmissiveMap = !Model.EmissiveTexturePath.empty();
                 const bool bUseAlphaMask = Model.AlphaMode == 1u;
+                const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0;
 
                 // Build pipeline key from material properties (bit 0: Normal, bit 1: MR, bit 2: BaseColor, bit 3: Emissive, bit 4: AlphaMask)
                 const uint32_t PipelineKey = 
@@ -1123,7 +1143,7 @@ void FDeferredRenderer::AddBasePass(FRenderGraph& Graph, const FCamera& Camera, 
                     (bUseEmissiveMap ? 8u : 0u) |
                     (bUseAlphaMask ? 16u : 0u);
 
-                LocalCommandList->SetPipelineState(BasePassPipelines[PipelineKey].Get());
+                LocalCommandList->SetPipelineState(bUseSkinning ? BasePassPipelinesSkinned[PipelineKey].Get() : BasePassPipelines[PipelineKey].Get());
 
                 if (AreModelPixEventsEnabled())
                 {
@@ -2211,12 +2231,17 @@ bool FDeferredRenderer::CreateBasePassPipeline(FDX12Device* Device, DXGI_FORMAT 
 {
     FShaderCompiler Compiler;
     std::vector<uint8_t> VSByteCode;
+    std::vector<uint8_t> VSByteCodeSkinned;
 
     const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
     const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
     const std::wstring PSTarget = RendererUtils::BuildShaderTarget(L"ps", ShaderModel);
 
     if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"VSMain", VSTarget, VSByteCode))
+    {
+        return false;
+    }
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"VSMain", VSTarget, VSByteCodeSkinned, { L"USE_SKINNING=1" }))
     {
         return false;
     }
@@ -2249,12 +2274,12 @@ bool FDeferredRenderer::CreateBasePassPipeline(FDX12Device* Device, DXGI_FORMAT 
         }
     }
 
-    auto InitializeBasePassDesc = [&](D3D12_GRAPHICS_PIPELINE_STATE_DESC& Desc)
+    auto InitializeBasePassDesc = [&](D3D12_GRAPHICS_PIPELINE_STATE_DESC& Desc, const std::vector<uint8_t>& VertexShader)
     {
         Desc = {};
         Desc.pRootSignature = BasePassRootSignature.Get();
         Desc.InputLayout = { nullptr, 0 };
-        Desc.VS = { VSByteCode.data(), VSByteCode.size() };
+        Desc.VS = { VertexShader.data(), VertexShader.size() };
         Desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
         Desc.SampleDesc.Count = 1;
         Desc.SampleMask = UINT_MAX;
@@ -2316,9 +2341,13 @@ bool FDeferredRenderer::CreateBasePassPipeline(FDX12Device* Device, DXGI_FORMAT 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
     for (uint32_t Permutation = 0; Permutation < 32; ++Permutation)
     {
-        InitializeBasePassDesc(PsoDesc);
+        InitializeBasePassDesc(PsoDesc, VSByteCode);
         PsoDesc.PS = { PSByteCodes[Permutation].data(), PSByteCodes[Permutation].size() };
         HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipelines[Permutation].GetAddressOf())));
+
+        InitializeBasePassDesc(PsoDesc, VSByteCodeSkinned);
+        PsoDesc.PS = { PSByteCodes[Permutation].data(), PSByteCodes[Permutation].size() };
+        HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipelinesSkinned[Permutation].GetAddressOf())));
     }
 
     return true;
@@ -2328,11 +2357,16 @@ bool FDeferredRenderer::CreateDepthPrepassPipeline(FDX12Device* Device)
 {
     FShaderCompiler Compiler;
     std::vector<uint8_t> VSByteCode;
+    std::vector<uint8_t> VSByteCodeSkinned;
 
     const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
     const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
 
     if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"VSMain", VSTarget, VSByteCode))
+    {
+        return false;
+    }
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"VSMain", VSTarget, VSByteCodeSkinned, { L"USE_SKINNING=1" }))
     {
         return false;
     }
@@ -2381,6 +2415,8 @@ bool FDeferredRenderer::CreateDepthPrepassPipeline(FDX12Device* Device)
     PsoDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
 
     HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(DepthPrepassPipeline.GetAddressOf())));
+    PsoDesc.VS = { VSByteCodeSkinned.data(), VSByteCodeSkinned.size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(DepthPrepassPipelineSkinned.GetAddressOf())));
     return true;
 }
 

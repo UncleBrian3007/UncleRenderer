@@ -30,6 +30,14 @@
       "rotate_euler": [ 0.0, 0.0, 0.0 ],
       "scale": [ 1.0, 1.0, 1.0 ],
       "visible": true
+    },
+    {
+      "id": "RiggedSimple",
+      "path": "Models/RiggedSimple.gltf",
+      "translate": [ 0.0, 0.0, 0.0 ],
+      "rotate_euler": [ 0.0, 0.0, 0.0 ],
+      "scale": [ 1.0, 1.0, 1.0 ],
+      "visible": true
     }
   ],
   "lights": [

@@ -1,373 +1,60 @@
 #include "GltfLoader.h"
 #include "Mesh.h"
 
+#ifdef _MSC_VER
+#pragma warning (disable : 4996)
+#endif
+
+#define CGLTF_IMPLEMENTATION
+#include "../../ThirdParty/cgltf/cgltf.h"
+
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <cstdint>
-#include <cmath>
-#include <cstring>
 #include <filesystem>
-#include <fstream>
-#include <map>
+#include <Windows.h>
 #include <string>
 #include <vector>
 
 namespace
 {
-    enum class EJsonType
+    using FMatrix4 = std::array<float, 16>;
+
+    std::string ToUtf8String(const std::wstring& Wide)
     {
-        Null,
-        Bool,
-        Number,
-        String,
-        Array,
-        Object
-    };
-
-    struct FJsonValue
-    {
-        EJsonType Type = EJsonType::Null;
-        bool BoolValue = false;
-        double NumberValue = 0.0;
-        std::string StringValue;
-        std::vector<FJsonValue> ArrayValue;
-        std::map<std::string, FJsonValue> ObjectValue;
-
-        bool IsNull() const { return Type == EJsonType::Null; }
-        bool IsArray() const { return Type == EJsonType::Array; }
-        bool IsObject() const { return Type == EJsonType::Object; }
-        bool IsString() const { return Type == EJsonType::String; }
-        bool IsNumber() const { return Type == EJsonType::Number; }
-
-        const FJsonValue* Find(const std::string& Key) const
+        if (Wide.empty())
         {
-            auto It = ObjectValue.find(Key);
-            return It != ObjectValue.end() ? &It->second : nullptr;
-        }
-    };
-
-    class FSimpleJsonParser
-    {
-    public:
-        explicit FSimpleJsonParser(const std::string& InText)
-            : Text(InText)
-        {
-        }
-
-        FJsonValue Parse()
-        {
-            Position = 0;
-            return ParseValue();
-        }
-
-    private:
-        void SkipWhitespace()
-        {
-            while (Position < Text.size() && std::isspace(static_cast<unsigned char>(Text[Position])))
-            {
-                ++Position;
-            }
-        }
-
-        bool Match(const char Expected)
-        {
-            SkipWhitespace();
-            if (Position < Text.size() && Text[Position] == Expected)
-            {
-                ++Position;
-                return true;
-            }
-            return false;
-        }
-
-        FJsonValue ParseValue()
-        {
-            SkipWhitespace();
-            if (Position >= Text.size())
-            {
-                return {};
-            }
-
-            char Ch = Text[Position];
-            if (Ch == '"')
-            {
-                return ParseString();
-            }
-            if (Ch == '{')
-            {
-                return ParseObject();
-            }
-            if (Ch == '[')
-            {
-                return ParseArray();
-            }
-            if (std::isdigit(static_cast<unsigned char>(Ch)) || Ch == '-' || Ch == '+')
-            {
-                return ParseNumber();
-            }
-            if (Text.compare(Position, 4, "true") == 0)
-            {
-                Position += 4;
-                FJsonValue V; V.Type = EJsonType::Bool; V.BoolValue = true; return V;
-            }
-            if (Text.compare(Position, 5, "false") == 0)
-            {
-                Position += 5;
-                FJsonValue V; V.Type = EJsonType::Bool; V.BoolValue = false; return V;
-            }
-            if (Text.compare(Position, 4, "null") == 0)
-            {
-                Position += 4;
-                return {};
-            }
-
             return {};
         }
 
-        FJsonValue ParseString()
+        const int RequiredSize = ::WideCharToMultiByte(
+            CP_UTF8,
+            0,
+            Wide.c_str(),
+            static_cast<int>(Wide.size()),
+            nullptr,
+            0,
+            nullptr,
+            nullptr);
+
+        if (RequiredSize <= 0)
         {
-            FJsonValue V;
-            V.Type = EJsonType::String;
-
-            if (!Match('"'))
-            {
-                return {};
-            }
-
-            std::string Result;
-            while (Position < Text.size())
-            {
-                char Ch = Text[Position++];
-                if (Ch == '"')
-                {
-                    break;
-                }
-                // Minimal string parsing; assumes no escape sequences in provided glTF.
-                Result.push_back(Ch);
-            }
-
-            V.StringValue = Result;
-            return V;
+            return {};
         }
 
-        FJsonValue ParseNumber()
-        {
-            const size_t Start = Position;
-            if (Text[Position] == '-' || Text[Position] == '+')
-            {
-                ++Position;
-            }
-            while (Position < Text.size() && std::isdigit(static_cast<unsigned char>(Text[Position])))
-            {
-                ++Position;
-            }
-            if (Position < Text.size() && Text[Position] == '.')
-            {
-                ++Position;
-                while (Position < Text.size() && std::isdigit(static_cast<unsigned char>(Text[Position])))
-                {
-                    ++Position;
-                }
-            }
+        std::string Result(static_cast<size_t>(RequiredSize), '\0');
+        ::WideCharToMultiByte(
+            CP_UTF8,
+            0,
+            Wide.c_str(),
+            static_cast<int>(Wide.size()),
+            Result.data(),
+            RequiredSize,
+            nullptr,
+            nullptr);
 
-            if (Position < Text.size() && (Text[Position] == 'e' || Text[Position] == 'E'))
-            {
-                ++Position;
-                if (Position < Text.size() && (Text[Position] == '+' || Text[Position] == '-'))
-                {
-                    ++Position;
-                }
-                while (Position < Text.size() && std::isdigit(static_cast<unsigned char>(Text[Position])))
-                {
-                    ++Position;
-                }
-            }
-
-            const std::string NumberText = Text.substr(Start, Position - Start);
-            FJsonValue V;
-            V.Type = EJsonType::Number;
-            V.NumberValue = std::strtod(NumberText.c_str(), nullptr);
-            return V;
-        }
-
-        FJsonValue ParseArray()
-        {
-            FJsonValue V;
-            V.Type = EJsonType::Array;
-
-            if (!Match('['))
-            {
-                return {};
-            }
-
-            SkipWhitespace();
-            if (Match(']'))
-            {
-                return V;
-            }
-
-            while (Position < Text.size())
-            {
-                V.ArrayValue.push_back(ParseValue());
-                SkipWhitespace();
-                if (Match(']'))
-                {
-                    break;
-                }
-                Match(',');
-            }
-
-            return V;
-        }
-
-        FJsonValue ParseObject()
-        {
-            FJsonValue V;
-            V.Type = EJsonType::Object;
-
-            if (!Match('{'))
-            {
-                return {};
-            }
-
-            SkipWhitespace();
-            if (Match('}'))
-            {
-                return V;
-            }
-
-            while (Position < Text.size())
-            {
-                FJsonValue Key = ParseString();
-                Match(':');
-                FJsonValue Value = ParseValue();
-                V.ObjectValue.emplace(Key.StringValue, std::move(Value));
-                SkipWhitespace();
-                if (Match('}'))
-                {
-                    break;
-                }
-                Match(',');
-            }
-
-            return V;
-        }
-
-        const std::string& Text;
-        size_t Position = 0;
-    };
-
-    std::vector<uint8_t> DecodeBase64(const std::string& Input)
-    {
-        static const int8_t DecodingTable[256] =
-        {
-            -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-            -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-            -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,62,-1,-1,-1,63,
-            52,53,54,55,56,57,58,59,60,61,-1,-1,-1, 0,-1,-1,
-            -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,
-            15,16,17,18,19,20,21,22,23,24,25,-1,-1,-1,-1,-1,
-            -1,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,
-            41,42,43,44,45,46,47,48,49,50,51,-1,-1,-1,-1,-1,
-            -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-            -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-            -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-            -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-            -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-            -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-            -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-            -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1
-        };
-
-        std::vector<uint8_t> Output;
-        Output.reserve(Input.size());
-
-        uint32_t Buffer = 0;
-        int32_t BitsCollected = 0;
-        for (unsigned char Ch : Input)
-        {
-            if (Ch == '=')
-            {
-                break;
-            }
-            const int8_t Decoded = DecodingTable[Ch];
-            if (Decoded < 0)
-            {
-                continue;
-            }
-
-            Buffer = (Buffer << 6) | static_cast<uint32_t>(Decoded);
-            BitsCollected += 6;
-            if (BitsCollected >= 8)
-            {
-                BitsCollected -= 8;
-                Output.push_back(static_cast<uint8_t>((Buffer >> BitsCollected) & 0xFF));
-            }
-        }
-
-        return Output;
+        return Result;
     }
-
-    const FJsonValue* GetObjectField(const FJsonValue* Object, const std::string& Key)
-    {
-        if (!Object || !Object->IsObject())
-        {
-            return nullptr;
-        }
-        return Object->Find(Key);
-    }
-
-    int64_t GetIntField(const FJsonValue* Object, const std::string& Key, int64_t Default = 0)
-    {
-        const FJsonValue* Field = GetObjectField(Object, Key);
-        if (Field && Field->IsNumber())
-        {
-            return static_cast<int64_t>(Field->NumberValue);
-        }
-        return Default;
-    }
-
-    double GetNumberField(const FJsonValue* Object, const std::string& Key, double Default = 0.0)
-    {
-        const FJsonValue* Field = GetObjectField(Object, Key);
-        if (Field && Field->IsNumber())
-        {
-            return Field->NumberValue;
-        }
-        return Default;
-    }
-
-	const FJsonValue* GetArrayElem(const FJsonValue* Array, size_t Index)
-	{
-		if (!Array || !Array->IsArray() || Index >= Array->ArrayValue.size())
-		{
-			return nullptr;
-		}
-		return &Array->ArrayValue[Index];
-	}
-
-    double GetNumberField(const FJsonValue* Array, size_t Index, double Default = 0.0)
-    {
-        const FJsonValue* Field = GetArrayElem(Array, Index);
-        if (Field && Field->IsNumber())
-        {
-            return Field->NumberValue;
-        }
-        return Default;
-    }
-
-    std::string GetStringField(const FJsonValue* Object, const std::string& Key)
-    {
-        const FJsonValue* Field = GetObjectField(Object, Key);
-        if (Field && Field->IsString())
-        {
-            return Field->StringValue;
-        }
-        return {};
-    }
-
-    using FMatrix4 = std::array<float, 16>;
 
     FMatrix4 MakeMirrorZMatrix()
     {
@@ -387,7 +74,6 @@ namespace
 
     FMatrix4 MultiplyMatrix(const FMatrix4& A, const FMatrix4& B)
     {
-        // Column-major multiplication (A * B)
         FMatrix4 Result{};
         for (int Col = 0; Col < 4; ++Col)
         {
@@ -424,74 +110,19 @@ namespace
         };
     }
 
-    FMatrix4 MatrixFromTRS(const FJsonValue* Node)
+    FMatrix4 MatrixFromTRS(const FFloat3& Translation, const FFloat4& Rotation, const FFloat3& Scale)
     {
-        if (!Node || !Node->IsObject())
-        {
-            return MakeIdentityMatrix();
-        }
-
-        const FJsonValue* MatrixValue = Node->Find("matrix");
-        if (MatrixValue && MatrixValue->IsArray() && MatrixValue->ArrayValue.size() == 16)
-        {
-            FMatrix4 M{};
-            for (size_t i = 0; i < 16; ++i)
-            {
-                M[i] = static_cast<float>(MatrixValue->ArrayValue[i].NumberValue);
-            }
-            return M;
-        }
-
-        const FJsonValue* Translation = Node->Find("translation");
-        const FJsonValue* Rotation = Node->Find("rotation");
-        const FJsonValue* Scale = Node->Find("scale");
-
-        const float tx = (Translation && Translation->IsArray() && Translation->ArrayValue.size() == 3)
-            ? static_cast<float>(Translation->ArrayValue[0].NumberValue)
-            : 0.0f;
-        const float ty = (Translation && Translation->IsArray() && Translation->ArrayValue.size() == 3)
-            ? static_cast<float>(Translation->ArrayValue[1].NumberValue)
-            : 0.0f;
-        const float tz = (Translation && Translation->IsArray() && Translation->ArrayValue.size() == 3)
-            ? static_cast<float>(Translation->ArrayValue[2].NumberValue)
-            : 0.0f;
-
-        const float sx = (Scale && Scale->IsArray() && Scale->ArrayValue.size() == 3)
-            ? static_cast<float>(Scale->ArrayValue[0].NumberValue)
-            : 1.0f;
-        const float sy = (Scale && Scale->IsArray() && Scale->ArrayValue.size() == 3)
-            ? static_cast<float>(Scale->ArrayValue[1].NumberValue)
-            : 1.0f;
-        const float sz = (Scale && Scale->IsArray() && Scale->ArrayValue.size() == 3)
-            ? static_cast<float>(Scale->ArrayValue[2].NumberValue)
-            : 1.0f;
-
-        const float rx = (Rotation && Rotation->IsArray() && Rotation->ArrayValue.size() == 4)
-            ? static_cast<float>(Rotation->ArrayValue[0].NumberValue)
-            : 0.0f;
-        const float ry = (Rotation && Rotation->IsArray() && Rotation->ArrayValue.size() == 4)
-            ? static_cast<float>(Rotation->ArrayValue[1].NumberValue)
-            : 0.0f;
-        const float rz = (Rotation && Rotation->IsArray() && Rotation->ArrayValue.size() == 4)
-            ? static_cast<float>(Rotation->ArrayValue[2].NumberValue)
-            : 0.0f;
-        const float rw = (Rotation && Rotation->IsArray() && Rotation->ArrayValue.size() == 4)
-            ? static_cast<float>(Rotation->ArrayValue[3].NumberValue)
-            : 1.0f;
-
         const FMatrix4 T = { 1.0f, 0.0f, 0.0f, 0.0f,
                              0.0f, 1.0f, 0.0f, 0.0f,
                              0.0f, 0.0f, 1.0f, 0.0f,
-                             tx,   ty,   tz,   1.0f };
+                             Translation.x, Translation.y, Translation.z, 1.0f };
 
-        const FMatrix4 S = { sx,   0.0f, 0.0f, 0.0f,
-                             0.0f, sy,   0.0f, 0.0f,
-                             0.0f, 0.0f, sz,   0.0f,
+        const FMatrix4 S = { Scale.x, 0.0f, 0.0f, 0.0f,
+                             0.0f, Scale.y, 0.0f, 0.0f,
+                             0.0f, 0.0f, Scale.z, 0.0f,
                              0.0f, 0.0f, 0.0f, 1.0f };
 
-        const FMatrix4 R = MatrixFromQuaternion(rx, ry, rz, rw);
-
-        // glTF uses column-major matrices with column vectors; compose as T * R * S
+        const FMatrix4 R = MatrixFromQuaternion(Rotation.x, Rotation.y, Rotation.z, Rotation.w);
         return MultiplyMatrix(MultiplyMatrix(T, R), S);
     }
 
@@ -500,42 +131,6 @@ namespace
         const FMatrix4 MirrorZ = MakeMirrorZMatrix();
         return MultiplyMatrix(MirrorZ, MultiplyMatrix(M, MirrorZ));
     }
-
-    FFloat3 TransformPosition(const FMatrix4& M, const FFloat3& P)
-    {
-        FFloat3 Out;
-        Out.x = M[0] * P.x + M[4] * P.y + M[8]  * P.z + M[12];
-        Out.y = M[1] * P.x + M[5] * P.y + M[9]  * P.z + M[13];
-        Out.z = M[2] * P.x + M[6] * P.y + M[10] * P.z + M[14];
-        return Out;
-    }
-
-    FFloat3 TransformDirection(const FMatrix4& M, const FFloat3& D)
-    {
-        FFloat3 Out;
-        Out.x = M[0] * D.x + M[4] * D.y + M[8]  * D.z;
-        Out.y = M[1] * D.x + M[5] * D.y + M[9]  * D.z;
-        Out.z = M[2] * D.x + M[6] * D.y + M[10] * D.z;
-
-        const float Length = std::sqrt(Out.x * Out.x + Out.y * Out.y + Out.z * Out.z);
-        if (Length > 0.0f)
-        {
-            Out.x /= Length;
-            Out.y /= Length;
-            Out.z /= Length;
-        }
-        return Out;
-    }
-
-    struct FMeshData
-    {
-        struct FPrimitiveData
-        {
-            FMesh::FPrimitive Primitive;
-            int64_t MaterialIndex = -1;
-        };
-        std::vector<FPrimitiveData> Primitives;
-    };
 
     DirectX::XMFLOAT4X4 ToFloat4x4(const FMatrix4& M)
     {
@@ -551,253 +146,207 @@ namespace
         return Result;
     }
 
-    void ProcessNodeRecursive(
-        const FJsonValue* Nodes,
-        int64_t NodeIndex,
-        const FMatrix4& ParentTransform,
-        const std::vector<FMeshData>& MeshDatas,
-        std::vector<FGltfNode>& OutNodes)
+    struct FMeshData
     {
-        const FJsonValue* Node = GetArrayElem(Nodes, static_cast<size_t>(NodeIndex));
-        if (!Node || !Node->IsObject())
+        struct FPrimitiveData
         {
-            return;
+            FMesh::FPrimitive Primitive;
+            int64_t MaterialIndex = -1;
+        };
+        std::vector<FPrimitiveData> Primitives;
+    };
+
+    const cgltf_accessor* FindAccessor(const cgltf_primitive* Primitive, cgltf_attribute_type Type, cgltf_int Index)
+    {
+        if (!Primitive)
+        {
+            return nullptr;
         }
 
-        const FMatrix4 Local = MatrixFromTRS(Node);
-        const FMatrix4 LocalLH = ToLeftHandedMatrix(Local);
-        const FMatrix4 World = MultiplyMatrix(ParentTransform, LocalLH);
-
-        const int64_t MeshIndex = GetIntField(Node, "mesh", -1);
-        if (MeshIndex >= 0 && MeshIndex < static_cast<int64_t>(MeshDatas.size()))
+        for (cgltf_size AttributeIndex = 0; AttributeIndex < Primitive->attributes_count; ++AttributeIndex)
         {
-            FGltfNode LoadedNode;
-            LoadedNode.MeshIndex = static_cast<int>(MeshIndex);
-            LoadedNode.WorldMatrix = ToFloat4x4(World);
-            LoadedNode.Name = GetStringField(Node, "name");
-            OutNodes.push_back(LoadedNode);
-        }
-
-        const FJsonValue* Children = GetObjectField(Node, "children");
-        if (Children && Children->IsArray())
-        {
-            for (size_t i = 0; i < Children->ArrayValue.size(); ++i)
+            const cgltf_attribute& Attribute = Primitive->attributes[AttributeIndex];
+            if (Attribute.type == Type && Attribute.index == Index)
             {
-                const int64_t ChildIndex = static_cast<int64_t>(Children->ArrayValue[i].NumberValue);
-                ProcessNodeRecursive(Nodes, ChildIndex, World, MeshDatas, OutNodes);
+                return Attribute.data;
             }
         }
+
+        return nullptr;
     }
-}
 
-namespace
-{
-    std::wstring ResolveTexturePath(const FJsonValue* Textures, const FJsonValue* Images, const std::filesystem::path& BasePath, int64_t TextureIndex)
+    EGltfAnimationInterpolation ToInterpolation(cgltf_interpolation_type Type)
     {
-        if (TextureIndex < 0)
+        switch (Type)
+        {
+        case cgltf_interpolation_type_step:
+            return EGltfAnimationInterpolation::Step;
+        case cgltf_interpolation_type_cubic_spline:
+            return EGltfAnimationInterpolation::CubicSpline;
+        case cgltf_interpolation_type_linear:
+        default:
+            return EGltfAnimationInterpolation::Linear;
+        }
+    }
+
+    bool ReadAccessorVec3(const cgltf_accessor* Accessor, std::vector<FFloat3>& OutValues)
+    {
+        if (!Accessor)
+        {
+            return false;
+        }
+
+        const cgltf_size Count = Accessor->count;
+        OutValues.resize(static_cast<size_t>(Count));
+        for (cgltf_size Index = 0; Index < Count; ++Index)
+        {
+            float Value[3] = {};
+            cgltf_accessor_read_float(Accessor, Index, Value, 3);
+            OutValues[static_cast<size_t>(Index)] = FFloat3(Value[0], Value[1], Value[2]);
+        }
+
+        return true;
+    }
+
+    bool ReadAccessorVec4(const cgltf_accessor* Accessor, std::vector<FFloat4>& OutValues)
+    {
+        if (!Accessor)
+        {
+            return false;
+        }
+
+        const cgltf_size Count = Accessor->count;
+        OutValues.resize(static_cast<size_t>(Count));
+        for (cgltf_size Index = 0; Index < Count; ++Index)
+        {
+            float Value[4] = {};
+            cgltf_accessor_read_float(Accessor, Index, Value, 4);
+            OutValues[static_cast<size_t>(Index)] = FFloat4(Value[0], Value[1], Value[2], Value[3]);
+        }
+
+        return true;
+    }
+
+    bool ReadAccessorScalar(const cgltf_accessor* Accessor, std::vector<float>& OutValues)
+    {
+        if (!Accessor)
+        {
+            return false;
+        }
+
+        const cgltf_size Count = Accessor->count;
+        OutValues.resize(static_cast<size_t>(Count));
+        for (cgltf_size Index = 0; Index < Count; ++Index)
+        {
+            float Value = 0.0f;
+            cgltf_accessor_read_float(Accessor, Index, &Value, 1);
+            OutValues[static_cast<size_t>(Index)] = Value;
+        }
+
+        return true;
+    }
+
+    DirectX::XMFLOAT4X4 ReadAccessorMat4LH(const cgltf_accessor* Accessor, cgltf_size Index)
+    {
+        float Value[16] = {};
+        cgltf_accessor_read_float(Accessor, Index, Value, 16);
+        FMatrix4 Matrix{};
+        for (int i = 0; i < 16; ++i)
+        {
+            Matrix[static_cast<size_t>(i)] = Value[i];
+        }
+
+        return ToFloat4x4(ToLeftHandedMatrix(Matrix));
+    }
+
+    std::wstring ResolveTexturePath(const std::filesystem::path& BasePath, const cgltf_texture* Texture)
+    {
+        if (!Texture || !Texture->image || !Texture->image->uri)
         {
             return L"";
         }
 
-        const FJsonValue* Texture = GetArrayElem(Textures, static_cast<size_t>(TextureIndex));
-        const int64_t ImageIndex = GetIntField(Texture, "source", -1);
-        if (ImageIndex < 0)
-        {
-            return L"";
-        }
-
-        const FJsonValue* Image = GetArrayElem(Images, static_cast<size_t>(ImageIndex));
-        const std::string ImageUri = GetStringField(Image, "uri");
-        if (ImageUri.empty())
-        {
-            return L"";
-        }
-
-        const std::filesystem::path FullPath = BasePath / std::filesystem::path(ImageUri);
+        const std::filesystem::path FullPath = BasePath / std::filesystem::path(Texture->image->uri);
         return FullPath.wstring();
     }
 
-    FGltfTextureTransform ResolveTextureTransform(const FJsonValue* TextureInfo)
+    FGltfTextureTransform ResolveTextureTransform(const cgltf_texture_view& View)
     {
         FGltfTextureTransform Transform;
 
-        if (!TextureInfo || !TextureInfo->IsObject())
+        if (!View.has_transform)
         {
             return Transform;
         }
 
-        const FJsonValue* Extensions = GetObjectField(TextureInfo, "extensions");
-        const FJsonValue* TransformExt = Extensions ? GetObjectField(Extensions, "KHR_texture_transform") : nullptr;
-        const FJsonValue* Source = TransformExt ? TransformExt : TextureInfo;
-
-        const FJsonValue* Offset = GetObjectField(Source, "offset");
-        if (Offset && Offset->IsArray())
-        {
-            Transform.Offset.x = static_cast<float>(GetNumberField(Offset, 0, Transform.Offset.x));
-            Transform.Offset.y = static_cast<float>(GetNumberField(Offset, 1, Transform.Offset.y));
-        }
-
-        const FJsonValue* Scale = GetObjectField(Source, "scale");
-        if (Scale && Scale->IsArray())
-        {
-            Transform.Scale.x = static_cast<float>(GetNumberField(Scale, 0, Transform.Scale.x));
-            Transform.Scale.y = static_cast<float>(GetNumberField(Scale, 1, Transform.Scale.y));
-        }
-
-        Transform.Rotation = static_cast<float>(GetNumberField(Source, "rotation", Transform.Rotation));
+        Transform.Offset.x = View.transform.offset[0];
+        Transform.Offset.y = View.transform.offset[1];
+        Transform.Scale.x = View.transform.scale[0];
+        Transform.Scale.y = View.transform.scale[1];
+        Transform.Rotation = View.transform.rotation;
 
         return Transform;
     }
-}
 
-bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& OutScene)
-{
-    std::ifstream File(std::filesystem::path(FilePath), std::ios::binary);
-    if (!File.is_open())
+    FGltfMaterialTextureSet ResolveMaterialTextures(const std::filesystem::path& BasePath, const cgltf_material* Material)
     {
-        return false;
+        FGltfMaterialTextureSet TextureSet;
+        if (!Material)
+        {
+            return TextureSet;
+        }
+
+        const cgltf_pbr_metallic_roughness& Pbr = Material->pbr_metallic_roughness;
+        TextureSet.BaseColor = ResolveTexturePath(BasePath, Pbr.base_color_texture.texture);
+        TextureSet.BaseColorTransform = ResolveTextureTransform(Pbr.base_color_texture);
+        TextureSet.BaseColorFactor.x = Pbr.base_color_factor[0];
+        TextureSet.BaseColorFactor.y = Pbr.base_color_factor[1];
+        TextureSet.BaseColorFactor.z = Pbr.base_color_factor[2];
+        TextureSet.BaseColorAlpha = Pbr.base_color_factor[3];
+        TextureSet.MetallicFactor = Pbr.metallic_factor;
+        TextureSet.RoughnessFactor = Pbr.roughness_factor;
+        TextureSet.MetallicRoughness = ResolveTexturePath(BasePath, Pbr.metallic_roughness_texture.texture);
+        TextureSet.MetallicRoughnessTransform = ResolveTextureTransform(Pbr.metallic_roughness_texture);
+
+        TextureSet.Normal = ResolveTexturePath(BasePath, Material->normal_texture.texture);
+        TextureSet.NormalTransform = ResolveTextureTransform(Material->normal_texture);
+        TextureSet.Emissive = ResolveTexturePath(BasePath, Material->emissive_texture.texture);
+        TextureSet.EmissiveTransform = ResolveTextureTransform(Material->emissive_texture);
+        TextureSet.EmissiveFactor.x = Material->emissive_factor[0];
+        TextureSet.EmissiveFactor.y = Material->emissive_factor[1];
+        TextureSet.EmissiveFactor.z = Material->emissive_factor[2];
+
+        if (Material->alpha_mode == cgltf_alpha_mode_mask)
+        {
+            TextureSet.bAlphaMask = true;
+            TextureSet.AlphaCutoff = Material->alpha_cutoff;
+        }
+
+        return TextureSet;
     }
 
-    std::string JsonText((std::istreambuf_iterator<char>(File)), std::istreambuf_iterator<char>());
-    File.close();
-
-    FSimpleJsonParser Parser(JsonText);
-    const FJsonValue Root = Parser.Parse();
-
-    const FJsonValue* Buffers = GetObjectField(&Root, "buffers");
-    if (!Buffers || !Buffers->IsArray() || Buffers->ArrayValue.empty())
+    bool AppendPrimitiveToMesh(const cgltf_primitive* Primitive, FMeshData::FPrimitiveData& OutPrimitive)
     {
-        return false;
-    }
-
-    const std::string Uri = GetStringField(&Buffers->ArrayValue[0], "uri");
-    const std::string Prefix = "data:application/octet-stream;base64,";
-
-    std::vector<uint8_t> BufferData;
-    if (Uri.compare(0, Prefix.size(), Prefix) == 0)
-    {
-        BufferData = DecodeBase64(Uri.substr(Prefix.size()));
-    }
-    else
-    {
-        const std::filesystem::path BasePath = std::filesystem::path(FilePath).parent_path();
-        const std::filesystem::path BufferPath = BasePath / std::filesystem::path(Uri);
-
-        std::ifstream BinFile(BufferPath, std::ios::binary | std::ios::ate);
-        if (!BinFile.is_open())
+        if (!Primitive)
         {
             return false;
         }
 
-        const std::streamsize FileSize = BinFile.tellg();
-        if (FileSize <= 0)
+        const cgltf_accessor* PositionAccessor = FindAccessor(Primitive, cgltf_attribute_type_position, 0);
+        if (!PositionAccessor)
         {
             return false;
         }
 
-        BufferData.resize(static_cast<size_t>(FileSize));
-        BinFile.seekg(0, std::ios::beg);
-        BinFile.read(reinterpret_cast<char*>(BufferData.data()), FileSize);
-    }
+        const cgltf_accessor* NormalAccessor = FindAccessor(Primitive, cgltf_attribute_type_normal, 0);
+        const cgltf_accessor* TexcoordAccessor = FindAccessor(Primitive, cgltf_attribute_type_texcoord, 0);
+        const cgltf_accessor* TangentAccessor = FindAccessor(Primitive, cgltf_attribute_type_tangent, 0);
+        const cgltf_accessor* ColorAccessor = FindAccessor(Primitive, cgltf_attribute_type_color, 0);
+        const cgltf_accessor* JointsAccessor = FindAccessor(Primitive, cgltf_attribute_type_joints, 0);
+        const cgltf_accessor* WeightsAccessor = FindAccessor(Primitive, cgltf_attribute_type_weights, 0);
 
-    if (BufferData.empty())
-    {
-        return false;
-    }
-
-    const FJsonValue* BufferViews = GetObjectField(&Root, "bufferViews");
-    const FJsonValue* Accessors = GetObjectField(&Root, "accessors");
-    const FJsonValue* Meshes = GetObjectField(&Root, "meshes");
-    if (!BufferViews || !BufferViews->IsArray() || !Accessors || !Accessors->IsArray() || !Meshes || !Meshes->IsArray())
-    {
-        return false;
-    }
-
-    const auto AppendPrimitiveToMesh = [&](const FJsonValue* Primitive, FMeshData::FPrimitiveData& OutPrimitive) -> bool
-    {
-        if (!Primitive || !Primitive->IsObject())
-        {
-            return false;
-        }
-
-        const FJsonValue* Attributes = GetObjectField(Primitive, "attributes");
-        if (!Attributes || !Attributes->IsObject())
-        {
-            return false;
-        }
-
-        const int64_t PositionAccessorIndex = GetIntField(Attributes, "POSITION", -1);
-        const int64_t NormalAccessorIndex = GetIntField(Attributes, "NORMAL", -1);
-        const int64_t TexcoordAccessorIndex = GetIntField(Attributes, "TEXCOORD_0", -1);
-        const int64_t TangentAccessorIndex = GetIntField(Attributes, "TANGENT", -1);
-        const int64_t ColorAccessorIndex = GetIntField(Attributes, "COLOR_0", -1);
-        const int64_t PrimitiveMode = GetIntField(Primitive, "mode", 4);
-        const int64_t IndicesAccessorIndex = GetIntField(Primitive, "indices", -1);
-
-        if (PositionAccessorIndex < 0 || IndicesAccessorIndex < 0)
-        {
-            return false;
-        }
-
-        const FJsonValue* PositionAccessor = GetArrayElem(Accessors, static_cast<size_t>(PositionAccessorIndex));
-        const FJsonValue* NormalAccessor = NormalAccessorIndex >= 0 ? GetArrayElem(Accessors, static_cast<size_t>(NormalAccessorIndex)) : nullptr;
-        const FJsonValue* TexcoordAccessor = TexcoordAccessorIndex >= 0 ? GetArrayElem(Accessors, static_cast<size_t>(TexcoordAccessorIndex)) : nullptr;
-        const FJsonValue* TangentAccessor = TangentAccessorIndex >= 0 ? GetArrayElem(Accessors, static_cast<size_t>(TangentAccessorIndex)) : nullptr;
-        const FJsonValue* ColorAccessor = ColorAccessorIndex >= 0 ? GetArrayElem(Accessors, static_cast<size_t>(ColorAccessorIndex)) : nullptr;
-        const FJsonValue* IndexAccessor = GetArrayElem(Accessors, static_cast<size_t>(IndicesAccessorIndex));
-
-        if (!PositionAccessor || !IndexAccessor)
-        {
-            return false;
-        }
-
-        const int64_t PositionBufferViewIndex = GetIntField(PositionAccessor, "bufferView", -1);
-        const int64_t NormalBufferViewIndex = NormalAccessor ? GetIntField(NormalAccessor, "bufferView", -1) : -1;
-        const int64_t TexcoordBufferViewIndex = TexcoordAccessor ? GetIntField(TexcoordAccessor, "bufferView", -1) : -1;
-        const int64_t TangentBufferViewIndex = TangentAccessor ? GetIntField(TangentAccessor, "bufferView", -1) : -1;
-        const int64_t ColorBufferViewIndex = ColorAccessor ? GetIntField(ColorAccessor, "bufferView", -1) : -1;
-        const int64_t IndexBufferViewIndex = GetIntField(IndexAccessor, "bufferView", -1);
-
-        const FJsonValue* PositionBufferView = GetArrayElem(BufferViews, static_cast<size_t>(PositionBufferViewIndex));
-        const FJsonValue* NormalBufferView = NormalBufferViewIndex >= 0 ? GetArrayElem(BufferViews, static_cast<size_t>(NormalBufferViewIndex)) : nullptr;
-        const FJsonValue* TexcoordBufferView = TexcoordBufferViewIndex >= 0 ? GetArrayElem(BufferViews, static_cast<size_t>(TexcoordBufferViewIndex)) : nullptr;
-        const FJsonValue* TangentBufferView = TangentBufferViewIndex >= 0 ? GetArrayElem(BufferViews, static_cast<size_t>(TangentBufferViewIndex)) : nullptr;
-        const FJsonValue* ColorBufferView = ColorBufferViewIndex >= 0 ? GetArrayElem(BufferViews, static_cast<size_t>(ColorBufferViewIndex)) : nullptr;
-        const FJsonValue* IndexBufferView = GetArrayElem(BufferViews, static_cast<size_t>(IndexBufferViewIndex));
-
-        if (!PositionBufferView || !IndexBufferView)
-        {
-            return false;
-        }
-
-        const int64_t PositionCount = GetIntField(PositionAccessor, "count", 0);
-        if (PositionCount <= 0)
-        {
-            return false;
-        }
-
-        const int64_t IndexCount = GetIntField(IndexAccessor, "count", 0);
-        if (IndexCount <= 0)
-        {
-            return false;
-        }
-
-        const int64_t PositionByteOffset = GetIntField(PositionAccessor, "byteOffset", 0) + GetIntField(PositionBufferView, "byteOffset", 0);
-        const int64_t NormalByteOffset = (NormalAccessor ? GetIntField(NormalAccessor, "byteOffset", 0) + GetIntField(NormalBufferView, "byteOffset", 0) : 0);
-        const int64_t TexcoordByteOffset = (TexcoordAccessor ? GetIntField(TexcoordAccessor, "byteOffset", 0) + GetIntField(TexcoordBufferView, "byteOffset", 0) : 0);
-        const int64_t TangentByteOffset = (TangentAccessor ? GetIntField(TangentAccessor, "byteOffset", 0) + GetIntField(TangentBufferView, "byteOffset", 0) : 0);
-        const int64_t ColorByteOffset = (ColorAccessor ? GetIntField(ColorAccessor, "byteOffset", 0) + GetIntField(ColorBufferView, "byteOffset", 0) : 0);
-        const int64_t IndexByteOffset = GetIntField(IndexAccessor, "byteOffset", 0) + GetIntField(IndexBufferView, "byteOffset", 0);
-
-        const int64_t PositionStride = GetIntField(PositionBufferView, "byteStride", static_cast<int64_t>(sizeof(float) * 3));
-        const int64_t NormalStride = NormalBufferView ? GetIntField(NormalBufferView, "byteStride", static_cast<int64_t>(sizeof(float) * 3)) : static_cast<int64_t>(sizeof(float) * 3);
-        const int64_t TexcoordStride = TexcoordBufferView ? GetIntField(TexcoordBufferView, "byteStride", static_cast<int64_t>(sizeof(float) * 2)) : static_cast<int64_t>(sizeof(float) * 2);
-        const int64_t TangentStride = TangentBufferView ? GetIntField(TangentBufferView, "byteStride", static_cast<int64_t>(sizeof(float) * 4)) : static_cast<int64_t>(sizeof(float) * 4);
-        const std::string ColorType = ColorAccessor ? GetStringField(ColorAccessor, "type") : std::string();
-        const int64_t DefaultColorStride = ColorType == "VEC4" ? static_cast<int64_t>(sizeof(float) * 4) : static_cast<int64_t>(sizeof(float) * 3);
-        const int64_t ColorStride = ColorBufferView ? GetIntField(ColorBufferView, "byteStride", DefaultColorStride) : DefaultColorStride;
-
-        if (PositionStride <= 0 || NormalStride <= 0 || TexcoordStride <= 0 || TangentStride <= 0 || ColorStride <= 0)
+        const cgltf_size PositionCount = PositionAccessor->count;
+        if (PositionCount == 0)
         {
             return false;
         }
@@ -808,133 +357,108 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
         Streams.UVs.resize(static_cast<size_t>(PositionCount), FFloat2(0.0f, 0.0f));
         Streams.Tangents.resize(static_cast<size_t>(PositionCount), FFloat4(0.0f, 0.0f, 0.0f, 1.0f));
         Streams.Colors.resize(static_cast<size_t>(PositionCount), FFloat4(1.0f, 1.0f, 1.0f, 1.0f));
+        Streams.Joints.resize(static_cast<size_t>(PositionCount), FUInt4{});
+        Streams.Weights.resize(static_cast<size_t>(PositionCount), FFloat4(0.0f, 0.0f, 0.0f, 0.0f));
 
-        for (int64_t i = 0; i < PositionCount; ++i)
+        for (cgltf_size VertexIndex = 0; VertexIndex < PositionCount; ++VertexIndex)
         {
-            const size_t PositionOffset = static_cast<size_t>(PositionByteOffset + i * PositionStride);
-            if (PositionOffset + sizeof(float) * 3 > BufferData.size())
-            {
-                return false;
-            }
-
             float Position[3] = {};
-            std::memcpy(Position, &BufferData[PositionOffset], sizeof(Position));
+            cgltf_accessor_read_float(PositionAccessor, VertexIndex, Position, 3);
             FFloat3 Pos = { Position[0], Position[1], Position[2] };
             Pos.z = -Pos.z;
-            Streams.Positions[static_cast<size_t>(i)] = Pos;
+            Streams.Positions[static_cast<size_t>(VertexIndex)] = Pos;
 
-            if (NormalAccessor && NormalBufferView)
+            if (NormalAccessor)
             {
-                const size_t Offset = static_cast<size_t>(NormalByteOffset + i * NormalStride);
-                if (Offset + sizeof(float) * 3 > BufferData.size())
-                {
-                    return false;
-                }
                 float Normal[3] = {};
-                std::memcpy(Normal, &BufferData[Offset], sizeof(Normal));
+                cgltf_accessor_read_float(NormalAccessor, VertexIndex, Normal, 3);
                 FFloat3 NormalValue{ Normal[0], Normal[1], Normal[2] };
                 NormalValue.z = -NormalValue.z;
-                Streams.Normals[static_cast<size_t>(i)] = NormalValue;
+                Streams.Normals[static_cast<size_t>(VertexIndex)] = NormalValue;
             }
             else
             {
                 FFloat3 NormalValue{ 0.0f, 0.0f, 1.0f };
                 NormalValue.z = -NormalValue.z;
-                Streams.Normals[static_cast<size_t>(i)] = NormalValue;
+                Streams.Normals[static_cast<size_t>(VertexIndex)] = NormalValue;
             }
 
-            if (TangentAccessor && TangentBufferView)
+            if (TangentAccessor)
             {
-                const size_t Offset = static_cast<size_t>(TangentByteOffset + i * TangentStride);
-                if (Offset + sizeof(float) * 4 > BufferData.size())
-                {
-                    return false;
-                }
                 float Tangent[4] = {};
-                std::memcpy(Tangent, &BufferData[Offset], sizeof(Tangent));
+                cgltf_accessor_read_float(TangentAccessor, VertexIndex, Tangent, 4);
                 FFloat4 TangentValue{ Tangent[0], Tangent[1], Tangent[2], Tangent[3] };
                 TangentValue.z = -TangentValue.z;
                 TangentValue.w = -TangentValue.w;
-                Streams.Tangents[static_cast<size_t>(i)] = TangentValue;
+                Streams.Tangents[static_cast<size_t>(VertexIndex)] = TangentValue;
             }
             else
             {
                 FFloat4 TangentValue{ 0.0f, 0.0f, 0.0f, 1.0f };
                 TangentValue.z = -TangentValue.z;
                 TangentValue.w = -TangentValue.w;
-                Streams.Tangents[static_cast<size_t>(i)] = TangentValue;
+                Streams.Tangents[static_cast<size_t>(VertexIndex)] = TangentValue;
             }
 
-            if (TexcoordAccessor && TexcoordBufferView)
+            if (TexcoordAccessor)
             {
-                const size_t Offset = static_cast<size_t>(TexcoordByteOffset + i * TexcoordStride);
-                if (Offset + sizeof(float) * 2 > BufferData.size())
-                {
-                    return false;
-                }
                 float UV[2] = {};
-                std::memcpy(UV, &BufferData[Offset], sizeof(UV));
-                Streams.UVs[static_cast<size_t>(i)] = FFloat2(UV[0], UV[1]);
+                cgltf_accessor_read_float(TexcoordAccessor, VertexIndex, UV, 2);
+                Streams.UVs[static_cast<size_t>(VertexIndex)] = FFloat2(UV[0], UV[1]);
             }
 
-            if (ColorAccessor && ColorBufferView)
+            if (ColorAccessor)
             {
-                const size_t Offset = static_cast<size_t>(ColorByteOffset + i * ColorStride);
-                const size_t ExpectedBytes = ColorType == "VEC4" ? sizeof(float) * 4 : sizeof(float) * 3;
-                if (Offset + ExpectedBytes > BufferData.size())
-                {
-                    return false;
-                }
-
+                const cgltf_size ComponentCount = cgltf_num_components(ColorAccessor->type);
                 float Color[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
-                std::memcpy(Color, &BufferData[Offset], ExpectedBytes);
-                const float Alpha = ColorType == "VEC4" ? Color[3] : 1.0f;
-                Streams.Colors[static_cast<size_t>(i)] = FFloat4(Color[0], Color[1], Color[2], Alpha);
+                cgltf_accessor_read_float(ColorAccessor, VertexIndex, Color, ComponentCount);
+                const float Alpha = (ComponentCount >= 4) ? Color[3] : 1.0f;
+                Streams.Colors[static_cast<size_t>(VertexIndex)] = FFloat4(Color[0], Color[1], Color[2], Alpha);
+            }
+
+            if (JointsAccessor)
+            {
+                cgltf_uint Joints[4] = {};
+                cgltf_accessor_read_uint(JointsAccessor, VertexIndex, Joints, 4);
+                Streams.Joints[static_cast<size_t>(VertexIndex)] = FUInt4{
+                    static_cast<uint32_t>(Joints[0]),
+                    static_cast<uint32_t>(Joints[1]),
+                    static_cast<uint32_t>(Joints[2]),
+                    static_cast<uint32_t>(Joints[3])
+                };
+            }
+
+            if (WeightsAccessor)
+            {
+                float Weights[4] = {};
+                cgltf_accessor_read_float(WeightsAccessor, VertexIndex, Weights, 4);
+                Streams.Weights[static_cast<size_t>(VertexIndex)] = FFloat4(Weights[0], Weights[1], Weights[2], Weights[3]);
             }
         }
 
         std::vector<uint32_t> RawIndices;
-        RawIndices.reserve(static_cast<size_t>(IndexCount));
-
-        const int64_t ComponentType = GetIntField(IndexAccessor, "componentType", 5125);
-        const size_t ComponentSize = (ComponentType == 5121) ? 1 : (ComponentType == 5123 ? 2 : 4);
-
-        for (int64_t i = 0; i < IndexCount; ++i)
+        if (Primitive->indices)
         {
-            const size_t Offset = static_cast<size_t>(IndexByteOffset + i * ComponentSize);
-            if (Offset + ComponentSize > BufferData.size())
+            const cgltf_size IndexCount = Primitive->indices->count;
+            RawIndices.reserve(static_cast<size_t>(IndexCount));
+            for (cgltf_size Index = 0; Index < IndexCount; ++Index)
             {
-                return false;
+                const cgltf_size Value = cgltf_accessor_read_index(Primitive->indices, Index);
+                RawIndices.push_back(static_cast<uint32_t>(Value));
             }
-
-            uint32_t Index = 0;
-            switch (ComponentType)
+        }
+        else
+        {
+            RawIndices.reserve(static_cast<size_t>(PositionCount));
+            for (cgltf_size Index = 0; Index < PositionCount; ++Index)
             {
-            case 5121: // UNSIGNED_BYTE
-                Index = BufferData[Offset];
-                break;
-            case 5123: // UNSIGNED_SHORT
-            {
-                uint16_t Value = 0;
-                std::memcpy(&Value, &BufferData[Offset], sizeof(uint16_t));
-                Index = Value;
-                break;
+                RawIndices.push_back(static_cast<uint32_t>(Index));
             }
-            default: // 5125 UNSIGNED_INT
-            {
-                uint32_t Value = 0;
-                std::memcpy(&Value, &BufferData[Offset], sizeof(uint32_t));
-                Index = Value;
-                break;
-            }
-            }
-
-            RawIndices.push_back(Index);
         }
 
-        switch (PrimitiveMode)
+        switch (Primitive->type)
         {
-        case 4: // TRIANGLES
+        case cgltf_primitive_type_triangles:
         {
             if (RawIndices.size() % 3 != 0)
             {
@@ -943,7 +467,7 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
             OutPrimitive.Primitive.Indices.insert(OutPrimitive.Primitive.Indices.end(), RawIndices.begin(), RawIndices.end());
             break;
         }
-        case 5: // TRIANGLE_STRIP
+        case cgltf_primitive_type_triangle_strip:
         {
             if (RawIndices.size() < 3)
             {
@@ -970,7 +494,7 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
             }
             break;
         }
-        case 6: // TRIANGLE_FAN
+        case cgltf_primitive_type_triangle_fan:
         {
             if (RawIndices.size() < 3)
             {
@@ -994,28 +518,118 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
         }
 
         return true;
-    };
+    }
 
-    std::vector<FMeshData> MeshDatas;
-    MeshDatas.resize(Meshes->ArrayValue.size());
-
-    for (size_t MeshIndex = 0; MeshIndex < Meshes->ArrayValue.size(); ++MeshIndex)
+    void ProcessNodeRecursive(const cgltf_data* Data, const cgltf_node* Node, std::vector<FGltfNode>& OutNodes)
     {
-        const FJsonValue* Mesh = GetArrayElem(Meshes, MeshIndex);
-        const FJsonValue* Primitives = GetObjectField(Mesh, "primitives");
-        if (!Primitives || !Primitives->IsArray())
+        if (!Data || !Node)
         {
-            return false;
+            return;
         }
 
-        for (const FJsonValue& PrimitiveValue : Primitives->ArrayValue)
+        const ptrdiff_t NodeIndex = Node - Data->nodes;
+
+        if (Node->mesh)
         {
-            const int64_t MaterialIndex = GetIntField(&PrimitiveValue, "material", -1);
+            const ptrdiff_t MeshIndex = Node->mesh - Data->meshes;
+            if (MeshIndex >= 0 && MeshIndex < static_cast<ptrdiff_t>(Data->meshes_count))
+            {
+                cgltf_float Matrix[16] = {};
+                cgltf_node_transform_world(Node, Matrix);
+                FMatrix4 World{};
+                for (int i = 0; i < 16; ++i)
+                {
+                    World[static_cast<size_t>(i)] = Matrix[i];
+                }
+
+                const FMatrix4 WorldLH = ToLeftHandedMatrix(World);
+
+                FGltfNode LoadedNode;
+                LoadedNode.MeshIndex = static_cast<int>(MeshIndex);
+                if (Node->skin)
+                {
+                    LoadedNode.SkinIndex = static_cast<int>(Node->skin - Data->skins);
+                }
+                LoadedNode.NodeIndex = static_cast<int>(NodeIndex);
+                LoadedNode.WorldMatrix = ToFloat4x4(WorldLH);
+                LoadedNode.Name = Node->name ? Node->name : "";
+                OutNodes.push_back(LoadedNode);
+            }
+        }
+        else if (NodeIndex >= 0 && NodeIndex < static_cast<ptrdiff_t>(Data->nodes_count))
+        {
+            cgltf_float Matrix[16] = {};
+            cgltf_node_transform_world(Node, Matrix);
+            FMatrix4 World{};
+            for (int i = 0; i < 16; ++i)
+            {
+                World[static_cast<size_t>(i)] = Matrix[i];
+            }
+
+            const FMatrix4 WorldLH = ToLeftHandedMatrix(World);
+
+            FGltfNode LoadedNode;
+            LoadedNode.MeshIndex = -1;
+            if (Node->skin)
+            {
+                LoadedNode.SkinIndex = static_cast<int>(Node->skin - Data->skins);
+            }
+            LoadedNode.NodeIndex = static_cast<int>(NodeIndex);
+            LoadedNode.WorldMatrix = ToFloat4x4(WorldLH);
+            LoadedNode.Name = Node->name ? Node->name : "";
+            OutNodes.push_back(LoadedNode);
+        }
+
+        for (cgltf_size ChildIndex = 0; ChildIndex < Node->children_count; ++ChildIndex)
+        {
+            ProcessNodeRecursive(Data, Node->children[ChildIndex], OutNodes);
+        }
+    }
+}
+
+bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& OutScene)
+{
+    const std::string FilePathUtf8 = ToUtf8String(FilePath);
+
+    cgltf_options Options{};
+    cgltf_data* Data = nullptr;
+
+    if (cgltf_parse_file(&Options, FilePathUtf8.c_str(), &Data) != cgltf_result_success || !Data)
+    {
+        return false;
+    }
+
+    if (cgltf_load_buffers(&Options, Data, FilePathUtf8.c_str()) != cgltf_result_success)
+    {
+        cgltf_free(Data);
+        return false;
+    }
+
+    if (cgltf_validate(Data) != cgltf_result_success)
+    {
+        cgltf_free(Data);
+        return false;
+    }
+
+    std::vector<FMeshData> MeshDatas;
+    MeshDatas.resize(Data->meshes_count);
+
+    for (cgltf_size MeshIndex = 0; MeshIndex < Data->meshes_count; ++MeshIndex)
+    {
+        const cgltf_mesh& Mesh = Data->meshes[MeshIndex];
+        for (cgltf_size PrimitiveIndex = 0; PrimitiveIndex < Mesh.primitives_count; ++PrimitiveIndex)
+        {
+            const cgltf_primitive& Primitive = Mesh.primitives[PrimitiveIndex];
 
             FMeshData::FPrimitiveData PrimitiveData;
-            PrimitiveData.MaterialIndex = MaterialIndex;
-            if (!AppendPrimitiveToMesh(&PrimitiveValue, PrimitiveData))
+            if (Primitive.material)
             {
+                PrimitiveData.MaterialIndex = Primitive.material - Data->materials;
+            }
+
+            if (!AppendPrimitiveToMesh(&Primitive, PrimitiveData))
+            {
+                cgltf_free(Data);
                 return false;
             }
 
@@ -1023,78 +637,12 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
         }
     }
 
-    const FJsonValue* Materials = GetObjectField(&Root, "materials");
-    const FJsonValue* Textures = GetObjectField(&Root, "textures");
-    const FJsonValue* Images = GetObjectField(&Root, "images");
-
-    const bool bHasMaterialData = Materials && Materials->IsArray() && !Materials->ArrayValue.empty()
-        && Textures && Textures->IsArray() && !Textures->ArrayValue.empty()
-        && Images && Images->IsArray() && !Images->ArrayValue.empty();
-
     const std::filesystem::path BasePath = std::filesystem::path(FilePath).parent_path();
-
-    const auto ResolveMaterialTextures = [&](const FJsonValue* Material) -> FGltfMaterialTextureSet
-    {
-        FGltfMaterialTextureSet TextureSet;
-
-        const FJsonValue* Pbr = GetObjectField(Material, "pbrMetallicRoughness");
-        if (Pbr)
-        {
-            const FJsonValue* BaseColorTexture = GetObjectField(Pbr, "baseColorTexture");
-            TextureSet.BaseColor = ResolveTexturePath(Textures, Images, BasePath, GetIntField(BaseColorTexture, "index", -1));
-            TextureSet.BaseColorTransform = ResolveTextureTransform(BaseColorTexture);
-
-            const FJsonValue* BaseColorFactor = GetObjectField(Pbr, "baseColorFactor");
-            if (BaseColorFactor && BaseColorFactor->IsArray())
-            {
-                TextureSet.BaseColorFactor.x = static_cast<float>(GetNumberField(BaseColorFactor, 0, TextureSet.BaseColorFactor.x));
-                TextureSet.BaseColorFactor.y = static_cast<float>(GetNumberField(BaseColorFactor, 1, TextureSet.BaseColorFactor.y));
-                TextureSet.BaseColorFactor.z = static_cast<float>(GetNumberField(BaseColorFactor, 2, TextureSet.BaseColorFactor.z));
-                TextureSet.BaseColorAlpha = static_cast<float>(GetNumberField(BaseColorFactor, 3, TextureSet.BaseColorAlpha));
-            }
-
-            TextureSet.MetallicFactor = static_cast<float>(GetNumberField(Pbr, "metallicFactor", 1.0));
-            TextureSet.RoughnessFactor = static_cast<float>(GetNumberField(Pbr, "roughnessFactor", 1.0));
-
-            const FJsonValue* MetallicRoughnessTexture = GetObjectField(Pbr, "metallicRoughnessTexture");
-            TextureSet.MetallicRoughness = ResolveTexturePath(Textures, Images, BasePath, GetIntField(MetallicRoughnessTexture, "index", -1));
-            TextureSet.MetallicRoughnessTransform = ResolveTextureTransform(MetallicRoughnessTexture);
-        }
-
-        const FJsonValue* NormalTexture = GetObjectField(Material, "normalTexture");
-        TextureSet.Normal = ResolveTexturePath(Textures, Images, BasePath, GetIntField(NormalTexture, "index", -1));
-        TextureSet.NormalTransform = ResolveTextureTransform(NormalTexture);
-
-        const FJsonValue* EmissiveTexture = GetObjectField(Material, "emissiveTexture");
-        TextureSet.Emissive = ResolveTexturePath(Textures, Images, BasePath, GetIntField(EmissiveTexture, "index", -1));
-        TextureSet.EmissiveTransform = ResolveTextureTransform(EmissiveTexture);
-
-        const FJsonValue* EmissiveFactor = GetObjectField(Material, "emissiveFactor");
-        if (EmissiveFactor && EmissiveFactor->IsArray())
-        {
-            TextureSet.EmissiveFactor.x = static_cast<float>(GetNumberField(EmissiveFactor, 0, TextureSet.EmissiveFactor.x));
-            TextureSet.EmissiveFactor.y = static_cast<float>(GetNumberField(EmissiveFactor, 1, TextureSet.EmissiveFactor.y));
-            TextureSet.EmissiveFactor.z = static_cast<float>(GetNumberField(EmissiveFactor, 2, TextureSet.EmissiveFactor.z));
-        }
-
-        const std::string AlphaMode = GetStringField(Material, "alphaMode");
-        if (AlphaMode == "MASK")
-        {
-            TextureSet.bAlphaMask = true;
-            TextureSet.AlphaCutoff = static_cast<float>(GetNumberField(Material, "alphaCutoff", TextureSet.AlphaCutoff));
-        }
-
-        return TextureSet;
-    };
-
     std::vector<FGltfMaterialTextureSet> MaterialTextureSets;
-    if (bHasMaterialData)
+    MaterialTextureSets.resize(Data->materials_count);
+    for (cgltf_size MaterialIndex = 0; MaterialIndex < Data->materials_count; ++MaterialIndex)
     {
-        MaterialTextureSets.resize(Materials->ArrayValue.size());
-        for (size_t MaterialIndex = 0; MaterialIndex < Materials->ArrayValue.size(); ++MaterialIndex)
-        {
-            MaterialTextureSets[MaterialIndex] = ResolveMaterialTextures(GetArrayElem(Materials, MaterialIndex));
-        }
+        MaterialTextureSets[MaterialIndex] = ResolveMaterialTextures(BasePath, &Data->materials[MaterialIndex]);
     }
 
     std::vector<std::vector<FGltfPrimitiveSection>> MeshPrimitiveSections(MeshDatas.size());
@@ -1110,7 +658,7 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
             Section.IndexStart = RunningIndexStart;
             Section.IndexCount = static_cast<uint32_t>(PrimitiveInfo.Primitive.Indices.size());
             RunningIndexStart += Section.IndexCount;
-            if (bHasMaterialData && PrimitiveInfo.MaterialIndex >= 0
+            if (PrimitiveInfo.MaterialIndex >= 0
                 && PrimitiveInfo.MaterialIndex < static_cast<int64_t>(MaterialTextureSets.size()))
             {
                 Section.Material = MaterialTextureSets[static_cast<size_t>(PrimitiveInfo.MaterialIndex)];
@@ -1119,24 +667,180 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
         }
     }
 
+    std::vector<FGltfSkin> Skins;
+    Skins.resize(Data->skins_count);
+    for (cgltf_size SkinIndex = 0; SkinIndex < Data->skins_count; ++SkinIndex)
+    {
+        const cgltf_skin& Skin = Data->skins[SkinIndex];
+        FGltfSkin SkinData;
+        SkinData.Name = Skin.name ? Skin.name : "";
+        if (Skin.skeleton)
+        {
+            SkinData.SkeletonNodeIndex = static_cast<int>(Skin.skeleton - Data->nodes);
+        }
+
+        SkinData.Joints.reserve(Skin.joints_count);
+        for (cgltf_size JointIndex = 0; JointIndex < Skin.joints_count; ++JointIndex)
+        {
+            const cgltf_node* JointNode = Skin.joints[JointIndex];
+            const int NodeIndex = JointNode ? static_cast<int>(JointNode - Data->nodes) : -1;
+            SkinData.Joints.push_back(NodeIndex);
+        }
+
+        const cgltf_accessor* InverseBindAccessor = Skin.inverse_bind_matrices;
+        const size_t MatrixCount = SkinData.Joints.size();
+        SkinData.InverseBindMatrices.resize(MatrixCount);
+        if (InverseBindAccessor)
+        {
+            const size_t AccessorCount = static_cast<size_t>(InverseBindAccessor->count);
+            const size_t ReadCount = (std::min)(MatrixCount, AccessorCount);
+            for (size_t Index = 0; Index < ReadCount; ++Index)
+            {
+                SkinData.InverseBindMatrices[Index] = ReadAccessorMat4LH(InverseBindAccessor, static_cast<cgltf_size>(Index));
+            }
+            for (size_t Index = ReadCount; Index < MatrixCount; ++Index)
+            {
+                SkinData.InverseBindMatrices[Index] = ToFloat4x4(MakeIdentityMatrix());
+            }
+        }
+        else
+        {
+            for (size_t Index = 0; Index < MatrixCount; ++Index)
+            {
+                SkinData.InverseBindMatrices[Index] = ToFloat4x4(MakeIdentityMatrix());
+            }
+        }
+
+        Skins[SkinIndex] = std::move(SkinData);
+    }
+
+    std::vector<FGltfAnimation> Animations;
+    Animations.resize(Data->animations_count);
+    for (cgltf_size AnimIndex = 0; AnimIndex < Data->animations_count; ++AnimIndex)
+    {
+        const cgltf_animation& Animation = Data->animations[AnimIndex];
+        FGltfAnimation AnimData;
+        AnimData.Name = Animation.name ? Animation.name : "";
+
+        AnimData.Samplers.resize(Animation.samplers_count);
+        for (cgltf_size SamplerIndex = 0; SamplerIndex < Animation.samplers_count; ++SamplerIndex)
+        {
+            const cgltf_animation_sampler& Sampler = Animation.samplers[SamplerIndex];
+            FGltfAnimationSampler SamplerData;
+            SamplerData.Interpolation = ToInterpolation(Sampler.interpolation);
+            ReadAccessorScalar(Sampler.input, SamplerData.InputTimes);
+
+            if (Sampler.output)
+            {
+                if (Sampler.output->type == cgltf_type_vec3)
+                {
+                    ReadAccessorVec3(Sampler.output, SamplerData.OutputVec3);
+                }
+                else if (Sampler.output->type == cgltf_type_vec4)
+                {
+                    ReadAccessorVec4(Sampler.output, SamplerData.OutputVec4);
+                }
+            }
+
+            AnimData.Samplers[SamplerIndex] = std::move(SamplerData);
+        }
+
+        AnimData.Channels.reserve(Animation.channels_count);
+        for (cgltf_size ChannelIndex = 0; ChannelIndex < Animation.channels_count; ++ChannelIndex)
+        {
+            const cgltf_animation_channel& Channel = Animation.channels[ChannelIndex];
+            if (!Channel.target_node || !Channel.sampler)
+            {
+                continue;
+            }
+
+            FGltfAnimationChannel ChannelData;
+            ChannelData.NodeIndex = static_cast<int>(Channel.target_node - Data->nodes);
+            ChannelData.SamplerIndex = static_cast<int>(Channel.sampler - Animation.samplers);
+
+            switch (Channel.target_path)
+            {
+            case cgltf_animation_path_type_rotation:
+                ChannelData.Path = EGltfAnimationPath::Rotation;
+                break;
+            case cgltf_animation_path_type_scale:
+                ChannelData.Path = EGltfAnimationPath::Scale;
+                break;
+            case cgltf_animation_path_type_translation:
+            default:
+                ChannelData.Path = EGltfAnimationPath::Translation;
+                break;
+            }
+
+            AnimData.Channels.push_back(ChannelData);
+        }
+
+        Animations[AnimIndex] = std::move(AnimData);
+    }
+
+    std::vector<FGltfNodeTransform> NodeTransforms;
+    NodeTransforms.resize(Data->nodes_count);
+    for (cgltf_size NodeIndex = 0; NodeIndex < Data->nodes_count; ++NodeIndex)
+    {
+        const cgltf_node& Node = Data->nodes[NodeIndex];
+        FGltfNodeTransform Transform;
+        Transform.ParentIndex = Node.parent ? static_cast<int>(Node.parent - Data->nodes) : -1;
+        Transform.bHasMatrix = Node.has_matrix != 0;
+
+        if (Node.has_translation)
+        {
+            Transform.Translation = FFloat3(Node.translation[0], Node.translation[1], Node.translation[2]);
+        }
+
+        if (Node.has_rotation)
+        {
+            Transform.Rotation = FFloat4(Node.rotation[0], Node.rotation[1], Node.rotation[2], Node.rotation[3]);
+        }
+
+        if (Node.has_scale)
+        {
+            Transform.Scale = FFloat3(Node.scale[0], Node.scale[1], Node.scale[2]);
+        }
+
+        if (!Transform.bHasMatrix)
+        {
+            const FMatrix4 Local = MatrixFromTRS(Transform.Translation, Transform.Rotation, Transform.Scale);
+            Transform.LocalMatrix = ToFloat4x4(ToLeftHandedMatrix(Local));
+        }
+        else
+        {
+            cgltf_float Matrix[16] = {};
+            cgltf_node_transform_local(&Node, Matrix);
+            FMatrix4 Local{};
+            for (int i = 0; i < 16; ++i)
+            {
+                Local[static_cast<size_t>(i)] = Matrix[i];
+            }
+            Transform.LocalMatrix = ToFloat4x4(ToLeftHandedMatrix(Local));
+        }
+
+        NodeTransforms[NodeIndex] = Transform;
+    }
+
     OutScene = {};
     OutScene.MeshPrimitiveSections = std::move(MeshPrimitiveSections);
+    OutScene.Skins = std::move(Skins);
+    OutScene.Animations = std::move(Animations);
+    OutScene.NodeTransforms = std::move(NodeTransforms);
 
-    const FJsonValue* Nodes = GetObjectField(&Root, "nodes");
-    const FJsonValue* Scenes = GetObjectField(&Root, "scenes");
-    const int64_t SceneIndex = GetIntField(&Root, "scene", 0);
-
-    if (Nodes && Nodes->IsArray() && Scenes && Scenes->IsArray())
+    const cgltf_scene* Scene = Data->scene ? Data->scene : (Data->scenes_count > 0 ? &Data->scenes[0] : nullptr);
+    if (Scene)
     {
-        const FJsonValue* Scene = GetArrayElem(Scenes, static_cast<size_t>(SceneIndex));
-        const FJsonValue* SceneNodes = GetObjectField(Scene, "nodes");
-        if (SceneNodes && SceneNodes->IsArray())
+        for (cgltf_size NodeIndex = 0; NodeIndex < Scene->nodes_count; ++NodeIndex)
         {
-            for (const FJsonValue& NodeValue : SceneNodes->ArrayValue)
-            {
-                const int64_t NodeIndex = static_cast<int64_t>(NodeValue.NumberValue);
-                ProcessNodeRecursive(Nodes, NodeIndex, MakeIdentityMatrix(), MeshDatas, OutScene.Nodes);
-            }
+            ProcessNodeRecursive(Data, Scene->nodes[NodeIndex], OutScene.Nodes);
+        }
+    }
+    else
+    {
+        for (cgltf_size NodeIndex = 0; NodeIndex < Data->nodes_count; ++NodeIndex)
+        {
+            ProcessNodeRecursive(Data, &Data->nodes[NodeIndex], OutScene.Nodes);
         }
     }
 
@@ -1146,6 +850,7 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
         {
             FGltfNode Node;
             Node.MeshIndex = static_cast<int>(MeshIndex);
+            Node.NodeIndex = static_cast<int>(MeshIndex);
             Node.WorldMatrix = ToFloat4x4(MakeIdentityMatrix());
             OutScene.Nodes.push_back(Node);
         }
@@ -1170,5 +875,6 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
         OutScene.Meshes.push_back(std::move(Mesh));
     }
 
+    cgltf_free(Data);
     return true;
 }

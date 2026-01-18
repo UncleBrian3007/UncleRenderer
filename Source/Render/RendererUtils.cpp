@@ -127,6 +127,31 @@ namespace
         }
     };
 
+    uint32_t CreateStructuredBufferSrv(FDX12Device* Device, ID3D12Resource* Buffer, uint32_t Stride)
+    {
+        if (!Device || !Device->GetBindlessDescriptorHeap() || !Buffer || Stride == 0)
+        {
+            return UINT32_MAX;
+        }
+
+        const D3D12_RESOURCE_DESC BufferDesc = Buffer->GetDesc();
+        const uint64_t ElementCount = BufferDesc.Width / Stride;
+        if (ElementCount == 0)
+        {
+            return UINT32_MAX;
+        }
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc = {};
+        SrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        SrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        SrvDesc.Format = DXGI_FORMAT_UNKNOWN;
+        SrvDesc.Buffer.FirstElement = 0;
+        SrvDesc.Buffer.NumElements = static_cast<UINT>(ElementCount);
+        SrvDesc.Buffer.StructureByteStride = Stride;
+        SrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+        return Device->CreateBindlessSrv(Buffer, SrvDesc);
+    }
+
     bool CreatePrimitiveGeometry(
         FDX12Device* Device,
         const FMesh::FPrimitive& Primitive,
@@ -185,30 +210,52 @@ namespace
             Colors = &DefaultColors;
         }
 
-        const std::array<const void*, 5> StreamData =
+        std::vector<FUInt4> DefaultJoints;
+        const std::vector<FUInt4>* Joints = &Primitive.VertexStreams.Joints;
+        if (Joints->size() != VertexCount)
+        {
+            DefaultJoints.assign(VertexCount, FUInt4{});
+            Joints = &DefaultJoints;
+        }
+
+        std::vector<FFloat4> DefaultWeights;
+        const std::vector<FFloat4>* Weights = &Primitive.VertexStreams.Weights;
+        if (Weights->size() != VertexCount)
+        {
+            DefaultWeights.assign(VertexCount, FFloat4(0.0f, 0.0f, 0.0f, 0.0f));
+            Weights = &DefaultWeights;
+        }
+
+        const std::array<const void*, 7> StreamData =
         {
             Positions->data(),
             Normals->data(),
             UVs->data(),
             Tangents->data(),
-            Colors->data()
+            Colors->data(),
+            Joints->data(),
+            Weights->data()
         };
 
-        const std::array<UINT, 5> StreamStrides =
+        const std::array<UINT, 7> StreamStrides =
         {
             static_cast<UINT>(sizeof(FFloat3)),
             static_cast<UINT>(sizeof(FFloat3)),
             static_cast<UINT>(sizeof(FFloat2)),
             static_cast<UINT>(sizeof(FFloat4)),
+            static_cast<UINT>(sizeof(FFloat4)),
+            static_cast<UINT>(sizeof(FUInt4)),
             static_cast<UINT>(sizeof(FFloat4))
         };
 
-        const std::array<UINT, 5> StreamSizes =
+        const std::array<UINT, 7> StreamSizes =
         {
             static_cast<UINT>(VertexCount * sizeof(FFloat3)),
             static_cast<UINT>(VertexCount * sizeof(FFloat3)),
             static_cast<UINT>(VertexCount * sizeof(FFloat2)),
             static_cast<UINT>(VertexCount * sizeof(FFloat4)),
+            static_cast<UINT>(VertexCount * sizeof(FFloat4)),
+            static_cast<UINT>(VertexCount * sizeof(FUInt4)),
             static_cast<UINT>(VertexCount * sizeof(FFloat4))
         };
 
@@ -236,7 +283,7 @@ namespace
         OutGeometry.VertexBufferCount = static_cast<uint32_t>(StreamData.size());
         OutGeometry.VertexBufferViews.fill({});
 
-        std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 5> UploadBuffers;
+        std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 7> UploadBuffers;
 
         for (size_t StreamIndex = 0; StreamIndex < StreamData.size(); ++StreamIndex)
         {
@@ -762,7 +809,8 @@ bool RendererUtils::CreateSceneModelsFromJson(
     const std::wstring& SceneFilePath,
     std::vector<FSceneModelResource>& OutModels,
     DirectX::XMFLOAT3& OutSceneCenter,
-    float& OutSceneRadius)
+    float& OutSceneRadius,
+    std::vector<FGltfScene>* OutGltfScenes)
 {
     OutModels.clear();
     uint32_t NextObjectId = 1;
@@ -798,6 +846,8 @@ bool RendererUtils::CreateSceneModelsFromJson(
             continue;
         }
 
+        const int SceneIndex = OutGltfScenes ? static_cast<int>(OutGltfScenes->size()) : -1;
+
         if (LoadedScene.Meshes.empty())
         {
             LogError("No meshes found in glTF: " + PathToUtf8String(MeshPath));
@@ -821,6 +871,7 @@ bool RendererUtils::CreateSceneModelsFromJson(
             {
                 FGltfNode DefaultNode;
                 DefaultNode.MeshIndex = static_cast<int>(MeshIndex);
+                DefaultNode.NodeIndex = static_cast<int>(MeshIndex);
                 DefaultNode.WorldMatrix = DirectX::XMFLOAT4X4(
                     1.0f, 0.0f, 0.0f, 0.0f,
                     0.0f, 1.0f, 0.0f, 0.0f,
@@ -866,7 +917,8 @@ bool RendererUtils::CreateSceneModelsFromJson(
                 XMConvertToRadians(Model.RotationEuler.z));
             const XMMATRIX Translation = XMMatrixTranslation(Model.Position.x, Model.Position.y, Model.Position.z);
 
-            const XMMATRIX World = NodeWorld * Scale * Rotation * Translation;
+            const XMMATRIX ModelTransform = Scale * Rotation * Translation;
+            const XMMATRIX World = NodeWorld * ModelTransform;
 
             const std::array<XMVECTOR, 8> LocalCorners =
             {
@@ -922,6 +974,10 @@ bool RendererUtils::CreateSceneModelsFromJson(
                 ModelResource.BaseIndexCount = Section.IndexCount;
 
                 XMStoreFloat4x4(&ModelResource.WorldMatrix, World);
+                XMStoreFloat4x4(&ModelResource.ModelTransform, ModelTransform);
+                ModelResource.GltfSceneIndex = SceneIndex;
+                ModelResource.GltfNodeIndex = LoadedNode.NodeIndex;
+                ModelResource.GltfSkinIndex = LoadedNode.SkinIndex;
 
                 const XMVECTOR CenterVec = XMVector3TransformCoord(XMVectorSet(MeshCenter.x, MeshCenter.y, MeshCenter.z, 1.0f), World);
                 XMStoreFloat3(&ModelResource.Center, CenterVec);
@@ -1006,43 +1062,88 @@ bool RendererUtils::CreateSceneModelsFromJson(
 
                 if (Device && Device->GetBindlessDescriptorHeap())
                 {
-                    const auto CreateStructuredBufferSrv = [&](ID3D12Resource* Buffer, uint32_t Stride) -> uint32_t
+                    ModelResource.VertexBufferBindlessIndices[0] = CreateStructuredBufferSrv(Device, ModelResource.Geometry.VertexBuffers[0].Get(), sizeof(FFloat3));
+                    ModelResource.VertexBufferBindlessIndices[1] = CreateStructuredBufferSrv(Device, ModelResource.Geometry.VertexBuffers[1].Get(), sizeof(FFloat3));
+                    ModelResource.VertexBufferBindlessIndices[2] = CreateStructuredBufferSrv(Device, ModelResource.Geometry.VertexBuffers[2].Get(), sizeof(FFloat2));
+                    ModelResource.VertexBufferBindlessIndices[3] = CreateStructuredBufferSrv(Device, ModelResource.Geometry.VertexBuffers[3].Get(), sizeof(FFloat4));
+                    ModelResource.VertexBufferBindlessIndices[4] = CreateStructuredBufferSrv(Device, ModelResource.Geometry.VertexBuffers[4].Get(), sizeof(FFloat4));
+                    ModelResource.VertexBufferBindlessIndices[5] = CreateStructuredBufferSrv(Device, ModelResource.Geometry.VertexBuffers[5].Get(), sizeof(FUInt4));
+                    ModelResource.VertexBufferBindlessIndices[6] = CreateStructuredBufferSrv(Device, ModelResource.Geometry.VertexBuffers[6].Get(), sizeof(FFloat4));
+                    ModelResource.IndexBufferBindlessIndex = CreateStructuredBufferSrv(Device, ModelResource.Geometry.IndexBuffer.Get(), sizeof(uint32_t));
+                }
+
+                if (Device && Device->GetBindlessDescriptorHeap() && ModelResource.GltfSkinIndex >= 0)
+                {
+                    if (static_cast<size_t>(ModelResource.GltfSkinIndex) < LoadedScene.Skins.size())
                     {
-                        if (!Buffer || Stride == 0)
+                        const FGltfSkin& Skin = LoadedScene.Skins[static_cast<size_t>(ModelResource.GltfSkinIndex)];
+                        ModelResource.BoneMatrixCount = static_cast<uint32_t>(Skin.Joints.size());
+                        if (ModelResource.BoneMatrixCount > 0)
                         {
-                            return UINT32_MAX;
+                            const uint64_t BufferSize = sizeof(DirectX::XMFLOAT4X4) * ModelResource.BoneMatrixCount;
+                            D3D12_HEAP_PROPERTIES UploadHeap = {};
+                            UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+                            UploadHeap.CreationNodeMask = 1;
+                            UploadHeap.VisibleNodeMask = 1;
+
+                            D3D12_RESOURCE_DESC BufferDesc = {};
+                            BufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+                            BufferDesc.Width = BufferSize;
+                            BufferDesc.Height = 1;
+                            BufferDesc.DepthOrArraySize = 1;
+                            BufferDesc.MipLevels = 1;
+                            BufferDesc.Format = DXGI_FORMAT_UNKNOWN;
+                            BufferDesc.SampleDesc.Count = 1;
+                            BufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+                            HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+                                &UploadHeap,
+                                D3D12_HEAP_FLAG_NONE,
+                                &BufferDesc,
+                                D3D12_RESOURCE_STATE_GENERIC_READ,
+                                nullptr,
+                                IID_PPV_ARGS(ModelResource.BoneMatrixBuffer.ReleaseAndGetAddressOf())));
+
+                            if (ModelResource.BoneMatrixBuffer)
+                            {
+                                ModelResource.BoneMatrixBuffer->SetName(L"SkinMatrixBuffer");
+                                D3D12_RANGE EmptyRange = { 0, 0 };
+                                HR_CHECK(ModelResource.BoneMatrixBuffer->Map(
+                                    0,
+                                    &EmptyRange,
+                                    reinterpret_cast<void**>(&ModelResource.BoneMatrixBufferMapped)));
+                                if (ModelResource.BoneMatrixBufferMapped)
+                                {
+                                    std::vector<DirectX::XMFLOAT4X4> IdentityMatrices(ModelResource.BoneMatrixCount);
+                                    for (uint32_t JointIndex = 0; JointIndex < ModelResource.BoneMatrixCount; ++JointIndex)
+                                    {
+                                        IdentityMatrices[JointIndex] = DirectX::XMFLOAT4X4(
+                                            1.0f, 0.0f, 0.0f, 0.0f,
+                                            0.0f, 1.0f, 0.0f, 0.0f,
+                                            0.0f, 0.0f, 1.0f, 0.0f,
+                                            0.0f, 0.0f, 0.0f, 1.0f);
+                                    }
+                                    std::memcpy(ModelResource.BoneMatrixBufferMapped, IdentityMatrices.data(), BufferSize);
+                                }
+                            }
+
+                            ModelResource.BoneMatrixBindlessIndex = CreateStructuredBufferSrv(
+                                Device,
+                                ModelResource.BoneMatrixBuffer.Get(),
+                                sizeof(DirectX::XMFLOAT4X4));
                         }
-
-                        const D3D12_RESOURCE_DESC BufferDesc = Buffer->GetDesc();
-                        const uint64_t ElementCount = BufferDesc.Width / Stride;
-                        if (ElementCount == 0)
-                        {
-                            return UINT32_MAX;
-                        }
-
-                        D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc = {};
-                        SrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-                        SrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-                        SrvDesc.Format = DXGI_FORMAT_UNKNOWN;
-                        SrvDesc.Buffer.FirstElement = 0;
-                        SrvDesc.Buffer.NumElements = static_cast<UINT>(ElementCount);
-                        SrvDesc.Buffer.StructureByteStride = Stride;
-                        SrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-                        return Device->CreateBindlessSrv(Buffer, SrvDesc);
-                    };
-
-                    ModelResource.VertexBufferBindlessIndices[0] = CreateStructuredBufferSrv(ModelResource.Geometry.VertexBuffers[0].Get(), sizeof(FFloat3));
-                    ModelResource.VertexBufferBindlessIndices[1] = CreateStructuredBufferSrv(ModelResource.Geometry.VertexBuffers[1].Get(), sizeof(FFloat3));
-                    ModelResource.VertexBufferBindlessIndices[2] = CreateStructuredBufferSrv(ModelResource.Geometry.VertexBuffers[2].Get(), sizeof(FFloat2));
-                    ModelResource.VertexBufferBindlessIndices[3] = CreateStructuredBufferSrv(ModelResource.Geometry.VertexBuffers[3].Get(), sizeof(FFloat4));
-                    ModelResource.VertexBufferBindlessIndices[4] = CreateStructuredBufferSrv(ModelResource.Geometry.VertexBuffers[4].Get(), sizeof(FFloat4));
-                    ModelResource.IndexBufferBindlessIndex = CreateStructuredBufferSrv(ModelResource.Geometry.IndexBuffer.Get(), sizeof(uint32_t));
+                    }
                 }
 
                 UpdateSceneBounds(ModelResource.Center, ModelResource.Radius, SceneMin, SceneMax);
 
                 OutModels.push_back(std::move(ModelResource));
             }
+        }
+
+        if (OutGltfScenes)
+        {
+            OutGltfScenes->push_back(std::move(LoadedScene));
         }
 
     }
@@ -1374,6 +1475,92 @@ void RendererUtils::UpdateCullingVisibility(
     }
 }
 
+void RendererUtils::UpdateGltfSceneAnimation(
+    std::vector<FSceneModelResource>& Models,
+    const std::vector<FGltfScene>& Scenes,
+    std::vector<FGltfAnimationPose>& ScenePoses,
+    std::vector<float>& SceneTimes,
+    float DeltaTime)
+{
+    if (Scenes.empty() || Models.empty())
+    {
+        return;
+    }
+
+    if (ScenePoses.size() != Scenes.size())
+    {
+        ScenePoses.resize(Scenes.size());
+        for (size_t Index = 0; Index < Scenes.size(); ++Index)
+        {
+            InitializeGltfAnimationPose(Scenes[Index], ScenePoses[Index]);
+        }
+    }
+
+    if (SceneTimes.size() != Scenes.size())
+    {
+        SceneTimes.assign(Scenes.size(), 0.0f);
+    }
+
+    for (size_t Index = 0; Index < Scenes.size(); ++Index)
+    {
+        SceneTimes[Index] += DeltaTime;
+        UpdateGltfAnimationPose(Scenes[Index], SceneTimes[Index], ScenePoses[Index]);
+    }
+
+    for (FSceneModelResource& Model : Models)
+    {
+        if (Model.GltfSceneIndex < 0 || Model.GltfNodeIndex < 0)
+        {
+            continue;
+        }
+
+        const size_t SceneIndex = static_cast<size_t>(Model.GltfSceneIndex);
+        if (SceneIndex >= ScenePoses.size())
+        {
+            continue;
+        }
+
+        const std::vector<DirectX::XMFLOAT4X4>& WorldMatrices = ScenePoses[SceneIndex].WorldMatrices;
+        const size_t NodeIndex = static_cast<size_t>(Model.GltfNodeIndex);
+        if (NodeIndex >= WorldMatrices.size())
+        {
+            continue;
+        }
+
+        using namespace DirectX;
+        const XMMATRIX NodeWorld = XMLoadFloat4x4(&WorldMatrices[NodeIndex]);
+        const XMMATRIX ModelTransform = XMLoadFloat4x4(&Model.ModelTransform);
+        const XMMATRIX World = XMMatrixMultiply(NodeWorld, ModelTransform);
+        XMStoreFloat4x4(&Model.WorldMatrix, World);
+
+        if (Model.GltfSkinIndex >= 0 && Model.BoneMatrixBufferMapped)
+        {
+            const size_t SkinIndex = static_cast<size_t>(Model.GltfSkinIndex);
+            if (SkinIndex < Scenes[SceneIndex].Skins.size()
+                && SkinIndex < ScenePoses[SceneIndex].SkinMatrices.size())
+            {
+                const FGltfSkin& Skin = Scenes[SceneIndex].Skins[SkinIndex];
+                const std::vector<DirectX::XMFLOAT4X4>& SkinMatrices = ScenePoses[SceneIndex].SkinMatrices[SkinIndex];
+                const size_t MatrixCount = std::min(SkinMatrices.size(), static_cast<size_t>(Model.BoneMatrixCount));
+
+                const XMMATRIX MeshWorld = XMLoadFloat4x4(&Model.WorldMatrix);
+                const XMMATRIX MeshWorldInv = XMMatrixInverse(nullptr, MeshWorld);
+
+                std::vector<DirectX::XMFLOAT4X4> FinalMatrices(MatrixCount);
+                for (size_t JointIndex = 0; JointIndex < MatrixCount; ++JointIndex)
+                {
+                    const XMMATRIX SkinMatrix = XMLoadFloat4x4(&SkinMatrices[JointIndex]);
+                    const XMMATRIX FinalMatrix = XMMatrixMultiply(SkinMatrix, MeshWorldInv); // Mesh Local Space 으로 다시 변환
+                    XMStoreFloat4x4(&FinalMatrices[JointIndex], FinalMatrix);
+                }
+
+                const size_t CopyBytes = MatrixCount * sizeof(DirectX::XMFLOAT4X4);
+                std::memcpy(Model.BoneMatrixBufferMapped, FinalMatrices.data(), CopyBytes);
+            }
+        }
+    }
+}
+
 bool RendererUtils::CreateMappedConstantBuffer(FDX12Device* Device, uint64_t BufferSize, FMappedConstantBuffer& OutConstantBuffer)
 {
     if (Device == nullptr)
@@ -1634,6 +1821,11 @@ void RendererUtils::UpdateSceneConstants(
         Model.IndexBufferBindlessIndex,
         0u,
         0u);
+    Constants.SkinningBindlessIndices = DirectX::XMUINT4(
+        Model.VertexBufferBindlessIndices[5],
+        Model.VertexBufferBindlessIndices[6],
+        Model.BoneMatrixBindlessIndex,
+        0u);
     Constants.GtaoRadius = GtaoRadius;
     Constants.GtaoIntensity = bGtaoEnabled ? GtaoIntensity : 0.0f;
     Constants.GtaoPower = GtaoPower;
@@ -1786,5 +1978,6 @@ uint32_t RendererUtils::BuildPipelineKey(const FSceneModelResource& Model)
     const uint32_t UseBase = !Model.BaseColorTexturePath.empty() ? 1u : 0u;
     const uint32_t UseEmissive = !Model.EmissiveTexturePath.empty() ? 1u : 0u;
     const uint32_t UseAlphaMask = (Model.AlphaMode == 1u) ? 1u : 0u;
-    return (UseNormal) | (UseMr << 1) | (UseBase << 2) | (UseEmissive << 3) | (UseAlphaMask << 4);
+    const uint32_t UseSkinning = (Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0) ? 1u : 0u;
+    return (UseNormal) | (UseMr << 1) | (UseBase << 2) | (UseEmissive << 3) | (UseAlphaMask << 4) | (UseSkinning << 5);
 }

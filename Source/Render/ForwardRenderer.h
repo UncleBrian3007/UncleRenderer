@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <memory>
 #include <vector>
 #include <wrl.h>
@@ -12,6 +13,7 @@
 #include "RendererUtils.h"
 #include "TextureLoader.h"
 #include "RenderGraph.h"
+#include "../Scene/GltfAnimation.h"
 
 class FDX12Device;
 class FDX12CommandContext;
@@ -70,39 +72,11 @@ private:
 private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> SkyRootSignature;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineState;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoBaseColor;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoMr;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoMrNoBaseColor;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoEmissive;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoBaseColorNoEmissive;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoMrNoEmissive;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoMrNoBaseColorNoEmissive;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoNormal;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoBaseColorNoNormal;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoMrNoNormal;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoMrNoBaseColorNoNormal;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoEmissiveNoNormal;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoBaseColorNoEmissiveNoNormal;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoMrNoEmissiveNoNormal;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoMrNoBaseColorNoEmissiveNoNormal;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateAlphaMask;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoBaseColorAlphaMask;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoMrAlphaMask;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoMrNoBaseColorAlphaMask;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoEmissiveAlphaMask;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoBaseColorNoEmissiveAlphaMask;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoMrNoEmissiveAlphaMask;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoMrNoBaseColorNoEmissiveAlphaMask;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoNormalAlphaMask;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoBaseColorNoNormalAlphaMask;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoMrNoNormalAlphaMask;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoMrNoBaseColorNoNormalAlphaMask;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoEmissiveNoNormalAlphaMask;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoBaseColorNoEmissiveNoNormalAlphaMask;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoMrNoEmissiveNoNormalAlphaMask;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateNoMrNoBaseColorNoEmissiveNoNormalAlphaMask;
+    // Base pass pipelines indexed by permutation key (bit 0: Normal, bit 1: MR, bit 2: BaseColor, bit 3: Emissive, bit 4: AlphaMask)
+    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 32> BasePassPipelines;
+    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 32> BasePassPipelinesSkinned;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassPipelineSkinned;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ShadowPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> SkyPipelineState;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ObjectIdPipeline;
@@ -113,5 +87,8 @@ private:
     uint32_t BrdfLutBindlessIndex = UINT32_MAX;
     FMeshGeometryBuffers SkyGeometry;
     float SkySphereRadius = 1000.0f;
+    std::vector<FGltfScene> GltfScenes;
+    std::vector<FGltfAnimationPose> GltfScenePoses;
+    std::vector<float> GltfSceneTimes;
 
 };

@@ -35,6 +35,7 @@ cbuffer SceneConstants : register(b0)
     float4 EmissiveTransformRotation;
     uint4 VertexBufferBindlessIndices;
     uint4 ExtraBindlessIndices;
+    uint4 SkinningBindlessIndices;
     float EnvMapMipCount;
     float3 PaddingEnvMap;
     float GtaoRadius;

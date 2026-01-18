@@ -72,6 +72,8 @@ namespace
         EnsureSize(LocalStreams.UVs, VertexCount, FFloat2(0.0f, 0.0f));
         EnsureSize(LocalStreams.Tangents, VertexCount, FFloat4(0.0f, 0.0f, 0.0f, 1.0f));
         EnsureSize(LocalStreams.Colors, VertexCount, FFloat4(1.0f, 1.0f, 1.0f, 1.0f));
+        EnsureSize(LocalStreams.Joints, VertexCount, FUInt4{});
+        EnsureSize(LocalStreams.Weights, VertexCount, FFloat4(0.0f, 0.0f, 0.0f, 0.0f));
 
         std::vector<meshopt_Stream> VertexStreams;
         VertexStreams.push_back({ LocalStreams.Positions.data(), sizeof(FFloat3), sizeof(FFloat3) });
@@ -79,6 +81,8 @@ namespace
         VertexStreams.push_back({ LocalStreams.UVs.data(), sizeof(FFloat2), sizeof(FFloat2) });
         VertexStreams.push_back({ LocalStreams.Tangents.data(), sizeof(FFloat4), sizeof(FFloat4) });
         VertexStreams.push_back({ LocalStreams.Colors.data(), sizeof(FFloat4), sizeof(FFloat4) });
+        VertexStreams.push_back({ LocalStreams.Joints.data(), sizeof(FUInt4), sizeof(FUInt4) });
+        VertexStreams.push_back({ LocalStreams.Weights.data(), sizeof(FFloat4), sizeof(FFloat4) });
 
         std::vector<unsigned int> Remap(LocalStreams.Positions.size());
         const size_t UniqueVertexCount = meshopt_generateVertexRemapMulti(
@@ -95,12 +99,16 @@ namespace
         meshopt_remapVertexBuffer(LocalStreams.UVs.data(), LocalStreams.UVs.data(), LocalStreams.UVs.size(), sizeof(FFloat2), Remap.data());
         meshopt_remapVertexBuffer(LocalStreams.Tangents.data(), LocalStreams.Tangents.data(), LocalStreams.Tangents.size(), sizeof(FFloat4), Remap.data());
         meshopt_remapVertexBuffer(LocalStreams.Colors.data(), LocalStreams.Colors.data(), LocalStreams.Colors.size(), sizeof(FFloat4), Remap.data());
+        meshopt_remapVertexBuffer(LocalStreams.Joints.data(), LocalStreams.Joints.data(), LocalStreams.Joints.size(), sizeof(FUInt4), Remap.data());
+        meshopt_remapVertexBuffer(LocalStreams.Weights.data(), LocalStreams.Weights.data(), LocalStreams.Weights.size(), sizeof(FFloat4), Remap.data());
 
         LocalStreams.Positions.resize(UniqueVertexCount);
         LocalStreams.Normals.resize(UniqueVertexCount);
         LocalStreams.UVs.resize(UniqueVertexCount);
         LocalStreams.Tangents.resize(UniqueVertexCount);
         LocalStreams.Colors.resize(UniqueVertexCount);
+        LocalStreams.Joints.resize(UniqueVertexCount);
+        LocalStreams.Weights.resize(UniqueVertexCount);
 
         const bool bCanReplaceSource = IndexStart == 0 && IndexCount == Indices.size();
         _ASSERT(bCanReplaceSource);

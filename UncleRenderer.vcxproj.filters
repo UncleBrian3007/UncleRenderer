@@ -212,6 +212,9 @@
     <ClCompile Include="ThirdParty\meshoptimizer\vfetchoptimizer.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Source\Scene\GltfAnimation.cpp">
+      <Filter>Source Files\Scene</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Source\Core\Application.h">
@@ -342,6 +345,9 @@
     </ClInclude>
     <ClInclude Include="ThirdParty\meshoptimizer\meshoptimizer.h">
       <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Scene\GltfAnimation.h">
+      <Filter>Header Files\Scene</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

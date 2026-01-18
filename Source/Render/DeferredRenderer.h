@@ -13,6 +13,7 @@
 #include "RendererUtils.h"
 #include "TextureLoader.h"
 #include "RenderGraph.h"
+#include "../Scene/GltfAnimation.h"
 
 class FDX12Device;
 class FDX12CommandContext;
@@ -185,7 +186,9 @@ private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> HZBRootSignature;
     // Base pass pipelines indexed by permutation key (bit 0: Normal, bit 1: MR, bit 2: BaseColor, bit 3: Emissive, bit 4: AlphaMask)
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 32> BasePassPipelines;
+    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 32> BasePassPipelinesSkinned;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassPipelineSkinned;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ShadowPipeline;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> LinearDepthRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> LinearDepthPipeline;
@@ -258,6 +261,9 @@ private:
     D3D12_RESOURCE_STATES LightingBufferState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES LinearDepthState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES GtaoState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    std::vector<FGltfScene> GltfScenes;
+    std::vector<FGltfAnimationPose> GltfScenePoses;
+    std::vector<float> GltfSceneTimes;
     D3D12_RESOURCE_STATES TonemapOutputState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     std::array<D3D12_RESOURCE_STATES, 2> LuminanceStates = { D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
     std::vector<D3D12_RESOURCE_STATES> TaaStates;
