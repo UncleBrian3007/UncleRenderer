@@ -63,9 +63,16 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
     }
 
     LogInfo("Creating forward renderer shadow pipeline...");
-    if (!CreateShadowPipeline(Device, RootSignature.Get(), ShadowPipeline))
+    const std::vector<std::wstring> ShadowDefines;
+    if (!CreateShadowPipeline(Device, RootSignature.Get(), ShadowDefines, ShadowPipeline))
     {
         LogError("Forward renderer initialization failed: shadow pipeline creation failed");
+        return false;
+    }
+    const std::vector<std::wstring> ShadowSkinnedDefines = { L"USE_SKINNING=1" };
+    if (!CreateShadowPipeline(Device, RootSignature.Get(), ShadowSkinnedDefines, ShadowPipelineSkinned))
+    {
+        LogError("Forward renderer initialization failed: shadow pipeline (skinned) creation failed");
         return false;
     }
 
@@ -522,7 +529,17 @@ void FForwardRenderer::AddShadowPass(FRenderGraph& Graph, const FCamera& Camera,
         FScopedPixEvent ShadowEvent(LocalCommandList, L"ShadowMap");
         Cmd.ClearDepth(ShadowDSVHandle, 1.0f);
 
-        LocalCommandList->SetPipelineState(ShadowPipeline.Get());
+        ID3D12PipelineState* CurrentShadowPipeline = nullptr;
+        const auto SetShadowPipeline = [&](bool bUseSkinning)
+        {
+            ID3D12PipelineState* Pipeline = bUseSkinning ? ShadowPipelineSkinned.Get() : ShadowPipeline.Get();
+            if (Pipeline != CurrentShadowPipeline)
+            {
+                LocalCommandList->SetPipelineState(Pipeline);
+                CurrentShadowPipeline = Pipeline;
+            }
+        };
+        SetShadowPipeline(false);
         LocalCommandList->SetGraphicsRootSignature(RootSignature.Get());
         LocalCommandList->RSSetViewports(1, &ShadowViewport);
         LocalCommandList->RSSetScissorRects(1, &ShadowScissor);
@@ -560,6 +577,7 @@ void FForwardRenderer::AddShadowPass(FRenderGraph& Graph, const FCamera& Camera,
             LocalCommandList->SetGraphicsRootConstantBufferView(
                 0,
                 ConstantBufferAddress + ConstantBufferOffset);
+            SetShadowPipeline(Model.bUseSkinning);
 
             if (AreModelPixEventsEnabled())
             {

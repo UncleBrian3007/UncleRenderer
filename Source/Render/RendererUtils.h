@@ -178,6 +178,7 @@ struct FSceneModelResource
     DirectX::XMFLOAT3 BoundsMin{ 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT3 BoundsMax{ 0.0f, 0.0f, 0.0f };
     uint32_t ObjectId = 0;
+    bool bUseSkinning = false;
     bool bUseMeshletCulling = false;
     DirectX::XMFLOAT4X4 ModelTransform{};
     int GltfSceneIndex = -1;

@@ -190,6 +190,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassPipelineSkinned;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ShadowPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> ShadowPipelineSkinned;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> LinearDepthRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> LinearDepthPipeline;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> GtaoRootSignature;

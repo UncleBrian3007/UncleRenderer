@@ -94,7 +94,11 @@ public:
 
 protected:
     void InitializeCommonSettings(uint32_t Width, uint32_t Height, const FRendererConfig& Config);
-    bool CreateShadowPipeline(FDX12Device* Device, ID3D12RootSignature* RootSignature, Microsoft::WRL::ComPtr<ID3D12PipelineState>& OutPipelineState);
+    bool CreateShadowPipeline(
+        FDX12Device* Device,
+        ID3D12RootSignature* RootSignature,
+        const std::vector<std::wstring>& Defines,
+        Microsoft::WRL::ComPtr<ID3D12PipelineState>& OutPipelineState);
     bool CreateShadowResources(
         FDX12Device* Device,
         uint32_t& InOutWidth,

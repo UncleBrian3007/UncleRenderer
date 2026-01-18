@@ -164,9 +164,16 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     }
 
     LogInfo("Creating deferred renderer shadow pipeline...");
-    if (!CreateShadowPipeline(Device, BasePassRootSignature.Get(), ShadowPipeline))
+    const std::vector<std::wstring> ShadowDefines;
+    if (!CreateShadowPipeline(Device, BasePassRootSignature.Get(), ShadowDefines, ShadowPipeline))
     {
         LogError("Deferred renderer initialization failed: shadow pipeline creation failed");
+        return false;
+    }
+    const std::vector<std::wstring> ShadowSkinnedDefines = { L"USE_SKINNING=1" };
+    if (!CreateShadowPipeline(Device, BasePassRootSignature.Get(), ShadowSkinnedDefines, ShadowPipelineSkinned))
+    {
+        LogError("Deferred renderer initialization failed: shadow pipeline (skinned) creation failed");
         return false;
     }
 
@@ -850,7 +857,17 @@ void FDeferredRenderer::AddShadowPass(FRenderGraph& Graph, const FCamera& Camera
         Cmd.ClearDepth(ShadowDSVHandle, 1.0f);
 
         ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
-        LocalCommandList->SetPipelineState(ShadowPipeline.Get());
+        ID3D12PipelineState* CurrentShadowPipeline = nullptr;
+        const auto SetShadowPipeline = [&](bool bUseSkinning)
+        {
+            ID3D12PipelineState* Pipeline = bUseSkinning ? ShadowPipelineSkinned.Get() : ShadowPipeline.Get();
+            if (Pipeline != CurrentShadowPipeline)
+            {
+                LocalCommandList->SetPipelineState(Pipeline);
+                CurrentShadowPipeline = Pipeline;
+            }
+        };
+        SetShadowPipeline(false);
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         LocalCommandList->SetGraphicsRootSignature(BasePassRootSignature.Get());
 
@@ -886,6 +903,7 @@ void FDeferredRenderer::AddShadowPass(FRenderGraph& Graph, const FCamera& Camera
             const FSceneModelResource& Model = SceneModels[ModelIndex];
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
 
+            SetShadowPipeline(Model.bUseSkinning);
             LocalCommandList->IASetVertexBuffers(0, Model.Geometry.VertexBufferCount, Model.Geometry.VertexBufferViews.data());
             LocalCommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
 

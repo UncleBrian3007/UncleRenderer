@@ -342,7 +342,11 @@ bool FRenderer::CreateCullingConstantBuffersPerFrame(FDX12Device* Device)
     return true;
 }
 
-bool FRenderer::CreateShadowPipeline(FDX12Device* Device, ID3D12RootSignature* RootSignature, Microsoft::WRL::ComPtr<ID3D12PipelineState>& OutPipelineState)
+bool FRenderer::CreateShadowPipeline(
+    FDX12Device* Device,
+    ID3D12RootSignature* RootSignature,
+    const std::vector<std::wstring>& Defines,
+    Microsoft::WRL::ComPtr<ID3D12PipelineState>& OutPipelineState)
 {
     if (!Device || !RootSignature)
     {
@@ -355,7 +359,7 @@ bool FRenderer::CreateShadowPipeline(FDX12Device* Device, ID3D12RootSignature* R
     const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
     const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
 
-    if (!Compiler.CompileFromFile(L"Shaders/ShadowMap.hlsl", L"VSMain", VSTarget, VSByteCode))
+    if (!Compiler.CompileFromFile(L"Shaders/ShadowMap.hlsl", L"VSMain", VSTarget, VSByteCode, Defines))
     {
         return false;
     }
