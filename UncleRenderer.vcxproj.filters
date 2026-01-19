@@ -440,5 +440,8 @@
     <None Include="Shaders\ShadowRays.hlsl">
       <Filter>Shaders</Filter>
     </None>
+    <None Include="Shaders\SkinningCS.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
   </ItemGroup>
 </Project>

@@ -1135,6 +1135,8 @@ bool RendererUtils::CreateSceneModelsFromJson(
                                 Device,
                                 ModelResource.BoneMatrixBuffer.Get(),
                                 sizeof(DirectX::XMFLOAT4X4));
+
+                            ModelResource.bUseSkinning = ModelResource.BoneMatrixBindlessIndex != UINT32_MAX;
                         }
                     }
                 }
@@ -1554,7 +1556,7 @@ void RendererUtils::UpdateGltfSceneAnimation(
                 for (size_t JointIndex = 0; JointIndex < MatrixCount; ++JointIndex)
                 {
                     const XMMATRIX SkinMatrix = XMLoadFloat4x4(&SkinMatrices[JointIndex]);
-                    const XMMATRIX FinalMatrix = XMMatrixMultiply(SkinMatrix, MeshWorldInv); // Mesh Local Space 으로 다시 변환
+					const XMMATRIX FinalMatrix = XMMatrixMultiply(SkinMatrix, MeshWorldInv); // To Mesh Local Space
                     XMStoreFloat4x4(&FinalMatrices[JointIndex], FinalMatrix);
                 }
 
@@ -1829,7 +1831,7 @@ void RendererUtils::UpdateSceneConstants(
         Model.VertexBufferBindlessIndices[5],
         Model.VertexBufferBindlessIndices[6],
         Model.BoneMatrixBindlessIndex,
-        0u);
+        Model.SkinnedPositionSrvBindlessIndex);
     Constants.GtaoRadius = GtaoRadius;
     Constants.GtaoIntensity = bGtaoEnabled ? GtaoIntensity : 0.0f;
     Constants.GtaoPower = GtaoPower;

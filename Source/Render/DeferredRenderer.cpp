@@ -127,6 +127,11 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
         LogError("Deferred renderer initialization failed: ray tracing pipeline creation failed");
         return false;
     }
+    if (!CreateSkinningPipeline(Device))
+    {
+        LogError("Deferred renderer initialization failed: skinning pipeline creation failed");
+        return false;
+    }
 
     LogInfo("Creating deferred renderer base pass root signature...");
     if (!CreateBasePassRootSignature(Device))
@@ -325,6 +330,12 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
         return false;
     }
 
+    if (!CreateSkinnedPositionBuffers())
+    {
+        LogError("Deferred renderer initialization failed: skinned position buffer creation failed");
+        return false;
+    }
+
     GltfScenePoses.resize(GltfScenes.size());
     GltfSceneTimes.assign(GltfScenes.size(), 0.0f);
     for (size_t Index = 0; Index < GltfScenes.size(); ++Index)
@@ -436,6 +447,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
     FDeferredFrameState FrameState;
     PrepareFrameState(Camera, FrameState);
+    DispatchSkinning(CmdContext, FrameState.LightViewProjection);
     UpdateRayTracingBlasRefit(CmdContext);
     BuildRayTracingTlas(CmdContext);
 

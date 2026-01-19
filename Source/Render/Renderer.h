@@ -111,9 +111,12 @@ protected:
     void ConfigureHZBOcclusion(bool bEnabled, uint32_t HZBBindlessIndex, uint32_t Width, uint32_t Height, uint32_t MipCount);
     void PrepareGpuDebugPrint(FDX12CommandContext& CmdContext);
     void DispatchGpuDebugPrintStats(FDX12CommandContext& CmdContext);
+    void DispatchSkinning(FDX12CommandContext& CmdContext, const DirectX::XMMATRIX& LightViewProjection);
+    bool CreateSkinnedPositionBuffers();
     void UpdateRayTracingBlasRefit(FDX12CommandContext& CmdContext);
     void BuildRayTracingTlas(FDX12CommandContext& CmdContext);
     bool CreateRayTracingPipeline(FDX12Device* Device);
+    bool CreateSkinningPipeline(FDX12Device* Device);
     bool CreateGpuDebugPrintResources(FDX12Device* Device);
     bool CreateGpuDebugPrintPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateGpuDebugPrintStatsPipeline(FDX12Device* Device);
@@ -168,6 +171,7 @@ protected:
 
     std::vector<FSceneModelResource> SceneModels;
     std::vector<bool> SceneModelVisibility;
+    std::vector<bool> SceneModelSkinningVisibility;
     struct FIndirectDrawRange
     {
         uint32_t Start = 0;
@@ -211,6 +215,8 @@ protected:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> MeshletRunClearPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> MeshletRunAppendPipeline;
     Microsoft::WRL::ComPtr<ID3D12CommandSignature> IndirectCommandSignature;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> SkinningRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> SkinningPipeline;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> GpuDebugPrintRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> GpuDebugPrintPipeline;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> GpuDebugPrintStatsRootSignature;

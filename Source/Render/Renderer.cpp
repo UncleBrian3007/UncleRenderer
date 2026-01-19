@@ -1298,6 +1298,267 @@ bool FRenderer::CreateRayTracingPipeline(FDX12Device* Device)
     return true;
 }
 
+bool FRenderer::CreateSkinnedPositionBuffers()
+{
+    if (!Device || !Device->GetBindlessDescriptorHeap())
+    {
+        return false;
+    }
+
+    bool bAllReady = true;
+    for (FSceneModelResource& Model : SceneModels)
+    {
+        if (Model.BoneMatrixBindlessIndex == UINT32_MAX || Model.BoneMatrixCount == 0)
+        {
+            continue;
+        }
+
+        const uint32_t VertexStride = Model.Geometry.VertexBufferViews[0].StrideInBytes;
+        const uint32_t VertexCount = VertexStride > 0
+            ? (Model.Geometry.VertexBufferViews[0].SizeInBytes / VertexStride)
+            : 0;
+        if (VertexCount == 0)
+        {
+            continue;
+        }
+
+        const uint64_t BufferSize = static_cast<uint64_t>(VertexCount) * sizeof(FFloat3);
+        Model.SkinnedPositionBuffers.assign(FramesInFlight, nullptr);
+        Model.SkinnedPositionSrvBindlessIndices.assign(FramesInFlight, UINT32_MAX);
+        Model.SkinnedPositionUavBindlessIndices.assign(FramesInFlight, UINT32_MAX);
+        Model.SkinnedPositionStates.assign(FramesInFlight, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+        D3D12_HEAP_PROPERTIES DefaultHeap = {};
+        DefaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
+        DefaultHeap.CreationNodeMask = 1;
+        DefaultHeap.VisibleNodeMask = 1;
+
+        D3D12_RESOURCE_DESC BufferDesc = {};
+        BufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        BufferDesc.Width = BufferSize;
+        BufferDesc.Height = 1;
+        BufferDesc.DepthOrArraySize = 1;
+        BufferDesc.MipLevels = 1;
+        BufferDesc.Format = DXGI_FORMAT_UNKNOWN;
+        BufferDesc.SampleDesc.Count = 1;
+        BufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        BufferDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+        const auto CreateStructuredBufferSrv = [&](ID3D12Resource* Buffer, uint32_t Stride)
+        {
+            if (!Buffer || Stride == 0)
+            {
+                return UINT32_MAX;
+            }
+            const D3D12_RESOURCE_DESC BufferDescLocal = Buffer->GetDesc();
+            const uint64_t ElementCount = BufferDescLocal.Width / Stride;
+            if (ElementCount == 0)
+            {
+                return UINT32_MAX;
+            }
+            D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc = {};
+            SrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+            SrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            SrvDesc.Format = DXGI_FORMAT_UNKNOWN;
+            SrvDesc.Buffer.FirstElement = 0;
+            SrvDesc.Buffer.NumElements = static_cast<UINT>(ElementCount);
+            SrvDesc.Buffer.StructureByteStride = Stride;
+            SrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+            return Device->CreateBindlessSrv(Buffer, SrvDesc);
+        };
+
+        const auto CreateStructuredBufferUav = [&](ID3D12Resource* Buffer, uint32_t Stride)
+        {
+            if (!Buffer || Stride == 0)
+            {
+                return UINT32_MAX;
+            }
+            const D3D12_RESOURCE_DESC BufferDescLocal = Buffer->GetDesc();
+            const uint64_t ElementCount = BufferDescLocal.Width / Stride;
+            if (ElementCount == 0)
+            {
+                return UINT32_MAX;
+            }
+            D3D12_UNORDERED_ACCESS_VIEW_DESC UavDesc = {};
+            UavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+            UavDesc.Format = DXGI_FORMAT_UNKNOWN;
+            UavDesc.Buffer.FirstElement = 0;
+            UavDesc.Buffer.NumElements = static_cast<UINT>(ElementCount);
+            UavDesc.Buffer.StructureByteStride = Stride;
+            UavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
+            return Device->CreateBindlessUav(Buffer, nullptr, UavDesc);
+        };
+
+        for (uint32_t FrameIndex = 0; FrameIndex < FramesInFlight; ++FrameIndex)
+        {
+            HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+                &DefaultHeap,
+                D3D12_HEAP_FLAG_NONE,
+                &BufferDesc,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                nullptr,
+                IID_PPV_ARGS(Model.SkinnedPositionBuffers[FrameIndex].ReleaseAndGetAddressOf())));
+
+            if (Model.SkinnedPositionBuffers[FrameIndex])
+            {
+                const std::wstring BufferName = L"SkinnedPositionBuffer_" + std::to_wstring(FrameIndex);
+                Model.SkinnedPositionBuffers[FrameIndex]->SetName(BufferName.c_str());
+                Model.SkinnedPositionSrvBindlessIndices[FrameIndex] = CreateStructuredBufferSrv(
+                    Model.SkinnedPositionBuffers[FrameIndex].Get(),
+                    sizeof(FFloat3));
+                Model.SkinnedPositionUavBindlessIndices[FrameIndex] = CreateStructuredBufferUav(
+                    Model.SkinnedPositionBuffers[FrameIndex].Get(),
+                    sizeof(FFloat3));
+            }
+        }
+
+        bool bReady = true;
+        for (uint32_t FrameIndex = 0; FrameIndex < FramesInFlight; ++FrameIndex)
+        {
+            bReady = bReady && Model.SkinnedPositionBuffers[FrameIndex]
+                && Model.SkinnedPositionSrvBindlessIndices[FrameIndex] != UINT32_MAX
+                && Model.SkinnedPositionUavBindlessIndices[FrameIndex] != UINT32_MAX;
+        }
+
+        Model.bUseSkinning = Model.bUseSkinning && bReady;
+        bAllReady = bAllReady && bReady;
+    }
+
+    return bAllReady;
+}
+
+void FRenderer::DispatchSkinning(FDX12CommandContext& CmdContext, const DirectX::XMMATRIX& LightViewProjection)
+{
+    SceneModelSkinningVisibility.assign(SceneModels.size(), false);
+    if (SceneModels.empty())
+    {
+        return;
+    }
+
+    const uint32_t FrameIndex = CmdContext.GetCurrentFrameIndex();
+
+    DirectX::XMVECTOR LightPlanes[6] = {};
+    RendererUtils::BuildFrustumPlanesFromMatrix(LightViewProjection, LightPlanes);
+
+    bool bHasVisibleSkinning = false;
+    for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+    {
+        FSceneModelResource& Model = SceneModels[ModelIndex];
+        const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0
+            && FrameIndex < Model.SkinnedPositionBuffers.size()
+            && FrameIndex < Model.SkinnedPositionUavBindlessIndices.size();
+
+        if (bUseSkinning)
+        {
+            Model.SkinnedPositionBuffer = Model.SkinnedPositionBuffers[FrameIndex];
+            Model.SkinnedPositionSrvBindlessIndex = Model.SkinnedPositionSrvBindlessIndices[FrameIndex];
+            Model.SkinnedPositionUavBindlessIndex = Model.SkinnedPositionUavBindlessIndices[FrameIndex];
+        }
+        else
+        {
+            Model.SkinnedPositionBuffer.Reset();
+            Model.SkinnedPositionSrvBindlessIndex = UINT32_MAX;
+            Model.SkinnedPositionUavBindlessIndex = UINT32_MAX;
+        }
+
+        if (!bUseSkinning || !Model.SkinnedPositionBuffer || Model.SkinnedPositionUavBindlessIndex == UINT32_MAX)
+        {
+            continue;
+        }
+
+        const bool bCameraVisible = SceneModelVisibility.empty() ? true : SceneModelVisibility[ModelIndex];
+        const bool bShadowVisible = RendererUtils::IsAabbInCameraFrustum(LightPlanes, Model.BoundsMin, Model.BoundsMax);
+        const bool bVisible = bCameraVisible || bShadowVisible;
+        SceneModelSkinningVisibility[ModelIndex] = bVisible;
+        bHasVisibleSkinning = bHasVisibleSkinning || bVisible;
+    }
+
+    if (!bHasVisibleSkinning)
+    {
+        return;
+    }
+
+    if (!Device || !SkinningPipeline || !SkinningRootSignature || !Device->GetBindlessDescriptorHeap())
+    {
+        return;
+    }
+
+    ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
+    if (!CommandList)
+    {
+        return;
+    }
+
+    ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
+    CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+    CommandList->SetComputeRootSignature(SkinningRootSignature.Get());
+    CommandList->SetPipelineState(SkinningPipeline.Get());
+
+    for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+    {
+        FSceneModelResource& Model = SceneModels[ModelIndex];
+        const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0
+            && FrameIndex < Model.SkinnedPositionBuffers.size()
+            && FrameIndex < Model.SkinnedPositionUavBindlessIndices.size()
+            && FrameIndex < Model.SkinnedPositionStates.size();
+        if (!bUseSkinning || !SceneModelSkinningVisibility[ModelIndex])
+        {
+            continue;
+        }
+
+        ID3D12Resource* SkinnedBuffer = Model.SkinnedPositionBuffers[FrameIndex].Get();
+        if (!SkinnedBuffer)
+        {
+            continue;
+        }
+
+        const uint32_t VertexStride = Model.Geometry.VertexBufferViews[0].StrideInBytes;
+        const uint32_t VertexCount = VertexStride > 0
+            ? (Model.Geometry.VertexBufferViews[0].SizeInBytes / VertexStride)
+            : 0;
+        if (VertexCount == 0)
+        {
+            continue;
+        }
+
+        if (Model.SkinnedPositionStates[FrameIndex] != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+        {
+            D3D12_RESOURCE_BARRIER Barrier = {};
+            Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            Barrier.Transition.pResource = SkinnedBuffer;
+            Barrier.Transition.StateBefore = Model.SkinnedPositionStates[FrameIndex];
+            Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+            Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            CommandList->ResourceBarrier(1, &Barrier);
+            Model.SkinnedPositionStates[FrameIndex] = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        }
+
+        const uint32_t Constants[] =
+        {
+            VertexCount,
+            Model.VertexBufferBindlessIndices[0],
+            Model.VertexBufferBindlessIndices[5],
+            Model.VertexBufferBindlessIndices[6],
+            Model.BoneMatrixBindlessIndex,
+            Model.SkinnedPositionUavBindlessIndex
+        };
+        CommandList->SetComputeRoot32BitConstants(0, _countof(Constants), Constants, 0);
+
+        const uint32_t DispatchCount = (VertexCount + 63) / 64;
+        CommandList->Dispatch(DispatchCount, 1, 1);
+
+        D3D12_RESOURCE_BARRIER Barrier = {};
+        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        Barrier.Transition.pResource = SkinnedBuffer;
+        Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        CommandList->ResourceBarrier(1, &Barrier);
+        Model.SkinnedPositionStates[FrameIndex] = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    }
+}
+
+
 void FRenderer::UpdateRayTracingBlasRefit(FDX12CommandContext& CmdContext)
 {
     if (!bRayTracedShadowsEnabled)
@@ -1327,6 +1588,8 @@ void FRenderer::UpdateRayTracingBlasRefit(FDX12CommandContext& CmdContext)
     SkinningBarrier.UAV.pResource = nullptr;
     CommandList4->ResourceBarrier(1, &SkinningBarrier);
 
+    const uint32_t FrameIndex = CmdContext.GetCurrentFrameIndex();
+
     for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
     {
         FSceneModelResource& Model = SceneModels[ModelIndex];
@@ -1335,16 +1598,26 @@ void FRenderer::UpdateRayTracingBlasRefit(FDX12CommandContext& CmdContext)
             continue;
         }
 
-        const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0;
+        const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0
+            && FrameIndex < Model.SkinnedPositionBuffers.size();
         if (!bUseSkinning)
         {
             continue;
         }
 
-        if (!SceneModelVisibility.empty() && !SceneModelVisibility[ModelIndex])
+        if (!SceneModelSkinningVisibility.empty() && ModelIndex < SceneModelSkinningVisibility.size()
+            && !SceneModelSkinningVisibility[ModelIndex])
         {
             continue;
         }
+
+        ID3D12Resource* SkinnedBuffer = Model.SkinnedPositionBuffers[FrameIndex].Get();
+        if (!SkinnedBuffer)
+        {
+            continue;
+        }
+
+        Model.BlasGeometryDesc.Triangles.VertexBuffer.StartAddress = SkinnedBuffer->GetGPUVirtualAddress();
 
         D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS Inputs = {};
         Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
@@ -2703,6 +2976,52 @@ bool FRenderer::CreateCullingPipelines(FDX12Device* Device)
     RunDesc.pRootSignature = MeshletRunRootSignature.Get();
     RunDesc.CS = { RunByteCode.data(), RunByteCode.size() };
     HR_CHECK(Device->GetDevice()->CreateComputePipelineState(&RunDesc, IID_PPV_ARGS(MeshletRunAppendPipeline.GetAddressOf())));
+
+    return true;
+}
+
+bool FRenderer::CreateSkinningPipeline(FDX12Device* Device)
+{
+    if (!Device)
+    {
+        return false;
+    }
+
+    D3D12_ROOT_PARAMETER1 RootParams[1] = {};
+    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[0].Constants.ShaderRegister = 0;
+    RootParams[0].Constants.RegisterSpace = 0;
+    RootParams[0].Constants.Num32BitValues = 6;
+    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    D3D12_ROOT_SIGNATURE_DESC1 RootDesc = {};
+    RootDesc.NumParameters = _countof(RootParams);
+    RootDesc.pParameters = RootParams;
+    RootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC VersionedRootDesc = {};
+    VersionedRootDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    VersionedRootDesc.Desc_1_1 = RootDesc;
+
+    ComPtr<ID3DBlob> SerializedSig;
+    ComPtr<ID3DBlob> ErrorBlob;
+    HR_CHECK(D3D12SerializeVersionedRootSignature(&VersionedRootDesc, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
+    HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(SkinningRootSignature.GetAddressOf())));
+
+    FShaderCompiler Compiler;
+    std::vector<uint8_t> CsByteCode;
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring CSTarget = RendererUtils::BuildShaderTarget(L"cs", ShaderModel);
+    if (!Compiler.CompileFromFile(L"Shaders/SkinningCS.hlsl", L"CSMain", CSTarget, CsByteCode))
+    {
+        LogError("Failed to compile skinning compute shader");
+        return false;
+    }
+
+    D3D12_COMPUTE_PIPELINE_STATE_DESC CsDesc = {};
+    CsDesc.pRootSignature = SkinningRootSignature.Get();
+    CsDesc.CS = { CsByteCode.data(), CsByteCode.size() };
+    HR_CHECK(Device->GetDevice()->CreateComputePipelineState(&CsDesc, IID_PPV_ARGS(SkinningPipeline.GetAddressOf())));
 
     return true;
 }

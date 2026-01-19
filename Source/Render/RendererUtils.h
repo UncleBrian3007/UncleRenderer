@@ -188,6 +188,13 @@ struct FSceneModelResource
     uint32_t BoneMatrixCount = 0;
     Microsoft::WRL::ComPtr<ID3D12Resource> BoneMatrixBuffer;
     uint8_t* BoneMatrixBufferMapped = nullptr;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SkinnedPositionBuffers;
+    std::vector<uint32_t> SkinnedPositionSrvBindlessIndices;
+    std::vector<uint32_t> SkinnedPositionUavBindlessIndices;
+    std::vector<D3D12_RESOURCE_STATES> SkinnedPositionStates;
+    Microsoft::WRL::ComPtr<ID3D12Resource> SkinnedPositionBuffer;
+    uint32_t SkinnedPositionSrvBindlessIndex = UINT32_MAX;
+    uint32_t SkinnedPositionUavBindlessIndex = UINT32_MAX;
     std::vector<FMesh::FMeshlet> Meshlets;
     std::vector<FMesh::FMeshletBounds> MeshletBounds;
     std::vector<uint32_t> MeshletIndices;

@@ -68,6 +68,7 @@ VSOutput VSMain(VSInput Input)
     StructuredBuffer<uint4> JointBuffer = ResourceDescriptorHeap[SkinningBindlessIndices.x];
     StructuredBuffer<float4> WeightBuffer = ResourceDescriptorHeap[SkinningBindlessIndices.y];
     StructuredBuffer<row_major float4x4> BoneMatrices = ResourceDescriptorHeap[SkinningBindlessIndices.z];
+    StructuredBuffer<float3> SkinnedPositionBuffer = ResourceDescriptorHeap[SkinningBindlessIndices.w];
 #endif
 
     uint vertexIndex = IndexBuffer[Input.VertexId + Input.StartVertexLocation];
@@ -85,7 +86,7 @@ VSOutput VSMain(VSInput Input)
         weights.y * BoneMatrices[joints.y] +
         weights.z * BoneMatrices[joints.z] +
         weights.w * BoneMatrices[joints.w];
-    position = mul(float4(position, 1.0), skinMatrix).xyz;
+    position = SkinnedPositionBuffer[vertexIndex];
     normal = mul(normal, (float3x3)skinMatrix);
     tangent.xyz = mul(tangent.xyz, (float3x3)skinMatrix);
 #endif

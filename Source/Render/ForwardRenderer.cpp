@@ -40,6 +40,11 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
         LogError("Forward renderer initialization failed: ray tracing pipeline creation failed");
         return false;
     }
+    if (!CreateSkinningPipeline(Device))
+    {
+        LogError("Forward renderer initialization failed: skinning pipeline creation failed");
+        return false;
+    }
 
     LogInfo("Creating forward renderer root signature...");
     if (!CreateRootSignature(Device))
@@ -152,6 +157,12 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
         return false;
     }
 
+    if (!CreateSkinnedPositionBuffers())
+    {
+        LogError("Forward renderer initialization failed: skinned position buffer creation failed");
+        return false;
+    }
+
     GltfScenePoses.resize(GltfScenes.size());
     GltfSceneTimes.assign(GltfScenes.size(), 0.0f);
     for (size_t Index = 0; Index < GltfScenes.size(); ++Index)
@@ -232,6 +243,7 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
 
     FForwardFrameState FrameState;
     PrepareFrameState(Camera, FrameState);
+    DispatchSkinning(CmdContext, FrameState.LightViewProjection);
     UpdateRayTracingBlasRefit(CmdContext);
     BuildRayTracingTlas(CmdContext);
 
