@@ -321,6 +321,10 @@ namespace
             TextureSet.bAlphaMask = true;
             TextureSet.AlphaCutoff = Material->alpha_cutoff;
         }
+        else if (Material->alpha_mode == cgltf_alpha_mode_blend)
+        {
+            TextureSet.bAlphaBlend = true;
+        }
 
         return TextureSet;
     }
@@ -552,7 +556,7 @@ namespace
                 }
                 LoadedNode.NodeIndex = static_cast<int>(NodeIndex);
                 LoadedNode.WorldMatrix = ToFloat4x4(WorldLH);
-                LoadedNode.Name = Node->name ? Node->name : "";
+                LoadedNode.Name = Node->mesh->name ? Node->mesh->name : (Node->name ? Node->name : "");
                 OutNodes.push_back(LoadedNode);
             }
         }

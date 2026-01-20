@@ -22,7 +22,7 @@ float3 FresnelSchlick(float VdotH, float3 F0)
 }
 
 // PBR 스펙/디퓨즈 합산 계산을 공통화한 함수
-float3 EvaluatePBR(float3 albedo, float metallic, float roughness, float3 F0, float3 N, float3 V, float3 L)
+float3 EvaluatePBR_Research(float3 albedo, float metallic, float roughness, float3 F0, float3 N, float3 V, float3 L)
 {
     float3 H = normalize(V + L);
 
@@ -45,4 +45,51 @@ float3 EvaluatePBR(float3 albedo, float metallic, float roughness, float3 F0, fl
     float3 diffuse = kd * albedo;// / PI;
 
     return (diffuse + specular) * NdotL;
+}
+
+float D_GGX(float NdotH, float a)
+{
+	float a2 = a * a;
+
+	float denom = (NdotH * NdotH * (a2 - 1.0f) + 1.0f);
+	denom = /*PI */denom * denom;
+
+	return a2 * rcp(denom);
+}
+
+//http://graphicrants.blogspot.com/2013/08/specular-brdf-reference.html
+// Smith Joint GGX
+float V_SmithGGX(float NdotV, float NdotL, float a)
+{
+	float a2 = a * a;
+
+	float G_V = NdotV + sqrt((NdotV - NdotV * a2) * NdotV + a2);
+	float G_L = NdotL + sqrt((NdotL - NdotL * a2) * NdotL + a2);
+	return rcp(G_V * G_L);
+}
+
+// PBR 스펙/디퓨즈 합산 계산을 공통화한 함수
+float3 EvaluatePBR(float3 albedo, float metallic, float roughness, float3 F0, float3 N, float3 V, float3 L)
+{
+	float3 H = normalize(V + L);
+
+	float NdotL = saturate(dot(N, L));
+	float NdotV = saturate(dot(N, V));
+	float NdotH = saturate(dot(N, H));
+	float VdotH = saturate(dot(V, H));
+
+	roughness = max(roughness, 0.03f);
+
+	float alpha = roughness * roughness;
+	float D = D_GGX(NdotH, alpha);
+
+	float V_G = V_SmithGGX(NdotV, NdotL, alpha); // V_G = G / 4(N·L N·V)
+
+	float3 F = FresnelSchlick(VdotH, F0);
+
+	float3 specular = (D * V_G * F);
+	float3 kd = (1.0f - F) * (1.0f - metallic);
+	float3 diffuse = kd * albedo; // / PI;
+
+	return (diffuse + specular) * NdotL;
 }

@@ -29,6 +29,7 @@ struct FGltfMaterialTextureSet
     FFloat3 EmissiveFactor{ 0.0f, 0.0f, 0.0f };
     float AlphaCutoff = 0.5f;
     bool bAlphaMask = false;
+    bool bAlphaBlend = false;
     FGltfTextureTransform BaseColorTransform;
     FGltfTextureTransform MetallicRoughnessTransform;
     FGltfTextureTransform NormalTransform;

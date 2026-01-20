@@ -579,6 +579,10 @@ void FForwardRenderer::AddShadowPass(FRenderGraph& Graph, const FCamera& Camera,
         for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
         {
             const FSceneModelResource& Model = SceneModels[ModelIndex];
+            if (Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+            {
+                continue;
+            }
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
             UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset, Data.LightViewProjection);
         }
@@ -591,6 +595,10 @@ void FForwardRenderer::AddShadowPass(FRenderGraph& Graph, const FCamera& Camera,
             }
 
             const FSceneModelResource& Model = SceneModels[ModelIndex];
+            if (Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+            {
+                continue;
+            }
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
 
             const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
@@ -680,7 +688,8 @@ void FForwardRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Camer
             }
 
             const FSceneModelResource& Model = SceneModels[ModelIndex];
-            if (Model.AlphaMode == 1u)
+            if (Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask)
+                || Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
             {
                 continue;
             }
@@ -844,6 +853,10 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
         for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
         {
             const FSceneModelResource& Model = SceneModels[ModelIndex];
+            if (Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+            {
+                continue;
+            }
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
             UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset, Data.LightViewProjection);
         }
@@ -893,6 +906,76 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                     LocalCommandList->ExecuteIndirect(IndirectCommandSignature.Get(), Range.Count, IndirectBuffer, Offset, RunCountBuffer, CountOffset);
                 }
             }
+
+            for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+            {
+                if (!SceneModelVisibility.empty() && !SceneModelVisibility[ModelIndex])
+                {
+                    continue;
+                }
+
+                const FSceneModelResource& Model = SceneModels[ModelIndex];
+                if (Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+                {
+                    continue;
+                }
+
+                const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0;
+                if (!bUseSkinning)
+                {
+                    continue;
+                }
+
+                const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
+
+                const bool bUseBaseColorMap = !Model.BaseColorTexturePath.empty();
+                const bool bUseMetallicRoughnessMap = !Model.MetallicRoughnessTexturePath.empty();
+                const bool bUseEmissiveMap = !Model.EmissiveTexturePath.empty();
+                const bool bUseNormalMap = Model.bHasNormalMap;
+                const bool bUseAlphaMask = Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask);
+
+                const uint32_t PipelineKey =
+                    (bUseNormalMap ? 1u : 0u) |
+                    (bUseMetallicRoughnessMap ? 2u : 0u) |
+                    (bUseBaseColorMap ? 4u : 0u) |
+                    (bUseEmissiveMap ? 8u : 0u) |
+                    (bUseAlphaMask ? 16u : 0u);
+
+                LocalCommandList->SetPipelineState(BasePassPipelinesSkinned[PipelineKey].Get());
+
+                const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
+                LocalCommandList->SetGraphicsRootConstantBufferView(
+                    0,
+                    ConstantBufferAddress + ConstantBufferOffset);
+                const uint32_t ShadowMaskEnabled = (bRayTracedShadowsEnabled && ShadowMaskBindlessIndex != UINT32_MAX) ? 1u : 0u;
+                const uint32_t ResolvedShadowMaskIndex = ShadowMaskEnabled ? ShadowMaskBindlessIndex : ShadowMapBindlessIndex;
+                const uint32_t ForwardBindlessIndices[] =
+                {
+                    Model.BaseColorBindlessIndex,
+                    Model.MetallicRoughnessBindlessIndex,
+                    Model.NormalBindlessIndex,
+                    Model.EmissiveBindlessIndex,
+                    ShadowMapBindlessIndex,
+                    ResolvedShadowMaskIndex,
+                    ShadowMaskEnabled,
+                    EnvironmentCubeBindlessIndex,
+                    BrdfLutBindlessIndex
+                };
+                LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(ForwardBindlessIndices), ForwardBindlessIndices, 0);
+
+                if (AreModelPixEventsEnabled())
+                {
+                    const std::wstring ModelLabel = Model.Name.empty()
+                        ? L"Model"
+                        : std::wstring(Model.Name.begin(), Model.Name.end());
+                    FScopedPixEvent ModelEvent(LocalCommandList, ModelLabel.c_str());
+                    LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0);
+                }
+                else
+                {
+                    LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0);
+                }
+            }
         }
         else
         {
@@ -904,13 +987,17 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                 }
 
                 const FSceneModelResource& Model = SceneModels[ModelIndex];
+                if (Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+                {
+                    continue;
+                }
                 const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
 
                 const bool bUseBaseColorMap = !Model.BaseColorTexturePath.empty();
                 const bool bUseMetallicRoughnessMap = !Model.MetallicRoughnessTexturePath.empty();
                 const bool bUseEmissiveMap = !Model.EmissiveTexturePath.empty();
                 const bool bUseNormalMap = Model.bHasNormalMap;
-                const bool bUseAlphaMask = Model.AlphaMode == 1u;
+                const bool bUseAlphaMask = Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask);
                 const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0;
 
                 const uint32_t PipelineKey =
@@ -1016,6 +1103,10 @@ void FForwardRenderer::AddObjectIdPass(FRenderGraph& Graph, const FCamera& Camer
             }
 
             const FSceneModelResource& Model = SceneModels[ModelIndex];
+            if (Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+            {
+                continue;
+            }
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
 
             LocalCommandList->IASetVertexBuffers(0, Model.Geometry.VertexBufferCount, Model.Geometry.VertexBufferViews.data());

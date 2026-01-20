@@ -719,6 +719,8 @@ void FRenderer::PrepareGpuDebugPrint(FDX12CommandContext& CmdContext)
     }
 
     ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
+	FScopedPixEvent DebugPrintEvent(CommandList, L"PrepareGpuDebugPrint");
+
     if (GpuDebugPrintState != D3D12_RESOURCE_STATE_COPY_DEST)
     {
         D3D12_RESOURCE_BARRIER Barrier = {};
@@ -1488,6 +1490,7 @@ void FRenderer::DispatchSkinning(FDX12CommandContext& CmdContext, const DirectX:
     {
         return;
     }
+	FScopedPixEvent SkinningEvent(CommandList, L"DispatchSkinning");
 
     ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
     CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
@@ -1581,6 +1584,7 @@ void FRenderer::UpdateRayTracingBlasRefit(FDX12CommandContext& CmdContext)
     {
         return;
     }
+	FScopedPixEvent BlasRefitEvent(CommandList4, L"UpdateRayTracingBlasRefit");
 
     bool bHasUpdates = false;
     D3D12_RESOURCE_BARRIER SkinningBarrier = {};
@@ -1975,6 +1979,12 @@ bool FRenderer::PrepareGpuDrivenDrawData(FGpuDrivenPreparedData& OutData)
     size_t TotalCommandCount = 0;
     for (const FSceneModelResource& Model : SceneModels)
     {
+        const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0;
+        if (bUseSkinning || Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+        {
+            continue;
+        }
+
         if (Model.bUseMeshletCulling && !Model.Meshlets.empty())
         {
             TotalCommandCount += Model.Meshlets.size();
@@ -2003,6 +2013,11 @@ bool FRenderer::PrepareGpuDrivenDrawData(FGpuDrivenPreparedData& OutData)
     {
         const FSceneModelResource& Model = SceneModels[SortedIndex];
         const uint32_t PipelineKey = PipelineKeys[SortedIndex];
+        const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0;
+        if (bUseSkinning || Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+        {
+            continue;
+        }
 
         const std::array<uint32_t, 4> MaterialIndices =
         {

@@ -902,6 +902,10 @@ void FDeferredRenderer::AddShadowPass(FRenderGraph& Graph, const FCamera& Camera
         for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
         {
             const FSceneModelResource& Model = SceneModels[ModelIndex];
+            if (Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+            {
+                continue;
+            }
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
             UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset);
         }
@@ -914,6 +918,10 @@ void FDeferredRenderer::AddShadowPass(FRenderGraph& Graph, const FCamera& Camera
             }
 
             const FSceneModelResource& Model = SceneModels[ModelIndex];
+            if (Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+            {
+                continue;
+            }
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
 
             const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0;
@@ -1000,7 +1008,8 @@ void FDeferredRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Came
             }
 
             const FSceneModelResource& Model = SceneModels[ModelIndex];
-            if (Model.AlphaMode == 1u)
+            if (Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask)
+                || Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
             {
                 continue;
             }
@@ -1134,9 +1143,7 @@ void FDeferredRenderer::AddBasePass(FRenderGraph& Graph, const FCamera& Camera, 
                     LocalCommandList->ExecuteIndirect(IndirectCommandSignature.Get(), Range.Count, IndirectBuffer, Offset, RunCountBuffer, CountOffset);
                 }
             }
-        }
-        else
-        {
+
             for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
             {
                 if (!SceneModelVisibility.empty() && !SceneModelVisibility[ModelIndex])
@@ -1145,6 +1152,17 @@ void FDeferredRenderer::AddBasePass(FRenderGraph& Graph, const FCamera& Camera, 
                 }
 
                 const FSceneModelResource& Model = SceneModels[ModelIndex];
+                if (Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+                {
+                    continue;
+                }
+
+                const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0;
+                if (!bUseSkinning)
+                {
+                    continue;
+                }
+
                 const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
 
                 const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
@@ -1162,7 +1180,63 @@ void FDeferredRenderer::AddBasePass(FRenderGraph& Graph, const FCamera& Camera, 
                 const bool bUseMetallicRoughnessMap = !Model.MetallicRoughnessTexturePath.empty();
                 const bool bUseBaseColorMap = !Model.BaseColorTexturePath.empty();
                 const bool bUseEmissiveMap = !Model.EmissiveTexturePath.empty();
-                const bool bUseAlphaMask = Model.AlphaMode == 1u;
+                const bool bUseAlphaMask = Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask);
+
+                const uint32_t PipelineKey = 
+                    (bUseNormalMap ? 1u : 0u) |
+                    (bUseMetallicRoughnessMap ? 2u : 0u) |
+                    (bUseBaseColorMap ? 4u : 0u) |
+                    (bUseEmissiveMap ? 8u : 0u) |
+                    (bUseAlphaMask ? 16u : 0u);
+
+                LocalCommandList->SetPipelineState(BasePassPipelinesSkinned[PipelineKey].Get());
+
+                if (AreModelPixEventsEnabled())
+                {
+                    const std::wstring ModelLabel = Model.Name.empty()
+                        ? L"Model"
+                        : std::wstring(Model.Name.begin(), Model.Name.end());
+                    FScopedPixEvent ModelEvent(LocalCommandList, ModelLabel.c_str());
+                    LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0);
+                }
+                else
+                {
+                    LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0);
+                }
+            }
+        }
+        else
+        {
+            for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+            {
+                if (!SceneModelVisibility.empty() && !SceneModelVisibility[ModelIndex])
+                {
+                    continue;
+                }
+
+                const FSceneModelResource& Model = SceneModels[ModelIndex];
+                if (Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+                {
+                    continue;
+                }
+                const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
+
+                const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
+                LocalCommandList->SetGraphicsRootConstantBufferView(0, ConstantBufferAddress + ConstantBufferOffset);
+                const uint32_t BindlessIndices[] =
+                {
+                    Model.BaseColorBindlessIndex,
+                    Model.MetallicRoughnessBindlessIndex,
+                    Model.NormalBindlessIndex,
+                    Model.EmissiveBindlessIndex
+                };
+                LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
+
+                const bool bUseNormalMap = Model.bHasNormalMap;
+                const bool bUseMetallicRoughnessMap = !Model.MetallicRoughnessTexturePath.empty();
+                const bool bUseBaseColorMap = !Model.BaseColorTexturePath.empty();
+                const bool bUseEmissiveMap = !Model.EmissiveTexturePath.empty();
+                const bool bUseAlphaMask = Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask);
                 const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0;
 
                 // Build pipeline key from material properties (bit 0: Normal, bit 1: MR, bit 2: BaseColor, bit 3: Emissive, bit 4: AlphaMask)
@@ -1249,6 +1323,10 @@ void FDeferredRenderer::AddObjectIdPass(FRenderGraph& Graph, const FCamera& Came
             }
 
             const FSceneModelResource& Model = SceneModels[ModelIndex];
+            if (Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+            {
+                continue;
+            }
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
 
             LocalCommandList->IASetVertexBuffers(0, Model.Geometry.VertexBufferCount, Model.Geometry.VertexBufferViews.data());

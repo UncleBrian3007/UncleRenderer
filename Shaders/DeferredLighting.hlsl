@@ -72,7 +72,7 @@ float4 PSMain(VSOutput Input) : SV_Target
 
     float roughness = smr.z;
     float metallic = smr.y;
-    float3 F0 = lerp(smr.x.xxx, albedo, metallic);
+	float3 F0 = lerp(smr.x.xxx, albedo, metallic); // Metallic 은 Albedo 에 반사율(색깔) 저장
 
     float3 viewPos = ReconstructViewPosition(Input.UV, depth);
 

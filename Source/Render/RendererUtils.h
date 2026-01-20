@@ -109,6 +109,13 @@ struct FSkyAtmosphereConstants
     float Padding2 = 0.0f;
 };
 
+enum class EAlphaMode : uint32_t
+{
+    Opaque = 0,
+    Mask = 1,
+    Blend = 2
+};
+
 struct FSkyPipelineConfig
 {
     bool DepthEnable = false;

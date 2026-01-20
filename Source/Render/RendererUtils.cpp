@@ -1019,7 +1019,9 @@ bool RendererUtils::CreateSceneModelsFromJson(
                 ModelResource.RoughnessFactor = Material.RoughnessFactor;
                 ModelResource.EmissiveFactor = Material.EmissiveFactor;
                 ModelResource.AlphaCutoff = Material.AlphaCutoff;
-                ModelResource.AlphaMode = Material.bAlphaMask ? 1u : 0u;
+                ModelResource.AlphaMode = static_cast<uint32_t>(Material.bAlphaBlend
+                    ? EAlphaMode::Blend
+                    : (Material.bAlphaMask ? EAlphaMode::Mask : EAlphaMode::Opaque));
                 ModelResource.bHasNormalMap = !ModelResource.NormalTexturePath.empty();
 
                 ModelResource.BaseColorTransformOffsetScale = BuildOffsetScale(Material.BaseColorTransform);
@@ -1535,9 +1537,6 @@ void RendererUtils::UpdateGltfSceneAnimation(
 
         using namespace DirectX;
         const XMMATRIX NodeWorld = XMLoadFloat4x4(&WorldMatrices[NodeIndex]);
-        const XMMATRIX ModelTransform = XMLoadFloat4x4(&Model.ModelTransform);
-        const XMMATRIX World = XMMatrixMultiply(NodeWorld, ModelTransform);
-        XMStoreFloat4x4(&Model.WorldMatrix, World);
 
         if (Model.GltfSkinIndex >= 0 && Model.BoneMatrixBufferMapped)
         {
@@ -1549,14 +1548,13 @@ void RendererUtils::UpdateGltfSceneAnimation(
                 const std::vector<DirectX::XMFLOAT4X4>& SkinMatrices = ScenePoses[SceneIndex].SkinMatrices[SkinIndex];
                 const size_t MatrixCount = std::min(SkinMatrices.size(), static_cast<size_t>(Model.BoneMatrixCount));
 
-                const XMMATRIX MeshWorld = XMLoadFloat4x4(&Model.WorldMatrix);
-                const XMMATRIX MeshWorldInv = XMMatrixInverse(nullptr, MeshWorld);
+                const XMMATRIX NodeWorldInv = XMMatrixInverse(nullptr, NodeWorld);
 
                 std::vector<DirectX::XMFLOAT4X4> FinalMatrices(MatrixCount);
                 for (size_t JointIndex = 0; JointIndex < MatrixCount; ++JointIndex)
                 {
                     const XMMATRIX SkinMatrix = XMLoadFloat4x4(&SkinMatrices[JointIndex]);
-					const XMMATRIX FinalMatrix = XMMatrixMultiply(SkinMatrix, MeshWorldInv); // To Mesh Local Space
+					const XMMATRIX FinalMatrix = XMMatrixMultiply(SkinMatrix, NodeWorldInv); // To Node Local Space
                     XMStoreFloat4x4(&FinalMatrices[JointIndex], FinalMatrix);
                 }
 
