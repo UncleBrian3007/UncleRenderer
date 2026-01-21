@@ -72,7 +72,7 @@ float4 PSMain(VSOutput Input) : SV_Target
 
     float roughness = smr.z;
     float metallic = smr.y;
-	float3 F0 = lerp(smr.x.xxx, albedo, metallic); // Metallic Àº Albedo ¿¡ ¹İ»çÀ²(»ö±ò) ÀúÀå
+	float3 F0 = lerp(smr.x.xxx, albedo, metallic); // Metallic Ã€Âº Albedo Â¿Â¡ Â¹ÃÂ»Ã§Ã€Â²(Â»Ã¶Â±Ã²) Ã€ÃºÃ€Ã¥
 
     float3 viewPos = ReconstructViewPosition(Input.UV, depth);
 
@@ -105,7 +105,12 @@ float4 PSMain(VSOutput Input) : SV_Target
     }
 #endif
 
-    float3 lighting = EvaluatePBR(albedo, metallic, roughness, F0, normal, V, L) * LightIntensity * LightColor * shadow;
+    float3 lighting = 0.0f;
+#if USE_PBR_RESEARCH
+    lighting = EvaluatePBR_Research(albedo, metallic, roughness, F0, normal, V, L) * LightIntensity * LightColor * shadow;
+#else
+    lighting = EvaluatePBR(albedo, metallic, roughness, F0, normal, V, L) * LightIntensity * LightColor * shadow;
+#endif
 
     float3 worldNormal = normalize(mul(normal, (float3x3)ViewInverse));
     float3 worldView = normalize(CameraPosition - worldPos);

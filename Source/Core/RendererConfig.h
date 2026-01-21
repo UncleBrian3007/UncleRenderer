@@ -42,6 +42,8 @@ struct FRendererConfig
     bool bEnableGtao = true;
     bool bEnableGtaoJitter = true;
     bool bEnableIndirectDraw = true;
+    bool bEnableSkinningIndirectDraw = false;
+    bool bEnablePbrResearch = false;
     bool bEnableGpuDebugPrint = true;
     float GtaoRadius = 0.75f;
     float GtaoIntensity = 1.0f;

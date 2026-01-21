@@ -90,6 +90,7 @@ public:
     bool IsHZBEnabled() const { return bHZBEnabled; }
     void SetGtaoEnabled(bool bEnabled) { bGtaoEnabled = bEnabled; }
     bool IsGtaoEnabled() const { return bGtaoEnabled; }
+    void SetPbrResearchEnabled(bool bEnabled) { bEnablePbrResearch = bEnabled; }
 
     void OnFrameFenceSignaled(uint32_t FrameIndex, uint64_t FenceValue) override;
 
@@ -195,7 +196,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> LinearDepthPipeline;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> GtaoRootSignature;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2> GtaoPipelines;
-    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2> LightingPipelines;
+    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> LightingPipelines;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> HZBPipelines;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> AutoExposurePipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> TaaPipeline;
@@ -296,6 +297,7 @@ private:
     bool bLuminanceHistoryValid = false;
     bool bHZBEnabled = true;
     bool bHZBReady = false;
+    bool bEnablePbrResearch = false;
 
     uint32_t HZBWidth = 0;
     uint32_t HZBHeight = 0;

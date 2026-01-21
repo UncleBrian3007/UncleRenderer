@@ -64,6 +64,7 @@ void FRenderer::InitializeCommonSettings(uint32_t Width, uint32_t Height, const 
     bEnableGraphDump = Config.bEnableGraphDump;
     bEnableGpuTiming = Config.bEnableGpuTiming;
     bEnableIndirectDraw = Config.bEnableIndirectDraw;
+    bEnableSkinningIndirectDraw = Config.bEnableSkinningIndirectDraw;
     bEnableGpuDebugPrint = Config.bEnableGpuDebugPrint;
     bGtaoEnabled = Config.bEnableGtao;
     bGtaoJitterEnabled = Config.bEnableGtaoJitter;
@@ -1550,6 +1551,11 @@ void FRenderer::DispatchSkinning(FDX12CommandContext& CmdContext, const DirectX:
         const uint32_t DispatchCount = (VertexCount + 63) / 64;
         CommandList->Dispatch(DispatchCount, 1, 1);
 
+        D3D12_RESOURCE_BARRIER UavBarrier = {};
+        UavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+        UavBarrier.UAV.pResource = SkinnedBuffer;
+        CommandList->ResourceBarrier(1, &UavBarrier);
+
         D3D12_RESOURCE_BARRIER Barrier = {};
         Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         Barrier.Transition.pResource = SkinnedBuffer;
@@ -1979,8 +1985,7 @@ bool FRenderer::PrepareGpuDrivenDrawData(FGpuDrivenPreparedData& OutData)
     size_t TotalCommandCount = 0;
     for (const FSceneModelResource& Model : SceneModels)
     {
-        const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0;
-        if (bUseSkinning || Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+        if (Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
         {
             continue;
         }
@@ -2013,8 +2018,7 @@ bool FRenderer::PrepareGpuDrivenDrawData(FGpuDrivenPreparedData& OutData)
     {
         const FSceneModelResource& Model = SceneModels[SortedIndex];
         const uint32_t PipelineKey = PipelineKeys[SortedIndex];
-        const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0;
-        if (bUseSkinning || Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+        if (Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
         {
             continue;
         }

@@ -119,6 +119,7 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     TaaSampleIndex = 0;
     bHZBEnabled = Config.bEnableHZB;
     bHZBReady = false;
+    bEnablePbrResearch = Config.bEnablePbrResearch;
 
     InitializeCommonSettings(Width, Height, Config);
 
@@ -1126,6 +1127,11 @@ void FDeferredRenderer::AddBasePass(FRenderGraph& Graph, const FCamera& Camera, 
             for (size_t RangeIndex = 0; RangeIndex < IndirectDrawRanges.size(); ++RangeIndex)
             {
                 const FIndirectDrawRange& Range = IndirectDrawRanges[RangeIndex];
+                const bool bRangeSkinning = (Range.PipelineKey & (1u << 5)) != 0;
+                if (bRangeSkinning && !bEnableSkinningIndirectDraw)
+                {
+                    continue;
+                }
                 ID3D12PipelineState* Pipeline = SelectPipelineByKey(Range.PipelineKey);
                 LocalCommandList->SetPipelineState(Pipeline);
                 LocalCommandList->SetGraphicsRoot32BitConstants(1, static_cast<UINT>(Range.MaterialBindlessIndices.size()), Range.MaterialBindlessIndices.data(), 0);
@@ -1144,64 +1150,67 @@ void FDeferredRenderer::AddBasePass(FRenderGraph& Graph, const FCamera& Camera, 
                 }
             }
 
-            for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+            if (!bEnableSkinningIndirectDraw)
             {
-                if (!SceneModelVisibility.empty() && !SceneModelVisibility[ModelIndex])
+                for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
                 {
-                    continue;
-                }
+                    if (!SceneModelVisibility.empty() && !SceneModelVisibility[ModelIndex])
+                    {
+                        continue;
+                    }
 
-                const FSceneModelResource& Model = SceneModels[ModelIndex];
-                if (Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
-                {
-                    continue;
-                }
+                    const FSceneModelResource& Model = SceneModels[ModelIndex];
+                    if (Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+                    {
+                        continue;
+                    }
 
-                const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0;
-                if (!bUseSkinning)
-                {
-                    continue;
-                }
+                    const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0;
+                    if (!bUseSkinning)
+                    {
+                        continue;
+                    }
 
-                const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
+                    const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
 
-                const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
-                LocalCommandList->SetGraphicsRootConstantBufferView(0, ConstantBufferAddress + ConstantBufferOffset);
-                const uint32_t BindlessIndices[] =
-                {
-                    Model.BaseColorBindlessIndex,
-                    Model.MetallicRoughnessBindlessIndex,
-                    Model.NormalBindlessIndex,
-                    Model.EmissiveBindlessIndex
-                };
-                LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
+                    const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
+                    LocalCommandList->SetGraphicsRootConstantBufferView(0, ConstantBufferAddress + ConstantBufferOffset);
+                    const uint32_t BindlessIndices[] =
+                    {
+                        Model.BaseColorBindlessIndex,
+                        Model.MetallicRoughnessBindlessIndex,
+                        Model.NormalBindlessIndex,
+                        Model.EmissiveBindlessIndex
+                    };
+                    LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
 
-                const bool bUseNormalMap = Model.bHasNormalMap;
-                const bool bUseMetallicRoughnessMap = !Model.MetallicRoughnessTexturePath.empty();
-                const bool bUseBaseColorMap = !Model.BaseColorTexturePath.empty();
-                const bool bUseEmissiveMap = !Model.EmissiveTexturePath.empty();
-                const bool bUseAlphaMask = Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask);
+                    const bool bUseNormalMap = Model.bHasNormalMap;
+                    const bool bUseMetallicRoughnessMap = !Model.MetallicRoughnessTexturePath.empty();
+                    const bool bUseBaseColorMap = !Model.BaseColorTexturePath.empty();
+                    const bool bUseEmissiveMap = !Model.EmissiveTexturePath.empty();
+                    const bool bUseAlphaMask = Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask);
 
-                const uint32_t PipelineKey = 
-                    (bUseNormalMap ? 1u : 0u) |
-                    (bUseMetallicRoughnessMap ? 2u : 0u) |
-                    (bUseBaseColorMap ? 4u : 0u) |
-                    (bUseEmissiveMap ? 8u : 0u) |
-                    (bUseAlphaMask ? 16u : 0u);
+                    const uint32_t PipelineKey = 
+                        (bUseNormalMap ? 1u : 0u) |
+                        (bUseMetallicRoughnessMap ? 2u : 0u) |
+                        (bUseBaseColorMap ? 4u : 0u) |
+                        (bUseEmissiveMap ? 8u : 0u) |
+                        (bUseAlphaMask ? 16u : 0u);
 
-                LocalCommandList->SetPipelineState(BasePassPipelinesSkinned[PipelineKey].Get());
+                    LocalCommandList->SetPipelineState(BasePassPipelinesSkinned[PipelineKey].Get());
 
-                if (AreModelPixEventsEnabled())
-                {
-                    const std::wstring ModelLabel = Model.Name.empty()
-                        ? L"Model"
-                        : std::wstring(Model.Name.begin(), Model.Name.end());
-                    FScopedPixEvent ModelEvent(LocalCommandList, ModelLabel.c_str());
-                    LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0);
-                }
-                else
-                {
-                    LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0);
+                    if (AreModelPixEventsEnabled())
+                    {
+                        const std::wstring ModelLabel = Model.Name.empty()
+                            ? L"Model"
+                            : std::wstring(Model.Name.begin(), Model.Name.end());
+                        FScopedPixEvent ModelEvent(LocalCommandList, ModelLabel.c_str());
+                        LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0);
+                    }
+                    else
+                    {
+                        LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0);
+                    }
                 }
             }
         }
@@ -1785,7 +1794,8 @@ void FDeferredRenderer::AddLightingPass(FRenderGraph& Graph, const FDeferredFram
         Cmd.SetRenderTarget(LightingRTVHandle, nullptr);
 
         const bool bUseShadowMask = bShadowsEnabled && bRayTracedShadowsEnabled && bRayTracingPipelineReady && ShadowMaskBindlessIndex != UINT32_MAX;
-        LocalCommandList->SetPipelineState(LightingPipelines[bUseShadowMask ? 1 : 0].Get());
+        const uint32_t PipelineIndex = (bUseShadowMask ? 1u : 0u) | (bEnablePbrResearch ? 2u : 0u);
+        LocalCommandList->SetPipelineState(LightingPipelines[PipelineIndex].Get());
         LocalCommandList->SetGraphicsRootSignature(LightingRootSignature.Get());
 
         LocalCommandList->RSSetViewports(1, &Viewport);
@@ -2632,7 +2642,7 @@ bool FDeferredRenderer::CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT 
 {
     FShaderCompiler Compiler;
     std::vector<uint8_t> VSByteCode;
-    std::vector<uint8_t> PSByteCodes[2];
+    std::vector<uint8_t> PSByteCodes[4];
 
     const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
     const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
@@ -2645,12 +2655,25 @@ bool FDeferredRenderer::CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT 
 
     const std::vector<std::wstring> DefaultDefines;
     const std::vector<std::wstring> ShadowMaskDefines = { L"USE_SHADOW_MASK=1" };
+    const std::vector<std::wstring> ResearchDefines = { L"USE_PBR_RESEARCH=1" };
+    const std::vector<std::wstring> ShadowMaskResearchDefines = { L"USE_SHADOW_MASK=1", L"USE_PBR_RESEARCH=1" };
+
     if (!Compiler.CompileFromFile(L"Shaders/DeferredLighting.hlsl", L"PSMain", PSTarget, PSByteCodes[0], DefaultDefines))
     {
         return false;
     }
 
     if (!Compiler.CompileFromFile(L"Shaders/DeferredLighting.hlsl", L"PSMain", PSTarget, PSByteCodes[1], ShadowMaskDefines))
+    {
+        return false;
+    }
+
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredLighting.hlsl", L"PSMain", PSTarget, PSByteCodes[2], ResearchDefines))
+    {
+        return false;
+    }
+
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredLighting.hlsl", L"PSMain", PSTarget, PSByteCodes[3], ShadowMaskResearchDefines))
     {
         return false;
     }
@@ -2686,9 +2709,11 @@ bool FDeferredRenderer::CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT 
     PsoDesc.RTVFormats[0] = LightingBufferFormat;
     PsoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
 
-    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(LightingPipelines[0].GetAddressOf())));
-    PsoDesc.PS = { PSByteCodes[1].data(), PSByteCodes[1].size() };
-    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(LightingPipelines[1].GetAddressOf())));
+    for (size_t Index = 0; Index < LightingPipelines.size(); ++Index)
+    {
+        PsoDesc.PS = { PSByteCodes[Index].data(), PSByteCodes[Index].size() };
+        HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(LightingPipelines[Index].GetAddressOf())));
+    }
     return true;
 }
 

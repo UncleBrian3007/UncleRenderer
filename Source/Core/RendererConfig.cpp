@@ -400,6 +400,16 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
         OutConfig.bEnableIndirectDraw = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
 
+    if (LowerKey == "skinningindirectdraw" || LowerKey == "enableskinningindirectdraw")
+    {
+        OutConfig.bEnableSkinningIndirectDraw = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+
+    if (LowerKey == "pbrresearch" || LowerKey == "enablepbrresearch")
+    {
+        OutConfig.bEnablePbrResearch = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+
     if (LowerKey == "width" || LowerKey == "windowwidth")
     {
         try

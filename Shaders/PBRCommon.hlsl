@@ -42,7 +42,7 @@ float3 EvaluatePBR_Research(float3 albedo, float metallic, float roughness, floa
 
     float3 specular = (D * G * F) / max(4.0f * NdotL * NdotV, 1e-4f);
     float3 kd = (1.0f - F) * (1.0f - metallic);
-    float3 diffuse = kd * albedo;// / PI;
+    float3 diffuse = kd * albedo / PI;
 
     return (diffuse + specular) * NdotL;
 }
@@ -52,7 +52,7 @@ float D_GGX(float NdotH, float a)
 	float a2 = a * a;
 
 	float denom = (NdotH * NdotH * (a2 - 1.0f) + 1.0f);
-	denom = /*PI */denom * denom;
+	denom = PI * denom * denom;
 
 	return a2 * rcp(denom);
 }
@@ -89,7 +89,7 @@ float3 EvaluatePBR(float3 albedo, float metallic, float roughness, float3 F0, fl
 
 	float3 specular = (D * V_G * F);
 	float3 kd = (1.0f - F) * (1.0f - metallic);
-	float3 diffuse = kd * albedo; // / PI;
+	float3 diffuse = kd * albedo / PI;
 
 	return (diffuse + specular) * NdotL;
 }

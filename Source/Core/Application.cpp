@@ -199,6 +199,8 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     DeferredRenderer = std::make_unique<FDeferredRenderer>();
     Camera = std::make_unique<FCamera>();
     bIndirectDrawEnabled = RendererConfig.bEnableIndirectDraw;
+    bSkinningIndirectDrawEnabled = RendererConfig.bEnableSkinningIndirectDraw;
+    bPbrResearchEnabled = RendererConfig.bEnablePbrResearch;
     SetModelPixEventsEnabled(bModelPixEventsEnabled);
 
     const std::wstring SceneFilePath = RendererConfig.SceneFile.empty() ? L"Assets/Scenes/Scene.json" : RendererConfig.SceneFile;
@@ -231,6 +233,8 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     {
         RendererConfig.bEnableIndirectDraw = false;
         bIndirectDrawEnabled = false;
+        bSkinningIndirectDrawEnabled = false;
+        RendererConfig.bEnableSkinningIndirectDraw = false;
         LogWarning("Indirect draw disabled because the device does not support Shader Model 6.8.");
     }
 
@@ -949,6 +953,8 @@ bool FApplication::ReloadScene(const std::wstring& ScenePath)
     ReloadConfig.GtaoRadius = GtaoRadius;
     ReloadConfig.GtaoThickness = GtaoThickness;
     ReloadConfig.bEnableIndirectDraw = bIndirectDrawEnabled;
+    ReloadConfig.bEnableSkinningIndirectDraw = bSkinningIndirectDrawEnabled;
+    ReloadConfig.bEnablePbrResearch = bPbrResearchEnabled;
     ReloadConfig.bEnableGpuDebugPrint = bGpuDebugPrintEnabled;
     ReloadConfig.bEnableTAA = bTaaEnabled;
     ReloadConfig.TaaHistoryWeight = TaaHistoryWeight;
@@ -1083,6 +1089,8 @@ void FApplication::StartAsyncSceneReload(const std::wstring& ScenePath)
     AsyncConfig.GtaoRadius = GtaoRadius;
     AsyncConfig.GtaoThickness = GtaoThickness;
     AsyncConfig.bEnableIndirectDraw = bIndirectDrawEnabled;
+    AsyncConfig.bEnableSkinningIndirectDraw = bSkinningIndirectDrawEnabled;
+    AsyncConfig.bEnablePbrResearch = bPbrResearchEnabled;
     AsyncConfig.FramesInFlight = SwapChain ? SwapChain->GetBackBufferCount() : 2u;
 
     const bool bPreferDeferred = ActiveRenderer == DeferredRenderer.get() || RendererConfig.RendererType == ERendererType::Deferred;
@@ -1664,6 +1672,37 @@ void FApplication::RenderUI()
             if (bIndirectDraw && !bIndirectDrawSupported)
             {
                 LogWarning("Indirect draw requires Shader Model 6.8 and remains disabled.");
+            }
+        }
+
+		ImGui::SameLine();
+        bool bSkinningIndirectDraw = bSkinningIndirectDrawEnabled;
+        if (ImGui::Checkbox("Skinning", &bSkinningIndirectDraw))
+        {
+            bSkinningIndirectDrawEnabled = bSkinningIndirectDraw;
+            RendererConfig.bEnableSkinningIndirectDraw = bSkinningIndirectDrawEnabled;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetSkinningIndirectDrawEnabled(bSkinningIndirectDrawEnabled);
+            }
+
+            if (ForwardRenderer)
+            {
+                ForwardRenderer->SetSkinningIndirectDrawEnabled(bSkinningIndirectDrawEnabled);
+            }
+        }
+
+        ImGui::SameLine();
+        bool bPbrResearch = bPbrResearchEnabled;
+        if (ImGui::Checkbox("PBR 2", &bPbrResearch))
+        {
+            bPbrResearchEnabled = bPbrResearch;
+            RendererConfig.bEnablePbrResearch = bPbrResearchEnabled;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetPbrResearchEnabled(bPbrResearchEnabled);
             }
         }
 

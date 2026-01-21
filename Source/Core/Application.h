@@ -89,6 +89,8 @@ private:
     bool bGpuDebugPrintEnabled = false;
     bool bTonemapEnabled = true;
     bool bIndirectDrawEnabled = true;
+    bool bSkinningIndirectDrawEnabled = false;
+    bool bPbrResearchEnabled = false;
     bool bModelPixEventsEnabled = true;
     bool bGtaoEnabled = true;
     bool bGtaoJitterEnabled = false;

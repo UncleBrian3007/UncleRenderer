@@ -81,6 +81,8 @@ public:
     const FCamera* GetCullingCameraOverride() const { return CullingCameraOverride; }
     void SetIndirectDrawEnabled(bool bEnabled) { bEnableIndirectDraw = bEnabled; }
     bool IsIndirectDrawEnabled() const { return bEnableIndirectDraw; }
+    void SetSkinningIndirectDrawEnabled(bool bEnabled) { bEnableSkinningIndirectDraw = bEnabled; }
+    bool IsSkinningIndirectDrawEnabled() const { return bEnableSkinningIndirectDraw; }
     void SetGtaoRadius(float Radius) { GtaoRadius = Radius; }
     float GetGtaoRadius() const { return GtaoRadius; }
     void SetGtaoThickness(float Thickness) { GtaoThickness = Thickness; }
@@ -287,6 +289,7 @@ protected:
     bool bEnableGraphDump = false;
     bool bEnableGpuTiming = false;
     bool bEnableIndirectDraw = false;
+    bool bEnableSkinningIndirectDraw = false;
     bool bEnableGpuDebugPrint = false;
     bool bGtaoEnabled = true;
     bool bGtaoJitterEnabled = true;
