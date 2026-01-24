@@ -1,13 +1,14 @@
 #include "SceneConstants.hlsl"
 
 RaytracingAccelerationStructure Scene : register(t0);
-Texture2D<float> DepthTexture : register(t1);
-Texture2D<float4> GBufferA : register(t2);
-RWTexture2D<float> ShadowMask : register(u0);
-
-struct ShadowPayload
+cbuffer RayTracingBindlessConstants : register(b1)
 {
-    uint Hit;
+    uint DepthTextureIndex;
+    uint GBufferAIndex;
+    uint ShadowMaskIndex;
+    uint UnusedIndex;
+    uint DispatchWidth;
+    uint DispatchHeight;
 };
 
 float3 ReconstructWorldPosition(uint2 pixel, float depth, uint2 dispatchDim)
@@ -20,25 +21,31 @@ float3 ReconstructWorldPosition(uint2 pixel, float depth, uint2 dispatchDim)
     return worldPosition.xyz;
 }
 
-[shader("raygeneration")]
-void RayGen()
+static const uint RayQueryThreadGroupSize = 8;
+static const uint ShadowRayFlags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
+    | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER
+    | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES;
+
+[numthreads(RayQueryThreadGroupSize, RayQueryThreadGroupSize, 1)]
+void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID)
 {
-    const uint2 DispatchIndex = DispatchRaysIndex().xy;
-    const uint2 DispatchDim = DispatchRaysDimensions().xy;
-    if (DispatchIndex.x >= DispatchDim.x || DispatchIndex.y >= DispatchDim.y)
+    if (DispatchThreadId.x >= DispatchWidth || DispatchThreadId.y >= DispatchHeight)
     {
         return;
     }
 
+    Texture2D<float> DepthTexture = ResourceDescriptorHeap[DepthTextureIndex];
+    Texture2D<float4> GBufferA = ResourceDescriptorHeap[GBufferAIndex];
+    RWTexture2D<float> ShadowMask = ResourceDescriptorHeap[ShadowMaskIndex];
+
+    const uint2 DispatchIndex = DispatchThreadId.xy;
+    const uint2 DispatchDim = uint2(DispatchWidth, DispatchHeight);
     const float Depth = DepthTexture.Load(int3(DispatchIndex, 0));
     if (Depth >= 1.0f)
     {
         ShadowMask[DispatchIndex] = 1u;
         return;
     }
-
-    ShadowPayload Payload;
-    Payload.Hit = 1;
 
     RayDesc Ray;
     float3 worldPosition = ReconstructWorldPosition(DispatchIndex, Depth, DispatchDim);
@@ -56,19 +63,12 @@ void RayGen()
     Ray.TMin = 0.0f;
     Ray.TMax = 10000.0f;
 
-    TraceRay(Scene, RAY_FLAG_NONE, 0xFF, 0, 1, 0, Ray, Payload);
+    RayQuery<ShadowRayFlags> RayQuery;
+    RayQuery.TraceRayInline(Scene, ShadowRayFlags, 0xFF, Ray);
+    while (RayQuery.Proceed())
+    {
+    }
 
-    ShadowMask[DispatchIndex] = Payload.Hit;
-}
-
-[shader("miss")]
-void Miss(inout ShadowPayload Payload)
-{
-    Payload.Hit = 1;
-}
-
-[shader("closesthit")]
-void ClosestHit(inout ShadowPayload Payload, in BuiltInTriangleIntersectionAttributes Attributes)
-{
-    Payload.Hit = 0;
+    const bool bHit = RayQuery.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
+    ShadowMask[DispatchIndex] = bHit ? 0.0f : 1.0f;
 }

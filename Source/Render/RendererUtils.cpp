@@ -1189,33 +1189,28 @@ bool RendererUtils::CreateDepthResources(FDX12Device* Device, uint32_t Width, ui
         return false;
     }
 
-    D3D12_RESOURCE_DESC Desc = {};
-    Desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    Desc.Width = Width;
-    Desc.Height = Height;
-    Desc.DepthOrArraySize = 1;
-    Desc.MipLevels = 1;
+    DXGI_FORMAT ResourceFormat = Format;
     if (Format == DXGI_FORMAT_D24_UNORM_S8_UINT)
     {
-        Desc.Format = DXGI_FORMAT_R24G8_TYPELESS;
+        ResourceFormat = DXGI_FORMAT_R24G8_TYPELESS;
     }
-    else
-    {
-        Desc.Format = Format;
-    }
-    Desc.SampleDesc.Count = 1;
-    Desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    Desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+    CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
+        ResourceFormat,
+        Width,
+        Height,
+        1,
+        1,
+        1,
+        0,
+        D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
 
     D3D12_CLEAR_VALUE ClearValue = {};
     ClearValue.Format = Format;
     ClearValue.DepthStencil.Depth = 0.0f;
     ClearValue.DepthStencil.Stencil = 0;
 
-    D3D12_HEAP_PROPERTIES HeapProps = {};
-    HeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
-    HeapProps.CreationNodeMask = 1;
-    HeapProps.VisibleNodeMask = 1;
+    CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
 
     HR_CHECK(Device->GetDevice()->CreateCommittedResource(
         &HeapProps,
@@ -1260,22 +1255,20 @@ bool RendererUtils::CreateObjectIdResources(
         return false;
     }
 
-    D3D12_RESOURCE_DESC Desc = {};
-    Desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    Desc.Width = Width;
-    Desc.Height = Height;
-    Desc.DepthOrArraySize = 1;
-    Desc.MipLevels = 1;
-    Desc.Format = DXGI_FORMAT_R32_UINT;
-    Desc.SampleDesc.Count = 1;
-    Desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    Desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
+        DXGI_FORMAT_R32_UINT,
+        Width,
+        Height,
+        1,
+        1,
+        1,
+        0,
+        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
 
     D3D12_CLEAR_VALUE ClearValue = {};
     ClearValue.Format = DXGI_FORMAT_R32_UINT;
 
-    D3D12_HEAP_PROPERTIES HeapProps = {};
-    HeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+    CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
 
     HR_CHECK(Device->GetDevice()->CreateCommittedResource(
         &HeapProps,

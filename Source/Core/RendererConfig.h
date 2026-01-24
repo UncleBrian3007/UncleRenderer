@@ -19,6 +19,7 @@ struct FRendererConfig
     bool bEnableFrameOverlap = true;
     bool bEnableShadows = true;
     bool bEnableRayTracedShadows = false;
+    bool bEnablePathTracing = false;
     float ShadowBias = 0.0f;
     bool bEnableTonemap = true;
     float TonemapExposure = 1.0f;

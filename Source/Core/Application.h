@@ -84,6 +84,7 @@ private:
     bool bFrameOverlapEnabled = false;
     bool bShadowsEnabled = true;
     bool bRayTracedShadowsEnabled = false;
+    bool bPathTracingEnabled = false;
     bool bHZBEnabled = true;
     bool bHzbTwoPassEnabled = true;
     bool bGpuTimingEnabled = false;

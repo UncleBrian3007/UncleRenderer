@@ -460,6 +460,8 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
     ConfigureHZBOcclusion(FrameState.bUseHZBOcclusion, HZBSrvBindlessIndex, HZBWidth, HZBHeight, HZBMipCount);
 
+    const bool bUsePathTracing = bPathTracingEnabled && bRayTracingPipelineReady;
+
     const uint32_t FrameIndex = GetFrameIndex() % GetFramesInFlight();
     uint32_t PrevVisibilityIndex = UINT32_MAX;
     uint32_t PrevVisibilityFrameIndex = UINT32_MAX;
@@ -529,7 +531,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
             "GPU Culling");
     }
 
-    if (!bRayTracedShadowsEnabled || !bRayTracingPipelineReady)
+    if (!bRayTracedShadowsEnabled && !bUsePathTracing)
     {
         AddShadowPass(Graph, Camera, FrameState, Resources.ShadowHandle);
     }
@@ -553,8 +555,6 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
             "GBuffer",
             true);
     }
-    AddRayTracingShadowPass(Graph, Camera, Resources.DepthHandle, Resources.GBufferHandles[0], Resources.ShadowMaskHandle);
-    AddObjectIdPass(Graph, Camera, Resources.ObjectIdHandle, Resources.DepthHandle);
     if (FrameState.bUseHzbTwoPass)
     {
         AddEarlyRejectListPass(Graph, FrameState, CurrentVisibilityIndex, FrameIndex);
@@ -586,10 +586,21 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
             "GBuffer (Late)",
             false);
     }
-    AddLinearDepthPass(Graph, FrameState, Resources.DepthHandle, Resources.LinearDepthHandle);
-    AddGtaoPass(Graph, FrameState, Resources.GBufferHandles, Resources.LinearDepthHandle, Resources.GtaoHandle);
-    AddLightingPass(Graph, FrameState, Resources.GBufferHandles, Resources.DepthHandle, Resources.GtaoHandle, Resources.ShadowHandle, Resources.LightingHandle);
-    AddSkyPass(Graph, Camera, Resources.DepthHandle, Resources.LightingHandle);
+
+	if (bUsePathTracing)
+	{
+		AddPathTracingPass(Graph, Camera, Resources.DepthHandle, Resources.GBufferHandles[0], Resources.GBufferHandles[2], Resources.LightingHandle);
+	}
+	else
+	{
+		AddRayTracingShadowPass(Graph, Camera, Resources.DepthHandle, Resources.GBufferHandles[0], Resources.ShadowMaskHandle);
+		AddLinearDepthPass(Graph, FrameState, Resources.DepthHandle, Resources.LinearDepthHandle);
+		AddGtaoPass(Graph, FrameState, Resources.GBufferHandles, Resources.LinearDepthHandle, Resources.GtaoHandle);
+		AddLightingPass(Graph, FrameState, Resources.GBufferHandles, Resources.DepthHandle, Resources.GtaoHandle, Resources.ShadowHandle, Resources.LightingHandle);
+		AddSkyPass(Graph, Camera, Resources.DepthHandle, Resources.LightingHandle);
+	}
+
+	AddObjectIdPass(Graph, Camera, Resources.ObjectIdHandle, Resources.DepthHandle);
     AddTemporalAAPass(Graph, FrameState, Resources.LightingHandle, Resources.TaaHandles);
     AddAutoExposurePass(Graph, FrameState, Resources.LightingHandle, Resources.LuminanceHandles, DeltaTime);
     AddTonemapPass(Graph, FrameState, Resources.GBufferHandles, Resources.LightingHandle, Resources.TonemapOutputResource, Resources.LuminanceHandles, Resources.TaaHandles, RtvHandle);
@@ -784,7 +795,7 @@ void FDeferredRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCame
         ShadowMaskHandle = Data.ShadowMaskHandle;
     }, [this, &Graph](const FRayTracingShadowPassData& Data, FDX12CommandContext& CmdContext)
     {
-        if (!bRayTracingPipelineReady || !RayTracingShaderTable || !RayTracingUavHeap)
+        if (!bRayTracingPipelineReady || !RayQueryShadowPipeline || !RayQueryRootSignature || !Device || !Device->GetBindlessDescriptorHeap())
         {
             return;
         }
@@ -826,22 +837,10 @@ void FDeferredRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCame
 
 		FScopedPixEvent RayTracingEvent(CommandList4, L"Ray Tracing Shadow Mask Pass");
 
-        const UINT DescriptorStride = Device->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-        const D3D12_CPU_DESCRIPTOR_HANDLE CpuStart = RayTracingUavHeap->GetCPUDescriptorHandleForHeapStart();
-        const D3D12_GPU_DESCRIPTOR_HANDLE GpuStart = RayTracingUavHeap->GetGPUDescriptorHandleForHeapStart();
-
-        D3D12_CPU_DESCRIPTOR_HANDLE DepthCpuHandle = CpuStart;
-        D3D12_GPU_DESCRIPTOR_HANDLE DepthGpuHandle = GpuStart;
-
-        D3D12_CPU_DESCRIPTOR_HANDLE GBufferCpuHandle = CpuStart;
-        D3D12_GPU_DESCRIPTOR_HANDLE GBufferGpuHandle = GpuStart;
-        GBufferCpuHandle.ptr += DescriptorStride;
-        GBufferGpuHandle.ptr += DescriptorStride;
-
-        D3D12_CPU_DESCRIPTOR_HANDLE UavCpuHandle = CpuStart;
-        D3D12_GPU_DESCRIPTOR_HANDLE UavGpuHandle = GpuStart;
-        UavCpuHandle.ptr += DescriptorStride * 2;
-        UavGpuHandle.ptr += DescriptorStride * 2;
+        if (FrameIndex >= RayTracingDepthSrvBindlessIndices.size())
+        {
+            return;
+        }
 
         D3D12_SHADER_RESOURCE_VIEW_DESC DepthSrvDesc = {};
         DepthSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
@@ -850,7 +849,16 @@ void FDeferredRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCame
         DepthSrvDesc.Texture2D.MipLevels = 1;
         DepthSrvDesc.Texture2D.MostDetailedMip = 0;
         DepthSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
-        Device->GetDevice()->CreateShaderResourceView(DepthBuffer, &DepthSrvDesc, DepthCpuHandle);
+        const uint32_t DepthBindlessIndex = RayTracingDepthSrvBindlessIndices[FrameIndex];
+        if (DepthBindlessIndex == UINT32_MAX)
+        {
+            return;
+        }
+        WriteBindlessSrv(DepthBindlessIndex, DepthBuffer, DepthSrvDesc);
+        if (FrameIndex < RayTracingDepthResources.size())
+        {
+            RayTracingDepthResources[FrameIndex] = DepthBuffer;
+        }
 
         D3D12_SHADER_RESOURCE_VIEW_DESC GBufferSrvDesc = {};
         GBufferSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
@@ -859,13 +867,29 @@ void FDeferredRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCame
         GBufferSrvDesc.Texture2D.MipLevels = 1;
         GBufferSrvDesc.Texture2D.MostDetailedMip = 0;
         GBufferSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
-        Device->GetDevice()->CreateShaderResourceView(GBufferA, &GBufferSrvDesc, GBufferCpuHandle);
+        if (RayTracingGBufferASrvBindlessIndex == UINT32_MAX)
+        {
+            RayTracingGBufferASrvBindlessIndex = Device->CreateBindlessSrv(GBufferA, GBufferSrvDesc);
+        }
+        else if (RayTracingGBufferAResource != GBufferA)
+        {
+            WriteBindlessSrv(RayTracingGBufferASrvBindlessIndex, GBufferA, GBufferSrvDesc);
+        }
+        RayTracingGBufferAResource = GBufferA;
 
-        D3D12_UNORDERED_ACCESS_VIEW_DESC UavDesc = {};
-        UavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-        UavDesc.Format = DXGI_FORMAT_R8_UNORM;
-        UavDesc.Texture2D.MipSlice = 0;
-        Device->GetDevice()->CreateUnorderedAccessView(ShadowMask, nullptr, &UavDesc, UavCpuHandle);
+        D3D12_UNORDERED_ACCESS_VIEW_DESC ShadowMaskUavDesc = {};
+        ShadowMaskUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        ShadowMaskUavDesc.Format = DXGI_FORMAT_R8_UNORM;
+        ShadowMaskUavDesc.Texture2D.MipSlice = 0;
+        if (RayTracingShadowMaskUavBindlessIndex == UINT32_MAX)
+        {
+            RayTracingShadowMaskUavBindlessIndex = Device->CreateBindlessUav(ShadowMask, nullptr, ShadowMaskUavDesc);
+        }
+        else if (RayTracingShadowMaskUavResource != ShadowMask)
+        {
+            WriteBindlessUav(RayTracingShadowMaskUavBindlessIndex, ShadowMask, nullptr, ShadowMaskUavDesc);
+        }
+        RayTracingShadowMaskUavResource = ShadowMask;
 
         if (ShadowMaskBindlessIndex == UINT32_MAX || ShadowMaskResource != ShadowMask)
         {
@@ -874,42 +898,55 @@ void FDeferredRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCame
             SrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
             SrvDesc.Format = DXGI_FORMAT_R8_UNORM;
             SrvDesc.Texture2D.MipLevels = 1;
-            ShadowMaskBindlessIndex = Device->CreateBindlessSrv(ShadowMask, SrvDesc);
+            if (ShadowMaskBindlessIndex == UINT32_MAX)
+            {
+                ShadowMaskBindlessIndex = Device->CreateBindlessSrv(ShadowMask, SrvDesc);
+            }
+            else
+            {
+                WriteBindlessSrv(ShadowMaskBindlessIndex, ShadowMask, SrvDesc);
+            }
             ShadowMaskResource = ShadowMask;
         }
 
-//        const UINT ClearValues[4] = { 1u, 0u, 0u, 0u };
-        ID3D12DescriptorHeap* Heaps[] = { RayTracingUavHeap.Get() };
-        CommandList4->SetDescriptorHeaps(_countof(Heaps), Heaps);
-//        CommandList4->ClearUnorderedAccessViewUint(UavGpuHandle, UavCpuHandle, ShadowMask, ClearValues, 0, nullptr);
+        if (RayTracingGBufferASrvBindlessIndex == UINT32_MAX || RayTracingShadowMaskUavBindlessIndex == UINT32_MAX || ShadowMaskBindlessIndex == UINT32_MAX)
+        {
+            return;
+        }
 
-        CommandList4->SetPipelineState1(RayTracingPipeline.GetStateObject());
-        CommandList4->SetComputeRootSignature(RayTracingGlobalRootSignature.Get());
+        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
+        CommandList4->SetDescriptorHeaps(_countof(Heaps), Heaps);
+
+        const uint32_t DispatchWidth = static_cast<uint32_t>(Viewport.Width);
+        const uint32_t DispatchHeight = static_cast<uint32_t>(Viewport.Height);
+        if (DispatchWidth == 0 || DispatchHeight == 0)
+        {
+            return;
+        }
+
+        constexpr uint32_t RayQueryThreadGroupSize = 8;
+        const uint32_t GroupCountX = (DispatchWidth + RayQueryThreadGroupSize - 1u) / RayQueryThreadGroupSize;
+        const uint32_t GroupCountY = (DispatchHeight + RayQueryThreadGroupSize - 1u) / RayQueryThreadGroupSize;
+
+        CommandList4->SetPipelineState(RayQueryShadowPipeline.Get());
+        CommandList4->SetComputeRootSignature(RayQueryRootSignature.Get());
         CommandList4->SetComputeRootShaderResourceView(0, TlasResultBuffers[FrameIndex]->GetGPUVirtualAddress());
         const uint64_t ConstantBufferOffset = 0;
         UpdateSceneConstants(*Data.Camera, SceneModels.front(), ConstantBufferOffset);
         const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
         CommandList4->SetComputeRootConstantBufferView(1, ConstantBufferAddress + ConstantBufferOffset);
-        CommandList4->SetComputeRootDescriptorTable(2, DepthGpuHandle);
-        CommandList4->SetComputeRootDescriptorTable(3, UavGpuHandle);
+        const uint32_t BindlessIndices[] =
+        {
+            DepthBindlessIndex,
+            RayTracingGBufferASrvBindlessIndex,
+            RayTracingShadowMaskUavBindlessIndex,
+            0u,
+            DispatchWidth,
+            DispatchHeight
+        };
+        CommandList4->SetComputeRoot32BitConstants(2, _countof(BindlessIndices), BindlessIndices, 0);
 
-        D3D12_DISPATCH_RAYS_DESC DispatchDesc = {};
-        DispatchDesc.RayGenerationShaderRecord.StartAddress = RayTracingShaderTable->GetGPUVirtualAddress();
-        DispatchDesc.RayGenerationShaderRecord.SizeInBytes = RayTracingShaderRecordSize;
-
-        DispatchDesc.MissShaderTable.StartAddress = RayTracingShaderTable->GetGPUVirtualAddress() + RayTracingShaderRecordSize;
-        DispatchDesc.MissShaderTable.SizeInBytes = RayTracingShaderRecordSize;
-        DispatchDesc.MissShaderTable.StrideInBytes = RayTracingShaderRecordSize;
-
-        DispatchDesc.HitGroupTable.StartAddress = RayTracingShaderTable->GetGPUVirtualAddress() + RayTracingShaderRecordSize * 2;
-        DispatchDesc.HitGroupTable.SizeInBytes = RayTracingShaderRecordSize;
-        DispatchDesc.HitGroupTable.StrideInBytes = RayTracingShaderRecordSize;
-
-        DispatchDesc.Width = static_cast<uint32>(Viewport.Width);
-        DispatchDesc.Height = static_cast<uint32>(Viewport.Height);
-        DispatchDesc.Depth = 1;
-
-        CommandList4->DispatchRays(&DispatchDesc);
+        CommandList4->Dispatch(GroupCountX, GroupCountY, 1);
     });
 
     Graph.AddPass<FRayTracingShadowPassData>("ShadowMaskSRV", [&, ShadowMaskDesc](FRayTracingShadowPassData& Data, FRGPassBuilder& Builder)
@@ -2152,6 +2189,193 @@ void FDeferredRenderer::AddLightingPass(FRenderGraph& Graph, const FDeferredFram
         LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(LightingBindlessIndices), LightingBindlessIndices, 0);
 
         LocalCommandList->DrawInstanced(3, 1, 0, 0);
+    });
+}
+
+void FDeferredRenderer::AddPathTracingPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle DepthHandle, FRGResourceHandle GBufferAHandle, FRGResourceHandle GBufferCHandle, FRGResourceHandle LightingHandle)
+{
+    struct FPathTracingPassData
+    {
+        FRGResourceHandle LightingHandle{};
+        FRGResourceHandle DepthHandle{};
+        FRGResourceHandle GBufferAHandle{};
+        FRGResourceHandle GBufferCHandle{};
+        const FCamera* Camera = nullptr;
+    };
+
+    Graph.AddPass<FPathTracingPassData>("PathTracing", [&, DepthHandle, GBufferAHandle, GBufferCHandle, LightingHandle](FPathTracingPassData& Data, FRGPassBuilder& Builder)
+    {
+        if (!bPathTracingEnabled || !bRayTracingPipelineReady || !DepthHandle || !GBufferAHandle || !GBufferCHandle || !LightingHandle)
+        {
+            return;
+        }
+
+        Data.LightingHandle = LightingHandle;
+        Data.DepthHandle = DepthHandle;
+        Data.GBufferAHandle = GBufferAHandle;
+        Data.GBufferCHandle = GBufferCHandle;
+        Data.Camera = &Camera;
+        Builder.WriteTexture(Data.LightingHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.ReadTexture(Data.DepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(Data.GBufferAHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(Data.GBufferCHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.KeepAlive();
+    }, [this, &Graph](const FPathTracingPassData& Data, FDX12CommandContext& CmdContext)
+    {
+        if (!bRayTracingPipelineReady || !RayQueryPathPipeline || !RayQueryRootSignature || !Device || !Device->GetBindlessDescriptorHeap())
+        {
+            return;
+        }
+
+        if (SceneModels.empty() || Data.Camera == nullptr)
+        {
+            return;
+        }
+
+        ID3D12Resource* LightingTarget = Graph.GetTextureResource(Data.LightingHandle);
+        if (!LightingTarget)
+        {
+            return;
+        }
+
+        ID3D12Resource* DepthBuffer = Graph.GetTextureResource(Data.DepthHandle);
+        if (!DepthBuffer)
+        {
+            return;
+        }
+
+        ID3D12Resource* GBufferA = Graph.GetTextureResource(Data.GBufferAHandle);
+        ID3D12Resource* GBufferC = Graph.GetTextureResource(Data.GBufferCHandle);
+        if (!GBufferA || !GBufferC)
+        {
+            return;
+        }
+
+        const uint32_t FrameIndex = CmdContext.GetCurrentFrameIndex();
+        if (FrameIndex >= TlasResultBuffers.size() || !TlasResultBuffers[FrameIndex])
+        {
+            return;
+        }
+
+        ID3D12GraphicsCommandList4* CommandList4 = CmdContext.GetCommandList4();
+        if (!CommandList4)
+        {
+            return;
+        }
+
+        FScopedPixEvent PathTracingEvent(CommandList4, L"Path Tracing Pass");
+
+        if (FrameIndex >= RayTracingDepthSrvBindlessIndices.size())
+        {
+            return;
+        }
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC DepthSrvDesc = {};
+        DepthSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        DepthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        DepthSrvDesc.Format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+        DepthSrvDesc.Texture2D.MipLevels = 1;
+        DepthSrvDesc.Texture2D.MostDetailedMip = 0;
+        DepthSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+        const uint32_t DepthBindlessIndex = RayTracingDepthSrvBindlessIndices[FrameIndex];
+        if (DepthBindlessIndex == UINT32_MAX)
+        {
+            return;
+        }
+        WriteBindlessSrv(DepthBindlessIndex, DepthBuffer, DepthSrvDesc);
+        if (FrameIndex < RayTracingDepthResources.size())
+        {
+            RayTracingDepthResources[FrameIndex] = DepthBuffer;
+        }
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC GBufferASrvDesc = {};
+        GBufferASrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        GBufferASrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        GBufferASrvDesc.Format = GBufferA->GetDesc().Format;
+        GBufferASrvDesc.Texture2D.MipLevels = 1;
+        GBufferASrvDesc.Texture2D.MostDetailedMip = 0;
+        GBufferASrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+        if (RayTracingGBufferASrvBindlessIndex == UINT32_MAX)
+        {
+            RayTracingGBufferASrvBindlessIndex = Device->CreateBindlessSrv(GBufferA, GBufferASrvDesc);
+        }
+        else if (RayTracingGBufferAResource != GBufferA)
+        {
+            WriteBindlessSrv(RayTracingGBufferASrvBindlessIndex, GBufferA, GBufferASrvDesc);
+        }
+        RayTracingGBufferAResource = GBufferA;
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC GBufferCSrvDesc = {};
+        GBufferCSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        GBufferCSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        GBufferCSrvDesc.Format = GBufferC->GetDesc().Format;
+        GBufferCSrvDesc.Texture2D.MipLevels = 1;
+        GBufferCSrvDesc.Texture2D.MostDetailedMip = 0;
+        GBufferCSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+        if (RayTracingGBufferCSrvBindlessIndex == UINT32_MAX)
+        {
+            RayTracingGBufferCSrvBindlessIndex = Device->CreateBindlessSrv(GBufferC, GBufferCSrvDesc);
+        }
+        else if (RayTracingGBufferCResource != GBufferC)
+        {
+            WriteBindlessSrv(RayTracingGBufferCSrvBindlessIndex, GBufferC, GBufferCSrvDesc);
+        }
+        RayTracingGBufferCResource = GBufferC;
+
+        D3D12_UNORDERED_ACCESS_VIEW_DESC LightingUavDesc = {};
+        LightingUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        LightingUavDesc.Format = LightingTarget->GetDesc().Format;
+        LightingUavDesc.Texture2D.MipSlice = 0;
+        if (RayTracingLightingUavBindlessIndex == UINT32_MAX)
+        {
+            RayTracingLightingUavBindlessIndex = Device->CreateBindlessUav(LightingTarget, nullptr, LightingUavDesc);
+        }
+        else if (RayTracingLightingResource != LightingTarget)
+        {
+            WriteBindlessUav(RayTracingLightingUavBindlessIndex, LightingTarget, nullptr, LightingUavDesc);
+        }
+        RayTracingLightingResource = LightingTarget;
+
+        if (RayTracingGBufferASrvBindlessIndex == UINT32_MAX
+            || RayTracingGBufferCSrvBindlessIndex == UINT32_MAX
+            || RayTracingLightingUavBindlessIndex == UINT32_MAX)
+        {
+            return;
+        }
+
+        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
+        CommandList4->SetDescriptorHeaps(_countof(Heaps), Heaps);
+
+        const uint32_t DispatchWidth = static_cast<uint32_t>(Viewport.Width);
+        const uint32_t DispatchHeight = static_cast<uint32_t>(Viewport.Height);
+        if (DispatchWidth == 0 || DispatchHeight == 0)
+        {
+            return;
+        }
+
+        constexpr uint32_t RayQueryThreadGroupSize = 8;
+        const uint32_t GroupCountX = (DispatchWidth + RayQueryThreadGroupSize - 1u) / RayQueryThreadGroupSize;
+        const uint32_t GroupCountY = (DispatchHeight + RayQueryThreadGroupSize - 1u) / RayQueryThreadGroupSize;
+
+        CommandList4->SetPipelineState(RayQueryPathPipeline.Get());
+        CommandList4->SetComputeRootSignature(RayQueryRootSignature.Get());
+        CommandList4->SetComputeRootShaderResourceView(0, TlasResultBuffers[FrameIndex]->GetGPUVirtualAddress());
+        const uint64_t ConstantBufferOffset = 0;
+        UpdateSceneConstants(*Data.Camera, SceneModels.front(), ConstantBufferOffset);
+        const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
+        CommandList4->SetComputeRootConstantBufferView(1, ConstantBufferAddress + ConstantBufferOffset);
+        const uint32_t BindlessIndices[] =
+        {
+            DepthBindlessIndex,
+            RayTracingGBufferASrvBindlessIndex,
+            RayTracingGBufferCSrvBindlessIndex,
+            RayTracingLightingUavBindlessIndex,
+            DispatchWidth,
+            DispatchHeight
+        };
+        CommandList4->SetComputeRoot32BitConstants(2, _countof(BindlessIndices), BindlessIndices, 0);
+
+        CommandList4->Dispatch(GroupCountX, GroupCountY, 1);
     });
 }
 
@@ -3622,7 +3846,7 @@ bool FDeferredRenderer::CreateGBufferResources(FDX12Device* Device, uint32_t Wid
         1,
         1,
         0,
-        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 
     D3D12_CLEAR_VALUE LightingClear = {};
     LightingClear.Format = Desc.Format;
@@ -3648,15 +3872,15 @@ bool FDeferredRenderer::CreateGBufferResources(FDX12Device* Device, uint32_t Wid
     Device->GetDevice()->CreateRenderTargetView(LightingBuffer.Get(), &LightingRtvDesc, RtvHandle);
     RtvHandle.ptr += RtvDescriptorSize;
 
-    Desc = CD3DX12_RESOURCE_DESC::Tex2D(
-        BackBufferFormat,
-        Width,
-        Height,
-        1,
-        1,
-        1,
-        0,
-        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+	Desc = CD3DX12_RESOURCE_DESC::Tex2D(
+		BackBufferFormat,
+		Width,
+		Height,
+		1,
+		1,
+		1,
+		0,
+		D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
 
     D3D12_CLEAR_VALUE TonemapClear = {};
     TonemapClear.Format = Desc.Format;
@@ -3691,21 +3915,17 @@ bool FDeferredRenderer::CreateLinearDepthResources(FDX12Device* Device, uint32_t
         return false;
     }
 
-    D3D12_HEAP_PROPERTIES HeapProps = {};
-    HeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
-    HeapProps.CreationNodeMask = 1;
-    HeapProps.VisibleNodeMask = 1;
+    CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
 
-    D3D12_RESOURCE_DESC Desc = {};
-    Desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    Desc.Width = Width;
-    Desc.Height = Height;
-    Desc.DepthOrArraySize = 1;
-    Desc.MipLevels = 1;
-    Desc.Format = DXGI_FORMAT_R16_FLOAT;
-    Desc.SampleDesc.Count = 1;
-    Desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    Desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
+        DXGI_FORMAT_R16_FLOAT,
+        Width,
+        Height,
+        1,
+        1,
+        1,
+        0,
+        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
 
     D3D12_CLEAR_VALUE ClearValue = {};
     ClearValue.Format = Desc.Format;
@@ -3754,21 +3974,17 @@ bool FDeferredRenderer::CreateGtaoResources(FDX12Device* Device, uint32_t Width,
         return false;
     }
 
-    D3D12_HEAP_PROPERTIES HeapProps = {};
-    HeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
-    HeapProps.CreationNodeMask = 1;
-    HeapProps.VisibleNodeMask = 1;
+    CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
 
-    D3D12_RESOURCE_DESC Desc = {};
-    Desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    Desc.Width = Width;
-    Desc.Height = Height;
-    Desc.DepthOrArraySize = 1;
-    Desc.MipLevels = 1;
-    Desc.Format = DXGI_FORMAT_R8_UNORM;
-    Desc.SampleDesc.Count = 1;
-    Desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    Desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
+        DXGI_FORMAT_R8_UNORM,
+        Width,
+        Height,
+        1,
+        1,
+        1,
+        0,
+        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
 
     D3D12_CLEAR_VALUE ClearValue = {};
     ClearValue.Format = Desc.Format;
@@ -3828,21 +4044,14 @@ bool FDeferredRenderer::CreateHilbertLutResources(FDX12Device* Device)
         }
     }
 
-    D3D12_RESOURCE_DESC Desc = {};
-    Desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    Desc.Width = HilbertWidth;
-    Desc.Height = HilbertWidth;
-    Desc.DepthOrArraySize = 1;
-    Desc.MipLevels = 1;
-    Desc.Format = DXGI_FORMAT_R16_UINT;
-    Desc.SampleDesc.Count = 1;
-    Desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    Desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+    CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
+        DXGI_FORMAT_R16_UINT,
+        HilbertWidth,
+        HilbertWidth,
+        1,
+        1);
 
-    D3D12_HEAP_PROPERTIES DefaultHeap = {};
-    DefaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
-    DefaultHeap.CreationNodeMask = 1;
-    DefaultHeap.VisibleNodeMask = 1;
+    CD3DX12_HEAP_PROPERTIES DefaultHeap(D3D12_HEAP_TYPE_DEFAULT);
 
     HR_CHECK(Device->GetDevice()->CreateCommittedResource(
         &DefaultHeap,
@@ -3863,21 +4072,9 @@ bool FDeferredRenderer::CreateHilbertLutResources(FDX12Device* Device)
     UINT64 UploadBufferSize = 0;
     Device->GetDevice()->GetCopyableFootprints(&Desc, 0, 1, 0, &Layout, &NumRows, &RowSizeInBytes, &UploadBufferSize);
 
-    D3D12_HEAP_PROPERTIES UploadHeap = {};
-    UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
-    UploadHeap.CreationNodeMask = 1;
-    UploadHeap.VisibleNodeMask = 1;
+    CD3DX12_HEAP_PROPERTIES UploadHeap(D3D12_HEAP_TYPE_UPLOAD);
 
-    D3D12_RESOURCE_DESC UploadDesc = {};
-    UploadDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    UploadDesc.Width = UploadBufferSize;
-    UploadDesc.Height = 1;
-    UploadDesc.DepthOrArraySize = 1;
-    UploadDesc.MipLevels = 1;
-    UploadDesc.Format = DXGI_FORMAT_UNKNOWN;
-    UploadDesc.SampleDesc.Count = 1;
-    UploadDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    UploadDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+    CD3DX12_RESOURCE_DESC UploadDesc = CD3DX12_RESOURCE_DESC::Buffer(UploadBufferSize);
 
     ComPtr<ID3D12Resource> UploadResource;
     HR_CHECK(Device->GetDevice()->CreateCommittedResource(
@@ -4063,23 +4260,17 @@ bool FDeferredRenderer::CreateHZBResources(FDX12Device* Device, uint32_t Width, 
         ++HZBMipCount;
     }
 
-    D3D12_RESOURCE_DESC Desc = {};
-    Desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    Desc.Alignment = 0;
-    Desc.Width = BaseWidth;
-    Desc.Height = BaseHeight;
-    Desc.DepthOrArraySize = 1;
-    Desc.MipLevels = static_cast<UINT16>(HZBMipCount);
-    Desc.Format = DXGI_FORMAT_R32_FLOAT;
-    Desc.SampleDesc.Count = 1;
-    Desc.SampleDesc.Quality = 0;
-    Desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    Desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
+        DXGI_FORMAT_R32_FLOAT,
+        BaseWidth,
+        BaseHeight,
+        1,
+        static_cast<UINT16>(HZBMipCount),
+        1,
+        0,
+        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 
-    D3D12_HEAP_PROPERTIES HeapProps = {};
-    HeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
-    HeapProps.CreationNodeMask = 1;
-    HeapProps.VisibleNodeMask = 1;
+    CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
 
     HR_CHECK(Device->GetDevice()->CreateCommittedResource(
         &HeapProps,

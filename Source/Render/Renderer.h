@@ -53,6 +53,8 @@ public:
 
     virtual void SetRayTracedShadowsEnabled(bool bEnabled) { bRayTracedShadowsEnabled = bEnabled; }
     virtual bool IsRayTracedShadowsEnabled() const { return bRayTracedShadowsEnabled; }
+    virtual void SetPathTracingEnabled(bool bEnabled) { bPathTracingEnabled = bEnabled; }
+    virtual bool IsPathTracingEnabled() const { return bPathTracingEnabled; }
 
     void SetFrameIndex(uint32_t FrameIndex);
     uint32_t GetFrameIndex() const { return CurrentFrameIndex; }
@@ -160,6 +162,10 @@ protected:
     void BuildRayTracingTlas(FDX12CommandContext& CmdContext);
     bool CreateRayTracingPipeline(FDX12Device* Device);
     bool CreateSkinningPipeline(FDX12Device* Device);
+    D3D12_CPU_DESCRIPTOR_HANDLE GetBindlessCpuHandle(uint32_t Index) const;
+    D3D12_GPU_DESCRIPTOR_HANDLE GetBindlessGpuHandle(uint32_t Index) const;
+    void WriteBindlessSrv(uint32_t Index, ID3D12Resource* Resource, const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc) const;
+    void WriteBindlessUav(uint32_t Index, ID3D12Resource* Resource, ID3D12Resource* Counter, const D3D12_UNORDERED_ACCESS_VIEW_DESC& Desc) const;
     bool CreateGpuDebugPrintResources(FDX12Device* Device);
     bool CreateGpuDebugPrintPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateGpuDebugPrintStatsPipeline(FDX12Device* Device);
@@ -350,14 +356,20 @@ protected:
     std::vector<D3D12_RESOURCE_STATES> LateListCountStates;
     std::vector<D3D12_RESOURCE_STATES> MeshletRunCountStates;
     FRayTracingDevice RayTracingDevice;
-    FRayTracingPipelineState RayTracingPipeline;
-    Microsoft::WRL::ComPtr<ID3D12RootSignature> RayTracingGlobalRootSignature;
-    Microsoft::WRL::ComPtr<ID3D12RootSignature> RayTracingLocalRootSignature;
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> RayTracingUavHeap;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RayTracingShaderTable;
-    uint32_t RayTracingShaderRecordSize = 0;
-    uint32_t RayTracingShaderTableSize = 0;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> RayQueryRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> RayQueryShadowPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> RayQueryPathPipeline;
     bool bRayTracingPipelineReady = false;
+    std::vector<uint32_t> RayTracingDepthSrvBindlessIndices;
+    std::vector<ID3D12Resource*> RayTracingDepthResources;
+    uint32_t RayTracingGBufferASrvBindlessIndex = UINT32_MAX;
+    uint32_t RayTracingGBufferCSrvBindlessIndex = UINT32_MAX;
+    uint32_t RayTracingLightingUavBindlessIndex = UINT32_MAX;
+    uint32_t RayTracingShadowMaskUavBindlessIndex = UINT32_MAX;
+    ID3D12Resource* RayTracingGBufferAResource = nullptr;
+    ID3D12Resource* RayTracingGBufferCResource = nullptr;
+    ID3D12Resource* RayTracingLightingResource = nullptr;
+    ID3D12Resource* RayTracingShadowMaskUavResource = nullptr;
     uint32_t ShadowMaskBindlessIndex = UINT32_MAX;
     ID3D12Resource* ShadowMaskResource = nullptr;
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> TlasScratchBuffers;
@@ -376,6 +388,7 @@ protected:
     uint32_t ShadowMapHeight = 0;
     bool bShadowsEnabled = true;
     bool bRayTracedShadowsEnabled = false;
+    bool bPathTracingEnabled = false;
     bool bLogResourceBarriers = false;
     bool bEnableGraphDump = false;
     bool bEnableGpuTiming = false;

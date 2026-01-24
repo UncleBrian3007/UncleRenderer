@@ -18,16 +18,57 @@
 #include <cstring>
 #include <cmath>
 
-namespace
+FRenderer::~FRenderer() = default;
+
+D3D12_CPU_DESCRIPTOR_HANDLE FRenderer::GetBindlessCpuHandle(uint32_t Index) const
 {
-    uint32_t AlignShaderRecordSize(uint32_t Size)
+    D3D12_CPU_DESCRIPTOR_HANDLE Handle{};
+    if (!Device || !Device->GetBindlessDescriptorHeap())
     {
-        const uint32_t Alignment = D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT;
-        return (Size + Alignment - 1u) & ~(Alignment - 1u);
+        return Handle;
     }
+
+    const UINT Stride = Device->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    Handle = Device->GetBindlessDescriptorHeap()->GetCPUDescriptorHandleForHeapStart();
+    Handle.ptr += static_cast<SIZE_T>(Index) * Stride;
+    return Handle;
 }
 
-FRenderer::~FRenderer() = default;
+D3D12_GPU_DESCRIPTOR_HANDLE FRenderer::GetBindlessGpuHandle(uint32_t Index) const
+{
+    D3D12_GPU_DESCRIPTOR_HANDLE Handle{};
+    if (!Device || !Device->GetBindlessDescriptorHeap())
+    {
+        return Handle;
+    }
+
+    const UINT Stride = Device->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    Handle = Device->GetBindlessDescriptorHeap()->GetGPUDescriptorHandleForHeapStart();
+    Handle.ptr += static_cast<UINT64>(Index) * Stride;
+    return Handle;
+}
+
+void FRenderer::WriteBindlessSrv(uint32_t Index, ID3D12Resource* Resource, const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc) const
+{
+    if (!Device || !Device->GetBindlessDescriptorHeap())
+    {
+        return;
+    }
+
+    const D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle = GetBindlessCpuHandle(Index);
+    Device->GetDevice()->CreateShaderResourceView(Resource, &Desc, CpuHandle);
+}
+
+void FRenderer::WriteBindlessUav(uint32_t Index, ID3D12Resource* Resource, ID3D12Resource* Counter, const D3D12_UNORDERED_ACCESS_VIEW_DESC& Desc) const
+{
+    if (!Device || !Device->GetBindlessDescriptorHeap())
+    {
+        return;
+    }
+
+    const D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle = GetBindlessCpuHandle(Index);
+    Device->GetDevice()->CreateUnorderedAccessView(Resource, Counter, &Desc, CpuHandle);
+}
 
 bool FRenderer::GetSceneModelStats(size_t& OutTotal, size_t& OutCulled) const
 {
@@ -60,6 +101,7 @@ void FRenderer::InitializeCommonSettings(uint32_t Width, uint32_t Height, const 
     bDepthPrepassEnabled = Config.bUseDepthPrepass;
     bShadowsEnabled = Config.bEnableShadows;
     bRayTracedShadowsEnabled = Config.bEnableRayTracedShadows;
+    bPathTracingEnabled = Config.bEnablePathTracing;
     ShadowBias = Config.ShadowBias;
     bLogResourceBarriers = Config.bLogResourceBarriers;
     bEnableGraphDump = Config.bEnableGraphDump;
@@ -1475,70 +1517,20 @@ bool FRenderer::CreateRayTracingPipeline(FDX12Device* Device)
 {
     bRayTracingPipelineReady = false;
 
-    if (!bRayTracedShadowsEnabled)
+    if (!Device || !Device->IsRayTracingSupported())
     {
+        LogWarning("Ray tracing pipeline skipped: DXR is not supported. Ray-traced features disabled.");
+        bRayTracedShadowsEnabled = false;
+        bPathTracingEnabled = false;
         return true;
     }
 
-    if (!Device || !Device->IsRayTracingSupported())
+    if (!RayTracingDevice.IsValid() && !Device->CreateRayTracingDevice(RayTracingDevice))
     {
-        LogWarning("Ray tracing pipeline skipped: DXR is not supported.");
         return false;
     }
 
-    FShaderCompiler Compiler;
-    std::vector<uint8_t> LibraryBytecode;
-    if (!Compiler.CompileLibraryFromFile(L"Shaders/ShadowRays.hlsl", L"lib_6_6", LibraryBytecode))
-    {
-        LogError("Failed to compile ray tracing shader library.");
-        return false;
-    }
-
-    D3D12_SHADER_BYTECODE Library = {};
-    Library.pShaderBytecode = LibraryBytecode.data();
-    Library.BytecodeLength = LibraryBytecode.size();
-
-    const wchar_t* Exports[] = { L"RayGen", L"Miss", L"ClosestHit" };
-    D3D12_EXPORT_DESC ExportDescs[3] = {};
-    for (uint32_t Index = 0; Index < 3; ++Index)
-    {
-        ExportDescs[Index].Name = Exports[Index];
-        ExportDescs[Index].ExportToRename = nullptr;
-        ExportDescs[Index].Flags = D3D12_EXPORT_FLAG_NONE;
-    }
-
-    D3D12_DXIL_LIBRARY_DESC LibraryDesc = {};
-    LibraryDesc.DXILLibrary = Library;
-    LibraryDesc.NumExports = _countof(ExportDescs);
-    LibraryDesc.pExports = ExportDescs;
-
-    D3D12_HIT_GROUP_DESC HitGroupDesc = {};
-    HitGroupDesc.HitGroupExport = L"ShadowHitGroup";
-    HitGroupDesc.Type = D3D12_HIT_GROUP_TYPE_TRIANGLES;
-    HitGroupDesc.ClosestHitShaderImport = L"ClosestHit";
-
-    D3D12_RAYTRACING_SHADER_CONFIG ShaderConfig = {};
-    ShaderConfig.MaxPayloadSizeInBytes = sizeof(uint32_t);
-    ShaderConfig.MaxAttributeSizeInBytes = sizeof(float) * 2;
-
-    D3D12_RAYTRACING_PIPELINE_CONFIG PipelineConfig = {};
-    PipelineConfig.MaxTraceRecursionDepth = 1;
-
-    D3D12_DESCRIPTOR_RANGE DepthSrvRange = {};
-    DepthSrvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    DepthSrvRange.NumDescriptors = 2;
-    DepthSrvRange.BaseShaderRegister = 1;
-    DepthSrvRange.RegisterSpace = 0;
-    DepthSrvRange.OffsetInDescriptorsFromTableStart = 0;
-
-    D3D12_DESCRIPTOR_RANGE UavRange = {};
-    UavRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
-    UavRange.NumDescriptors = 1;
-    UavRange.BaseShaderRegister = 0;
-    UavRange.RegisterSpace = 0;
-    UavRange.OffsetInDescriptorsFromTableStart = 0;
-
-    D3D12_ROOT_PARAMETER RootParameters[4] = {};
+    D3D12_ROOT_PARAMETER RootParameters[3] = {};
     RootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
     RootParameters[0].Descriptor.ShaderRegister = 0;
     RootParameters[0].Descriptor.RegisterSpace = 0;
@@ -1549,20 +1541,16 @@ bool FRenderer::CreateRayTracingPipeline(FDX12Device* Device)
     RootParameters[1].Descriptor.RegisterSpace = 0;
     RootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-    RootParameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    RootParameters[2].DescriptorTable.NumDescriptorRanges = 1;
-    RootParameters[2].DescriptorTable.pDescriptorRanges = &DepthSrvRange;
+    RootParameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParameters[2].Constants.ShaderRegister = 1;
+    RootParameters[2].Constants.RegisterSpace = 0;
+    RootParameters[2].Constants.Num32BitValues = 6;
     RootParameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-
-    RootParameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    RootParameters[3].DescriptorTable.NumDescriptorRanges = 1;
-    RootParameters[3].DescriptorTable.pDescriptorRanges = &UavRange;
-    RootParameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     D3D12_ROOT_SIGNATURE_DESC GlobalRootDesc = {};
     GlobalRootDesc.NumParameters = _countof(RootParameters);
     GlobalRootDesc.pParameters = RootParameters;
-    GlobalRootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+    GlobalRootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
 
     ComPtr<ID3DBlob> GlobalSignatureBlob;
     ComPtr<ID3DBlob> GlobalErrorBlob;
@@ -1571,134 +1559,76 @@ bool FRenderer::CreateRayTracingPipeline(FDX12Device* Device)
         0,
         GlobalSignatureBlob->GetBufferPointer(),
         GlobalSignatureBlob->GetBufferSize(),
-        IID_PPV_ARGS(RayTracingGlobalRootSignature.ReleaseAndGetAddressOf())));
+        IID_PPV_ARGS(RayQueryRootSignature.ReleaseAndGetAddressOf())));
 
-    D3D12_ROOT_SIGNATURE_DESC LocalRootDesc = {};
-    LocalRootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_LOCAL_ROOT_SIGNATURE;
+    FShaderCompiler Compiler;
+    RayQueryShadowPipeline.Reset();
+    RayQueryPathPipeline.Reset();
 
-    ComPtr<ID3DBlob> LocalSignatureBlob;
-    ComPtr<ID3DBlob> LocalErrorBlob;
-    HR_CHECK(D3D12SerializeRootSignature(&LocalRootDesc, D3D_ROOT_SIGNATURE_VERSION_1, LocalSignatureBlob.GetAddressOf(), LocalErrorBlob.GetAddressOf()));
-    HR_CHECK(Device->GetDevice()->CreateRootSignature(
-        0,
-        LocalSignatureBlob->GetBufferPointer(),
-        LocalSignatureBlob->GetBufferSize(),
-        IID_PPV_ARGS(RayTracingLocalRootSignature.ReleaseAndGetAddressOf())));
-
-    D3D12_STATE_SUBOBJECT Subobjects[7] = {};
-    uint32_t SubobjectIndex = 0;
-
-    Subobjects[SubobjectIndex].Type = D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY;
-    Subobjects[SubobjectIndex].pDesc = &LibraryDesc;
-    ++SubobjectIndex;
-
-    Subobjects[SubobjectIndex].Type = D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP;
-    Subobjects[SubobjectIndex].pDesc = &HitGroupDesc;
-    ++SubobjectIndex;
-
-    Subobjects[SubobjectIndex].Type = D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG;
-    Subobjects[SubobjectIndex].pDesc = &ShaderConfig;
-    ++SubobjectIndex;
-
-    D3D12_GLOBAL_ROOT_SIGNATURE GlobalRootSignatureDesc = {};
-    GlobalRootSignatureDesc.pGlobalRootSignature = RayTracingGlobalRootSignature.Get();
-    Subobjects[SubobjectIndex].Type = D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE;
-    Subobjects[SubobjectIndex].pDesc = &GlobalRootSignatureDesc;
-    ++SubobjectIndex;
-
-    D3D12_LOCAL_ROOT_SIGNATURE LocalRootSignatureDesc = {};
-    LocalRootSignatureDesc.pLocalRootSignature = RayTracingLocalRootSignature.Get();
-    Subobjects[SubobjectIndex].Type = D3D12_STATE_SUBOBJECT_TYPE_LOCAL_ROOT_SIGNATURE;
-    Subobjects[SubobjectIndex].pDesc = &LocalRootSignatureDesc;
-    const uint32_t LocalRootIndex = SubobjectIndex;
-    ++SubobjectIndex;
-
-    const wchar_t* LocalExports[] = { L"ShadowHitGroup" };
-    D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION Association = {};
-    Association.pSubobjectToAssociate = &Subobjects[LocalRootIndex];
-    Association.NumExports = _countof(LocalExports);
-    Association.pExports = LocalExports;
-    Subobjects[SubobjectIndex].Type = D3D12_STATE_SUBOBJECT_TYPE_SUBOBJECT_TO_EXPORTS_ASSOCIATION;
-    Subobjects[SubobjectIndex].pDesc = &Association;
-    ++SubobjectIndex;
-
-    Subobjects[SubobjectIndex].Type = D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG;
-    Subobjects[SubobjectIndex].pDesc = &PipelineConfig;
-    ++SubobjectIndex;
-
-    D3D12_STATE_OBJECT_DESC StateObjectDesc = {};
-    StateObjectDesc.Type = D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE;
-    StateObjectDesc.NumSubobjects = SubobjectIndex;
-    StateObjectDesc.pSubobjects = Subobjects;
-
-    if (!RayTracingDevice.IsValid() && !Device->CreateRayTracingDevice(RayTracingDevice))
+    std::vector<uint8_t> ShadowBytecode;
+    if (!Compiler.CompileFromFile(L"Shaders/ShadowRays.hlsl", L"CSMain", L"cs_6_6", ShadowBytecode))
     {
+        LogError("Failed to compile ray query shadow shader.");
         return false;
     }
 
-    if (!RayTracingPipeline.Initialize(RayTracingDevice.GetDevice(), StateObjectDesc))
+    D3D12_COMPUTE_PIPELINE_STATE_DESC ShadowPsoDesc = {};
+    ShadowPsoDesc.pRootSignature = RayQueryRootSignature.Get();
+    ShadowPsoDesc.CS.pShaderBytecode = ShadowBytecode.data();
+    ShadowPsoDesc.CS.BytecodeLength = ShadowBytecode.size();
+    HR_CHECK(Device->GetDevice()->CreateComputePipelineState(&ShadowPsoDesc, IID_PPV_ARGS(RayQueryShadowPipeline.ReleaseAndGetAddressOf())));
+    if (!RayQueryShadowPipeline)
     {
-        LogError("Ray tracing pipeline state creation failed.");
+        LogError("Ray query shadow pipeline state creation failed.");
+        return false;
+    }
+    RayQueryShadowPipeline->SetName(L"RayQueryShadowPipeline");
+
+    std::vector<uint8_t> PathBytecode;
+    if (!Compiler.CompileFromFile(L"Shaders/PathTracing.hlsl", L"CSMain", L"cs_6_6", PathBytecode))
+    {
+        LogError("Failed to compile ray query path tracing shader.");
         return false;
     }
 
-    ID3D12StateObjectProperties* Properties = RayTracingPipeline.GetStateObjectProperties();
-    if (!Properties)
+    D3D12_COMPUTE_PIPELINE_STATE_DESC PathPsoDesc = {};
+    PathPsoDesc.pRootSignature = RayQueryRootSignature.Get();
+    PathPsoDesc.CS.pShaderBytecode = PathBytecode.data();
+    PathPsoDesc.CS.BytecodeLength = PathBytecode.size();
+    HR_CHECK(Device->GetDevice()->CreateComputePipelineState(&PathPsoDesc, IID_PPV_ARGS(RayQueryPathPipeline.ReleaseAndGetAddressOf())));
+    if (!RayQueryPathPipeline)
     {
-        LogError("Ray tracing pipeline state properties missing.");
+        LogError("Ray query path tracing pipeline state creation failed.");
         return false;
     }
+    RayQueryPathPipeline->SetName(L"RayQueryPathPipeline");
 
-    const void* RayGenId = Properties->GetShaderIdentifier(L"RayGen");
-    const void* MissId = Properties->GetShaderIdentifier(L"Miss");
-    const void* HitGroupId = Properties->GetShaderIdentifier(L"ShadowHitGroup");
-    if (!RayGenId || !MissId || !HitGroupId)
+    RayTracingDepthSrvBindlessIndices.assign(FramesInFlight, UINT32_MAX);
+    RayTracingDepthResources.assign(FramesInFlight, nullptr);
+    RayTracingGBufferASrvBindlessIndex = UINT32_MAX;
+    RayTracingGBufferCSrvBindlessIndex = UINT32_MAX;
+    RayTracingLightingUavBindlessIndex = UINT32_MAX;
+    RayTracingShadowMaskUavBindlessIndex = UINT32_MAX;
+    RayTracingGBufferAResource = nullptr;
+    RayTracingGBufferCResource = nullptr;
+    RayTracingLightingResource = nullptr;
+    RayTracingShadowMaskUavResource = nullptr;
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC DepthSrvDesc = {};
+    DepthSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    DepthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    DepthSrvDesc.Format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+    DepthSrvDesc.Texture2D.MipLevels = 1;
+    DepthSrvDesc.Texture2D.MostDetailedMip = 0;
+    DepthSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+
+    for (uint32_t FrameIndex = 0; FrameIndex < FramesInFlight; ++FrameIndex)
     {
-        LogError("Ray tracing shader identifiers are missing.");
-        return false;
-    }
-
-    RayTracingShaderRecordSize = AlignShaderRecordSize(D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
-    RayTracingShaderTableSize = RayTracingShaderRecordSize * 3;
-
-    CD3DX12_HEAP_PROPERTIES UploadHeap(D3D12_HEAP_TYPE_UPLOAD);
-    CD3DX12_RESOURCE_DESC TableDesc = CD3DX12_RESOURCE_DESC::Buffer(RayTracingShaderTableSize);
-
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &UploadHeap,
-        D3D12_HEAP_FLAG_NONE,
-        &TableDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        nullptr,
-        IID_PPV_ARGS(RayTracingShaderTable.ReleaseAndGetAddressOf())));
-
-    if (!RayTracingShaderTable)
-    {
-        LogError("Ray tracing shader table allocation failed.");
-        return false;
-    }
-
-    RayTracingShaderTable->SetName(L"RayTracingShaderTable");
-
-    uint8_t* MappedData = nullptr;
-    D3D12_RANGE EmptyRange = { 0, 0 };
-    HR_CHECK(RayTracingShaderTable->Map(0, &EmptyRange, reinterpret_cast<void**>(&MappedData)));
-
-    std::memcpy(MappedData, RayGenId, D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
-    std::memcpy(MappedData + RayTracingShaderRecordSize, MissId, D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
-    std::memcpy(MappedData + RayTracingShaderRecordSize * 2, HitGroupId, D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
-    RayTracingShaderTable->Unmap(0, nullptr);
-
-    if (!RayTracingUavHeap)
-    {
-        D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
-        HeapDesc.NumDescriptors = 3;
-        HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-        HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-        HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(RayTracingUavHeap.ReleaseAndGetAddressOf())));
-        if (RayTracingUavHeap)
+        RayTracingDepthSrvBindlessIndices[FrameIndex] = Device->CreateBindlessSrv(nullptr, DepthSrvDesc);
+        if (RayTracingDepthSrvBindlessIndices[FrameIndex] == UINT32_MAX)
         {
-            RayTracingUavHeap->SetName(L"RayTracingUavHeap");
+            LogError("Failed to allocate bindless depth SRV for ray tracing.");
+            return false;
         }
     }
 
@@ -1962,7 +1892,7 @@ void FRenderer::DispatchSkinning(FDX12CommandContext& CmdContext, const DirectX:
 
 void FRenderer::UpdateRayTracingBlasRefit(FDX12CommandContext& CmdContext)
 {
-    if (!bRayTracedShadowsEnabled)
+    if (!bRayTracedShadowsEnabled && !bPathTracingEnabled)
     {
         return;
     }
@@ -2056,7 +1986,7 @@ void FRenderer::UpdateRayTracingBlasRefit(FDX12CommandContext& CmdContext)
 
 void FRenderer::BuildRayTracingTlas(FDX12CommandContext& CmdContext)
 {
-    if (!bRayTracedShadowsEnabled)
+    if (!bRayTracedShadowsEnabled && !bPathTracingEnabled)
     {
         return;
     }

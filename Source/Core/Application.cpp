@@ -157,6 +157,7 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     bDepthPrepassEnabled = RendererConfig.bUseDepthPrepass;
     bShadowsEnabled = RendererConfig.bEnableShadows;
     bRayTracedShadowsEnabled = RendererConfig.bEnableRayTracedShadows;
+    bPathTracingEnabled = RendererConfig.bEnablePathTracing;
     bGpuTimingEnabled = RendererConfig.bEnableGpuTiming;
     bGpuDebugPrintEnabled = RendererConfig.bEnableGpuDebugPrint;
     ShadowBias = RendererConfig.ShadowBias;
@@ -228,6 +229,13 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
         bRayTracedShadowsEnabled = false;
         RendererConfig.bEnableRayTracedShadows = false;
         LogWarning("Ray traced shadows requested, but DXR is not supported. Falling back to raster shadows.");
+    }
+
+    if (bPathTracingEnabled && !Device->IsRayTracingSupported())
+    {
+        bPathTracingEnabled = false;
+        RendererConfig.bEnablePathTracing = false;
+        LogWarning("Path tracing requested, but DXR is not supported. Disabling path tracing.");
     }
 
     if (RendererConfig.bEnableIndirectDraw && !Device->IsShaderModelForIndirectDrawSupported())
@@ -936,6 +944,7 @@ bool FApplication::ReloadScene(const std::wstring& ScenePath)
     ReloadConfig.bUseDepthPrepass = bDepthPrepassEnabled;
     ReloadConfig.bEnableShadows = bShadowsEnabled;
     ReloadConfig.bEnableRayTracedShadows = bRayTracedShadowsEnabled;
+    ReloadConfig.bEnablePathTracing = bPathTracingEnabled;
     ReloadConfig.ShadowBias = ShadowBias;
     ReloadConfig.bEnableHZB = bHZBEnabled;
     ReloadConfig.bEnableGtao = bGtaoEnabled;
@@ -1062,6 +1071,7 @@ void FApplication::StartAsyncSceneReload(const std::wstring& ScenePath)
     AsyncConfig.bUseDepthPrepass = bDepthPrepassEnabled;
     AsyncConfig.bEnableShadows = bShadowsEnabled;
     AsyncConfig.bEnableRayTracedShadows = bRayTracedShadowsEnabled;
+    AsyncConfig.bEnablePathTracing = bPathTracingEnabled;
     AsyncConfig.ShadowBias = ShadowBias;
     AsyncConfig.bEnableTonemap = bTonemapEnabled;
     AsyncConfig.TonemapExposure = TonemapExposure;
@@ -1749,6 +1759,32 @@ void FApplication::RenderUI()
             if (ForwardRenderer)
             {
                 ForwardRenderer->SetRayTracedShadowsEnabled(bRayTracedShadowsEnabled);
+            }
+        }
+
+        bool bPathTracing = bPathTracingEnabled;
+        if (ImGui::Checkbox("Path Tracing", &bPathTracing))
+        {
+            if (bPathTracing && !bRayTracingSupported)
+            {
+                bPathTracingEnabled = false;
+                RendererConfig.bEnablePathTracing = false;
+                LogWarning("Path tracing requested, but DXR is not supported. Disabling path tracing.");
+            }
+            else
+            {
+                bPathTracingEnabled = bPathTracing;
+                RendererConfig.bEnablePathTracing = bPathTracingEnabled;
+            }
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetPathTracingEnabled(bPathTracingEnabled);
+            }
+
+            if (ForwardRenderer)
+            {
+                ForwardRenderer->SetPathTracingEnabled(bPathTracingEnabled);
             }
         }
 

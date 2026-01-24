@@ -562,18 +562,15 @@ bool FRenderGraph::AcquireTransientTexture(FRGTextureResource& Texture, D3D12_RE
         return true;
     }
 
-    D3D12_RESOURCE_DESC ResourceDesc = {};
-    ResourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    ResourceDesc.Alignment = 0;
-    ResourceDesc.Width = Texture.Desc.Width;
-    ResourceDesc.Height = Texture.Desc.Height;
-    ResourceDesc.DepthOrArraySize = 1;
-    ResourceDesc.MipLevels = 1;
-    ResourceDesc.Format = Texture.Desc.Format;
-    ResourceDesc.SampleDesc.Count = 1;
-    ResourceDesc.SampleDesc.Quality = 0;
-    ResourceDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    ResourceDesc.Flags = Texture.Flags;
+    CD3DX12_RESOURCE_DESC ResourceDesc = CD3DX12_RESOURCE_DESC::Tex2D(
+        Texture.Desc.Format,
+        Texture.Desc.Width,
+        Texture.Desc.Height,
+        1,
+        1,
+        1,
+        0,
+        Texture.Flags);
 
     D3D12_CLEAR_VALUE ClearValue = {};
     D3D12_CLEAR_VALUE* ClearPtr = nullptr;
