@@ -1592,6 +1592,18 @@ void FApplication::RenderUI()
         }
 
         ImGui::SameLine();
+        bool bHzbTwoPass = bHzbTwoPassEnabled;
+        if (ImGui::Checkbox("HZB Two Pass", &bHzbTwoPass))
+        {
+            bHzbTwoPassEnabled = bHzbTwoPass;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetHzbTwoPassEnabled(bHzbTwoPassEnabled);
+            }
+        }
+
+        ImGui::SameLine();
         bool bGtao = bGtaoEnabled;
         if (ImGui::Checkbox("GTAO", &bGtao))
         {

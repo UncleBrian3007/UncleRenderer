@@ -84,6 +84,8 @@ void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     uint frustum = StatsBuffer.Load(0);
     uint occlusion = StatsBuffer.Load(4);
     uint cone = StatsBuffer.Load(8);
+    uint merged = StatsBuffer.Load(4 * kDebugPrintStatsMergedIndex);
+    uint lateVisible = StatsBuffer.Load(4 * kDebugPrintStatsLateVisibleIndex);
 
     const uint textColor = 0xffffffffu;
     uint2 pos = uint2(8, 20);
@@ -97,4 +99,12 @@ void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     pos = uint2(8, 52);
     PrintLabel(pos, textColor, 'C', 'O', 'N', 'E', 'C', 'U', 'L', ' ');
     PrintUInt(uint2(8 + 8 * 8, 52), cone, textColor);
+
+    pos = uint2(8, 68);
+    PrintLabel(pos, textColor, 'M', 'E', 'R', 'G', 'E', 'D', ' ', ' ');
+    PrintUInt(uint2(8 + 8 * 8, 68), merged, textColor);
+
+    pos = uint2(8, 84);
+    PrintLabel(pos, textColor, 'L', 'A', 'T', 'E', 'V', 'I', 'S', ' ');
+    PrintUInt(uint2(8 + 8 * 8, 84), lateVisible, textColor);
 }

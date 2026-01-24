@@ -19,31 +19,19 @@ cbuffer CullingBindlessConstants : register(b1)
 [numthreads(64, 1, 1)]
 void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    uint index = dispatchThreadId.x;
+    ByteAddressBuffer CullingListCount = ResourceDescriptorHeap[CullingListCountIndex];
+    const uint listCount = CullingListCount.Load(0);
+    if (dispatchThreadId.x >= listCount)
+        return;
+
+    StructuredBuffer<uint> CullingList = ResourceDescriptorHeap[CullingListIndex];
+    const uint index = CullingList[dispatchThreadId.x];
     if (index >= IndirectCommandCount)
         return;
 
     StructuredBuffer<float4> ModelBounds = ResourceDescriptorHeap[ModelBoundsIndex];
     StructuredBuffer<float4> MeshletConeAxisCutoff = ResourceDescriptorHeap[MeshletConeAxisIndex];
     RWStructuredBuffer<uint> VisibleMeshlets = ResourceDescriptorHeap[VisibleMeshletsIndex];
-    StructuredBuffer<uint> VisibilityInput = ResourceDescriptorHeap[VisibilityInputIndex];
-
-    if (CullingMode == 1)
-    {
-        if (VisibilityInput[index] == 0)
-        {
-            VisibleMeshlets[index] = 0;
-            return;
-        }
-    }
-    else if (CullingMode == 2)
-    {
-        if (VisibleMeshlets[index] != 0)
-        {
-            VisibleMeshlets[index] = 1;
-            return;
-        }
-    }
 
     Texture2D<float> HZBTexture = ResourceDescriptorHeap[HZBTextureIndex];
     bool visible;

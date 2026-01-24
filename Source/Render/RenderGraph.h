@@ -9,8 +9,9 @@
 #include <chrono>
 #include <unordered_map>
 #include "../RHI/DX12Commons.h"
+#include "../Core/GpuDebugMarkers.h"
+#include "../RHI/DX12CommandContext.h"
 
-class FDX12CommandContext;
 class FDX12Device;
 
 struct FRGTextureDesc

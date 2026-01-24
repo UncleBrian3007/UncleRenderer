@@ -460,16 +460,132 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
     ConfigureHZBOcclusion(FrameState.bUseHZBOcclusion, HZBSrvBindlessIndex, HZBWidth, HZBHeight, HZBMipCount);
 
-    AddGpuCullingPass(Graph, Camera, FrameState, Resources.HZBHandle);
+    const uint32_t FrameIndex = GetFrameIndex() % GetFramesInFlight();
+    uint32_t PrevVisibilityIndex = UINT32_MAX;
+    uint32_t PrevVisibilityFrameIndex = UINT32_MAX;
+    uint32_t CurrentVisibilityIndex = UINT32_MAX;
+    uint32_t PrevVisibleListSrvIndex = UINT32_MAX;
+    uint32_t PrevVisibleCountSrvIndex = UINT32_MAX;
+    uint32_t LateListSrvIndex = UINT32_MAX;
+    uint32_t LateListCountSrvIndex = UINT32_MAX;
+    if (!MeshletVisibilitySrvBindlessIndices.empty())
+    {
+        const uint32_t FramesInFlight = GetFramesInFlight();
+        const uint32_t PrevFrameIndex = (GetFrameIndex() + FramesInFlight - 1u) % FramesInFlight;
+        PrevVisibilityIndex = MeshletVisibilitySrvBindlessIndices[PrevFrameIndex];
+        PrevVisibilityFrameIndex = PrevFrameIndex;
+        CurrentVisibilityIndex = MeshletVisibilitySrvBindlessIndices[FrameIndex];
+    }
+    if (FrameIndex < PrevVisibleListSrvBindlessIndices.size())
+    {
+        PrevVisibleListSrvIndex = PrevVisibleListSrvBindlessIndices[FrameIndex];
+        PrevVisibleCountSrvIndex = PrevVisibleCountSrvBindlessIndices[FrameIndex];
+    }
+    if (FrameIndex < LateListSrvBindlessIndices.size())
+    {
+        LateListSrvIndex = LateListSrvBindlessIndices[FrameIndex];
+        LateListCountSrvIndex = LateListCountSrvBindlessIndices[FrameIndex];
+    }
+
+    if (FrameState.bUseHzbTwoPass)
+    {
+        AddVisibilityListPass(Graph, FrameState, PrevVisibilityIndex, PrevVisibilityFrameIndex, FrameIndex);
+        AddGpuCullingPass(
+            Graph,
+            Camera,
+            FrameState,
+            Resources.HZBHandle,
+            ECullingMode::All,
+            UINT32_MAX,
+            UINT32_MAX,
+            PrevVisibleListSrvIndex,
+            PrevVisibleCountSrvIndex,
+            "GPU Culling (Early)");
+
+        AddBasePass(
+            Graph,
+            Camera,
+            FrameState,
+            Resources.GBufferHandles,
+            Resources.DepthHandle,
+            Resources.LightingHandle,
+            true,
+            true,
+            "GBuffer (Early)",
+            true);
+    }
+    else
+    {
+        AddGpuCullingPass(
+            Graph,
+            Camera,
+            FrameState,
+            Resources.HZBHandle,
+            ECullingMode::All,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            "GPU Culling");
+    }
+
     if (!bRayTracedShadowsEnabled || !bRayTracingPipelineReady)
     {
         AddShadowPass(Graph, Camera, FrameState, Resources.ShadowHandle);
     }
-    AddDepthPrepass(Graph, Camera, FrameState, Resources.DepthHandle);
-    AddBasePass(Graph, Camera, FrameState, Resources.GBufferHandles, Resources.DepthHandle, Resources.LightingHandle);
+
+    if (FrameState.bDoDepthPrepass)
+    {
+        AddDepthPrepass(Graph, Camera, FrameState, Resources.DepthHandle);
+    }
+
+    if (!FrameState.bUseHzbTwoPass)
+    {
+        AddBasePass(
+            Graph,
+            Camera,
+            FrameState,
+            Resources.GBufferHandles,
+            Resources.DepthHandle,
+            Resources.LightingHandle,
+            true,
+            !FrameState.bDoDepthPrepass,
+            "GBuffer",
+            true);
+    }
     AddRayTracingShadowPass(Graph, Camera, Resources.DepthHandle, Resources.GBufferHandles[0], Resources.ShadowMaskHandle);
     AddObjectIdPass(Graph, Camera, Resources.ObjectIdHandle, Resources.DepthHandle);
+    if (FrameState.bUseHzbTwoPass)
+    {
+        AddEarlyRejectListPass(Graph, FrameState, CurrentVisibilityIndex, FrameIndex);
+    }
     AddHZBPass(Graph, FrameState, Resources.DepthHandle, Resources.HZBHandle);
+    if (FrameState.bUseHzbTwoPass)
+    {
+        AddLateListMergePass(Graph, FrameState, FrameIndex);
+        AddGpuCullingPass(
+            Graph,
+            Camera,
+            FrameState,
+            Resources.HZBHandle,
+            ECullingMode::LateAfterEarly,
+            UINT32_MAX,
+            UINT32_MAX,
+            LateListSrvIndex,
+            LateListCountSrvIndex,
+            "GPU Culling (Late)");
+        AddBasePass(
+            Graph,
+            Camera,
+            FrameState,
+            Resources.GBufferHandles,
+            Resources.DepthHandle,
+            Resources.LightingHandle,
+            false,
+            false,
+            "GBuffer (Late)",
+            false);
+    }
     AddLinearDepthPass(Graph, FrameState, Resources.DepthHandle, Resources.LinearDepthHandle);
     AddGtaoPass(Graph, FrameState, Resources.GBufferHandles, Resources.LinearDepthHandle, Resources.GtaoHandle);
     AddLightingPass(Graph, FrameState, Resources.GBufferHandles, Resources.DepthHandle, Resources.GtaoHandle, Resources.ShadowHandle, Resources.LightingHandle);
@@ -523,17 +639,19 @@ void FDeferredRenderer::PrepareFrameState(const FCamera& Camera, FDeferredFrameS
 
     OutState.bRenderShadows = bShadowsEnabled && ShadowPipeline && ShadowMap;
     OutState.bDoDepthPrepass = bDepthPrepassEnabled && DepthPrepassPipeline;
-    if (!OutState.bDoDepthPrepass)
-    {
-        bHZBReady = false;
-    }
-
     if (!bHZBEnabled)
     {
         bHZBReady = false;
     }
 
-    OutState.bUseHZBOcclusion = bHZBEnabled && bHZBReady && HZBSrvBindlessIndex != UINT32_MAX;
+    const bool bPrevHZBReady = bHZBReady;
+    OutState.bUseHZBOcclusion = bHZBEnabled && bPrevHZBReady && HZBSrvBindlessIndex != UINT32_MAX;
+    OutState.bUseHzbTwoPass = bEnableIndirectDraw && OutState.bUseHZBOcclusion && bEnableHzbTwoPass;
+    if (OutState.bUseHzbTwoPass)
+    {
+        OutState.bDoDepthPrepass = false;
+    }
+    OutState.bBuildHZB = bHZBEnabled;
     OutState.bCasActive = bCasEnabled && CasPipeline && CasRootSignature;
     OutState.LightViewProjection = RendererUtils::BuildDirectionalLightViewProjection(SceneCenter, SceneRadius, LightDirection);
 }
@@ -807,19 +925,39 @@ void FDeferredRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCame
     });
 }
 
-void FDeferredRenderer::AddGpuCullingPass(FRenderGraph& Graph, const FCamera& Camera, const FDeferredFrameState& FrameState, FRGResourceHandle HZBHandle)
+void FDeferredRenderer::AddGpuCullingPass(
+    FRenderGraph& Graph,
+    const FCamera& Camera,
+    const FDeferredFrameState& FrameState,
+    FRGResourceHandle HZBHandle,
+    ECullingMode Mode,
+    uint32_t VisibilityInputIndex,
+    uint32_t VisibilityInputFrameIndex,
+    uint32_t CullingListIndex,
+    uint32_t CullingListCountIndex,
+    const char* PassName)
 {
     struct FGpuCullingPassData
     {
         bool bEnabled = false;
         const FCamera* Camera = nullptr;
+        ECullingMode Mode = ECullingMode::All;
+        uint32_t VisibilityInputIndex = UINT32_MAX;
+        uint32_t VisibilityInputFrameIndex = UINT32_MAX;
+        uint32_t CullingListIndex = UINT32_MAX;
+        uint32_t CullingListCountIndex = UINT32_MAX;
     };
 
-    Graph.AddPass<FGpuCullingPassData>("GPU Culling", [this, &Camera, HZBHandle, FrameState](FGpuCullingPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FGpuCullingPassData>(PassName, [this, &Camera, HZBHandle, FrameState, Mode, VisibilityInputIndex, VisibilityInputFrameIndex, CullingListIndex, CullingListCountIndex](FGpuCullingPassData& Data, FRGPassBuilder& Builder)
     {
         Data.bEnabled = bEnableIndirectDraw && CullingPipeline && CullingRootSignature && GetIndirectCommandBuffer()
             && ModelBoundsBuffer && MeshletConeAxisBuffer && MeshletConeApexBuffer && Device && Device->GetBindlessDescriptorHeap();
         Data.Camera = &Camera;
+        Data.Mode = Mode;
+        Data.VisibilityInputIndex = VisibilityInputIndex;
+        Data.VisibilityInputFrameIndex = VisibilityInputFrameIndex;
+        Data.CullingListIndex = CullingListIndex;
+        Data.CullingListCountIndex = CullingListCountIndex;
         if (Data.bEnabled)
         {
             if (FrameState.bUseHZBOcclusion)
@@ -828,14 +966,187 @@ void FDeferredRenderer::AddGpuCullingPass(FRenderGraph& Graph, const FCamera& Ca
             }
             Builder.KeepAlive();
         }
-    }, [this](const FGpuCullingPassData& Data, FDX12CommandContext& Cmd)
+    }, [this, PassName](const FGpuCullingPassData& Data, FDX12CommandContext& Cmd)
     {
         if (!Data.bEnabled)
         {
             return;
         }
 
-        DispatchGpuCulling(Cmd, *Data.Camera);
+        DispatchGpuCulling(
+            Cmd,
+            *Data.Camera,
+            PassName,
+            Data.Mode,
+            Data.VisibilityInputIndex,
+            Data.VisibilityInputFrameIndex,
+            Data.CullingListIndex,
+            Data.CullingListCountIndex,
+            Data.Mode == ECullingMode::LateAfterEarly);
+    });
+}
+
+void FDeferredRenderer::AddVisibilityListPass(
+    FRenderGraph& Graph,
+    const FDeferredFrameState& FrameState,
+    uint32_t VisibilityIndex,
+    uint32_t VisibilityFrameIndex,
+    uint32_t FrameIndex)
+{
+    struct FVisibilityListPassData
+    {
+        bool bEnabled = false;
+        uint32_t VisibilityIndex = UINT32_MAX;
+        uint32_t VisibilityFrameIndex = UINT32_MAX;
+        uint32_t FrameIndex = 0;
+    };
+
+    Graph.AddPass<FVisibilityListPassData>("Build Prev Visibility Lists", [this, FrameState, VisibilityIndex, VisibilityFrameIndex, FrameIndex](FVisibilityListPassData& Data, FRGPassBuilder& Builder)
+    {
+        Data.bEnabled = FrameState.bUseHzbTwoPass && BuildVisibilityListsPipeline && ClearVisibilityCountsPipeline
+            && VisibilityListRootSignature && Device && Device->GetBindlessDescriptorHeap();
+        Data.VisibilityIndex = VisibilityIndex;
+        Data.VisibilityFrameIndex = VisibilityFrameIndex;
+        Data.FrameIndex = FrameIndex;
+        if (Data.bEnabled)
+        {
+            Builder.KeepAlive();
+        }
+    }, [this](const FVisibilityListPassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        if (Data.VisibilityIndex == UINT32_MAX || Data.FrameIndex >= PrevVisibleListUavBindlessIndices.size())
+        {
+            return;
+        }
+
+        if (PrevVisibleListUavBindlessIndices[Data.FrameIndex] == UINT32_MAX
+            || PrevInvisibleListUavBindlessIndices[Data.FrameIndex] == UINT32_MAX
+            || PrevVisibleCountUavBindlessIndices[Data.FrameIndex] == UINT32_MAX
+            || PrevInvisibleCountUavBindlessIndices[Data.FrameIndex] == UINT32_MAX)
+        {
+            return;
+        }
+
+        DispatchBuildVisibilityLists(
+            Cmd,
+            Data.VisibilityIndex,
+            PrevVisibleListUavBindlessIndices[Data.FrameIndex],
+            PrevInvisibleListUavBindlessIndices[Data.FrameIndex],
+            PrevVisibleCountUavBindlessIndices[Data.FrameIndex],
+            PrevInvisibleCountUavBindlessIndices[Data.FrameIndex],
+            Data.VisibilityFrameIndex,
+            Data.FrameIndex);
+    });
+}
+
+void FDeferredRenderer::AddEarlyRejectListPass(
+    FRenderGraph& Graph,
+    const FDeferredFrameState& FrameState,
+    uint32_t VisibilityIndex,
+    uint32_t FrameIndex)
+{
+    struct FEarlyRejectPassData
+    {
+        bool bEnabled = false;
+        uint32_t VisibilityIndex = UINT32_MAX;
+        uint32_t FrameIndex = 0;
+    };
+
+    Graph.AddPass<FEarlyRejectPassData>("Build Early Reject List", [this, FrameState, VisibilityIndex, FrameIndex](FEarlyRejectPassData& Data, FRGPassBuilder& Builder)
+    {
+        Data.bEnabled = FrameState.bUseHzbTwoPass && BuildEarlyRejectListPipeline && ClearVisibilityCountsPipeline
+            && VisibilityListRootSignature && Device && Device->GetBindlessDescriptorHeap();
+        Data.VisibilityIndex = VisibilityIndex;
+        Data.FrameIndex = FrameIndex;
+        if (Data.bEnabled)
+        {
+            Builder.KeepAlive();
+        }
+    }, [this](const FEarlyRejectPassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        if (Data.VisibilityIndex == UINT32_MAX || Data.FrameIndex >= EarlyRejectListUavBindlessIndices.size())
+        {
+            return;
+        }
+
+        if (EarlyRejectListUavBindlessIndices[Data.FrameIndex] == UINT32_MAX
+            || EarlyRejectCountUavBindlessIndices[Data.FrameIndex] == UINT32_MAX)
+        {
+            return;
+        }
+
+        DispatchBuildEarlyRejectList(
+            Cmd,
+            Data.VisibilityIndex,
+            EarlyRejectListUavBindlessIndices[Data.FrameIndex],
+            EarlyRejectCountUavBindlessIndices[Data.FrameIndex],
+            Data.FrameIndex);
+    });
+}
+
+void FDeferredRenderer::AddLateListMergePass(
+    FRenderGraph& Graph,
+    const FDeferredFrameState& FrameState,
+    uint32_t FrameIndex)
+{
+    struct FMergeListPassData
+    {
+        bool bEnabled = false;
+        uint32_t FrameIndex = 0;
+    };
+
+    Graph.AddPass<FMergeListPassData>("Merge Late Visibility Lists", [this, FrameState, FrameIndex](FMergeListPassData& Data, FRGPassBuilder& Builder)
+    {
+        Data.bEnabled = FrameState.bUseHzbTwoPass && MergeVisibilityListsPipeline && VisibilityListRootSignature
+            && Device && Device->GetBindlessDescriptorHeap();
+        Data.FrameIndex = FrameIndex;
+        if (Data.bEnabled)
+        {
+            Builder.KeepAlive();
+        }
+    }, [this](const FMergeListPassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        if (Data.FrameIndex >= LateListUavBindlessIndices.size() || Data.FrameIndex >= LateListFlagUavBindlessIndices.size())
+        {
+            return;
+        }
+
+        if (PrevInvisibleListSrvBindlessIndices[Data.FrameIndex] == UINT32_MAX
+            || EarlyRejectListSrvBindlessIndices[Data.FrameIndex] == UINT32_MAX
+            || PrevInvisibleCountSrvBindlessIndices[Data.FrameIndex] == UINT32_MAX
+            || EarlyRejectCountSrvBindlessIndices[Data.FrameIndex] == UINT32_MAX
+            || LateListUavBindlessIndices[Data.FrameIndex] == UINT32_MAX
+            || LateListCountUavBindlessIndices[Data.FrameIndex] == UINT32_MAX
+            || LateListFlagUavBindlessIndices[Data.FrameIndex] == UINT32_MAX)
+        {
+            return;
+        }
+
+        DispatchMergeVisibilityLists(
+            Cmd,
+            PrevInvisibleListSrvBindlessIndices[Data.FrameIndex],
+            EarlyRejectListSrvBindlessIndices[Data.FrameIndex],
+            PrevInvisibleCountSrvBindlessIndices[Data.FrameIndex],
+            EarlyRejectCountSrvBindlessIndices[Data.FrameIndex],
+            LateListUavBindlessIndices[Data.FrameIndex],
+            LateListCountUavBindlessIndices[Data.FrameIndex],
+            LateListFlagUavBindlessIndices[Data.FrameIndex],
+            Data.FrameIndex);
     });
 }
 
@@ -1047,17 +1358,36 @@ void FDeferredRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Came
     });
 }
 
-void FDeferredRenderer::AddBasePass(FRenderGraph& Graph, const FCamera& Camera, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle LightingHandle)
+void FDeferredRenderer::AddBasePass(
+    FRenderGraph& Graph,
+    const FCamera& Camera,
+    const FDeferredFrameState& FrameState,
+    const std::array<FRGResourceHandle, 3>& GBufferHandles,
+    FRGResourceHandle DepthHandle,
+    FRGResourceHandle LightingHandle,
+    bool bClearTargets,
+    bool bClearDepth,
+    const char* PassName,
+    bool bAllowSkinningFallback)
 {
+    const std::wstring PassLabel = PassName
+        ? std::wstring(PassName, PassName + std::strlen(PassName))
+        : L"GBuffer";
     struct FBasePassData
     {
         bool bDoDepthPrepass = false;
+        bool bClearTargets = false;
+        bool bClearDepth = false;
+        bool bAllowSkinningFallback = false;
         const FCamera* Camera = nullptr;
     };
 
-    Graph.AddPass<FBasePassData>("GBuffer", [&](FBasePassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FBasePassData>(PassName, [&](FBasePassData& Data, FRGPassBuilder& Builder)
     {
         Data.bDoDepthPrepass = FrameState.bDoDepthPrepass;
+        Data.bClearTargets = bClearTargets;
+        Data.bClearDepth = bClearDepth;
+        Data.bAllowSkinningFallback = bAllowSkinningFallback;
         Data.Camera = &Camera;
 
         for (int i = 0; i < 3; ++i)
@@ -1067,11 +1397,11 @@ void FDeferredRenderer::AddBasePass(FRenderGraph& Graph, const FCamera& Camera, 
 
         Builder.WriteTexture(LightingHandle, D3D12_RESOURCE_STATE_RENDER_TARGET);
         Builder.WriteTexture(DepthHandle, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-    }, [this](const FBasePassData& Data, FDX12CommandContext& Cmd)
+    }, [this, PassLabel](const FBasePassData& Data, FDX12CommandContext& Cmd)
     {
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
 
-        FScopedPixEvent GBufferEvent(LocalCommandList, L"GBuffer");
+        FScopedPixEvent GBufferEvent(LocalCommandList, PassLabel.c_str());
 
         D3D12_CPU_DESCRIPTOR_HANDLE BasePassRTVs[4] =
         {
@@ -1081,19 +1411,22 @@ void FDeferredRenderer::AddBasePass(FRenderGraph& Graph, const FCamera& Camera, 
             LightingRTVHandle
         };
 
-        if (!Data.bDoDepthPrepass)
+        if (Data.bClearDepth)
         {
             Cmd.ClearDepth(GetDSVHandle());
         }
 
-        for (const D3D12_CPU_DESCRIPTOR_HANDLE& Handle : GBufferRTVHandles)
+        if (Data.bClearTargets)
         {
-            const float ClearValue[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
-            Cmd.ClearRenderTarget(Handle, ClearValue);
-        }
+            for (const D3D12_CPU_DESCRIPTOR_HANDLE& Handle : GBufferRTVHandles)
+            {
+                const float ClearValue[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+                Cmd.ClearRenderTarget(Handle, ClearValue);
+            }
 
-        const float SceneClear[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
-        Cmd.ClearRenderTarget(LightingRTVHandle, SceneClear);
+            const float SceneClear[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+            Cmd.ClearRenderTarget(LightingRTVHandle, SceneClear);
+        }
 
         ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
@@ -1150,7 +1483,7 @@ void FDeferredRenderer::AddBasePass(FRenderGraph& Graph, const FCamera& Camera, 
                 }
             }
 
-            if (!bEnableSkinningIndirectDraw)
+            if (!bEnableSkinningIndirectDraw && Data.bAllowSkinningFallback)
             {
                 for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
                 {
@@ -1415,7 +1748,7 @@ void FDeferredRenderer::AddHZBPass(FRenderGraph& Graph, const FDeferredFrameStat
         uint32_t HZBNullUav = UINT32_MAX;
     };
 
-    if (!bHZBEnabled || !FrameState.bDoDepthPrepass)
+    if (!bHZBEnabled || !FrameState.bBuildHZB)
     {
         return;
     }
@@ -4169,6 +4502,12 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     if (!CreateCullingPipelines(Device))
     {
         LogError("Failed to create culling pipelines");
+        return false;
+    }
+
+    if (!CreateVisibilityListPipelines(Device))
+    {
+        LogError("Failed to create visibility list pipelines");
         return false;
     }
 

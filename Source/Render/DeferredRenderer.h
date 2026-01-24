@@ -88,6 +88,8 @@ public:
 
     void SetHZBEnabled(bool bEnabled) { bHZBEnabled = bEnabled; }
     bool IsHZBEnabled() const { return bHZBEnabled; }
+    void SetHzbTwoPassEnabled(bool bEnabled) { bEnableHzbTwoPass = bEnabled; }
+    bool IsHzbTwoPassEnabled() const { return bEnableHzbTwoPass; }
     void SetGtaoEnabled(bool bEnabled) { bGtaoEnabled = bEnabled; }
     bool IsGtaoEnabled() const { return bGtaoEnabled; }
     void SetPbrResearchEnabled(bool bEnabled) { bEnablePbrResearch = bEnabled; }
@@ -105,6 +107,8 @@ private:
         bool bRenderShadows = false;
         bool bDoDepthPrepass = false;
         bool bUseHZBOcclusion = false;
+        bool bUseHzbTwoPass = false;
+        bool bBuildHZB = false;
         bool bCasActive = false;
         bool bGtaoJitterActive = false;
         DirectX::XMMATRIX LightViewProjection = DirectX::XMMatrixIdentity();
@@ -163,11 +167,46 @@ private:
     void PrepareFrameState(const FCamera& Camera, FDeferredFrameState& OutState);
     void ConfigureFrameGraph(FRenderGraph& Graph) const;
     void ImportFrameResources(FRenderGraph& Graph, FDeferredFrameResources& OutResources);
-    void AddGpuCullingPass(FRenderGraph& Graph, const FCamera& Camera, const FDeferredFrameState& FrameState, FRGResourceHandle HZBHandle);
+    void AddGpuCullingPass(
+        FRenderGraph& Graph,
+        const FCamera& Camera,
+        const FDeferredFrameState& FrameState,
+        FRGResourceHandle HZBHandle,
+        FRenderer::ECullingMode Mode,
+        uint32_t VisibilityInputIndex,
+        uint32_t VisibilityInputFrameIndex,
+        uint32_t CullingListIndex,
+        uint32_t CullingListCountIndex,
+        const char* PassName);
+    void AddVisibilityListPass(
+        FRenderGraph& Graph,
+        const FDeferredFrameState& FrameState,
+        uint32_t VisibilityIndex,
+        uint32_t VisibilityFrameIndex,
+        uint32_t FrameIndex);
+    void AddEarlyRejectListPass(
+        FRenderGraph& Graph,
+        const FDeferredFrameState& FrameState,
+        uint32_t VisibilityIndex,
+        uint32_t FrameIndex);
+    void AddLateListMergePass(
+        FRenderGraph& Graph,
+        const FDeferredFrameState& FrameState,
+        uint32_t FrameIndex);
     void AddShadowPass(FRenderGraph& Graph, const FCamera& Camera, const FDeferredFrameState& FrameState, FRGResourceHandle ShadowHandle);
     void AddRayTracingShadowPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle DepthHandle, FRGResourceHandle GBufferHandle, FRGResourceHandle& ShadowMaskHandle);
     void AddDepthPrepass(FRenderGraph& Graph, const FCamera& Camera, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle);
-    void AddBasePass(FRenderGraph& Graph, const FCamera& Camera, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle LightingHandle);
+    void AddBasePass(
+        FRenderGraph& Graph,
+        const FCamera& Camera,
+        const FDeferredFrameState& FrameState,
+        const std::array<FRGResourceHandle, 3>& GBufferHandles,
+        FRGResourceHandle DepthHandle,
+        FRGResourceHandle LightingHandle,
+        bool bClearTargets,
+        bool bClearDepth,
+        const char* PassName,
+        bool bAllowSkinningFallback);
     void AddObjectIdPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle ObjectIdHandle, FRGResourceHandle DepthHandle);
     void AddHZBPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle HZBHandle);
     void AddLinearDepthPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle LinearDepthHandle);
@@ -297,6 +336,7 @@ private:
     bool bLuminanceHistoryValid = false;
     bool bHZBEnabled = true;
     bool bHZBReady = false;
+    bool bEnableHzbTwoPass = true;
     bool bEnablePbrResearch = false;
 
     uint32_t HZBWidth = 0;

@@ -22,6 +22,12 @@ class FCamera;
 class FRenderer
 {
 public:
+    enum class ECullingMode : uint32_t
+    {
+        All = 0,
+        EarlyVisible = 1,
+        LateAfterEarly = 2
+    };
     struct FGpuDebugPrintEntry
     {
         uint32_t X = 0;
@@ -34,6 +40,7 @@ public:
     static constexpr uint32_t GpuDebugPrintHeaderSize = sizeof(uint32_t);
     static constexpr uint32_t GpuDebugPrintEntryStride = sizeof(FGpuDebugPrintEntry);
     static constexpr uint64_t GpuDebugPrintBufferSize = GpuDebugPrintHeaderSize + static_cast<uint64_t>(GpuDebugPrintMaxEntries) * GpuDebugPrintEntryStride;
+    static constexpr uint32_t GpuDebugPrintStatsCount = 5;
 
     virtual ~FRenderer();
 
@@ -56,9 +63,9 @@ public:
     ID3D12Resource* GetSceneConstantBuffer() const;
     D3D12_GPU_VIRTUAL_ADDRESS GetSceneConstantBufferAddress() const;
     uint8_t* GetSceneConstantBufferMapped() const;
-    ID3D12Resource* GetCullingConstantBuffer() const;
-    D3D12_GPU_VIRTUAL_ADDRESS GetCullingConstantBufferAddress() const;
-    uint8_t* GetCullingConstantBufferMapped() const;
+    ID3D12Resource* GetCullingConstantBuffer(bool bLatePass = false) const;
+    D3D12_GPU_VIRTUAL_ADDRESS GetCullingConstantBufferAddress(bool bLatePass = false) const;
+    uint8_t* GetCullingConstantBufferMapped(bool bLatePass = false) const;
     ID3D12Resource* GetIndirectCommandBuffer() const;
     D3D12_RESOURCE_STATES& GetIndirectCommandState();
     ID3D12Resource* GetMeshletRunCountBuffer() const;
@@ -109,7 +116,41 @@ protected:
         Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>& OutShadowDsvHeap,
         D3D12_CPU_DESCRIPTOR_HANDLE& OutShadowDsvHandle,
         D3D12_RESOURCE_STATES& OutShadowState);
-    void DispatchGpuCulling(FDX12CommandContext& CmdContext, const FCamera& Camera);
+    void DispatchGpuCulling(
+        FDX12CommandContext& CmdContext,
+        const FCamera& Camera,
+        const char* PassName,
+        ECullingMode Mode,
+        uint32_t VisibilityInputIndex,
+        uint32_t VisibilityInputFrameIndex,
+        uint32_t CullingListIndex,
+        uint32_t CullingListCountIndex,
+        bool bUseLateVisibility);
+    void DispatchBuildVisibilityLists(
+        FDX12CommandContext& CmdContext,
+        uint32_t VisibilityIndex,
+        uint32_t VisibleListIndex,
+        uint32_t InvisibleListIndex,
+        uint32_t VisibleCountIndex,
+        uint32_t InvisibleCountIndex,
+        uint32_t VisibilityFrameIndex,
+        uint32_t FrameIndex);
+    void DispatchBuildEarlyRejectList(
+        FDX12CommandContext& CmdContext,
+        uint32_t VisibilityIndex,
+        uint32_t RejectListIndex,
+        uint32_t RejectCountIndex,
+        uint32_t FrameIndex);
+    void DispatchMergeVisibilityLists(
+        FDX12CommandContext& CmdContext,
+        uint32_t ListAIndex,
+        uint32_t ListBIndex,
+        uint32_t CountAIndex,
+        uint32_t CountBIndex,
+        uint32_t OutputListIndex,
+        uint32_t OutputCountIndex,
+        uint32_t FlagsIndex,
+        uint32_t FrameIndex);
     void ConfigureHZBOcclusion(bool bEnabled, uint32_t HZBBindlessIndex, uint32_t Width, uint32_t Height, uint32_t MipCount);
     void PrepareGpuDebugPrint(FDX12CommandContext& CmdContext);
     void DispatchGpuDebugPrintStats(FDX12CommandContext& CmdContext);
@@ -126,6 +167,7 @@ protected:
     bool CreateDepthResourcesPerFrame(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT Format);
     bool CreateSceneConstantBuffersPerFrame(FDX12Device* Device, uint64_t BufferSize);
     bool CreateCullingConstantBuffersPerFrame(FDX12Device* Device);
+    bool CreateVisibilityListPipelines(FDX12Device* Device);
 
     // GPU-driven rendering helper methods
 
@@ -158,6 +200,8 @@ protected:
     std::vector<uint8_t*> SceneConstantBufferMapped;
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> CullingConstantBuffers;
     std::vector<uint8_t*> CullingConstantBufferMapped;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> CullingConstantBuffersLate;
+    std::vector<uint8_t*> CullingConstantBufferMappedLate;
     D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilHandle{};
     D3D12_CPU_DESCRIPTOR_HANDLE ShadowDSVHandle{};
     D3D12_CPU_DESCRIPTOR_HANDLE ObjectIdRtvHandle{};
@@ -192,6 +236,16 @@ protected:
     Microsoft::WRL::ComPtr<ID3D12Resource> MeshletRangeOffsetBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> MeshletRangeOffsetUpload;
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> MeshletVisibilityBuffers;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> MeshletVisibilityLateBuffers;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> PrevVisibleListBuffers;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> PrevInvisibleListBuffers;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> EarlyRejectListBuffers;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> LateListBuffers;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> LateListFlagBuffers;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> PrevVisibleCountBuffers;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> PrevInvisibleCountBuffers;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> EarlyRejectCountBuffers;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> LateListCountBuffers;
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> MeshletRunCountBuffers;
     Microsoft::WRL::ComPtr<ID3D12Resource> ModelBoundsBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> ModelBoundsUpload;
@@ -212,7 +266,14 @@ protected:
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> ObjectIdRtvHeap;
     std::unique_ptr<FTextureLoader> TextureLoader;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> CullingRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> VisibilityListRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> CullingPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> CullingListPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> BuildVisibilityListsPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> BuildEarlyRejectListPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> MergeVisibilityListsPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> ClearVisibilityCountsPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> ClearVisibilityFlagsPipeline;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> MeshletRunRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> MeshletRunClearPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> MeshletRunAppendPipeline;
@@ -241,6 +302,26 @@ protected:
     std::vector<uint32_t> IndirectCommandTemplateBindlessIndices;
     std::vector<uint32_t> MeshletVisibilitySrvBindlessIndices;
     std::vector<uint32_t> MeshletVisibilityUavBindlessIndices;
+    std::vector<uint32_t> MeshletVisibilityLateSrvBindlessIndices;
+    std::vector<uint32_t> MeshletVisibilityLateUavBindlessIndices;
+    std::vector<uint32_t> PrevVisibleListSrvBindlessIndices;
+    std::vector<uint32_t> PrevVisibleListUavBindlessIndices;
+    std::vector<uint32_t> PrevInvisibleListSrvBindlessIndices;
+    std::vector<uint32_t> PrevInvisibleListUavBindlessIndices;
+    std::vector<uint32_t> EarlyRejectListSrvBindlessIndices;
+    std::vector<uint32_t> EarlyRejectListUavBindlessIndices;
+    std::vector<uint32_t> LateListSrvBindlessIndices;
+    std::vector<uint32_t> LateListUavBindlessIndices;
+    std::vector<uint32_t> LateListFlagSrvBindlessIndices;
+    std::vector<uint32_t> LateListFlagUavBindlessIndices;
+    std::vector<uint32_t> PrevVisibleCountSrvBindlessIndices;
+    std::vector<uint32_t> PrevVisibleCountUavBindlessIndices;
+    std::vector<uint32_t> PrevInvisibleCountSrvBindlessIndices;
+    std::vector<uint32_t> PrevInvisibleCountUavBindlessIndices;
+    std::vector<uint32_t> EarlyRejectCountSrvBindlessIndices;
+    std::vector<uint32_t> EarlyRejectCountUavBindlessIndices;
+    std::vector<uint32_t> LateListCountSrvBindlessIndices;
+    std::vector<uint32_t> LateListCountUavBindlessIndices;
     std::vector<uint32_t> MeshletRunCountUavBindlessIndices;
     uint32_t GpuDebugPrintAtlasWidth = 0;
     uint32_t GpuDebugPrintAtlasHeight = 0;
@@ -257,6 +338,16 @@ protected:
     D3D12_RESOURCE_STATES ObjectIdState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     std::vector<D3D12_RESOURCE_STATES> IndirectCommandStates;
     std::vector<D3D12_RESOURCE_STATES> MeshletVisibilityStates;
+    std::vector<D3D12_RESOURCE_STATES> MeshletVisibilityLateStates;
+    std::vector<D3D12_RESOURCE_STATES> PrevVisibleListStates;
+    std::vector<D3D12_RESOURCE_STATES> PrevInvisibleListStates;
+    std::vector<D3D12_RESOURCE_STATES> EarlyRejectListStates;
+    std::vector<D3D12_RESOURCE_STATES> LateListStates;
+    std::vector<D3D12_RESOURCE_STATES> LateListFlagStates;
+    std::vector<D3D12_RESOURCE_STATES> PrevVisibleCountStates;
+    std::vector<D3D12_RESOURCE_STATES> PrevInvisibleCountStates;
+    std::vector<D3D12_RESOURCE_STATES> EarlyRejectCountStates;
+    std::vector<D3D12_RESOURCE_STATES> LateListCountStates;
     std::vector<D3D12_RESOURCE_STATES> MeshletRunCountStates;
     FRayTracingDevice RayTracingDevice;
     FRayTracingPipelineState RayTracingPipeline;

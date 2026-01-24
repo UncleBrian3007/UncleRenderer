@@ -9,7 +9,7 @@ cbuffer CullingConstants : register(b0)
     uint HZBHeight;
     uint DebugPrintEnabled;
     uint RangeCount;
-    uint Padding0;
+    uint CullingMode;
     float3 CameraPosition;
     float Padding1;
 };

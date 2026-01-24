@@ -443,5 +443,29 @@
     <None Include="Shaders\SkinningCS.hlsl">
       <Filter>Shaders</Filter>
     </None>
+    <None Include="Shaders\BuildEarlyRejectList.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\BuildVisibilityLists.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\ClearVisibilityCounts.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\ClearVisibilityFlags.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\CullingConstants.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\CullMeshletCommon.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\CullMeshletVisibilityList.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\MergeVisibilityLists.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
   </ItemGroup>
 </Project>

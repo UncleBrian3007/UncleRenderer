@@ -491,7 +491,8 @@ void FForwardRenderer::AddGpuCullingPass(FRenderGraph& Graph, const FCamera& Cam
         const FCamera* Camera = nullptr;
     };
 
-    Graph.AddPass<FGpuCullingPassData>("GPU Culling", [this, &Camera, DepthHandle](FGpuCullingPassData& Data, FRGPassBuilder& Builder)
+    const char* PassName = "GPU Culling";
+    Graph.AddPass<FGpuCullingPassData>(PassName, [this, &Camera, DepthHandle](FGpuCullingPassData& Data, FRGPassBuilder& Builder)
     {
         Data.bEnabled = bEnableIndirectDraw && CullingPipeline && CullingRootSignature && GetIndirectCommandBuffer()
             && ModelBoundsBuffer && MeshletConeAxisBuffer && MeshletConeApexBuffer && Device && Device->GetBindlessDescriptorHeap();
@@ -500,14 +501,14 @@ void FForwardRenderer::AddGpuCullingPass(FRenderGraph& Graph, const FCamera& Cam
         {
             Builder.KeepAlive();
         }
-    }, [this](const FGpuCullingPassData& Data, FDX12CommandContext& Cmd)
+    }, [this, PassName](const FGpuCullingPassData& Data, FDX12CommandContext& Cmd)
     {
         if (!Data.bEnabled)
         {
             return;
         }
 
-        DispatchGpuCulling(Cmd, *Data.Camera);
+        DispatchGpuCulling(Cmd, *Data.Camera, PassName, ECullingMode::All, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, false);
     });
 }
 
@@ -1644,6 +1645,12 @@ bool FForwardRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     if (!CreateCullingPipelines(Device))
     {
         LogError("Failed to create culling pipelines");
+        return false;
+    }
+
+    if (!CreateVisibilityListPipelines(Device))
+    {
+        LogError("Failed to create visibility list pipelines");
         return false;
     }
 
