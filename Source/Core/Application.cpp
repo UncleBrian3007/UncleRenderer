@@ -30,6 +30,7 @@
 #include <array>
 #include <chrono>
 #include <cwchar>
+#include <d3dx12.h>
 
 extern "C"
 {
@@ -381,19 +382,8 @@ bool FApplication::RenderFrame()
             HR_CHECK(D3DDevice->CreateQueryHeap(&HeapDesc, IID_PPV_ARGS(FrameTimingQueryHeap.GetAddressOf())));
 
             const UINT64 ReadbackSize = static_cast<UINT64>(QueryCount) * sizeof(uint64);
-            D3D12_HEAP_PROPERTIES HeapProps = {};
-            HeapProps.Type = D3D12_HEAP_TYPE_READBACK;
-
-            D3D12_RESOURCE_DESC BufferDesc = {};
-            BufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-            BufferDesc.Width = ReadbackSize;
-            BufferDesc.Height = 1;
-            BufferDesc.DepthOrArraySize = 1;
-            BufferDesc.MipLevels = 1;
-            BufferDesc.Format = DXGI_FORMAT_UNKNOWN;
-            BufferDesc.SampleDesc.Count = 1;
-            BufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
+            CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_READBACK);
+            CD3DX12_RESOURCE_DESC BufferDesc = CD3DX12_RESOURCE_DESC::Buffer(ReadbackSize);
             HR_CHECK(D3DDevice->CreateCommittedResource(
                 &HeapProps,
                 D3D12_HEAP_FLAG_NONE,

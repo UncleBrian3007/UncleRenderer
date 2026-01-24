@@ -23,6 +23,7 @@
 #include <filesystem>
 #include <cmath>
 #include <limits>
+#include <d3dx12.h>
 
 using Microsoft::WRL::ComPtr;
 
@@ -1305,18 +1306,8 @@ bool RendererUtils::CreateObjectIdResources(
     OutFootprint.Footprint.Depth = 1;
     OutFootprint.Footprint.RowPitch = OutRowPitch;
 
-    D3D12_RESOURCE_DESC BufferDesc = {};
-    BufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    BufferDesc.Width = OutRowPitch;
-    BufferDesc.Height = 1;
-    BufferDesc.DepthOrArraySize = 1;
-    BufferDesc.MipLevels = 1;
-    BufferDesc.Format = DXGI_FORMAT_UNKNOWN;
-    BufferDesc.SampleDesc.Count = 1;
-    BufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-    D3D12_HEAP_PROPERTIES ReadbackProps = {};
-    ReadbackProps.Type = D3D12_HEAP_TYPE_READBACK;
+    CD3DX12_RESOURCE_DESC BufferDesc = CD3DX12_RESOURCE_DESC::Buffer(OutRowPitch);
+    CD3DX12_HEAP_PROPERTIES ReadbackProps(D3D12_HEAP_TYPE_READBACK);
     HR_CHECK(Device->GetDevice()->CreateCommittedResource(
         &ReadbackProps,
         D3D12_HEAP_FLAG_NONE,
@@ -1574,20 +1565,8 @@ bool RendererUtils::CreateMappedConstantBuffer(FDX12Device* Device, uint64_t Buf
 
     const uint64_t ConstantBufferSize = (BufferSize + 255ULL) & ~255ULL;
 
-    D3D12_HEAP_PROPERTIES UploadHeap = {};
-    UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
-    UploadHeap.CreationNodeMask = 1;
-    UploadHeap.VisibleNodeMask = 1;
-
-    D3D12_RESOURCE_DESC BufferDesc = {};
-    BufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    BufferDesc.Width = ConstantBufferSize;
-    BufferDesc.Height = 1;
-    BufferDesc.DepthOrArraySize = 1;
-    BufferDesc.MipLevels = 1;
-    BufferDesc.Format = DXGI_FORMAT_UNKNOWN;
-    BufferDesc.SampleDesc.Count = 1;
-    BufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    CD3DX12_HEAP_PROPERTIES UploadHeap(D3D12_HEAP_TYPE_UPLOAD);
+    CD3DX12_RESOURCE_DESC BufferDesc = CD3DX12_RESOURCE_DESC::Buffer(ConstantBufferSize);
 
     HR_CHECK(Device->GetDevice()->CreateCommittedResource(
         &UploadHeap,

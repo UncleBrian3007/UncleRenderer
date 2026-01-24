@@ -12,6 +12,7 @@
 #include "../Core/GpuDebugMarkers.h"
 #include "../Core/Logger.h"
 #include "../Core/RendererConfig.h"
+#include <d3dx12.h>
 #include <array>
 #include <algorithm>
 #include <cstring>
@@ -445,28 +446,23 @@ bool FRenderer::CreateShadowResources(
         InOutHeight = 4096;
     }
 
-    D3D12_RESOURCE_DESC Desc = {};
-    Desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    Desc.Alignment = 0;
-    Desc.Width = InOutWidth;
-    Desc.Height = InOutHeight;
-    Desc.DepthOrArraySize = 1;
-    Desc.MipLevels = 1;
-    Desc.Format = DXGI_FORMAT_R32_TYPELESS;
-    Desc.SampleDesc.Count = 1;
-    Desc.SampleDesc.Quality = 0;
-    Desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    Desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+    CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
+        DXGI_FORMAT_R32_TYPELESS,
+        InOutWidth,
+        InOutHeight,
+        /*arraySize*/ 1,
+        /*mipLevels*/ 1,
+        /*sampleCount*/ 1,
+        /*sampleQuality*/ 0,
+        D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
+        D3D12_TEXTURE_LAYOUT_UNKNOWN);
 
     D3D12_CLEAR_VALUE ClearValue = {};
     ClearValue.Format = DXGI_FORMAT_D32_FLOAT;
     ClearValue.DepthStencil.Depth = 1.0f;
     ClearValue.DepthStencil.Stencil = 0;
 
-    D3D12_HEAP_PROPERTIES HeapProps = {};
-    HeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
-    HeapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-    HeapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
     HeapProps.CreationNodeMask = 1;
     HeapProps.VisibleNodeMask = 1;
 
@@ -1665,17 +1661,8 @@ bool FRenderer::CreateRayTracingPipeline(FDX12Device* Device)
     RayTracingShaderRecordSize = AlignShaderRecordSize(D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
     RayTracingShaderTableSize = RayTracingShaderRecordSize * 3;
 
-    D3D12_HEAP_PROPERTIES UploadHeap = {};
-    UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
-
-    D3D12_RESOURCE_DESC TableDesc = {};
-    TableDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    TableDesc.Width = RayTracingShaderTableSize;
-    TableDesc.Height = 1;
-    TableDesc.DepthOrArraySize = 1;
-    TableDesc.MipLevels = 1;
-    TableDesc.SampleDesc.Count = 1;
-    TableDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    CD3DX12_HEAP_PROPERTIES UploadHeap(D3D12_HEAP_TYPE_UPLOAD);
+    CD3DX12_RESOURCE_DESC TableDesc = CD3DX12_RESOURCE_DESC::Buffer(RayTracingShaderTableSize);
 
     HR_CHECK(Device->GetDevice()->CreateCommittedResource(
         &UploadHeap,
@@ -1749,21 +1736,8 @@ bool FRenderer::CreateSkinnedPositionBuffers()
         Model.SkinnedPositionUavBindlessIndices.assign(FramesInFlight, UINT32_MAX);
         Model.SkinnedPositionStates.assign(FramesInFlight, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
-        D3D12_HEAP_PROPERTIES DefaultHeap = {};
-        DefaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
-        DefaultHeap.CreationNodeMask = 1;
-        DefaultHeap.VisibleNodeMask = 1;
-
-        D3D12_RESOURCE_DESC BufferDesc = {};
-        BufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        BufferDesc.Width = BufferSize;
-        BufferDesc.Height = 1;
-        BufferDesc.DepthOrArraySize = 1;
-        BufferDesc.MipLevels = 1;
-        BufferDesc.Format = DXGI_FORMAT_UNKNOWN;
-        BufferDesc.SampleDesc.Count = 1;
-        BufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-        BufferDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+        CD3DX12_HEAP_PROPERTIES DefaultHeap(D3D12_HEAP_TYPE_DEFAULT);
+        CD3DX12_RESOURCE_DESC BufferDesc = CD3DX12_RESOURCE_DESC::Buffer(BufferSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 
         const auto CreateStructuredBufferSrv = [&](ID3D12Resource* Buffer, uint32_t Stride)
         {
@@ -1771,7 +1745,7 @@ bool FRenderer::CreateSkinnedPositionBuffers()
             {
                 return UINT32_MAX;
             }
-            const D3D12_RESOURCE_DESC BufferDescLocal = Buffer->GetDesc();
+        const D3D12_RESOURCE_DESC BufferDescLocal = Buffer->GetDesc();
             const uint64_t ElementCount = BufferDescLocal.Width / Stride;
             if (ElementCount == 0)
             {
@@ -1794,7 +1768,7 @@ bool FRenderer::CreateSkinnedPositionBuffers()
             {
                 return UINT32_MAX;
             }
-            const D3D12_RESOURCE_DESC BufferDescLocal = Buffer->GetDesc();
+        const D3D12_RESOURCE_DESC BufferDescLocal = Buffer->GetDesc();
             const uint64_t ElementCount = BufferDescLocal.Width / Stride;
             if (ElementCount == 0)
             {
@@ -2169,17 +2143,8 @@ void FRenderer::BuildRayTracingTlas(FDX12CommandContext& CmdContext)
     const uint64_t InstanceBufferSize = sizeof(D3D12_RAYTRACING_INSTANCE_DESC) * TlasInstanceCapacity;
     if (!TlasInstanceBuffers[FrameIndex] || TlasInstanceBuffers[FrameIndex]->GetDesc().Width < InstanceBufferSize)
     {
-        D3D12_HEAP_PROPERTIES UploadHeap = {};
-        UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
-
-        D3D12_RESOURCE_DESC InstanceBufferDesc = {};
-        InstanceBufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        InstanceBufferDesc.Width = InstanceBufferSize;
-        InstanceBufferDesc.Height = 1;
-        InstanceBufferDesc.DepthOrArraySize = 1;
-        InstanceBufferDesc.MipLevels = 1;
-        InstanceBufferDesc.SampleDesc.Count = 1;
-        InstanceBufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        CD3DX12_HEAP_PROPERTIES UploadHeap(D3D12_HEAP_TYPE_UPLOAD);
+        CD3DX12_RESOURCE_DESC InstanceBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(InstanceBufferSize);
 
         HR_CHECK(Device->GetDevice()->CreateCommittedResource(
             &UploadHeap,
@@ -2220,18 +2185,8 @@ void FRenderer::BuildRayTracingTlas(FDX12CommandContext& CmdContext)
             return;
         }
 
-        D3D12_HEAP_PROPERTIES HeapProps = {};
-        HeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
-
-        D3D12_RESOURCE_DESC Desc = {};
-        Desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        Desc.Width = Size;
-        Desc.Height = 1;
-        Desc.DepthOrArraySize = 1;
-        Desc.MipLevels = 1;
-        Desc.SampleDesc.Count = 1;
-        Desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-        Desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+        CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
+        CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Buffer(Size, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 
         HR_CHECK(Device->GetDevice()->CreateCommittedResource(
             &HeapProps,
@@ -2573,137 +2528,125 @@ bool FRenderer::CreatePerFrameIndirectBuffers(FDX12Device* Device, const FGpuDri
 
     const uint64_t CommandBufferSize = sizeof(FIndirectDrawCommand) * Data.Commands.size();
 
-    D3D12_HEAP_PROPERTIES UploadHeap = {};
-    UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
-    UploadHeap.CreationNodeMask = 1;
-    UploadHeap.VisibleNodeMask = 1;
-
-    D3D12_HEAP_PROPERTIES DefaultHeap = {};
-    DefaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
-    DefaultHeap.CreationNodeMask = 1;
-    DefaultHeap.VisibleNodeMask = 1;
-
-    D3D12_RESOURCE_DESC BufferDesc = {};
-    BufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    BufferDesc.Width = CommandBufferSize;
-    BufferDesc.Height = 1;
-    BufferDesc.DepthOrArraySize = 1;
-    BufferDesc.MipLevels = 1;
-    BufferDesc.Format = DXGI_FORMAT_UNKNOWN;
-    BufferDesc.SampleDesc.Count = 1;
-    BufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    BufferDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-
-    D3D12_RESOURCE_DESC UploadDesc = BufferDesc;
-    UploadDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
-
-    D3D12_RESOURCE_DESC TemplateDesc = BufferDesc;
-    TemplateDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+    CD3DX12_HEAP_PROPERTIES DefaultHeap(D3D12_HEAP_TYPE_DEFAULT);
+    CD3DX12_RESOURCE_DESC BufferDesc = CD3DX12_RESOURCE_DESC::Buffer(CommandBufferSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+    CD3DX12_RESOURCE_DESC TemplateDesc = CD3DX12_RESOURCE_DESC::Buffer(CommandBufferSize);
 
     const D3D12_RANGE EmptyRange = { 0, 0 };
 
-    IndirectCommandBuffers.clear();
-    IndirectCommandTemplateBuffers.clear();
+    const uint32_t Frames = GetFramesInFlight();
+
+    const auto ClearAndResize = [&](auto& Container) { Container.clear(); Container.resize(Frames); };
+    const auto ClearAndAssignState = [&](auto& Container, D3D12_RESOURCE_STATES State)
+    {
+        Container.clear();
+        Container.resize(Frames, State);
+    };
+    const auto ClearAndAssignIndex = [&](auto& Container)
+    {
+        Container.clear();
+        Container.resize(Frames, UINT32_MAX);
+    };
+
+    ClearAndResize(IndirectCommandBuffers);
+    ClearAndResize(IndirectCommandTemplateBuffers);
     IndirectCommandStates.clear();
-    MeshletVisibilityBuffers.clear();
-    MeshletVisibilityLateBuffers.clear();
-    PrevVisibleListBuffers.clear();
-    PrevInvisibleListBuffers.clear();
-    EarlyRejectListBuffers.clear();
-    LateListBuffers.clear();
-    LateListFlagBuffers.clear();
-    PrevVisibleCountBuffers.clear();
-    PrevInvisibleCountBuffers.clear();
-    EarlyRejectCountBuffers.clear();
-    LateListCountBuffers.clear();
-    MeshletRunCountBuffers.clear();
-    MeshletVisibilityStates.clear();
-    PrevVisibleListStates.clear();
-    PrevInvisibleListStates.clear();
-    EarlyRejectListStates.clear();
-    LateListStates.clear();
-    PrevVisibleCountStates.clear();
-    PrevInvisibleCountStates.clear();
-    EarlyRejectCountStates.clear();
-    LateListCountStates.clear();
-    MeshletRunCountStates.clear();
-    IndirectCommandBuffers.resize(GetFramesInFlight());
-    IndirectCommandTemplateBuffers.resize(GetFramesInFlight());
-    IndirectCommandStates.resize(GetFramesInFlight(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
-    MeshletVisibilityBuffers.resize(GetFramesInFlight());
-    MeshletVisibilityLateBuffers.resize(GetFramesInFlight());
-    PrevVisibleListBuffers.resize(GetFramesInFlight());
-    PrevInvisibleListBuffers.resize(GetFramesInFlight());
-    EarlyRejectListBuffers.resize(GetFramesInFlight());
-    LateListBuffers.resize(GetFramesInFlight());
-    LateListFlagBuffers.resize(GetFramesInFlight());
-    PrevVisibleCountBuffers.resize(GetFramesInFlight());
-    PrevInvisibleCountBuffers.resize(GetFramesInFlight());
-    EarlyRejectCountBuffers.resize(GetFramesInFlight());
-    LateListCountBuffers.resize(GetFramesInFlight());
-    MeshletRunCountBuffers.resize(GetFramesInFlight());
-    MeshletVisibilityStates.resize(GetFramesInFlight(), D3D12_RESOURCE_STATE_COMMON);
-    MeshletVisibilityLateStates.resize(GetFramesInFlight(), D3D12_RESOURCE_STATE_COMMON);
-    PrevVisibleListStates.resize(GetFramesInFlight(), D3D12_RESOURCE_STATE_COMMON);
-    PrevInvisibleListStates.resize(GetFramesInFlight(), D3D12_RESOURCE_STATE_COMMON);
-    EarlyRejectListStates.resize(GetFramesInFlight(), D3D12_RESOURCE_STATE_COMMON);
-    LateListStates.resize(GetFramesInFlight(), D3D12_RESOURCE_STATE_COMMON);
-    LateListFlagStates.resize(GetFramesInFlight(), D3D12_RESOURCE_STATE_COMMON);
-    PrevVisibleCountStates.resize(GetFramesInFlight(), D3D12_RESOURCE_STATE_COMMON);
-    PrevInvisibleCountStates.resize(GetFramesInFlight(), D3D12_RESOURCE_STATE_COMMON);
-    EarlyRejectCountStates.resize(GetFramesInFlight(), D3D12_RESOURCE_STATE_COMMON);
-    LateListCountStates.resize(GetFramesInFlight(), D3D12_RESOURCE_STATE_COMMON);
-    MeshletRunCountStates.resize(GetFramesInFlight(), D3D12_RESOURCE_STATE_COMMON);
-    IndirectCommandUavBindlessIndices.clear();
-    IndirectCommandTemplateBindlessIndices.clear();
-    MeshletVisibilitySrvBindlessIndices.clear();
-    MeshletVisibilityUavBindlessIndices.clear();
-    MeshletVisibilityLateSrvBindlessIndices.clear();
-    MeshletVisibilityLateUavBindlessIndices.clear();
-    PrevVisibleListSrvBindlessIndices.clear();
-    PrevVisibleListUavBindlessIndices.clear();
-    PrevInvisibleListSrvBindlessIndices.clear();
-    PrevInvisibleListUavBindlessIndices.clear();
-    EarlyRejectListSrvBindlessIndices.clear();
-    EarlyRejectListUavBindlessIndices.clear();
-    LateListSrvBindlessIndices.clear();
-    LateListUavBindlessIndices.clear();
-    LateListFlagSrvBindlessIndices.clear();
-    LateListFlagUavBindlessIndices.clear();
-    PrevVisibleCountSrvBindlessIndices.clear();
-    PrevVisibleCountUavBindlessIndices.clear();
-    PrevInvisibleCountSrvBindlessIndices.clear();
-    PrevInvisibleCountUavBindlessIndices.clear();
-    EarlyRejectCountSrvBindlessIndices.clear();
-    EarlyRejectCountUavBindlessIndices.clear();
-    LateListCountSrvBindlessIndices.clear();
-    LateListCountUavBindlessIndices.clear();
-    MeshletRunCountUavBindlessIndices.clear();
-    IndirectCommandUavBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
-    IndirectCommandTemplateBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
-    MeshletVisibilitySrvBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
-    MeshletVisibilityUavBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
-    MeshletVisibilityLateSrvBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
-    MeshletVisibilityLateUavBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
-    PrevVisibleListSrvBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
-    PrevVisibleListUavBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
-    PrevInvisibleListSrvBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
-    PrevInvisibleListUavBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
-    EarlyRejectListSrvBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
-    EarlyRejectListUavBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
-    LateListSrvBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
-    LateListUavBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
-    LateListFlagSrvBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
-    LateListFlagUavBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
-    PrevVisibleCountSrvBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
-    PrevVisibleCountUavBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
-    PrevInvisibleCountSrvBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
-    PrevInvisibleCountUavBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
-    EarlyRejectCountSrvBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
-    EarlyRejectCountUavBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
-    LateListCountSrvBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
-    LateListCountUavBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
-    MeshletRunCountUavBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
+    IndirectCommandStates.resize(Frames, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
+    ClearAndResize(MeshletVisibilityBuffers);
+    ClearAndResize(MeshletVisibilityLateBuffers);
+    ClearAndResize(PrevVisibleListBuffers);
+    ClearAndResize(PrevInvisibleListBuffers);
+    ClearAndResize(EarlyRejectListBuffers);
+    ClearAndResize(LateListBuffers);
+    ClearAndResize(LateListFlagBuffers);
+    ClearAndResize(PrevVisibleCountBuffers);
+    ClearAndResize(PrevInvisibleCountBuffers);
+    ClearAndResize(EarlyRejectCountBuffers);
+    ClearAndResize(LateListCountBuffers);
+    ClearAndResize(MeshletRunCountBuffers);
+
+    ClearAndAssignState(MeshletVisibilityStates, D3D12_RESOURCE_STATE_COMMON);
+    ClearAndAssignState(MeshletVisibilityLateStates, D3D12_RESOURCE_STATE_COMMON);
+    ClearAndAssignState(PrevVisibleListStates, D3D12_RESOURCE_STATE_COMMON);
+    ClearAndAssignState(PrevInvisibleListStates, D3D12_RESOURCE_STATE_COMMON);
+    ClearAndAssignState(EarlyRejectListStates, D3D12_RESOURCE_STATE_COMMON);
+    ClearAndAssignState(LateListStates, D3D12_RESOURCE_STATE_COMMON);
+    ClearAndAssignState(LateListFlagStates, D3D12_RESOURCE_STATE_COMMON);
+    ClearAndAssignState(PrevVisibleCountStates, D3D12_RESOURCE_STATE_COMMON);
+    ClearAndAssignState(PrevInvisibleCountStates, D3D12_RESOURCE_STATE_COMMON);
+    ClearAndAssignState(EarlyRejectCountStates, D3D12_RESOURCE_STATE_COMMON);
+    ClearAndAssignState(LateListCountStates, D3D12_RESOURCE_STATE_COMMON);
+    ClearAndAssignState(MeshletRunCountStates, D3D12_RESOURCE_STATE_COMMON);
+
+    ClearAndAssignIndex(IndirectCommandUavBindlessIndices);
+    ClearAndAssignIndex(IndirectCommandTemplateBindlessIndices);
+    ClearAndAssignIndex(MeshletVisibilitySrvBindlessIndices);
+    ClearAndAssignIndex(MeshletVisibilityUavBindlessIndices);
+    ClearAndAssignIndex(MeshletVisibilityLateSrvBindlessIndices);
+    ClearAndAssignIndex(MeshletVisibilityLateUavBindlessIndices);
+    ClearAndAssignIndex(PrevVisibleListSrvBindlessIndices);
+    ClearAndAssignIndex(PrevVisibleListUavBindlessIndices);
+    ClearAndAssignIndex(PrevInvisibleListSrvBindlessIndices);
+    ClearAndAssignIndex(PrevInvisibleListUavBindlessIndices);
+    ClearAndAssignIndex(EarlyRejectListSrvBindlessIndices);
+    ClearAndAssignIndex(EarlyRejectListUavBindlessIndices);
+    ClearAndAssignIndex(LateListSrvBindlessIndices);
+    ClearAndAssignIndex(LateListUavBindlessIndices);
+    ClearAndAssignIndex(LateListFlagSrvBindlessIndices);
+    ClearAndAssignIndex(LateListFlagUavBindlessIndices);
+    ClearAndAssignIndex(PrevVisibleCountSrvBindlessIndices);
+    ClearAndAssignIndex(PrevVisibleCountUavBindlessIndices);
+    ClearAndAssignIndex(PrevInvisibleCountSrvBindlessIndices);
+    ClearAndAssignIndex(PrevInvisibleCountUavBindlessIndices);
+    ClearAndAssignIndex(EarlyRejectCountSrvBindlessIndices);
+    ClearAndAssignIndex(EarlyRejectCountUavBindlessIndices);
+    ClearAndAssignIndex(LateListCountSrvBindlessIndices);
+    ClearAndAssignIndex(LateListCountUavBindlessIndices);
+    ClearAndAssignIndex(MeshletRunCountUavBindlessIndices);
+
+    const auto CreateBufferWithViews = [&](uint32_t FrameIndex,
+        const std::wstring& BaseName,
+        const D3D12_RESOURCE_DESC& Desc,
+        DXGI_FORMAT SrvFormat,
+        uint32_t NumElements,
+        uint32_t StructureStride,
+        std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>& Buffers,
+        std::vector<uint32_t>& SrvIndices,
+        std::vector<uint32_t>& UavIndices)
+    {
+        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+            &DefaultHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &Desc,
+            D3D12_RESOURCE_STATE_COMMON,
+            nullptr,
+            IID_PPV_ARGS(Buffers[FrameIndex].GetAddressOf())));
+        if (Buffers[FrameIndex])
+        {
+            const std::wstring FullName = BaseName + L"_Frame" + std::to_wstring(FrameIndex);
+            Buffers[FrameIndex]->SetName(FullName.c_str());
+        }
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc = {};
+        SrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        SrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        SrvDesc.Format = SrvFormat;
+        SrvDesc.Buffer.FirstElement = 0;
+        SrvDesc.Buffer.NumElements = NumElements;
+        SrvDesc.Buffer.StructureByteStride = StructureStride;
+        SrvDesc.Buffer.Flags = (StructureStride == 0) ? D3D12_BUFFER_SRV_FLAG_RAW : D3D12_BUFFER_SRV_FLAG_NONE;
+        SrvIndices[FrameIndex] = Device->CreateBindlessSrv(Buffers[FrameIndex].Get(), SrvDesc);
+
+        D3D12_UNORDERED_ACCESS_VIEW_DESC UavDesc = {};
+        UavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        UavDesc.Format = SrvFormat;
+        UavDesc.Buffer.FirstElement = 0;
+        UavDesc.Buffer.NumElements = NumElements;
+        UavDesc.Buffer.StructureByteStride = StructureStride;
+        UavDesc.Buffer.CounterOffsetInBytes = 0;
+        UavDesc.Buffer.Flags = (StructureStride == 0) ? D3D12_BUFFER_UAV_FLAG_RAW : D3D12_BUFFER_UAV_FLAG_NONE;
+        UavIndices[FrameIndex] = Device->CreateBindlessUav(Buffers[FrameIndex].Get(), nullptr, UavDesc);
+    };
 
     for (uint32_t FrameIndex = 0; FrameIndex < GetFramesInFlight(); ++FrameIndex)
     {
@@ -2748,145 +2691,27 @@ bool FRenderer::CreatePerFrameIndirectBuffers(FDX12Device* Device, const FGpuDri
         TemplateSrvDesc.Buffer.FirstElement = 0;
         TemplateSrvDesc.Buffer.NumElements = static_cast<UINT>(CommandBufferSize / 4);
         TemplateSrvDesc.Buffer.StructureByteStride = 0;
-        TemplateSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
-        IndirectCommandTemplateBindlessIndices[FrameIndex] = Device->CreateBindlessSrv(IndirectCommandTemplateBuffers[FrameIndex].Get(), TemplateSrvDesc);
+            TemplateSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+            IndirectCommandTemplateBindlessIndices[FrameIndex] = Device->CreateBindlessSrv(IndirectCommandTemplateBuffers[FrameIndex].Get(), TemplateSrvDesc);
 
         D3D12_RESOURCE_DESC VisibilityDesc = BufferDesc;
         VisibilityDesc.Width = sizeof(uint32_t) * IndirectCommandCount;
         VisibilityDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-        auto CreateVisibilityBuffer = [&](const std::wstring& Name,
-            std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>& Buffers,
-            std::vector<uint32_t>& SrvIndices,
-            std::vector<uint32_t>& UavIndices)
-        {
-            HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-                &DefaultHeap,
-                D3D12_HEAP_FLAG_NONE,
-                &VisibilityDesc,
-                D3D12_RESOURCE_STATE_COMMON,
-                nullptr,
-                IID_PPV_ARGS(Buffers[FrameIndex].GetAddressOf())));
-            if (Buffers[FrameIndex])
-            {
-                const std::wstring FullName = Name + L"_Frame" + std::to_wstring(FrameIndex);
-                Buffers[FrameIndex]->SetName(FullName.c_str());
-            }
+        CreateBufferWithViews(FrameIndex, L"MeshletVisibilityBuffer", VisibilityDesc, DXGI_FORMAT_UNKNOWN, IndirectCommandCount, sizeof(uint32_t), MeshletVisibilityBuffers, MeshletVisibilitySrvBindlessIndices, MeshletVisibilityUavBindlessIndices);
+        CreateBufferWithViews(FrameIndex, L"MeshletVisibilityLateBuffer", VisibilityDesc, DXGI_FORMAT_UNKNOWN, IndirectCommandCount, sizeof(uint32_t), MeshletVisibilityLateBuffers, MeshletVisibilityLateSrvBindlessIndices, MeshletVisibilityLateUavBindlessIndices);
+        CreateBufferWithViews(FrameIndex, L"PrevVisibleList", VisibilityDesc, DXGI_FORMAT_UNKNOWN, IndirectCommandCount, sizeof(uint32_t), PrevVisibleListBuffers, PrevVisibleListSrvBindlessIndices, PrevVisibleListUavBindlessIndices);
+        CreateBufferWithViews(FrameIndex, L"PrevInvisibleList", VisibilityDesc, DXGI_FORMAT_UNKNOWN, IndirectCommandCount, sizeof(uint32_t), PrevInvisibleListBuffers, PrevInvisibleListSrvBindlessIndices, PrevInvisibleListUavBindlessIndices);
+        CreateBufferWithViews(FrameIndex, L"EarlyRejectList", VisibilityDesc, DXGI_FORMAT_UNKNOWN, IndirectCommandCount, sizeof(uint32_t), EarlyRejectListBuffers, EarlyRejectListSrvBindlessIndices, EarlyRejectListUavBindlessIndices);
+        CreateBufferWithViews(FrameIndex, L"LateList", VisibilityDesc, DXGI_FORMAT_UNKNOWN, IndirectCommandCount, sizeof(uint32_t), LateListBuffers, LateListSrvBindlessIndices, LateListUavBindlessIndices);
+        CreateBufferWithViews(FrameIndex, L"LateListFlags", VisibilityDesc, DXGI_FORMAT_UNKNOWN, IndirectCommandCount, sizeof(uint32_t), LateListFlagBuffers, LateListFlagSrvBindlessIndices, LateListFlagUavBindlessIndices);
 
-            D3D12_SHADER_RESOURCE_VIEW_DESC VisibilitySrvDesc = {};
-            VisibilitySrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-            VisibilitySrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            VisibilitySrvDesc.Format = DXGI_FORMAT_UNKNOWN;
-            VisibilitySrvDesc.Buffer.FirstElement = 0;
-            VisibilitySrvDesc.Buffer.NumElements = IndirectCommandCount;
-            VisibilitySrvDesc.Buffer.StructureByteStride = sizeof(uint32_t);
-            VisibilitySrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-            SrvIndices[FrameIndex] = Device->CreateBindlessSrv(Buffers[FrameIndex].Get(), VisibilitySrvDesc);
-
-            D3D12_UNORDERED_ACCESS_VIEW_DESC VisibilityUavDesc = {};
-            VisibilityUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-            VisibilityUavDesc.Format = DXGI_FORMAT_UNKNOWN;
-            VisibilityUavDesc.Buffer.FirstElement = 0;
-            VisibilityUavDesc.Buffer.NumElements = IndirectCommandCount;
-            VisibilityUavDesc.Buffer.StructureByteStride = sizeof(uint32_t);
-            VisibilityUavDesc.Buffer.CounterOffsetInBytes = 0;
-            VisibilityUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
-            UavIndices[FrameIndex] = Device->CreateBindlessUav(Buffers[FrameIndex].Get(), nullptr, VisibilityUavDesc);
-        };
-
-        CreateVisibilityBuffer(L"MeshletVisibilityBuffer", MeshletVisibilityBuffers, MeshletVisibilitySrvBindlessIndices, MeshletVisibilityUavBindlessIndices);
-        CreateVisibilityBuffer(L"MeshletVisibilityLateBuffer", MeshletVisibilityLateBuffers, MeshletVisibilityLateSrvBindlessIndices, MeshletVisibilityLateUavBindlessIndices);
-
-        auto CreateListBuffer = [&](const std::wstring& Name,
-            std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>& Buffers,
-            std::vector<uint32_t>& SrvIndices,
-            std::vector<uint32_t>& UavIndices)
-        {
-            HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-                &DefaultHeap,
-                D3D12_HEAP_FLAG_NONE,
-                &VisibilityDesc,
-                D3D12_RESOURCE_STATE_COMMON,
-                nullptr,
-                IID_PPV_ARGS(Buffers[FrameIndex].GetAddressOf())));
-            if (Buffers[FrameIndex])
-            {
-                const std::wstring FullName = Name + L"_Frame" + std::to_wstring(FrameIndex);
-                Buffers[FrameIndex]->SetName(FullName.c_str());
-            }
-
-            D3D12_SHADER_RESOURCE_VIEW_DESC ListSrvDesc = {};
-            ListSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-            ListSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            ListSrvDesc.Format = DXGI_FORMAT_UNKNOWN;
-            ListSrvDesc.Buffer.FirstElement = 0;
-            ListSrvDesc.Buffer.NumElements = IndirectCommandCount;
-            ListSrvDesc.Buffer.StructureByteStride = sizeof(uint32_t);
-            ListSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-            SrvIndices[FrameIndex] = Device->CreateBindlessSrv(Buffers[FrameIndex].Get(), ListSrvDesc);
-
-            D3D12_UNORDERED_ACCESS_VIEW_DESC ListUavDesc = {};
-            ListUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-            ListUavDesc.Format = DXGI_FORMAT_UNKNOWN;
-            ListUavDesc.Buffer.FirstElement = 0;
-            ListUavDesc.Buffer.NumElements = IndirectCommandCount;
-            ListUavDesc.Buffer.StructureByteStride = sizeof(uint32_t);
-            ListUavDesc.Buffer.CounterOffsetInBytes = 0;
-            ListUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
-            UavIndices[FrameIndex] = Device->CreateBindlessUav(Buffers[FrameIndex].Get(), nullptr, ListUavDesc);
-        };
-
-        auto CreateCountBuffer = [&](const std::wstring& Name,
-            std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>& Buffers,
-            std::vector<uint32_t>& SrvIndices,
-            std::vector<uint32_t>& UavIndices)
-        {
-            D3D12_RESOURCE_DESC CountDesc = BufferDesc;
-            CountDesc.Width = sizeof(uint32_t);
-            CountDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-            HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-                &DefaultHeap,
-                D3D12_HEAP_FLAG_NONE,
-                &CountDesc,
-                D3D12_RESOURCE_STATE_COMMON,
-                nullptr,
-                IID_PPV_ARGS(Buffers[FrameIndex].GetAddressOf())));
-            if (Buffers[FrameIndex])
-            {
-                const std::wstring FullName = Name + L"_Frame" + std::to_wstring(FrameIndex);
-                Buffers[FrameIndex]->SetName(FullName.c_str());
-            }
-
-            D3D12_SHADER_RESOURCE_VIEW_DESC CountSrvDesc = {};
-            CountSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-            CountSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            CountSrvDesc.Format = DXGI_FORMAT_R32_TYPELESS;
-            CountSrvDesc.Buffer.FirstElement = 0;
-            CountSrvDesc.Buffer.NumElements = 1;
-            CountSrvDesc.Buffer.StructureByteStride = 0;
-            CountSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
-            SrvIndices[FrameIndex] = Device->CreateBindlessSrv(Buffers[FrameIndex].Get(), CountSrvDesc);
-
-            D3D12_UNORDERED_ACCESS_VIEW_DESC CountUavDesc = {};
-            CountUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-            CountUavDesc.Format = DXGI_FORMAT_R32_TYPELESS;
-            CountUavDesc.Buffer.FirstElement = 0;
-            CountUavDesc.Buffer.NumElements = 1;
-            CountUavDesc.Buffer.StructureByteStride = 0;
-            CountUavDesc.Buffer.CounterOffsetInBytes = 0;
-            CountUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
-            UavIndices[FrameIndex] = Device->CreateBindlessUav(Buffers[FrameIndex].Get(), nullptr, CountUavDesc);
-        };
-
-        CreateListBuffer(L"PrevVisibleList", PrevVisibleListBuffers, PrevVisibleListSrvBindlessIndices, PrevVisibleListUavBindlessIndices);
-        CreateListBuffer(L"PrevInvisibleList", PrevInvisibleListBuffers, PrevInvisibleListSrvBindlessIndices, PrevInvisibleListUavBindlessIndices);
-        CreateListBuffer(L"EarlyRejectList", EarlyRejectListBuffers, EarlyRejectListSrvBindlessIndices, EarlyRejectListUavBindlessIndices);
-        CreateListBuffer(L"LateList", LateListBuffers, LateListSrvBindlessIndices, LateListUavBindlessIndices);
-        CreateListBuffer(L"LateListFlags", LateListFlagBuffers, LateListFlagSrvBindlessIndices, LateListFlagUavBindlessIndices);
-
-        CreateCountBuffer(L"PrevVisibleCount", PrevVisibleCountBuffers, PrevVisibleCountSrvBindlessIndices, PrevVisibleCountUavBindlessIndices);
-        CreateCountBuffer(L"PrevInvisibleCount", PrevInvisibleCountBuffers, PrevInvisibleCountSrvBindlessIndices, PrevInvisibleCountUavBindlessIndices);
-        CreateCountBuffer(L"EarlyRejectCount", EarlyRejectCountBuffers, EarlyRejectCountSrvBindlessIndices, EarlyRejectCountUavBindlessIndices);
-        CreateCountBuffer(L"LateListCount", LateListCountBuffers, LateListCountSrvBindlessIndices, LateListCountUavBindlessIndices);
+        D3D12_RESOURCE_DESC CountDesc = BufferDesc;
+        CountDesc.Width = sizeof(uint32_t);
+        CountDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+        CreateBufferWithViews(FrameIndex, L"PrevVisibleCount", CountDesc, DXGI_FORMAT_R32_TYPELESS, 1, 0, PrevVisibleCountBuffers, PrevVisibleCountSrvBindlessIndices, PrevVisibleCountUavBindlessIndices);
+        CreateBufferWithViews(FrameIndex, L"PrevInvisibleCount", CountDesc, DXGI_FORMAT_R32_TYPELESS, 1, 0, PrevInvisibleCountBuffers, PrevInvisibleCountSrvBindlessIndices, PrevInvisibleCountUavBindlessIndices);
+        CreateBufferWithViews(FrameIndex, L"EarlyRejectCount", CountDesc, DXGI_FORMAT_R32_TYPELESS, 1, 0, EarlyRejectCountBuffers, EarlyRejectCountSrvBindlessIndices, EarlyRejectCountUavBindlessIndices);
+        CreateBufferWithViews(FrameIndex, L"LateListCount", CountDesc, DXGI_FORMAT_R32_TYPELESS, 1, 0, LateListCountBuffers, LateListCountSrvBindlessIndices, LateListCountUavBindlessIndices);
 
         D3D12_RESOURCE_DESC RunCountDesc = BufferDesc;
         RunCountDesc.Width = sizeof(uint32_t) * Data.RangeOffsets.size();
@@ -2982,8 +2807,7 @@ bool FRenderer::CreateSharedGpuDrivenBuffers(FDX12Device* Device, const FGpuDriv
     }
 
     // Meshlet draw data buffer
-    D3D12_RESOURCE_DESC DrawDataDesc = BufferDesc;
-    DrawDataDesc.Width = MeshletDrawDataSize;
+    CD3DX12_RESOURCE_DESC DrawDataDesc = CD3DX12_RESOURCE_DESC::Buffer(MeshletDrawDataSize, BufferDesc.Flags);
 
     HR_CHECK(Device->GetDevice()->CreateCommittedResource(
         &DefaultHeap,
@@ -3014,8 +2838,7 @@ bool FRenderer::CreateSharedGpuDrivenBuffers(FDX12Device* Device, const FGpuDriv
     }
 
     // Range offset buffer
-    D3D12_RESOURCE_DESC RangeOffsetDesc = BufferDesc;
-    RangeOffsetDesc.Width = RangeOffsetSize;
+    CD3DX12_RESOURCE_DESC RangeOffsetDesc = CD3DX12_RESOURCE_DESC::Buffer(RangeOffsetSize, BufferDesc.Flags);
 
     HR_CHECK(Device->GetDevice()->CreateCommittedResource(
         &DefaultHeap,
@@ -3046,8 +2869,7 @@ bool FRenderer::CreateSharedGpuDrivenBuffers(FDX12Device* Device, const FGpuDriv
     }
 
     // Cone axis buffer
-    D3D12_RESOURCE_DESC ConeDesc = BufferDesc;
-    ConeDesc.Width = ConeBufferSize;
+    CD3DX12_RESOURCE_DESC ConeDesc = CD3DX12_RESOURCE_DESC::Buffer(ConeBufferSize, BufferDesc.Flags);
 
     HR_CHECK(Device->GetDevice()->CreateCommittedResource(
         &DefaultHeap,
@@ -3107,9 +2929,7 @@ bool FRenderer::CreateSharedGpuDrivenBuffers(FDX12Device* Device, const FGpuDriv
     }
 
     // GPU debug print buffers
-    D3D12_RESOURCE_DESC DebugDesc = BufferDesc;
-    DebugDesc.Width = GpuDebugPrintBufferSize;
-    DebugDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    CD3DX12_RESOURCE_DESC DebugDesc = CD3DX12_RESOURCE_DESC::Buffer(GpuDebugPrintBufferSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 
     HR_CHECK(Device->GetDevice()->CreateCommittedResource(
         &DefaultHeap,
@@ -3145,9 +2965,7 @@ bool FRenderer::CreateSharedGpuDrivenBuffers(FDX12Device* Device, const FGpuDriv
         GpuDebugPrintUpload->Unmap(0, nullptr);
     }
 
-    D3D12_RESOURCE_DESC StatsDesc = BufferDesc;
-    StatsDesc.Width = sizeof(uint32_t) * GpuDebugPrintStatsCount;
-    StatsDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    CD3DX12_RESOURCE_DESC StatsDesc = CD3DX12_RESOURCE_DESC::Buffer(sizeof(uint32_t) * GpuDebugPrintStatsCount, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 
     HR_CHECK(Device->GetDevice()->CreateCommittedResource(
         &DefaultHeap,
@@ -3161,8 +2979,7 @@ bool FRenderer::CreateSharedGpuDrivenBuffers(FDX12Device* Device, const FGpuDriv
         GpuDebugPrintStatsBuffer->SetName(L"GpuDebugPrintStatsBuffer");
     }
 
-    D3D12_RESOURCE_DESC StatsUploadDesc = StatsDesc;
-    StatsUploadDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+    CD3DX12_RESOURCE_DESC StatsUploadDesc = CD3DX12_RESOURCE_DESC::Buffer(sizeof(uint32_t) * GpuDebugPrintStatsCount);
     HR_CHECK(Device->GetDevice()->CreateCommittedResource(
         &UploadHeap,
         D3D12_HEAP_FLAG_NONE,

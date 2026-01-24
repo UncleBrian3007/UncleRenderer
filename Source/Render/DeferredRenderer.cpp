@@ -3557,18 +3557,7 @@ bool FDeferredRenderer::CreateGBufferResources(FDX12Device* Device, uint32_t Wid
     Microsoft::WRL::ComPtr<ID3D12Resource>* Targets[3] = { &GBufferA, &GBufferB, &GBufferC };
     const wchar_t* GBufferNames[3] = { L"GBufferA", L"GBufferB", L"GBufferC" };
 
-    D3D12_RESOURCE_DESC Desc = {};
-    Desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    Desc.DepthOrArraySize = 1;
-    Desc.MipLevels = 1;
-    Desc.SampleDesc.Count = 1;
-    Desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    Desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-
-    D3D12_HEAP_PROPERTIES HeapProps = {};
-    HeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
-    HeapProps.CreationNodeMask = 1;
-    HeapProps.VisibleNodeMask = 1;
+    CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
 
     const UINT RtvDescriptorSize = Device->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
     D3D12_CPU_DESCRIPTOR_HANDLE RtvHandle = {};
@@ -3588,9 +3577,15 @@ bool FDeferredRenderer::CreateGBufferResources(FDX12Device* Device, uint32_t Wid
 
     for (int i = 0; i < 3; ++i)
     {
-        Desc.Width = Width;
-        Desc.Height = Height;
-        Desc.Format = GBufferFormats[i];
+        CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
+            GBufferFormats[i],
+            Width,
+            Height,
+            1,
+            1,
+            1,
+            0,
+            D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
 
         D3D12_CLEAR_VALUE ClearValue = {};
         ClearValue.Format = Desc.Format;
@@ -3619,9 +3614,15 @@ bool FDeferredRenderer::CreateGBufferResources(FDX12Device* Device, uint32_t Wid
         GBufferStates[i] = D3D12_RESOURCE_STATE_RENDER_TARGET;
     }
 
-    Desc.Width = Width;
-    Desc.Height = Height;
-    Desc.Format = LightingBufferFormat;
+    CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
+        LightingBufferFormat,
+        Width,
+        Height,
+        1,
+        1,
+        1,
+        0,
+        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
 
     D3D12_CLEAR_VALUE LightingClear = {};
     LightingClear.Format = Desc.Format;
@@ -3647,9 +3648,15 @@ bool FDeferredRenderer::CreateGBufferResources(FDX12Device* Device, uint32_t Wid
     Device->GetDevice()->CreateRenderTargetView(LightingBuffer.Get(), &LightingRtvDesc, RtvHandle);
     RtvHandle.ptr += RtvDescriptorSize;
 
-    Desc.Width = Width;
-    Desc.Height = Height;
-    Desc.Format = BackBufferFormat;
+    Desc = CD3DX12_RESOURCE_DESC::Tex2D(
+        BackBufferFormat,
+        Width,
+        Height,
+        1,
+        1,
+        1,
+        0,
+        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
 
     D3D12_CLEAR_VALUE TonemapClear = {};
     TonemapClear.Format = Desc.Format;
