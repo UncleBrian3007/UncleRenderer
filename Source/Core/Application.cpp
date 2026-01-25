@@ -158,6 +158,7 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     bShadowsEnabled = RendererConfig.bEnableShadows;
     bRayTracedShadowsEnabled = RendererConfig.bEnableRayTracedShadows;
     bPathTracingEnabled = RendererConfig.bEnablePathTracing;
+    bPathTracingAccumulationEnabled = RendererConfig.bEnablePathTracingAccumulation;
     bGpuTimingEnabled = RendererConfig.bEnableGpuTiming;
     bGpuDebugPrintEnabled = RendererConfig.bEnableGpuDebugPrint;
     ShadowBias = RendererConfig.ShadowBias;
@@ -1603,7 +1604,6 @@ void FApplication::RenderUI()
             }
         }
 
-        ImGui::SameLine();
         bool bGtao = bGtaoEnabled;
         if (ImGui::Checkbox("GTAO", &bGtao))
         {
@@ -1735,6 +1735,7 @@ void FApplication::RenderUI()
             }
         }
 
+		ImGui::SameLine();
         const bool bRayTracingSupported = Device && Device->IsRayTracingSupported();
         bool bRayTracedShadows = bRayTracedShadowsEnabled;
         if (ImGui::Checkbox("Ray Traced Shadows", &bRayTracedShadows))
@@ -1788,6 +1789,27 @@ void FApplication::RenderUI()
             }
         }
 
+        if (bPathTracingEnabled)
+        {
+            ImGui::SameLine();
+            bool bPathTracingAccumulation = bPathTracingAccumulationEnabled;
+            if (ImGui::Checkbox("PT Accumulation", &bPathTracingAccumulation))
+            {
+                bPathTracingAccumulationEnabled = bPathTracingAccumulation;
+                RendererConfig.bEnablePathTracingAccumulation = bPathTracingAccumulationEnabled;
+
+                if (DeferredRenderer)
+                {
+                    DeferredRenderer->SetPathTracingAccumulationEnabled(bPathTracingAccumulationEnabled);
+                }
+
+                if (ForwardRenderer)
+                {
+                    ForwardRenderer->SetPathTracingAccumulationEnabled(bPathTracingAccumulationEnabled);
+                }
+            }
+        }
+
         //float ShadowBiasValue = ShadowBias;
         //if (ImGui::SliderFloat("Shadow Bias", &ShadowBiasValue, 0.0f, 0.01f, "%.5f"))
         //{
@@ -1804,7 +1826,6 @@ void FApplication::RenderUI()
         //    }
         //}
 
-		ImGui::SameLine();
 		bool bModelPixEvents = bModelPixEventsEnabled;
 		if (ImGui::Checkbox("Model Pix Events", &bModelPixEvents))
 		{

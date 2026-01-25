@@ -1544,7 +1544,7 @@ bool FRenderer::CreateRayTracingPipeline(FDX12Device* Device)
     RootParameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParameters[2].Constants.ShaderRegister = 1;
     RootParameters[2].Constants.RegisterSpace = 0;
-    RootParameters[2].Constants.Num32BitValues = 6;
+    RootParameters[2].Constants.Num32BitValues = 7;
     RootParameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     D3D12_ROOT_SIGNATURE_DESC GlobalRootDesc = {};

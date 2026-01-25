@@ -244,6 +244,9 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <None Include="Shaders\TemporalAA.hlsl">
       <FileType>Document</FileType>
     </None>
+    <None Include="Shaders\PathTracingAccumulation.hlsl">
+      <FileType>Document</FileType>
+    </None>
     <None Include="Shaders\BuildHZB.hlsl">
       <FileType>Document</FileType>
     </None>
@@ -328,6 +331,11 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
       <FileType>Document</FileType>
     </None>
     <None Include="Shaders\MergeVisibilityLists.hlsl">
+      <FileType>Document</FileType>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Shaders\PathTracing.hlsl">
       <FileType>Document</FileType>
     </None>
   </ItemGroup>

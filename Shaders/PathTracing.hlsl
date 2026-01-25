@@ -9,6 +9,7 @@ cbuffer RayTracingBindlessConstants : register(b1)
     uint OutputTextureIndex;
     uint DispatchWidth;
     uint DispatchHeight;
+    uint FrameIndex;
 };
 
 float3 ReconstructWorldPosition(uint2 pixel, float depth, uint2 dispatchDim)
@@ -109,14 +110,14 @@ void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID)
 
     float3 albedo = GBufferC.Load(int3(DispatchIndex, 0)).rgb;
 
-    float2 rand = float2(Random01(DispatchIndex, 1u), Random01(DispatchIndex, 2u));
+    float2 rand = float2(Random01(DispatchIndex, FrameIndex * 2u + 1u), Random01(DispatchIndex, FrameIndex * 2u + 2u));
     float3 bounceDir = SampleHemisphereCosine(rand, worldNormal);
 
     RayDesc Ray;
     Ray.Origin = worldPosition + worldNormal * 0.01f;
     Ray.Direction = bounceDir;
-    Ray.TMin = 0.0f;
-    Ray.TMax = 10000.0f;
+    Ray.TMin = 0.001f;
+    Ray.TMax = 1.0f;
 
     RayQuery<PathRayFlags> RayQuery;
     RayQuery.TraceRayInline(Scene, PathRayFlags, 0xFF, Ray);
@@ -124,10 +125,9 @@ void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID)
     {
     }
 
-    const bool bHit = RayQuery.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
-    const uint instanceId = bHit ? RayQuery.CommittedInstanceID() : 0u;
-    float3 indirect = bHit ? HashToColor(instanceId) : EvaluateSky(bounceDir);
-    float3 direct = max(dot(worldNormal, -normalize(LightDirection)), 0.0f) * LightIntensity * LightColor;
-    float3 color = albedo * (direct + indirect * 0.5f);
-    PathOutput[DispatchIndex] = float4(color, 1.0f);
+	float visibility = RayQuery.CommittedStatus() == COMMITTED_NOTHING ? 3.0 : 0.0;
+
+	float3 radiance = float3(visibility, visibility, visibility);
+
+    PathOutput[DispatchIndex] = float4(radiance, 1.0f);
 }

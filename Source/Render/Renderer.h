@@ -55,6 +55,7 @@ public:
     virtual bool IsRayTracedShadowsEnabled() const { return bRayTracedShadowsEnabled; }
     virtual void SetPathTracingEnabled(bool bEnabled) { bPathTracingEnabled = bEnabled; }
     virtual bool IsPathTracingEnabled() const { return bPathTracingEnabled; }
+    virtual void SetPathTracingAccumulationEnabled(bool bEnabled) { }
 
     void SetFrameIndex(uint32_t FrameIndex);
     uint32_t GetFrameIndex() const { return CurrentFrameIndex; }

@@ -94,6 +94,14 @@ public:
     bool IsGtaoEnabled() const { return bGtaoEnabled; }
     void SetPbrResearchEnabled(bool bEnabled) { bEnablePbrResearch = bEnabled; }
 
+    void SetPathTracingAccumulationEnabled(bool bEnabled)
+    {
+        bPathTracingAccumulationEnabled = bEnabled;
+        std::fill(PathTracingAccumulationHistoryValid.begin(), PathTracingAccumulationHistoryValid.end(), false);
+        PathTracingAccumulatedFrames = 0;
+    }
+    bool IsPathTracingAccumulationEnabled() const { return bPathTracingAccumulationEnabled; }
+
     void OnFrameFenceSignaled(uint32_t FrameIndex, uint64_t FenceValue) override;
 
 private:
@@ -111,6 +119,10 @@ private:
         bool bBuildHZB = false;
         bool bCasActive = false;
         bool bGtaoJitterActive = false;
+        bool bPathTracingAccumulationActive = false;
+        bool bPathTracingAccumulationHistoryReady = false;
+        uint32_t PathTracingAccumulationReadIndex = 0;
+        uint32_t PathTracingAccumulationWriteIndex = 0;
         DirectX::XMMATRIX LightViewProjection = DirectX::XMMatrixIdentity();
     };
 
@@ -128,6 +140,8 @@ private:
         std::array<FRGResourceHandle, 2> LuminanceHandles{};
         std::vector<FRGResourceHandle> TaaHandles{};
         FRGResourceHandle HZBHandle{};
+        FRGResourceHandle PathTracingTempHandle{};
+        std::vector<FRGResourceHandle> PathTracingAccumulationHandles{};
     };
 
     bool CreateBasePassRootSignature(FDX12Device* Device);
@@ -156,6 +170,9 @@ private:
     bool CreateHZBResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateLuminanceResources(FDX12Device* Device);
     bool CreateTaaResources(FDX12Device* Device, uint32_t Width, uint32_t Height, uint32_t FrameCount);
+    bool CreatePathTracingAccumulationResources(FDX12Device* Device, uint32_t Width, uint32_t Height, uint32_t FrameCount);
+    bool CreatePathTracingAccumulationRootSignature(FDX12Device* Device);
+    bool CreatePathTracingAccumulationPipeline(FDX12Device* Device);
     bool CreateObjectIdResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateObjectIdPipeline(FDX12Device* Device);
     bool CreateDescriptorHeap(FDX12Device* Device);
@@ -212,7 +229,8 @@ private:
     void AddLinearDepthPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle LinearDepthHandle);
     void AddGtaoPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle GtaoHandle);
     void AddLightingPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle GtaoHandle, FRGResourceHandle ShadowHandle, FRGResourceHandle LightingHandle);
-    void AddPathTracingPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle DepthHandle, FRGResourceHandle GBufferAHandle, FRGResourceHandle GBufferCHandle, FRGResourceHandle LightingHandle);
+    void AddPathTracingPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle DepthHandle, FRGResourceHandle GBufferAHandle, FRGResourceHandle GBufferCHandle, FRGResourceHandle OutputHandle);
+    void AddPathTracingAccumulationPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle PathTracingTempHandle, FRGResourceHandle LightingHandle, const std::vector<FRGResourceHandle>& AccumulationHandles);
     void AddSkyPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle DepthHandle, FRGResourceHandle LightingHandle);
     void AddTemporalAAPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle LightingHandle, const std::vector<FRGResourceHandle>& TaaHandles);
     void AddAutoExposurePass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle LightingHandle, const std::array<FRGResourceHandle, 2>& LuminanceHandles, float DeltaTime);
@@ -240,6 +258,7 @@ private:
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> HZBPipelines;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> AutoExposurePipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> TaaPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> PathTracingAccumulationPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> TonemapPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> CasPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> SkyPipelineState;
@@ -247,6 +266,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> SkyRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> AutoExposureRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> TaaRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> PathTracingAccumulationRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> TonemapRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> CasRootSignature;
     std::vector<FModelTextureSet> SceneTextures;
@@ -258,6 +278,8 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> TonemapOutput;
     std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 2> LuminanceTextures;
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> TaaHistoryTextures;
+    Microsoft::WRL::ComPtr<ID3D12Resource> PathTracingTempTexture;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> PathTracingAccumulationTextures;
     Microsoft::WRL::ComPtr<ID3D12Resource> HierarchicalZBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> HZBNullUavResource;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> GBufferRTVHeap;
@@ -288,6 +310,9 @@ private:
     std::array<uint32_t, 2> LuminanceUavBindlessIndices{ { UINT32_MAX, UINT32_MAX } };
     std::vector<uint32_t> TaaSrvBindlessIndices;
     std::vector<uint32_t> TaaUavBindlessIndices;
+    uint32_t PathTracingTempBindlessIndex = UINT32_MAX;
+    std::vector<uint32_t> PathTracingAccumulationSrvBindlessIndices;
+    std::vector<uint32_t> PathTracingAccumulationUavBindlessIndices;
     std::vector<uint32_t> DepthBindlessIndices;
     uint32_t HZBSrvBindlessIndex = UINT32_MAX;
     std::vector<uint32_t> HZBSrvMipBindlessIndices;
@@ -309,6 +334,8 @@ private:
     D3D12_RESOURCE_STATES TonemapOutputState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     std::array<D3D12_RESOURCE_STATES, 2> LuminanceStates = { D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
     std::vector<D3D12_RESOURCE_STATES> TaaStates;
+    D3D12_RESOURCE_STATES PathTracingTempState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    std::vector<D3D12_RESOURCE_STATES> PathTracingAccumulationStates;
     FMeshGeometryBuffers SkyGeometry;
 
     DirectX::XMFLOAT4X4 SceneWorldMatrix{};
@@ -333,6 +360,13 @@ private:
     DirectX::XMFLOAT2 TaaJitter{ 0.0f, 0.0f };
     DirectX::XMMATRIX TaaProjection = DirectX::XMMatrixIdentity();
     bool bUseTaaJitter = false;
+    bool bPathTracingAccumulationEnabled = false;
+    uint32_t PathTracingAccumulationFrameCount = 0;
+    std::vector<bool> PathTracingAccumulationHistoryValid;
+    uint32_t PathTracingAccumulatedFrames = 0;
+    DirectX::XMFLOAT3 PreviousCameraPosition{ 0.0f, 0.0f, 0.0f };
+    DirectX::XMFLOAT4X4 PreviousCameraViewMatrix{};
+    bool bFirstFrame = true;
     uint32_t LuminanceWriteIndex = 0;
     bool bLuminanceHistoryValid = false;
     bool bHZBEnabled = true;
