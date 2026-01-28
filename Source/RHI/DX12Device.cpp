@@ -84,6 +84,7 @@ bool FDX12Device::Initialize()
     if (!CreateDevice())  { LogError("Failed to create D3D12 device"); return false; }
     if (!QueryRayTracingSupport()) { LogError("Failed to query DXR support"); return false; }
     if (!CreateBindlessDescriptorHeap()) { LogError("Failed to create bindless descriptor heap"); return false; }
+    if (!CreateSamplerDescriptorHeap()) { LogError("Failed to create sampler descriptor heap"); return false; }
     if (!DetermineShaderModel()) { LogError("Failed to determine shader model"); return false; }
     if (!CreateCommandQueues()) { LogError("Failed to create command queues"); return false; }
 
@@ -190,6 +191,115 @@ bool FDX12Device::CreateBindlessDescriptorHeap()
     BindlessDescriptorStride = Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     BindlessDescriptorNextIndex.store(0);
 
+    return true;
+}
+
+bool FDX12Device::CreateSamplerDescriptorHeap()
+{
+    // Create sampler descriptor heap with enough space for multiple samplers
+    D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
+    HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
+    HeapDesc.NumDescriptors = 16;
+    HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    HeapDesc.NodeMask = 0;
+
+    HR_CHECK(Device->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(SamplerDescriptorHeap.ReleaseAndGetAddressOf())));
+    if (SamplerDescriptorHeap)
+    {
+        SamplerDescriptorHeap->SetName(L"SamplerDescriptorHeap");
+    }
+
+    const uint32_t SamplerDescriptorSize = Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+    CD3DX12_CPU_DESCRIPTOR_HANDLE SamplerHandle(SamplerDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
+
+    // Sampler 0: Linear filter with Clamp address mode
+    {
+        D3D12_SAMPLER_DESC SamplerDesc = {};
+        SamplerDesc.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+        SamplerDesc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        SamplerDesc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        SamplerDesc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        SamplerDesc.MipLODBias = 0.0f;
+        SamplerDesc.MaxAnisotropy = 1;
+        SamplerDesc.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+        SamplerDesc.BorderColor[0] = 0.0f;
+        SamplerDesc.BorderColor[1] = 0.0f;
+        SamplerDesc.BorderColor[2] = 0.0f;
+        SamplerDesc.BorderColor[3] = 0.0f;
+        SamplerDesc.MinLOD = 0.0f;
+        SamplerDesc.MaxLOD = D3D12_FLOAT32_MAX;
+        
+        Device->CreateSampler(&SamplerDesc, SamplerHandle);
+        LinearClampSamplerIndex = 0;
+        SamplerHandle.Offset(1, SamplerDescriptorSize);
+    }
+
+    // Sampler 1: Linear filter with Wrap address mode
+    {
+        D3D12_SAMPLER_DESC SamplerDesc = {};
+        SamplerDesc.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+        SamplerDesc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+        SamplerDesc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+        SamplerDesc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+        SamplerDesc.MipLODBias = 0.0f;
+        SamplerDesc.MaxAnisotropy = 1;
+        SamplerDesc.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+        SamplerDesc.BorderColor[0] = 0.0f;
+        SamplerDesc.BorderColor[1] = 0.0f;
+        SamplerDesc.BorderColor[2] = 0.0f;
+        SamplerDesc.BorderColor[3] = 0.0f;
+        SamplerDesc.MinLOD = 0.0f;
+        SamplerDesc.MaxLOD = D3D12_FLOAT32_MAX;
+        
+        Device->CreateSampler(&SamplerDesc, SamplerHandle);
+        LinearWrapSamplerIndex = 1;
+        SamplerHandle.Offset(1, SamplerDescriptorSize);
+    }
+
+    // Sampler 2: Anisotropic filter with Clamp address mode
+    {
+        D3D12_SAMPLER_DESC SamplerDesc = {};
+        SamplerDesc.Filter = D3D12_FILTER_ANISOTROPIC;
+        SamplerDesc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        SamplerDesc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        SamplerDesc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        SamplerDesc.MipLODBias = 0.0f;
+        SamplerDesc.MaxAnisotropy = 4;
+        SamplerDesc.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+        SamplerDesc.BorderColor[0] = 0.0f;
+        SamplerDesc.BorderColor[1] = 0.0f;
+        SamplerDesc.BorderColor[2] = 0.0f;
+        SamplerDesc.BorderColor[3] = 0.0f;
+        SamplerDesc.MinLOD = 0.0f;
+        SamplerDesc.MaxLOD = D3D12_FLOAT32_MAX;
+        
+        Device->CreateSampler(&SamplerDesc, SamplerHandle);
+        AnisotropicClampSamplerIndex = 2;
+        SamplerHandle.Offset(1, SamplerDescriptorSize);
+    }
+
+    // Sampler 3: Anisotropic filter with Wrap address mode
+    {
+        D3D12_SAMPLER_DESC SamplerDesc = {};
+        SamplerDesc.Filter = D3D12_FILTER_ANISOTROPIC;
+        SamplerDesc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+        SamplerDesc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+        SamplerDesc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+        SamplerDesc.MipLODBias = 0.0f;
+        SamplerDesc.MaxAnisotropy = 4;
+        SamplerDesc.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+        SamplerDesc.BorderColor[0] = 0.0f;
+        SamplerDesc.BorderColor[1] = 0.0f;
+        SamplerDesc.BorderColor[2] = 0.0f;
+        SamplerDesc.BorderColor[3] = 0.0f;
+        SamplerDesc.MinLOD = 0.0f;
+        SamplerDesc.MaxLOD = D3D12_FLOAT32_MAX;
+        
+        Device->CreateSampler(&SamplerDesc, SamplerHandle);
+        AnisotropicWrapSamplerIndex = 3;
+    }
+
+    LogInfo("Sampler descriptor heap created with 4 samplers: LinearClamp(0), LinearWrap(1), AnisotropicClamp(2), AnisotropicWrap(3)");
     return true;
 }
 

@@ -20,6 +20,11 @@ public:
     uint32_t             GetBindlessDescriptorCount() const { return BindlessDescriptorCount; }
     uint32_t             CreateBindlessSrv(ID3D12Resource* Resource, const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc);
     uint32_t             CreateBindlessUav(ID3D12Resource* Resource, ID3D12Resource* Counter, const D3D12_UNORDERED_ACCESS_VIEW_DESC& Desc);
+    ID3D12DescriptorHeap* GetSamplerDescriptorHeap() const { return SamplerDescriptorHeap.Get(); }
+    uint32_t             GetLinearClampSamplerIndex() const { return LinearClampSamplerIndex; }
+    uint32_t             GetLinearWrapSamplerIndex() const { return LinearWrapSamplerIndex; }
+    uint32_t             GetAnisotropicClampSamplerIndex() const { return AnisotropicClampSamplerIndex; }
+    uint32_t             GetAnisotropicWrapSamplerIndex() const { return AnisotropicWrapSamplerIndex; }
 
     IDXGIFactory6*       GetFactory() const { return Factory.Get(); }
     IDXGIAdapter4*       GetAdapter() const { return Adapter.Get(); }
@@ -35,6 +40,7 @@ private:
     bool CreateDevice();
     bool QueryRayTracingSupport();
     bool CreateBindlessDescriptorHeap();
+    bool CreateSamplerDescriptorHeap();
     bool CreateCommandQueues();
     bool CheckTearingSupport();
     bool DetermineShaderModel();
@@ -48,6 +54,11 @@ private:
     std::atomic<uint32_t> BindlessDescriptorNextIndex{ 0 };
     uint32_t BindlessDescriptorCount = 0;
     uint32_t BindlessDescriptorStride = 0;
+    ComPtr<ID3D12DescriptorHeap> SamplerDescriptorHeap;
+    uint32_t LinearClampSamplerIndex = 0;
+    uint32_t LinearWrapSamplerIndex = 0;
+    uint32_t AnisotropicClampSamplerIndex = 0;
+    uint32_t AnisotropicWrapSamplerIndex = 0;
 
     std::unique_ptr<FDX12CommandQueue> GraphicsQueue;
 

@@ -364,10 +364,12 @@ protected:
     std::vector<uint32_t> RayTracingDepthSrvBindlessIndices;
     std::vector<ID3D12Resource*> RayTracingDepthResources;
     uint32_t RayTracingGBufferASrvBindlessIndex = UINT32_MAX;
+    uint32_t RayTracingGBufferBSrvBindlessIndex = UINT32_MAX;
     uint32_t RayTracingGBufferCSrvBindlessIndex = UINT32_MAX;
     uint32_t RayTracingLightingUavBindlessIndex = UINT32_MAX;
     uint32_t RayTracingShadowMaskUavBindlessIndex = UINT32_MAX;
     ID3D12Resource* RayTracingGBufferAResource = nullptr;
+    ID3D12Resource* RayTracingGBufferBResource = nullptr;
     ID3D12Resource* RayTracingGBufferCResource = nullptr;
     ID3D12Resource* RayTracingLightingResource = nullptr;
     ID3D12Resource* RayTracingShadowMaskUavResource = nullptr;
@@ -378,6 +380,8 @@ protected:
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> TlasInstanceBuffers;
     std::vector<bool> TlasBuilt;
     uint32_t TlasInstanceCapacity = 0;
+    Microsoft::WRL::ComPtr<ID3D12Resource> PathTracingInstanceDataBuffer;
+    uint32_t PathTracingInstanceDataBindlessIndex = UINT32_MAX;
     D3D12_RESOURCE_STATES GpuDebugPrintState = D3D12_RESOURCE_STATE_COMMON;
     D3D12_RESOURCE_STATES GpuDebugPrintStatsState = D3D12_RESOURCE_STATE_COMMON;
 

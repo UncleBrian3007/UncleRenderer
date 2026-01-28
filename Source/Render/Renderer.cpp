@@ -1544,13 +1544,14 @@ bool FRenderer::CreateRayTracingPipeline(FDX12Device* Device)
     RootParameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParameters[2].Constants.ShaderRegister = 1;
     RootParameters[2].Constants.RegisterSpace = 0;
-    RootParameters[2].Constants.Num32BitValues = 7;
+    RootParameters[2].Constants.Num32BitValues = 12;
     RootParameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     D3D12_ROOT_SIGNATURE_DESC GlobalRootDesc = {};
     GlobalRootDesc.NumParameters = _countof(RootParameters);
     GlobalRootDesc.pParameters = RootParameters;
-    GlobalRootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+    GlobalRootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
+        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
 
     ComPtr<ID3DBlob> GlobalSignatureBlob;
     ComPtr<ID3DBlob> GlobalErrorBlob;
@@ -2010,6 +2011,22 @@ void FRenderer::BuildRayTracingTlas(FDX12CommandContext& CmdContext)
     std::vector<D3D12_RAYTRACING_INSTANCE_DESC> Instances;
     Instances.reserve(SceneModels.size());
 
+    // Build instance data buffer for path tracing
+    struct FPathTracingInstanceData
+    {
+        uint32_t PositionBufferIndex;
+        uint32_t NormalBufferIndex;
+        uint32_t UVBufferIndex;
+        uint32_t IndexBufferIndex;
+        uint32_t BaseColorTextureIndex;
+        uint32_t NormalTextureIndex;
+        uint32_t MetallicRoughnessTextureIndex;
+        uint32_t Padding;
+    };
+
+    std::vector<FPathTracingInstanceData> InstanceDataArray;
+    InstanceDataArray.reserve(SceneModels.size());
+
     uint32_t InstanceId = 0;
     for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
     {
@@ -2047,11 +2064,64 @@ void FRenderer::BuildRayTracingTlas(FDX12CommandContext& CmdContext)
         InstanceDesc.Transform[2][3] = World._34;
 
         Instances.push_back(InstanceDesc);
+
+        // Build instance data for path tracing (same order as TLAS instances)
+        FPathTracingInstanceData InstData = {};
+        InstData.PositionBufferIndex = Model.VertexBufferBindlessIndices[0];
+        InstData.NormalBufferIndex = Model.VertexBufferBindlessIndices[1];
+        InstData.UVBufferIndex = Model.VertexBufferBindlessIndices[2];
+        InstData.IndexBufferIndex = Model.IndexBufferBindlessIndex;
+        InstData.BaseColorTextureIndex = Model.BaseColorBindlessIndex;
+        InstData.NormalTextureIndex = Model.NormalBindlessIndex;
+        InstData.MetallicRoughnessTextureIndex = Model.MetallicRoughnessBindlessIndex;
+        InstData.Padding = 0;
+
+        InstanceDataArray.push_back(InstData);
     }
 
     if (Instances.empty())
     {
         return;
+    }
+
+    // Create or update the instance data buffer
+    const uint64_t InstanceDataBufferSize = sizeof(FPathTracingInstanceData) * InstanceDataArray.size();
+    if (!PathTracingInstanceDataBuffer || PathTracingInstanceDataBuffer->GetDesc().Width < InstanceDataBufferSize)
+    {
+        CD3DX12_HEAP_PROPERTIES UploadHeap(D3D12_HEAP_TYPE_UPLOAD);
+        CD3DX12_RESOURCE_DESC BufferDesc = CD3DX12_RESOURCE_DESC::Buffer(InstanceDataBufferSize);
+
+        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+            &UploadHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &BufferDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(PathTracingInstanceDataBuffer.ReleaseAndGetAddressOf())));
+
+        PathTracingInstanceDataBuffer->SetName(L"PathTracingInstanceDataBuffer");
+
+        // Create bindless SRV
+        CD3DX12_SHADER_RESOURCE_VIEW_DESC SrvDesc = {};
+        SrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        SrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        SrvDesc.Format = DXGI_FORMAT_UNKNOWN;
+        SrvDesc.Buffer.FirstElement = 0;
+        SrvDesc.Buffer.NumElements = static_cast<UINT>(InstanceDataArray.size());
+        SrvDesc.Buffer.StructureByteStride = sizeof(FPathTracingInstanceData);
+        SrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+
+        PathTracingInstanceDataBindlessIndex = Device->CreateBindlessSrv(PathTracingInstanceDataBuffer.Get(), SrvDesc);
+    }
+
+    // Update buffer data
+    if (PathTracingInstanceDataBuffer)
+    {
+        void* MappedData = nullptr;
+        D3D12_RANGE EmptyRange = { 0, 0 };
+        HR_CHECK(PathTracingInstanceDataBuffer->Map(0, &EmptyRange, &MappedData));
+        std::memcpy(MappedData, InstanceDataArray.data(), sizeof(FPathTracingInstanceData) * InstanceDataArray.size());
+        PathTracingInstanceDataBuffer->Unmap(0, nullptr);
     }
 
     const uint32_t FrameIndex = CmdContext.GetCurrentFrameIndex();

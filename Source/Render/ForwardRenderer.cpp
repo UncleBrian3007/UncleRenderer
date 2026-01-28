@@ -400,9 +400,9 @@ void FForwardRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCamer
         {
             return;
         }
-        WriteBindlessSrv(DepthBindlessIndex, DepthBuffer, DepthSrvDesc);
-        if (FrameIndex < RayTracingDepthResources.size())
+        if (FrameIndex < RayTracingDepthResources.size() && RayTracingDepthResources[FrameIndex] != DepthBuffer)
         {
+            WriteBindlessSrv(DepthBindlessIndex, DepthBuffer, DepthSrvDesc);
             RayTracingDepthResources[FrameIndex] = DepthBuffer;
         }
 
@@ -461,7 +461,7 @@ void FForwardRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCamer
         }
 
         const UINT ClearValues[4] = { 1u, 0u, 0u, 0u };
-        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
+        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap(), Device->GetSamplerDescriptorHeap() };
         CommandList4->SetDescriptorHeaps(_countof(Heaps), Heaps);
         const D3D12_GPU_DESCRIPTOR_HANDLE UavGpuHandle = GetBindlessGpuHandle(RayTracingShadowMaskUavBindlessIndex);
         const D3D12_CPU_DESCRIPTOR_HANDLE UavCpuHandle = GetBindlessCpuHandle(RayTracingShadowMaskUavBindlessIndex);

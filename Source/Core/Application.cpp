@@ -1808,6 +1808,32 @@ void FApplication::RenderUI()
                     ForwardRenderer->SetPathTracingAccumulationEnabled(bPathTracingAccumulationEnabled);
                 }
             }
+
+            int PathTracingMaxBounces = static_cast<int>(RendererConfig.PathTracingMaxBounces);
+            if (ImGui::SliderInt("PT Max Bounces", &PathTracingMaxBounces, 1, 16))
+            {
+                RendererConfig.PathTracingMaxBounces = static_cast<uint32_t>(PathTracingMaxBounces);
+
+                if (DeferredRenderer)
+                {
+                    DeferredRenderer->SetPathTracingMaxBounces(RendererConfig.PathTracingMaxBounces);
+                }
+            }
+
+            // Path Tracing Debug Mode
+            const char* DebugModeNames[] = { "Normal PT", "GBuffer Albedo", "First Hit Albedo", "Texture Index Hash", "Direct Lighting Only", "Indirect Lighting Only", "Hit/Miss Mask" };
+            int CurrentDebugMode = 0;
+            if (DeferredRenderer)
+            {
+                CurrentDebugMode = DeferredRenderer->GetPathTracingDebugMode();
+            }
+            if (ImGui::Combo("PT Debug Mode", &CurrentDebugMode, DebugModeNames, IM_ARRAYSIZE(DebugModeNames)))
+            {
+                if (DeferredRenderer)
+                {
+                    DeferredRenderer->SetPathTracingDebugMode(CurrentDebugMode);
+                }
+            }
         }
 
         //float ShadowBiasValue = ShadowBias;

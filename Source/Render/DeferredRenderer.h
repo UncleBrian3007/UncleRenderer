@@ -97,10 +97,45 @@ public:
     void SetPathTracingAccumulationEnabled(bool bEnabled)
     {
         bPathTracingAccumulationEnabled = bEnabled;
+        // Also update user preference so it's restored when exiting debug modes
+        if (PathTracingDebugMode == 0)
+        {
+            bPathTracingAccumulationUserPreference = bEnabled;
+        }
         std::fill(PathTracingAccumulationHistoryValid.begin(), PathTracingAccumulationHistoryValid.end(), false);
         PathTracingAccumulatedFrames = 0;
     }
     bool IsPathTracingAccumulationEnabled() const { return bPathTracingAccumulationEnabled; }
+
+    void SetPathTracingMaxBounces(uint32_t MaxBounces) { PathTracingMaxBounces = MaxBounces; }
+    uint32_t GetPathTracingMaxBounces() const { return PathTracingMaxBounces; }
+
+    void SetPathTracingDebugMode(int Mode) 
+    { 
+        if (PathTracingDebugMode != Mode)
+        {
+            // Save user preference when leaving mode 0
+            if (PathTracingDebugMode == 0 && Mode >= 1 && Mode <= 6)
+            {
+                bPathTracingAccumulationUserPreference = bPathTracingAccumulationEnabled;
+            }
+            
+            PathTracingDebugMode = Mode;
+            std::fill(PathTracingAccumulationHistoryValid.begin(), PathTracingAccumulationHistoryValid.end(), false);
+			PathTracingAccumulatedFrames = 0;
+
+            // Disable accumulation for debug modes 1-6, restore for mode 0
+            if (Mode >= 1 && Mode <= 6)
+            {
+                bPathTracingAccumulationEnabled = false;
+            }
+            else if (Mode == 0)
+            {
+                bPathTracingAccumulationEnabled = bPathTracingAccumulationUserPreference;
+            }
+        }
+    }
+    int GetPathTracingDebugMode() const { return PathTracingDebugMode; }
 
     void OnFrameFenceSignaled(uint32_t FrameIndex, uint64_t FenceValue) override;
 
@@ -229,7 +264,7 @@ private:
     void AddLinearDepthPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle LinearDepthHandle);
     void AddGtaoPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle GtaoHandle);
     void AddLightingPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle GtaoHandle, FRGResourceHandle ShadowHandle, FRGResourceHandle LightingHandle);
-    void AddPathTracingPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle DepthHandle, FRGResourceHandle GBufferAHandle, FRGResourceHandle GBufferCHandle, FRGResourceHandle OutputHandle);
+    void AddPathTracingPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle DepthHandle, FRGResourceHandle GBufferAHandle, FRGResourceHandle GBufferBHandle, FRGResourceHandle GBufferCHandle, FRGResourceHandle OutputHandle);
     void AddPathTracingAccumulationPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle PathTracingTempHandle, FRGResourceHandle LightingHandle, const std::vector<FRGResourceHandle>& AccumulationHandles);
     void AddSkyPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle DepthHandle, FRGResourceHandle LightingHandle);
     void AddTemporalAAPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle LightingHandle, const std::vector<FRGResourceHandle>& TaaHandles);
@@ -361,9 +396,12 @@ private:
     DirectX::XMMATRIX TaaProjection = DirectX::XMMatrixIdentity();
     bool bUseTaaJitter = false;
     bool bPathTracingAccumulationEnabled = false;
+    bool bPathTracingAccumulationUserPreference = false; // User's preference when not in debug mode
     uint32_t PathTracingAccumulationFrameCount = 0;
     std::vector<bool> PathTracingAccumulationHistoryValid;
     uint32_t PathTracingAccumulatedFrames = 0;
+    uint32_t PathTracingMaxBounces = 4;
+    int PathTracingDebugMode = 0; // 0=Normal PT, 1=GBuffer Albedo, 2=First Hit Albedo, 3=Texture Index Hash
     DirectX::XMFLOAT3 PreviousCameraPosition{ 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT4X4 PreviousCameraViewMatrix{};
     bool bFirstFrame = true;

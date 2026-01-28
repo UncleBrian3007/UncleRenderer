@@ -607,7 +607,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
 	if (bUsePathTracing)
 	{
-		AddPathTracingPass(Graph, Camera, Resources.DepthHandle, Resources.GBufferHandles[0], Resources.GBufferHandles[2], Resources.PathTracingTempHandle);
+		AddPathTracingPass(Graph, Camera, Resources.DepthHandle, Resources.GBufferHandles[0], Resources.GBufferHandles[1], Resources.GBufferHandles[2], Resources.PathTracingTempHandle);
 		AddPathTracingAccumulationPass(Graph, FrameState, Resources.PathTracingTempHandle, Resources.LightingHandle, Resources.PathTracingAccumulationHandles);
 	}
 	else
@@ -948,9 +948,9 @@ void FDeferredRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCame
         {
             return;
         }
-        WriteBindlessSrv(DepthBindlessIndex, DepthBuffer, DepthSrvDesc);
-        if (FrameIndex < RayTracingDepthResources.size())
+        if (FrameIndex < RayTracingDepthResources.size() && RayTracingDepthResources[FrameIndex] != DepthBuffer)
         {
+            WriteBindlessSrv(DepthBindlessIndex, DepthBuffer, DepthSrvDesc);
             RayTracingDepthResources[FrameIndex] = DepthBuffer;
         }
 
@@ -1008,7 +1008,7 @@ void FDeferredRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCame
             return;
         }
 
-        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
+        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap(), Device->GetSamplerDescriptorHeap() };
         CommandList4->SetDescriptorHeaps(_countof(Heaps), Heaps);
 
         const uint32_t DispatchWidth = static_cast<uint32_t>(Viewport.Width);
@@ -2286,21 +2286,22 @@ void FDeferredRenderer::AddLightingPass(FRenderGraph& Graph, const FDeferredFram
     });
 }
 
-void FDeferredRenderer::AddPathTracingPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle DepthHandle, FRGResourceHandle GBufferAHandle, FRGResourceHandle GBufferCHandle, FRGResourceHandle OutputHandle)
+void FDeferredRenderer::AddPathTracingPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle DepthHandle, FRGResourceHandle GBufferAHandle, FRGResourceHandle GBufferBHandle, FRGResourceHandle GBufferCHandle, FRGResourceHandle OutputHandle)
 {
     struct FPathTracingPassData
     {
         FRGResourceHandle OutputHandle{};
         FRGResourceHandle DepthHandle{};
         FRGResourceHandle GBufferAHandle{};
+        FRGResourceHandle GBufferBHandle{};
         FRGResourceHandle GBufferCHandle{};
         const FCamera* Camera = nullptr;
         uint32_t FrameIndex = 0;
     };
 
-    Graph.AddPass<FPathTracingPassData>("PathTracing", [&, DepthHandle, GBufferAHandle, GBufferCHandle, OutputHandle](FPathTracingPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FPathTracingPassData>("PathTracing", [&, DepthHandle, GBufferAHandle, GBufferBHandle, GBufferCHandle, OutputHandle](FPathTracingPassData& Data, FRGPassBuilder& Builder)
     {
-        if (!bPathTracingEnabled || !bRayTracingPipelineReady || !DepthHandle || !GBufferAHandle || !GBufferCHandle || !OutputHandle)
+        if (!bPathTracingEnabled || !bRayTracingPipelineReady || !DepthHandle || !GBufferAHandle || !GBufferBHandle || !GBufferCHandle || !OutputHandle)
         {
             return;
         }
@@ -2308,12 +2309,14 @@ void FDeferredRenderer::AddPathTracingPass(FRenderGraph& Graph, const FCamera& C
         Data.OutputHandle = OutputHandle;
         Data.DepthHandle = DepthHandle;
         Data.GBufferAHandle = GBufferAHandle;
+        Data.GBufferBHandle = GBufferBHandle;
         Data.GBufferCHandle = GBufferCHandle;
         Data.Camera = &Camera;
         Data.FrameIndex = PathTracingAccumulatedFrames;
         Builder.WriteTexture(Data.OutputHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         Builder.ReadTexture(Data.DepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(Data.GBufferAHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(Data.GBufferBHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(Data.GBufferCHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.KeepAlive();
     }, [this, &Graph](const FPathTracingPassData& Data, FDX12CommandContext& CmdContext)
@@ -2341,8 +2344,9 @@ void FDeferredRenderer::AddPathTracingPass(FRenderGraph& Graph, const FCamera& C
         }
 
         ID3D12Resource* GBufferA = Graph.GetTextureResource(Data.GBufferAHandle);
+        ID3D12Resource* GBufferB = Graph.GetTextureResource(Data.GBufferBHandle);
         ID3D12Resource* GBufferC = Graph.GetTextureResource(Data.GBufferCHandle);
-        if (!GBufferA || !GBufferC)
+        if (!GBufferA || !GBufferB || !GBufferC)
         {
             return;
         }
@@ -2378,9 +2382,9 @@ void FDeferredRenderer::AddPathTracingPass(FRenderGraph& Graph, const FCamera& C
         {
             return;
         }
-        WriteBindlessSrv(DepthBindlessIndex, DepthBuffer, DepthSrvDesc);
-        if (FrameIndex < RayTracingDepthResources.size())
+        if (FrameIndex < RayTracingDepthResources.size() && RayTracingDepthResources[FrameIndex] != DepthBuffer)
         {
+            WriteBindlessSrv(DepthBindlessIndex, DepthBuffer, DepthSrvDesc);
             RayTracingDepthResources[FrameIndex] = DepthBuffer;
         }
 
@@ -2400,6 +2404,23 @@ void FDeferredRenderer::AddPathTracingPass(FRenderGraph& Graph, const FCamera& C
             WriteBindlessSrv(RayTracingGBufferASrvBindlessIndex, GBufferA, GBufferASrvDesc);
         }
         RayTracingGBufferAResource = GBufferA;
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC GBufferBSrvDesc = {};
+        GBufferBSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        GBufferBSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        GBufferBSrvDesc.Format = GBufferB->GetDesc().Format;
+        GBufferBSrvDesc.Texture2D.MipLevels = 1;
+        GBufferBSrvDesc.Texture2D.MostDetailedMip = 0;
+        GBufferBSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+        if (RayTracingGBufferBSrvBindlessIndex == UINT32_MAX)
+        {
+            RayTracingGBufferBSrvBindlessIndex = Device->CreateBindlessSrv(GBufferB, GBufferBSrvDesc);
+        }
+        else if (RayTracingGBufferBResource != GBufferB)
+        {
+            WriteBindlessSrv(RayTracingGBufferBSrvBindlessIndex, GBufferB, GBufferBSrvDesc);
+        }
+        RayTracingGBufferBResource = GBufferB;
 
         D3D12_SHADER_RESOURCE_VIEW_DESC GBufferCSrvDesc = {};
         GBufferCSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
@@ -2433,13 +2454,14 @@ void FDeferredRenderer::AddPathTracingPass(FRenderGraph& Graph, const FCamera& C
         RayTracingLightingResource = OutputTarget;
 
         if (RayTracingGBufferASrvBindlessIndex == UINT32_MAX
+            || RayTracingGBufferBSrvBindlessIndex == UINT32_MAX
             || RayTracingGBufferCSrvBindlessIndex == UINT32_MAX
             || RayTracingLightingUavBindlessIndex == UINT32_MAX)
         {
             return;
         }
 
-        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
+        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap(), Device->GetSamplerDescriptorHeap() };
         CommandList4->SetDescriptorHeaps(_countof(Heaps), Heaps);
 
         const uint32_t DispatchWidth = static_cast<uint32_t>(Viewport.Width);
@@ -2464,11 +2486,16 @@ void FDeferredRenderer::AddPathTracingPass(FRenderGraph& Graph, const FCamera& C
         {
             DepthBindlessIndex,
             RayTracingGBufferASrvBindlessIndex,
+            RayTracingGBufferBSrvBindlessIndex,
             RayTracingGBufferCSrvBindlessIndex,
             RayTracingLightingUavBindlessIndex,
             DispatchWidth,
             DispatchHeight,
-            Data.FrameIndex
+            Data.FrameIndex,
+            PathTracingInstanceDataBindlessIndex,
+            PathTracingMaxBounces,
+            Device->GetLinearClampSamplerIndex(),
+            static_cast<uint32_t>(PathTracingDebugMode)
         };
         CommandList4->SetComputeRoot32BitConstants(2, _countof(BindlessIndices), BindlessIndices, 0);
 
