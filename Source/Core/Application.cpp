@@ -1821,7 +1821,21 @@ void FApplication::RenderUI()
             }
 
             // Path Tracing Debug Mode
-            const char* DebugModeNames[] = { "Normal PT", "GBuffer Albedo", "First Hit Albedo", "Texture Index Hash", "Direct Lighting Only", "Indirect Lighting Only", "Hit/Miss Mask" };
+            const char* DebugModeNames[] = {
+                "Normal PT",
+                "GBuffer Albedo",
+                "First Hit Albedo",
+                "Texture Index Hash",
+                "Direct Light",
+                "Diffuse Probability",
+                "Hit/Miss Mask",
+                "Throughput Over Pdf",
+                "Firefly Metric",
+                "First Hit Distance",
+                "Sky Miss Contribution",
+                "First Hit NdotV",
+                "Bounce1 NdotV"
+            };
             int CurrentDebugMode = 0;
             if (DeferredRenderer)
             {

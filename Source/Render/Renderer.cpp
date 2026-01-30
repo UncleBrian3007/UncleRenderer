@@ -1565,6 +1565,7 @@ bool FRenderer::CreateRayTracingPipeline(FDX12Device* Device)
     FShaderCompiler Compiler;
     RayQueryShadowPipeline.Reset();
     RayQueryPathPipeline.Reset();
+    RayQueryPathDebugPipeline.Reset();
 
     std::vector<uint8_t> ShadowBytecode;
     if (!Compiler.CompileFromFile(L"Shaders/ShadowRays.hlsl", L"CSMain", L"cs_6_6", ShadowBytecode))
@@ -1603,6 +1604,26 @@ bool FRenderer::CreateRayTracingPipeline(FDX12Device* Device)
         return false;
     }
     RayQueryPathPipeline->SetName(L"RayQueryPathPipeline");
+
+    std::vector<uint8_t> PathDebugBytecode;
+    const std::vector<std::wstring> PathDebugDefines = { L"PATH_TRACING_DEBUG=1" };
+    if (!Compiler.CompileFromFile(L"Shaders/PathTracing.hlsl", L"CSMain", L"cs_6_6", PathDebugBytecode, PathDebugDefines))
+    {
+        LogError("Failed to compile ray query path tracing debug shader.");
+        return false;
+    }
+
+    D3D12_COMPUTE_PIPELINE_STATE_DESC PathDebugPsoDesc = {};
+    PathDebugPsoDesc.pRootSignature = RayQueryRootSignature.Get();
+    PathDebugPsoDesc.CS.pShaderBytecode = PathDebugBytecode.data();
+    PathDebugPsoDesc.CS.BytecodeLength = PathDebugBytecode.size();
+    HR_CHECK(Device->GetDevice()->CreateComputePipelineState(&PathDebugPsoDesc, IID_PPV_ARGS(RayQueryPathDebugPipeline.ReleaseAndGetAddressOf())));
+    if (!RayQueryPathDebugPipeline)
+    {
+        LogError("Ray query path tracing debug pipeline state creation failed.");
+        return false;
+    }
+    RayQueryPathDebugPipeline->SetName(L"RayQueryPathDebugPipeline");
 
     RayTracingDepthSrvBindlessIndices.assign(FramesInFlight, UINT32_MAX);
     RayTracingDepthResources.assign(FramesInFlight, nullptr);
@@ -2021,7 +2042,7 @@ void FRenderer::BuildRayTracingTlas(FDX12CommandContext& CmdContext)
         uint32_t BaseColorTextureIndex;
         uint32_t NormalTextureIndex;
         uint32_t MetallicRoughnessTextureIndex;
-        uint32_t Padding;
+        uint32_t Flags;
     };
 
     std::vector<FPathTracingInstanceData> InstanceDataArray;
@@ -2074,7 +2095,7 @@ void FRenderer::BuildRayTracingTlas(FDX12CommandContext& CmdContext)
         InstData.BaseColorTextureIndex = Model.BaseColorBindlessIndex;
         InstData.NormalTextureIndex = Model.NormalBindlessIndex;
         InstData.MetallicRoughnessTextureIndex = Model.MetallicRoughnessBindlessIndex;
-        InstData.Padding = 0;
+        InstData.Flags = Model.bDoubleSided ? 1u : 0u;
 
         InstanceDataArray.push_back(InstData);
     }

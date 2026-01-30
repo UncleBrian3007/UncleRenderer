@@ -2321,7 +2321,7 @@ void FDeferredRenderer::AddPathTracingPass(FRenderGraph& Graph, const FCamera& C
         Builder.KeepAlive();
     }, [this, &Graph](const FPathTracingPassData& Data, FDX12CommandContext& CmdContext)
     {
-        if (!bRayTracingPipelineReady || !RayQueryPathPipeline || !RayQueryRootSignature || !Device || !Device->GetBindlessDescriptorHeap())
+        if (!bRayTracingPipelineReady || !RayQueryRootSignature || !Device || !Device->GetBindlessDescriptorHeap())
         {
             return;
         }
@@ -2475,7 +2475,12 @@ void FDeferredRenderer::AddPathTracingPass(FRenderGraph& Graph, const FCamera& C
         const uint32_t GroupCountX = (DispatchWidth + RayQueryThreadGroupSize - 1u) / RayQueryThreadGroupSize;
         const uint32_t GroupCountY = (DispatchHeight + RayQueryThreadGroupSize - 1u) / RayQueryThreadGroupSize;
 
-        CommandList4->SetPipelineState(RayQueryPathPipeline.Get());
+        ID3D12PipelineState* PathTracingPipeline = PathTracingDebugMode > 0 ? RayQueryPathDebugPipeline.Get() : RayQueryPathPipeline.Get();
+        if (!PathTracingPipeline)
+        {
+            return;
+        }
+        CommandList4->SetPipelineState(PathTracingPipeline);
         CommandList4->SetComputeRootSignature(RayQueryRootSignature.Get());
         CommandList4->SetComputeRootShaderResourceView(0, TlasResultBuffers[FrameIndex]->GetGPUVirtualAddress());
         const uint64_t ConstantBufferOffset = 0;

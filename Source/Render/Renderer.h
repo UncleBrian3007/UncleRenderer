@@ -360,6 +360,7 @@ protected:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> RayQueryRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RayQueryShadowPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RayQueryPathPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> RayQueryPathDebugPipeline;
     bool bRayTracingPipelineReady = false;
     std::vector<uint32_t> RayTracingDepthSrvBindlessIndices;
     std::vector<ID3D12Resource*> RayTracingDepthResources;

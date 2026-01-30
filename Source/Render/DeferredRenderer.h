@@ -115,7 +115,7 @@ public:
         if (PathTracingDebugMode != Mode)
         {
             // Save user preference when leaving mode 0
-            if (PathTracingDebugMode == 0 && Mode >= 1 && Mode <= 6)
+            if (PathTracingDebugMode == 0 && Mode >= 1 && Mode <= 12)
             {
                 bPathTracingAccumulationUserPreference = bPathTracingAccumulationEnabled;
             }
@@ -124,8 +124,8 @@ public:
             std::fill(PathTracingAccumulationHistoryValid.begin(), PathTracingAccumulationHistoryValid.end(), false);
 			PathTracingAccumulatedFrames = 0;
 
-            // Disable accumulation for debug modes 1-6, restore for mode 0
-            if (Mode >= 1 && Mode <= 6)
+            // Disable accumulation for debug modes 1-12, restore for mode 0
+            if (Mode >= 1 && Mode <= 12)
             {
                 bPathTracingAccumulationEnabled = false;
             }
@@ -401,7 +401,7 @@ private:
     std::vector<bool> PathTracingAccumulationHistoryValid;
     uint32_t PathTracingAccumulatedFrames = 0;
     uint32_t PathTracingMaxBounces = 4;
-    int PathTracingDebugMode = 0; // 0=Normal PT, 1=GBuffer Albedo, 2=First Hit Albedo, 3=Texture Index Hash
+    int PathTracingDebugMode = 0; // 0=Normal PT, 1=GBuffer Albedo, 2=First Hit Albedo, 3=Texture Index Hash, 4=Direct Light, 5=Diffuse Probability, 6=Hit/Miss Mask, 7=Throughput Over Pdf, 8=Firefly Metric, 9=First Hit Distance, 10=Sky Miss Contribution, 11=First Hit NdotV, 12=Bounce1 NdotV
     DirectX::XMFLOAT3 PreviousCameraPosition{ 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT4X4 PreviousCameraViewMatrix{};
     bool bFirstFrame = true;

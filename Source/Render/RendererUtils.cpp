@@ -1023,6 +1023,7 @@ bool RendererUtils::CreateSceneModelsFromJson(
                 ModelResource.AlphaMode = static_cast<uint32_t>(Material.bAlphaBlend
                     ? EAlphaMode::Blend
                     : (Material.bAlphaMask ? EAlphaMode::Mask : EAlphaMode::Opaque));
+                ModelResource.bDoubleSided = Material.bDoubleSided;
                 ModelResource.bHasNormalMap = !ModelResource.NormalTexturePath.empty();
 
                 ModelResource.BaseColorTransformOffsetScale = BuildOffsetScale(Material.BaseColorTransform);
@@ -1772,6 +1773,7 @@ void RendererUtils::UpdateSceneConstants(
     Constants.BaseColor = BaseColorFactor;
     Constants.LightIntensity = LightIntensity;
     XMStoreFloat3(&Constants.LightDirection, XMVector3Normalize(LightDirection));
+    Constants.LightRadius = 0.02f;
     Constants.CameraPosition = Camera.GetPosition();
     Constants.LightColor = LightColor;
     Constants.EmissiveFactor = EmissiveFactor;

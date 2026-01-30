@@ -53,7 +53,7 @@ struct FSceneConstants
     DirectX::XMFLOAT3 BaseColor;
     float LightIntensity = 1.0f;
     DirectX::XMFLOAT3 LightDirection;
-    float Padding1 = 0.0f;
+    float LightRadius = 0.02f;
     DirectX::XMFLOAT3 CameraPosition;
     float Padding2 = 0.0f;
     DirectX::XMFLOAT3 LightColor{ 1.0f, 1.0f, 1.0f };
@@ -162,6 +162,7 @@ struct FSceneModelResource
     DirectX::XMFLOAT3 EmissiveFactor{ 0.0f, 0.0f, 0.0f };
     float AlphaCutoff = 0.5f;
     uint32_t AlphaMode = 0;
+    bool bDoubleSided = false;
     std::wstring BaseColorTexturePath;
     std::wstring MetallicRoughnessTexturePath;
     std::wstring NormalTexturePath;

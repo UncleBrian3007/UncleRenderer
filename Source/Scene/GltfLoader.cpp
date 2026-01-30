@@ -326,6 +326,8 @@ namespace
             TextureSet.bAlphaBlend = true;
         }
 
+        TextureSet.bDoubleSided = Material->double_sided;
+
         return TextureSet;
     }
 

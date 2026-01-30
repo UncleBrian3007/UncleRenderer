@@ -30,6 +30,7 @@ struct FGltfMaterialTextureSet
     float AlphaCutoff = 0.5f;
     bool bAlphaMask = false;
     bool bAlphaBlend = false;
+    bool bDoubleSided = false;
     FGltfTextureTransform BaseColorTransform;
     FGltfTextureTransform MetallicRoughnessTransform;
     FGltfTextureTransform NormalTransform;

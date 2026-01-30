@@ -1,6 +1,10 @@
 #include "PBRCommon.hlsl"
 #include "SceneConstants.hlsl"
 
+#ifndef PATH_TRACING_DEBUG
+#define PATH_TRACING_DEBUG 0
+#endif
+
 RaytracingAccelerationStructure Scene : register(t0);
 cbuffer RayTracingBindlessConstants : register(b1)
 {
@@ -15,7 +19,7 @@ cbuffer RayTracingBindlessConstants : register(b1)
     uint InstanceDataBufferIndex;
     uint MaxBounces;
     uint LinearClampSamplerIndex;
-    int DebugMode; // 0=Normal PT, 1=GBuffer Albedo, 2=First Hit Albedo, 3=Texture Index Hash
+    int DebugMode; // 0=Normal PT, 1=GBuffer Albedo, 2=First Hit Albedo, 3=Texture Index Hash, 4=Direct Light, 5=Diffuse Probability, 6=Hit/Miss Mask, 7=Throughput Over Pdf, 8=Firefly Metric, 9=First Hit Distance, 10=Sky Miss Contribution, 11=First Hit NdotV, 12=Bounce1 NdotV
 };
 
 float3 ReconstructWorldPosition(uint2 pixel, float depth, uint2 dispatchDim)
@@ -70,6 +74,58 @@ float3 SampleHemisphereCosine(float2 rand, float3 normal)
     return normalize(sample);
 }
 
+float3 TangentToWorld(float3 v, float3 N);
+
+float3 SampleConeUniform(float2 randVal, float radius, float3 direction)
+{
+    float cosTheta = cos(radius);
+    float r0 = cosTheta + randVal.x * (1.0f - cosTheta);
+    float r = sqrt(max(0.0f, 1.0f - r0 * r0));
+    float phi = 2.0f * PI * randVal.y;
+
+    float sinPhi;
+    float cosPhi;
+    sincos(phi, sinPhi, cosPhi);
+
+    float3 v = float3(r * cosPhi, r * sinPhi, r0);
+    return TangentToWorld(v, direction);
+}
+
+float Luminance(float3 color)
+{
+    return dot(max(color, 0.0f), float3(0.2126f, 0.7152f, 0.0722f));
+}
+
+float3 DiffuseBRDF(float3 diffuse)
+{
+    return diffuse / 3.14159265f;
+}
+
+float3 SpecularBRDF(float3 N, float3 V, float3 L, float3 specular, float roughness, out float3 F)
+{
+    float3 H = normalize(V + L);
+
+    float NdotV = saturate(dot(N, V));
+    float NdotL = saturate(dot(N, L));
+    float NdotH = saturate(dot(N, H));
+    float VdotH = saturate(dot(V, H));
+
+    float alpha = roughness * roughness;
+    float D = D_GGX(NdotH, alpha);
+    float V_G = V_SmithGGX(NdotV, NdotL, alpha);
+    F = FresnelSchlick(VdotH, specular);
+
+    return D * V_G * F;
+}
+
+float3 BRDF(float3 wi, float3 wo, float3 N, float3 diffuse, float3 specular, float roughness)
+{
+    float3 F;
+    float3 specularBrdf = SpecularBRDF(N, wo, wi, specular, roughness, F);
+    float3 diffuseBrdf = DiffuseBRDF(diffuse);
+    return diffuseBrdf + specularBrdf;
+}
+
 // Sample GGX distribution for importance sampling
 // Returns sampled half-vector H in tangent space
 float3 SampleGGX(float2 rand, float alpha)
@@ -89,79 +145,6 @@ float3 TangentToWorld(float3 v, float3 N)
     return v.x * T + v.y * B + v.z * N;
 }
 
-// PDF for GGX importance sampling
-float PDF_GGX(float NdotH, float VdotH, float alpha)
-{
-    float D = D_GGX(NdotH, alpha);
-    return (D * NdotH) / (4.0f * VdotH);
-}
-
-// Sample BRDF using importance sampling (GGX for specular, cosine-weighted for diffuse)
-// Returns sampled direction, PDF of the selected lobe only, lobe selection probability, and which lobe was sampled
-// Sampling probability is based on roughness, NOT on Fresnel energy (keeps probability and BRDF energy separate)
-float3 SampleBRDF(float2 rand, float3 N, float3 V, float3 albedo, float metallic, float roughness, out float pdf, out float lobeProbability, out bool sampledSpecular)
-{
-    float alpha = roughness * roughness;
-    
-    // Lobe selection probability based on roughness (NOT Fresnel energy)
-    // Rough surfaces: favor diffuse sampling
-    // Smooth surfaces: favor specular sampling
-    // This is purely for sampling efficiency, NOT for BRDF energy weighting
-    float specularProbability = 0.5f + 0.3f * (1.0f - roughness); // Range: 0.5 (rough) to 0.8 (smooth)
-    specularProbability = lerp(specularProbability, 1.0f, metallic); // Metals always prefer specular
-    specularProbability = clamp(specularProbability, 0.1f, 0.9f); // Keep both lobes accessible
-    
-    float3 L;
-    
-    if (rand.x < specularProbability)
-    {
-        // Sample specular (GGX)
-        sampledSpecular = true;
-        lobeProbability = specularProbability;
-        
-        float2 u = float2((rand.x - 0.0f) / specularProbability, rand.y);
-        float3 H_tangent = SampleGGX(u, alpha);
-        float3 H = TangentToWorld(H_tangent, N);
-        
-        // Reflect view direction around half-vector to get light direction
-        L = reflect(-V, H);
-        
-        float NdotL = dot(N, L);
-        if (NdotL <= 0.0f)
-        {
-            pdf = 0.0f;
-            return float3(0.0f, 0.0f, 0.0f);
-        }
-        
-        float NdotH = saturate(dot(N, H));
-        float VdotH = saturate(dot(V, H));
-        
-        // Use only the PDF of the specular lobe (NOT mixture PDF)
-        pdf = PDF_GGX(NdotH, VdotH, alpha);
-    }
-    else
-    {
-        // Sample diffuse (cosine-weighted hemisphere)
-        sampledSpecular = false;
-        lobeProbability = 1.0f - specularProbability;
-        
-        float2 u = float2((rand.x - specularProbability) / (1.0f - specularProbability), rand.y);
-        L = SampleHemisphereCosine(u, N);
-        
-        float NdotL = dot(N, L);
-        if (NdotL <= 0.0f)
-        {
-            pdf = 0.0f;
-            return float3(0.0f, 0.0f, 0.0f);
-        }
-        
-        // Use only the PDF of the diffuse lobe (NOT mixture PDF)
-        pdf = NdotL / 3.14159265f;
-    }
-    
-    return L;
-}
-
 float3 EvaluateSky(float3 direction)
 {
     float t = saturate(direction.y * 0.5f + 0.5f);
@@ -178,8 +161,15 @@ struct FInstanceData
     uint BaseColorTextureIndex;
     uint NormalTextureIndex;
     uint MetallicRoughnessTextureIndex;
-    uint Padding;
+    uint Flags;
 };
+
+static const uint INSTANCE_FLAG_DOUBLE_SIDED = 1u;
+
+bool IsDoubleSided(FInstanceData instData)
+{
+    return (instData.Flags & INSTANCE_FLAG_DOUBLE_SIDED) != 0u;
+}
 
 // Fetch instance data for a hit
 FInstanceData GetInstanceData(uint instanceID)
@@ -264,6 +254,38 @@ float3 SampleAlbedo(uint instanceID, float2 uv)
     return BaseColorTexture.SampleLevel(LinearSampler, uv, 0).rgb;
 }
 
+float SampleOpacity(uint instanceID, uint primitiveIndex, float2 barycentrics)
+{
+    float alpha = BaseColorAlpha;
+    FInstanceData instData = GetInstanceData(instanceID);
+
+    if (instData.BaseColorTextureIndex == 0xFFFFFFFF)
+    {
+        return alpha;
+    }
+
+    float2 uv = GetInterpolatedUV(instanceID, primitiveIndex, barycentrics);
+    Texture2D<float4> BaseColorTexture = ResourceDescriptorHeap[instData.BaseColorTextureIndex];
+    SamplerState LinearSampler = SamplerDescriptorHeap[LinearClampSamplerIndex];
+    return alpha * BaseColorTexture.SampleLevel(LinearSampler, uv, 0).a;
+}
+
+bool AlphaTest(uint instanceID, uint primitiveIndex, float2 barycentrics)
+{
+    if (AlphaMode == 0u)
+    {
+        return true;
+    }
+
+    if (AlphaMode == 2u)
+    {
+        return false;
+    }
+
+    float alpha = SampleOpacity(instanceID, primitiveIndex, barycentrics);
+    return alpha >= AlphaCutoff;
+}
+
 // Sample metallic and roughness from texture
 float2 SampleMetallicRoughness(uint instanceID, float2 uv)
 {
@@ -294,55 +316,31 @@ static const uint ShadowRayFlags = RAY_FLAG_SKIP_CLOSEST_HIT_SHADER
     | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES
     | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
 static const float MaxRayDistance = 1000.0f;
-static const float SecondaryBounceAlbedo = 0.5f;
-static const float RussianRouletteThreshold = 0.1f;
 static const float FireflyThreshold = 5.0f;
 
-// Evaluate direct lighting using PBR (Next Event Estimation)
-// Traces a shadow ray to the sun and returns the direct light contribution
-float3 EvaluateDirectLighting(float3 hitPoint, float3 normal, float3 viewDir, float3 albedo, float metallic, float roughness)
+bool TraceVisibilityRay(RayDesc ray)
 {
-    // Sun direction from SceneConstants (normalized)
-    float3 lightDir = normalize(LightDirection);
-    
-    // Check if surface faces the light
-    float NdotL = dot(normal, lightDir);
-    if (NdotL <= 0.0f)
-    {
-        return float3(0.0f, 0.0f, 0.0f);
-    }
-    
-    // Trace shadow ray to check visibility
-    // Offset origin along normal to avoid self-intersection
-    RayDesc ShadowRay;
-    ShadowRay.Origin = hitPoint + normal * 0.01f;
-    ShadowRay.Direction = lightDir;
-    ShadowRay.TMin = 0.001f;
-    ShadowRay.TMax = MaxRayDistance;
-    
     RayQuery<ShadowRayFlags> ShadowQuery;
-    ShadowQuery.TraceRayInline(Scene, ShadowRayFlags, 0xFF, ShadowRay);
+    ShadowQuery.TraceRayInline(Scene, ShadowRayFlags, 0xFF, ray);
     while (ShadowQuery.Proceed())
     {
+        uint instanceID = ShadowQuery.CandidateInstanceID();
+        uint primitiveIndex = ShadowQuery.CandidatePrimitiveIndex();
+        float2 barycentrics = ShadowQuery.CandidateTriangleBarycentrics();
+        if (AlphaTest(instanceID, primitiveIndex, barycentrics))
+        {
+            ShadowQuery.CommitNonOpaqueTriangleHit();
+        }
     }
-    
-    // If ray hit something, the point is in shadow
-    if (ShadowQuery.CommittedStatus() != COMMITTED_NOTHING)
-    {
-        return float3(0.0f, 0.0f, 0.0f);
-    }
-    
-    // Calculate F0 for PBR (base reflectivity at normal incidence)
-    // Default dielectric F0 is 0.04, metals use albedo as F0
-    float3 F0 = lerp(float3(0.04f, 0.04f, 0.04f), albedo, metallic);
-    
-    // Evaluate PBR BRDF: combines diffuse and specular
-    // Returns (diffuse + specular) * NdotL
-    float3 brdf = EvaluatePBR(albedo, metallic, roughness, F0, normal, viewDir, lightDir);
-    
-    // Apply light color and intensity
-    float3 directLight = brdf * LightColor * LightIntensity;
-    return directLight;
+
+    return ShadowQuery.CommittedStatus() == COMMITTED_NOTHING;
+}
+
+float ProbabilityToSampleDiffuse(float3 diffuse, float3 specular)
+{
+    float lumDiffuse = Luminance(diffuse);
+    float lumSpecular = Luminance(specular);
+    return lumDiffuse / max(lumDiffuse + lumSpecular, 0.0001f);
 }
 
 [numthreads(RayQueryThreadGroupSize, RayQueryThreadGroupSize, 1)]
@@ -362,6 +360,7 @@ void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID)
     const uint2 DispatchIndex = DispatchThreadId.xy;
     const uint2 DispatchDim = uint2(DispatchWidth, DispatchHeight);
     
+#if PATH_TRACING_DEBUG
     // Debug Mode 1: Visualize GBuffer albedo (rasterized result)
     // This is placed BEFORE depth check to show albedo for all pixels including sky
     if (DebugMode == 1)
@@ -370,6 +369,7 @@ void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID)
         PathOutput[DispatchIndex] = float4(dbgAlbedo, 1);
         return;
     }
+#endif
     
     const float Depth = DepthTexture.Load(int3(DispatchIndex, 0));
     if (Depth >= 1.0f)
@@ -397,211 +397,244 @@ void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID)
     float currentMetallic = materialProps.g;   // Green channel = metallic
     float currentRoughness = max(materialProps.b, 0.03f);  // Blue channel = roughness, min 0.03 for stability
 
-    // Path tracing with multiple bounces - Direct Lighting First approach
-    // Initialize current surface data from G-Buffer before loop
-    float3 currentPos = worldPosition;
-    float3 currentNormal = worldNormal;
-    float3 currentAlbedo = albedo;
-    
-    float3 radiance = float3(0.0f, 0.0f, 0.0f);
-    float3 throughput = float3(1.0f, 1.0f, 1.0f); // Start with full energy
-    
-    // Track incoming ray direction - direction from which light arrives at surface
-    // Initially from camera to first surface point
-    float3 incomingDir = normalize(worldPosition - CameraPosition);
-    
-    for (uint bounce = 0; bounce < MaxBounces; ++bounce)
+    float3 position = worldPosition;
+    float3 wo = normalize(CameraPosition - worldPosition);
+    float3 N = worldNormal;
+    if (dot(N, wo) < 0.0f)
     {
-        // View direction is opposite of incoming ray direction
-        float3 viewDir = -incomingDir;
-        
-        // Direct Lighting: Evaluate PBR at current surface point
-        float3 directLight = EvaluateDirectLighting(currentPos, currentNormal, viewDir, currentAlbedo, currentMetallic, currentRoughness);
-        
-        // Debug Mode 5: Indirect Lighting Only - skip direct lighting accumulation
-        if (DebugMode != 5)
+        N = -N;
+    }
+
+#if PATH_TRACING_DEBUG
+    if (DebugMode == 11)
+    {
+        float ndv = dot(N, wo);
+        float3 c = (ndv < 0.0f) ? float3(1.0f, 0.0f, 0.0f) : float3(0.0f, 1.0f, 0.0f);
+        PathOutput[DispatchIndex] = float4(c, 1.0f);
+        return;
+    }
+#endif
+
+    float3 diffuse = albedo * (1.0f - currentMetallic);
+    float3 specular = lerp(float3(0.04f, 0.04f, 0.04f), albedo, currentMetallic);
+    float roughness = currentRoughness;
+
+    float3 radiance = float3(0.0f, 0.0f, 0.0f);
+    float3 throughput = float3(1.0f, 1.0f, 1.0f);
+    float pdf = 1.0f;
+
+    for (uint bounce = 0; bounce < MaxBounces + 1; ++bounce)
+    {
+        float3 lightDir = normalize(LightDirection);
+        float2 randLight = float2(
+            Random01(DispatchIndex, FrameIndex * (MaxBounces + 1u) * 5u + bounce * 5u + 1u),
+            Random01(DispatchIndex, FrameIndex * (MaxBounces + 1u) * 5u + bounce * 5u + 2u)
+        );
+        float3 wi = SampleConeUniform(randLight, LightRadius, lightDir);
+        RayDesc ShadowRay;
+        ShadowRay.Origin = position + N * 0.01f;
+        ShadowRay.Direction = wi;
+        ShadowRay.TMin = 0.0f;
+        ShadowRay.TMax = MaxRayDistance;
+
+        float visibility = TraceVisibilityRay(ShadowRay) ? 1.0f : 0.0f;
+        float NdotL = saturate(dot(N, wi));
+        float3 directLight = BRDF(wi, wo, N, diffuse, specular, roughness) * visibility * LightColor * LightIntensity * NdotL;
+
+#if PATH_TRACING_DEBUG
+        if (DebugMode == 4 && bounce == 0)
         {
-            radiance += throughput * directLight; // PBR already includes albedo and BRDF
+            PathOutput[DispatchIndex] = float4(directLight, 1.0f);
+            return;
         }
-        
-        // Debug Mode 4: Direct Lighting Only - terminate path after accumulating direct lighting
-        if (DebugMode == 4)
+#endif
+        float invPdf = rcp(max(pdf, 1e-6f));
+		radiance += directLight * throughput * invPdf;
+
+        if (bounce == MaxBounces)
         {
             break;
         }
-        
-        // Generate random values for indirect lighting BRDF importance sampling
-        float2 rand = float2(
-            Random01(DispatchIndex, FrameIndex * MaxBounces * 2u + bounce * 2u + 1u),
-            Random01(DispatchIndex, FrameIndex * MaxBounces * 2u + bounce * 2u + 2u)
+
+        float probDiffuse = ProbabilityToSampleDiffuse(diffuse, specular);
+        float randSelect = Random01(DispatchIndex, FrameIndex * (MaxBounces + 1u) * 5u + bounce * 5u + 3u);
+        float2 randSample = float2(
+            Random01(DispatchIndex, FrameIndex * (MaxBounces + 1u) * 5u + bounce * 5u + 4u),
+            Random01(DispatchIndex, FrameIndex * (MaxBounces + 1u) * 5u + bounce * 5u + 5u)
         );
-        
-        // Sample BRDF using importance sampling (GGX for specular, cosine-weighted for diffuse)
-        float pdf;
-        float lobeProbability;
-        bool sampledSpecular;
-        float3 rayDirection = SampleBRDF(rand, currentNormal, viewDir, currentAlbedo, currentMetallic, currentRoughness, pdf, lobeProbability, sampledSpecular);
-        
-        if (pdf <= 0.0f)
+
+#if PATH_TRACING_DEBUG
+        if (DebugMode == 5 && bounce == 0)
         {
-            break; // Invalid sample
+            PathOutput[DispatchIndex] = float4(probDiffuse, probDiffuse, probDiffuse, 1.0f);
+            return;
         }
-        
-        // CRITICAL: Save previous surface properties BEFORE ray tracing
-        // These will be used for throughput calculation (BRDF was sampled from this surface)
-        float3 prevNormal = currentNormal;
-        float3 prevAlbedo = currentAlbedo;
-        float prevMetallic = currentMetallic;
-        float prevRoughness = currentRoughness;
-        float3 prevViewDir = viewDir;
-        
-        // Trace indirect ray
+#endif
+
+        if (randSelect < probDiffuse)
+        {
+            wi = SampleHemisphereCosine(randSample, N);
+
+            float3 diffuseBrdf = DiffuseBRDF(diffuse);
+            float NdotL = saturate(dot(N, wi));
+
+            throughput *= diffuseBrdf * NdotL;
+            pdf *= (NdotL / 3.14159265f) * probDiffuse;
+        }
+        else
+        {
+            float3 H = TangentToWorld(SampleGGX(randSample, roughness * roughness), N);
+            wi = reflect(-wo, H);
+
+            float3 F;
+            float3 specularBrdf = SpecularBRDF(N, wo, wi, specular, roughness, F);
+            float NdotL = saturate(dot(N, wi));
+
+            throughput *= specularBrdf * NdotL;
+
+            float D = D_GGX(saturate(dot(N, H)), roughness * roughness);
+            float NdotH = saturate(dot(N, H));
+            float LdotH = saturate(dot(wi, H));
+            pdf *= (D * NdotH / max(4.0f * LdotH, 0.0001f)) * (1.0f - probDiffuse);
+        }
+
+        float throughputOverPdf = max(throughput.x, max(throughput.y, throughput.z)) / max(pdf, 0.0001f);
+#if PATH_TRACING_DEBUG
+        if (DebugMode == 7 && bounce == 0)
+        {
+            PathOutput[DispatchIndex] = float4(throughputOverPdf, throughputOverPdf, throughputOverPdf, 1.0f);
+            return;
+        }
+
+        if (DebugMode == 8 && bounce == 0)
+        {
+            float fireflyMetric = throughputOverPdf / FireflyThreshold;
+            PathOutput[DispatchIndex] = float4(fireflyMetric, fireflyMetric, fireflyMetric, 1.0f);
+            return;
+        }
+#endif
+
+        if (throughputOverPdf > FireflyThreshold)
+        {
+            break;
+        }
+
         RayDesc Ray;
-        Ray.Origin = currentPos + currentNormal * 0.01f; // Offset to avoid self-intersection
-        Ray.Direction = rayDirection;
+        Ray.Origin = position + N * 0.01f;
+        Ray.Direction = wi;
         Ray.TMin = 0.001f;
         Ray.TMax = MaxRayDistance;
-        
+
         RayQuery<PathRayFlags> RayQuery;
         RayQuery.TraceRayInline(Scene, PathRayFlags, 0xFF, Ray);
         while (RayQuery.Proceed())
         {
+            uint instanceID = RayQuery.CandidateInstanceID();
+            uint primitiveIndex = RayQuery.CandidatePrimitiveIndex();
+            float2 barycentrics = RayQuery.CandidateTriangleBarycentrics();
+            if (AlphaTest(instanceID, primitiveIndex, barycentrics))
+            {
+                RayQuery.CommitNonOpaqueTriangleHit();
+            }
         }
-        
-        // Debug Mode 6: Hit/Miss Mask - visualize ray coverage
+
+#if PATH_TRACING_DEBUG
         if (DebugMode == 6 && bounce == 0)
         {
             if (RayQuery.CommittedStatus() == COMMITTED_NOTHING)
-                PathOutput[DispatchIndex] = float4(0, 0, 0, 1); // Black = miss (sky)
+                PathOutput[DispatchIndex] = float4(0, 0, 0, 1);
             else
-                PathOutput[DispatchIndex] = float4(1, 1, 1, 1); // White = hit (geometry)
+                PathOutput[DispatchIndex] = float4(1, 1, 1, 1);
             return;
         }
-        
-        // Check if ray hit anything
+#endif
+
         if (RayQuery.CommittedStatus() == COMMITTED_NOTHING)
         {
-            // Ray escaped to sky - add sky contribution and terminate
-            radiance += throughput * EvaluateSky(rayDirection);
+			invPdf = rcp(max(pdf, 1e-6f));
+#if PATH_TRACING_DEBUG
+            if (DebugMode == 10 && bounce == 0)
+            {
+                float3 skyContribution = EvaluateSky(wi) * throughput * invPdf;
+                PathOutput[DispatchIndex] = float4(skyContribution, 1.0f);
+                return;
+            }
+
+            if (DebugMode == 12 && bounce == 0)
+            {
+                PathOutput[DispatchIndex] = float4(0.0f, 0.0f, 1.0f, 1.0f);
+                return;
+            }
+#endif
+
+            radiance += EvaluateSky(wi) * throughput * invPdf;
             break;
         }
-        
-        // Ray hit something - fetch next surface data
+
         uint instanceID = RayQuery.CommittedInstanceID();
         uint primitiveIndex = RayQuery.CommittedPrimitiveIndex();
         float2 barycentrics = RayQuery.CommittedTriangleBarycentrics();
         float hitT = RayQuery.CommittedRayT();
+        bool frontFace = RayQuery.CommittedTriangleFrontFace();
+        FInstanceData instData = GetInstanceData(instanceID);
+
+#if PATH_TRACING_DEBUG
+        if (DebugMode == 9 && bounce == 0)
+        {
+            float hitDistance = saturate(hitT / MaxRayDistance);
+            PathOutput[DispatchIndex] = float4(hitDistance, hitDistance, hitDistance, 1.0f);
+            return;
+        }
+#endif
         float3x4 objectToWorld = RayQuery.CommittedObjectToWorld3x4();
-        
-        // Get next hit point position
-        float3 nextPos = Ray.Origin + rayDirection * hitT;
-        
-        // Get interpolated normal and UV from actual geometry data
-        // Normal is transformed from object space to world space
+
+        float3 nextPos = Ray.Origin + wi * hitT;
         float3 nextNormal = GetInterpolatedNormal(instanceID, primitiveIndex, barycentrics, objectToWorld);
+        if (IsDoubleSided(instData) && !frontFace)
+        {
+            nextNormal = -nextNormal;
+        }
         float2 uv = GetInterpolatedUV(instanceID, primitiveIndex, barycentrics);
-        
-        // Sample albedo from texture for next surface
         float3 nextAlbedo = SampleAlbedo(instanceID, uv);
-        
-        // Sample metallic and roughness from texture for next surface
         float2 nextMetallicRoughness = SampleMetallicRoughness(instanceID, uv);
         float nextMetallic = nextMetallicRoughness.x;
         float nextRoughness = nextMetallicRoughness.y;
-        
-        // Debug Mode 3: Visualize BaseColorTextureIndex per instance (first hit only)
-        // Shows hash colors to verify that different instances have different texture bindings
+
+#if PATH_TRACING_DEBUG
         if (DebugMode == 3 && bounce == 0)
         {
-            FInstanceData instData = GetInstanceData(instanceID);
             float3 hashColor = HashToColor(instData.BaseColorTextureIndex);
             PathOutput[DispatchIndex] = float4(hashColor, 1);
             return;
         }
-        
-        // Debug Mode 2: Visualize first ray hit albedo
+
         if (DebugMode == 2 && bounce == 0)
         {
             PathOutput[DispatchIndex] = float4(nextAlbedo, 1);
             return;
         }
-        
-        // NOW evaluate BRDF using PREVIOUS surface properties
-        // (the surface from which we sampled the ray direction)
-        // Calculate F0 for PBR
-        float3 F0 = lerp(float3(0.04f, 0.04f, 0.04f), prevAlbedo, prevMetallic);
-        float NdotL = saturate(dot(prevNormal, rayDirection));
-        float NdotV = saturate(dot(prevNormal, prevViewDir));
-        float3 H = normalize(prevViewDir + rayDirection);
-        float NdotH = saturate(dot(prevNormal, H));
-        float VdotH = saturate(dot(prevViewDir, H));
-        
-        float3 brdf;
-        if (sampledSpecular)
+#endif
+
+        position = nextPos;
+        N = nextNormal;
+        diffuse = nextAlbedo * (1.0f - nextMetallic);
+        specular = lerp(float3(0.04f, 0.04f, 0.04f), nextAlbedo, nextMetallic);
+        roughness = max(nextRoughness, 0.03f);
+        wo = -wi;
+        if (dot(N, wo) < 0.0f)
         {
-            // Evaluate only specular lobe (Cook-Torrance)
-            float alpha = prevRoughness * prevRoughness;
-            float D = D_GGX(NdotH, alpha);
-            float G = V_SmithGGX(NdotV, NdotL, alpha);
-            float3 F = FresnelSchlick(VdotH, F0);
-            
-            brdf = (D * G * F) / max(4.0f * NdotV * NdotL, 0.001f) * NdotL;
+            N = -N;
         }
-        else
+
+#if PATH_TRACING_DEBUG
+        if (DebugMode == 12 && bounce == 0)
         {
-            // Evaluate only diffuse lobe (Lambert)
-            // Pure Lambert without Fresnel for color stability across bounces
-            float3 kD = (1.0f - prevMetallic);
-            brdf = kD * prevAlbedo / 3.14159265f * NdotL;
+            float ndv = dot(N, wo);
+            float3 c = (ndv < 0.0f) ? float3(1.0f, 0.0f, 0.0f) : float3(0.0f, 1.0f, 0.0f);
+            PathOutput[DispatchIndex] = float4(c, 1.0f);
+            return;
         }
-        
-        // Update throughput with correct Monte Carlo estimator:
-        // throughput *= (f_lobe * cosTheta) / (pdf_lobe * lobeProbability)
-        // Note: brdf already includes NdotL, so brdf = f * NdotL = f * cosTheta
-        // Therefore: throughput *= brdf / (pdf * lobeProbability)
-        // The lobeProbability compensation is CRITICAL: without it, paths are statistically underweighted
-        throughput *= brdf / (pdf * lobeProbability);
-        
-        // Firefly rejection: terminate paths with unstable throughput
-        // This reduces high-energy outliers (bright white pixels) without biasing the estimator
-        // Early path termination is mathematically valid - it doesn't introduce bias
-        float luminanceThroughput = max(throughput.r, max(throughput.g, throughput.b));
-        if (luminanceThroughput > FireflyThreshold)
-        {
-            break; // Terminate this path early to prevent fireflies
-        }
-        
-        // ONLY NOW update current surface state to next surface for next iteration
-        currentPos = nextPos;
-        currentNormal = nextNormal;
-        currentAlbedo = nextAlbedo;
-        currentMetallic = nextMetallic;
-        currentRoughness = nextRoughness;
-        
-        // Update incoming direction for next bounce
-        incomingDir = rayDirection;
-        
-        // Unbiased Russian roulette termination
-        // Calculate survival probability based on throughput luminance
-        float maxThroughput = max(throughput.r, max(throughput.g, throughput.b));
-        if (maxThroughput < RussianRouletteThreshold && bounce > 1)
-        {
-            // Use throughput as survival probability (clamped to reasonable range)
-            float survivalProbability = clamp(maxThroughput, 0.1f, 1.0f);
-            
-            // Generate random value for Russian roulette decision
-            float rrRand = Random01(DispatchIndex, FrameIndex * MaxBounces * 3u + bounce * 3u);
-            
-            if (rrRand >= survivalProbability)
-            {
-                // Terminate path
-                break;
-            }
-            
-            // Path survived - compensate throughput to maintain unbiased estimator
-            // Divide by survival probability: E[throughput/p] = throughput
-            throughput /= survivalProbability;
-        }
+#endif
     }
 
     PathOutput[DispatchIndex] = float4(radiance, 1.0f);

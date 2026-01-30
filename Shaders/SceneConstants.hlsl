@@ -8,7 +8,7 @@ cbuffer SceneConstants : register(b0)
     float3 BaseColor;
     float LightIntensity;
     float3 LightDirection;
-    float Padding1;
+    float LightRadius;
     float3 CameraPosition;
     float Padding2;
     float3 LightColor;

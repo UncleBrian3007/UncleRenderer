@@ -13,6 +13,11 @@ cbuffer PathTracingAccumulationBindlessConstants : register(b1)
     uint LightingOutputTextureIndex;
 };
 
+bool BadFloat4(float4 v)
+{
+    return any(isnan(v)) || any(isinf(v));
+}
+
 [numthreads(8, 8, 1)]
 void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID)
 {
@@ -38,6 +43,19 @@ void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID)
 
     float4 history = AccumulationHistory.Load(int3(pixel, 0));
 
+/*    
+	float3 h = history.xyz;
+	float3 c = current.xyz;
+    
+    bool badRange = any(h < 1e-3f) || any(c < 1e-3f);
+    
+    if (BadFloat4(history) || BadFloat4(current) || badRange)
+    {
+        AccumulationOutput[pixel] = current;
+        LightingOutput[pixel] = current;
+        return;
+	}
+*/
 	static const float MAX_ACCUMULATION_SAMPLES = 1000.0f;
 	float SampleCount = min(float(FrameIndex), MAX_ACCUMULATION_SAMPLES);
     float weight = 1.0f / float(SampleCount + 1.0f);
