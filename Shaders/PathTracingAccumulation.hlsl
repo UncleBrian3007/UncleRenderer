@@ -34,7 +34,7 @@ void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID)
     
     float4 current = PathTracingTemp.Load(int3(pixel, 0));
 
-    if (UseHistory == 0)
+    if (UseHistory == 0 || FrameIndex == 0)
     {
         AccumulationOutput[pixel] = current;
         LightingOutput[pixel] = current;
@@ -56,9 +56,9 @@ void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID)
         return;
 	}
 */
-	static const float MAX_ACCUMULATION_SAMPLES = 1000.0f;
-	float SampleCount = min(float(FrameIndex), MAX_ACCUMULATION_SAMPLES);
-    float weight = 1.0f / float(SampleCount + 1.0f);
+	static const float MAX_ACCUMULATION_SAMPLES = 60*5.0f;
+	float sampleCount = min(float(FrameIndex) + 1.0f, MAX_ACCUMULATION_SAMPLES);
+    float weight = 1.0f / float(sampleCount);
     float4 accumulated = history + (current - history) * weight;
     
     AccumulationOutput[pixel] = accumulated;

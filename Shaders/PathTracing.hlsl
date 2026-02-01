@@ -19,6 +19,7 @@ cbuffer RayTracingBindlessConstants : register(b1)
     uint InstanceDataBufferIndex;
     uint MaxBounces;
     uint LinearClampSamplerIndex;
+    uint EnvironmentCubeBindlessIndex;
     int DebugMode; // 0=Normal PT, 1=GBuffer Albedo, 2=First Hit Albedo, 3=Texture Index Hash, 4=Direct Light, 5=Diffuse Probability, 6=Hit/Miss Mask, 7=Throughput Over Pdf, 8=Firefly Metric, 9=First Hit Distance, 10=Sky Miss Contribution, 11=First Hit NdotV, 12=Bounce1 NdotV
 };
 
@@ -147,8 +148,9 @@ float3 TangentToWorld(float3 v, float3 N)
 
 float3 EvaluateSky(float3 direction)
 {
-    float t = saturate(direction.y * 0.5f + 0.5f);
-    return lerp(float3(0.5f, 0.6f, 0.8f), float3(0.1f, 0.2f, 0.4f), 1.0f - t);
+    TextureCube EnvironmentMap = ResourceDescriptorHeap[EnvironmentCubeBindlessIndex];
+    SamplerState LinearSampler = SamplerDescriptorHeap[LinearClampSamplerIndex];
+    return EnvironmentMap.SampleLevel(LinearSampler, direction, 0).rgb;
 }
 
 // Structure to hold per-instance geometry buffer indices

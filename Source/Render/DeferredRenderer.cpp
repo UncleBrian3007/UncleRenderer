@@ -616,9 +616,9 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 		AddLinearDepthPass(Graph, FrameState, Resources.DepthHandle, Resources.LinearDepthHandle);
 		AddGtaoPass(Graph, FrameState, Resources.GBufferHandles, Resources.LinearDepthHandle, Resources.GtaoHandle);
 		AddLightingPass(Graph, FrameState, Resources.GBufferHandles, Resources.DepthHandle, Resources.GtaoHandle, Resources.ShadowHandle, Resources.LightingHandle);
-		AddSkyPass(Graph, Camera, Resources.DepthHandle, Resources.LightingHandle);
 	}
 
+	AddSkyPass(Graph, Camera, Resources.DepthHandle, Resources.LightingHandle);
 	AddObjectIdPass(Graph, Camera, Resources.ObjectIdHandle, Resources.DepthHandle);
     AddTemporalAAPass(Graph, FrameState, Resources.LightingHandle, Resources.TaaHandles);
     AddAutoExposurePass(Graph, FrameState, Resources.LightingHandle, Resources.LuminanceHandles, DeltaTime);
@@ -2456,7 +2456,8 @@ void FDeferredRenderer::AddPathTracingPass(FRenderGraph& Graph, const FCamera& C
         if (RayTracingGBufferASrvBindlessIndex == UINT32_MAX
             || RayTracingGBufferBSrvBindlessIndex == UINT32_MAX
             || RayTracingGBufferCSrvBindlessIndex == UINT32_MAX
-            || RayTracingLightingUavBindlessIndex == UINT32_MAX)
+            || RayTracingLightingUavBindlessIndex == UINT32_MAX
+            || EnvironmentCubeBindlessIndex == UINT32_MAX)
         {
             return;
         }
@@ -2500,6 +2501,7 @@ void FDeferredRenderer::AddPathTracingPass(FRenderGraph& Graph, const FCamera& C
             PathTracingInstanceDataBindlessIndex,
             PathTracingMaxBounces,
             Device->GetLinearClampSamplerIndex(),
+            EnvironmentCubeBindlessIndex,
             static_cast<uint32_t>(PathTracingDebugMode)
         };
         CommandList4->SetComputeRoot32BitConstants(2, _countof(BindlessIndices), BindlessIndices, 0);

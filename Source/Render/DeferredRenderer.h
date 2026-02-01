@@ -400,7 +400,7 @@ private:
     uint32_t PathTracingAccumulationFrameCount = 0;
     std::vector<bool> PathTracingAccumulationHistoryValid;
     uint32_t PathTracingAccumulatedFrames = 0;
-    uint32_t PathTracingMaxBounces = 4;
+    uint32_t PathTracingMaxBounces = 8;
     int PathTracingDebugMode = 0; // 0=Normal PT, 1=GBuffer Albedo, 2=First Hit Albedo, 3=Texture Index Hash, 4=Direct Light, 5=Diffuse Probability, 6=Hit/Miss Mask, 7=Throughput Over Pdf, 8=Firefly Metric, 9=First Hit Distance, 10=Sky Miss Contribution, 11=First Hit NdotV, 12=Bounce1 NdotV
     DirectX::XMFLOAT3 PreviousCameraPosition{ 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT4X4 PreviousCameraViewMatrix{};
