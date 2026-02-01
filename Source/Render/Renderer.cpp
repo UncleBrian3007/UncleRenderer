@@ -2043,6 +2043,7 @@ void FRenderer::BuildRayTracingTlas(FDX12CommandContext& CmdContext)
         uint32_t NormalTextureIndex;
         uint32_t MetallicRoughnessTextureIndex;
         uint32_t Flags;
+        DirectX::XMFLOAT4X4 WorldInverseTranspose;
     };
 
     std::vector<FPathTracingInstanceData> InstanceDataArray;
@@ -2096,6 +2097,9 @@ void FRenderer::BuildRayTracingTlas(FDX12CommandContext& CmdContext)
         InstData.NormalTextureIndex = Model.NormalBindlessIndex;
         InstData.MetallicRoughnessTextureIndex = Model.MetallicRoughnessBindlessIndex;
         InstData.Flags = Model.bDoubleSided ? 1u : 0u;
+        DirectX::XMMATRIX WorldMatrix = DirectX::XMLoadFloat4x4(&Model.WorldMatrix);
+        DirectX::XMMATRIX WorldInverseTranspose = DirectX::XMMatrixTranspose(DirectX::XMMatrixInverse(nullptr, WorldMatrix));
+        DirectX::XMStoreFloat4x4(&InstData.WorldInverseTranspose, WorldInverseTranspose);
 
         InstanceDataArray.push_back(InstData);
     }

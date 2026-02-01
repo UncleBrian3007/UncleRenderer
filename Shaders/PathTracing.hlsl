@@ -164,6 +164,7 @@ struct FInstanceData
     uint NormalTextureIndex;
     uint MetallicRoughnessTextureIndex;
     uint Flags;
+    float4x4 WorldInverseTranspose;
 };
 
 static const uint INSTANCE_FLAG_DOUBLE_SIDED = 1u;
@@ -206,7 +207,7 @@ float2 InterpolateFloat2(float2 v0, float2 v1, float2 v2, float2 barycentrics)
 }
 
 // Get interpolated normal at hit point (transforms from object space to world space)
-float3 GetInterpolatedNormal(uint instanceID, uint primitiveIndex, float2 barycentrics, float3x4 objectToWorld)
+float3 GetInterpolatedNormal(uint instanceID, uint primitiveIndex, float2 barycentrics)
 {
     FInstanceData instData = GetInstanceData(instanceID);
     uint3 indices = GetTriangleIndices(instanceID, primitiveIndex);
@@ -220,8 +221,8 @@ float3 GetInterpolatedNormal(uint instanceID, uint primitiveIndex, float2 baryce
     // Interpolate object-space normal
     float3 objectNormal = InterpolateFloat3(n0, n1, n2, barycentrics);
     
-    // Transform to world space (use upper 3x3 for normal transformation)
-    float3 worldNormal = mul((float3x3)objectToWorld, objectNormal);
+    // Transform to world space using inverse transpose
+    float3 worldNormal = mul((float3x3)instData.WorldInverseTranspose, objectNormal);
     
     return normalize(worldNormal);
 }
@@ -588,10 +589,8 @@ void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID)
             return;
         }
 #endif
-        float3x4 objectToWorld = RayQuery.CommittedObjectToWorld3x4();
-
         float3 nextPos = Ray.Origin + wi * hitT;
-        float3 nextNormal = GetInterpolatedNormal(instanceID, primitiveIndex, barycentrics, objectToWorld);
+        float3 nextNormal = GetInterpolatedNormal(instanceID, primitiveIndex, barycentrics);
         if (IsDoubleSided(instData) && !frontFace)
         {
             nextNormal = -nextNormal;
