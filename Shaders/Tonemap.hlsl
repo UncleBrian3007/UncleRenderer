@@ -36,8 +36,6 @@ cbuffer TonemapBindlessConstants : register(b1)
 SamplerState SceneSampler : register(s0);
 
 // Based on https://github.com/KhronosGroup/ToneMapping/blob/main/PBR_Neutral/pbrNeutral.glsl
-    Texture2D HDRScene = ResourceDescriptorHeap[HDRSceneIndex];
-    Texture2D LogAverageLuminance = ResourceDescriptorHeap[LogAverageLuminanceIndex];
 // 원본 색상(Hue)과 채도(Saturation)를 최대한 유지하면서 밝은 하이라이트 부분만 자연스럽게 압축
 float3 PBRNeutralToneMapping(float3 color)
 {

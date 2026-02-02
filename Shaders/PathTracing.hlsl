@@ -5,6 +5,23 @@
 #define PATH_TRACING_DEBUG 0
 #endif
 
+// "Efficient Construction of Perpendicular Vectors Without Branching"
+float3 GetPerpendicularVector(float3 u)
+{
+	float3 a = abs(u);
+	uint xm = ((a.x - a.y) < 0 && (a.x - a.z) < 0) ? 1 : 0;
+	uint ym = (a.y - a.z) < 0 ? (1 ^ xm) : 0;
+	uint zm = 1 ^ (xm | ym);
+	return cross(u, float3(xm, ym, zm));
+}
+
+float3 TangentToWorld(float3 v, float3 N)
+{
+	const float3 B = GetPerpendicularVector(N);
+	const float3 T = cross(B, N);
+	return T * v.x + B * v.y + N * v.z;
+}
+
 RaytracingAccelerationStructure Scene : register(t0);
 cbuffer RayTracingBindlessConstants : register(b1)
 {
@@ -75,7 +92,19 @@ float3 SampleHemisphereCosine(float2 rand, float3 normal)
     return normalize(sample);
 }
 
-float3 TangentToWorld(float3 v, float3 N);
+// PDF = cos / PI = NdotL / PI
+float3 SampleCosHemisphere(float2 randVal, float3 N)
+{
+	float r = sqrt(randVal.x);
+	float phi = 2.0 * PI * randVal.y;
+
+	float sinPhi, cosPhi;
+	sincos(phi, sinPhi, cosPhi);
+
+	float3 v = float3(r * cos(phi), r * sin(phi), sqrt(1.0 - randVal.x));
+
+	return TangentToWorld(v, N);
+}
 
 float3 SampleConeUniform(float2 randVal, float radius, float3 direction)
 {
@@ -136,14 +165,6 @@ float3 SampleGGX(float2 rand, float alpha)
     float sinTheta = sqrt(1.0f - cosTheta * cosTheta);
     
     return float3(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
-}
-
-// Transform vector from tangent space to world space
-float3 TangentToWorld(float3 v, float3 N)
-{
-    float3 T = normalize(abs(N.z) < 0.999f ? cross(float3(0.0f, 0.0f, 1.0f), N) : cross(float3(0.0f, 1.0f, 0.0f), N));
-    float3 B = cross(N, T);
-    return v.x * T + v.y * B + v.z * N;
 }
 
 float3 EvaluateSky(float3 direction)
@@ -313,11 +334,8 @@ float2 SampleMetallicRoughness(uint instanceID, float2 uv)
 
 // Constants for ray tracing
 static const uint RayQueryThreadGroupSize = 8;
-static const uint PathRayFlags = RAY_FLAG_SKIP_CLOSEST_HIT_SHADER
-    | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES;
-static const uint ShadowRayFlags = RAY_FLAG_SKIP_CLOSEST_HIT_SHADER
-    | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES
-    | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
+static const uint PathRayFlags = RAY_FLAG_NONE;
+static const uint ShadowRayFlags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES;
 static const float MaxRayDistance = 1000.0f;
 static const float FireflyThreshold = 5.0f;
 
@@ -428,15 +446,14 @@ void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID)
 
     for (uint bounce = 0; bounce < MaxBounces + 1; ++bounce)
     {
-        float3 lightDir = normalize(LightDirection);
+        float3 wi = LightDirection;
         float2 randLight = float2(
             Random01(DispatchIndex, FrameIndex * (MaxBounces + 1u) * 5u + bounce * 5u + 1u),
             Random01(DispatchIndex, FrameIndex * (MaxBounces + 1u) * 5u + bounce * 5u + 2u)
         );
-        float3 wi = SampleConeUniform(randLight, LightRadius, lightDir);
         RayDesc ShadowRay;
         ShadowRay.Origin = position + N * 0.01f;
-        ShadowRay.Direction = wi;
+        ShadowRay.Direction = SampleConeUniform(randLight, LightRadius, wi);
         ShadowRay.TMin = 0.0f;
         ShadowRay.TMax = MaxRayDistance;
 
@@ -476,7 +493,7 @@ void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID)
 
         if (randSelect < probDiffuse)
         {
-            wi = SampleHemisphereCosine(randSample, N);
+            wi = SampleCosHemisphere(randSample, N);
 
             float3 diffuseBrdf = DiffuseBRDF(diffuse);
             float NdotL = saturate(dot(N, wi));
@@ -589,7 +606,7 @@ void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID)
             return;
         }
 #endif
-        float3 nextPos = Ray.Origin + wi * hitT;
+        float3 nextPos = RayQuery.WorldRayOrigin() + RayQuery.WorldRayDirection() * RayQuery.CommittedRayT();
         float3 nextNormal = GetInterpolatedNormal(instanceID, primitiveIndex, barycentrics);
         if (IsDoubleSided(instData) && !frontFace)
         {
