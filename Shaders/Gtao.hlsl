@@ -205,10 +205,11 @@ float4 PSMain(VSOutput Input) : SV_Target
     Texture2D<float> LinearDepthTexture = ResourceDescriptorHeap[LinearDepthIndex];
     Texture2D<uint> HilbertLut = ResourceDescriptorHeap[HilbertLutIndex];
     float4 normalEncoded = GBufferA.Sample(GBufferSampler, Input.UV);
-    float3 normal = normalize(normalEncoded.xyz * 2.0f - 1.0f);
+    float3 worldNormal = normalize(normalEncoded.xyz * 2.0f - 1.0f);
+    float3 viewNormal = normalize(mul(worldNormal, (float3x3)View));
     float viewZ = LinearDepthTexture.Sample(GBufferSampler, Input.UV).r;
     float3 viewPos = ReconstructViewPosition(Input.UV, viewZ);
     uint2 pixCoord = uint2(Input.Position.xy);
-    float ao = ComputeGtao(LinearDepthTexture, HilbertLut, Input.UV, pixCoord, viewPos, normal);
+    float ao = ComputeGtao(LinearDepthTexture, HilbertLut, Input.UV, pixCoord, viewPos, viewNormal);
     return float4(ao, ao, ao, 1.0f);
 }

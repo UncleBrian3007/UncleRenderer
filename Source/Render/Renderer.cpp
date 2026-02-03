@@ -2039,10 +2039,13 @@ void FRenderer::BuildRayTracingTlas(FDX12CommandContext& CmdContext)
         uint32_t NormalBufferIndex;
         uint32_t UVBufferIndex;
         uint32_t IndexBufferIndex;
+        uint32_t TangentBufferIndex;
         uint32_t BaseColorTextureIndex;
         uint32_t NormalTextureIndex;
         uint32_t MetallicRoughnessTextureIndex;
         uint32_t Flags;
+        DirectX::XMFLOAT4 BaseColorFactorAndAlpha;
+        DirectX::XMFLOAT4 MetallicRoughnessAlphaCutoff;
         DirectX::XMFLOAT4X4 WorldInverseTranspose;
     };
 
@@ -2093,10 +2096,21 @@ void FRenderer::BuildRayTracingTlas(FDX12CommandContext& CmdContext)
         InstData.NormalBufferIndex = Model.VertexBufferBindlessIndices[1];
         InstData.UVBufferIndex = Model.VertexBufferBindlessIndices[2];
         InstData.IndexBufferIndex = Model.IndexBufferBindlessIndex;
+        InstData.TangentBufferIndex = Model.VertexBufferBindlessIndices[3];
         InstData.BaseColorTextureIndex = Model.BaseColorBindlessIndex;
         InstData.NormalTextureIndex = Model.NormalBindlessIndex;
         InstData.MetallicRoughnessTextureIndex = Model.MetallicRoughnessBindlessIndex;
         InstData.Flags = Model.bDoubleSided ? 1u : 0u;
+        InstData.BaseColorFactorAndAlpha = DirectX::XMFLOAT4(
+            Model.BaseColorFactor.x,
+            Model.BaseColorFactor.y,
+            Model.BaseColorFactor.z,
+            Model.BaseColorAlpha);
+        InstData.MetallicRoughnessAlphaCutoff = DirectX::XMFLOAT4(
+            Model.MetallicFactor,
+            Model.RoughnessFactor,
+            Model.AlphaCutoff,
+            0.0f);
         DirectX::XMMATRIX WorldMatrix = DirectX::XMLoadFloat4x4(&Model.WorldMatrix);
         DirectX::XMMATRIX WorldInverseTranspose = DirectX::XMMatrixTranspose(DirectX::XMMatrixInverse(nullptr, WorldMatrix));
         DirectX::XMStoreFloat4x4(&InstData.WorldInverseTranspose, WorldInverseTranspose);

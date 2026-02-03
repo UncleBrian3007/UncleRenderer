@@ -50,8 +50,7 @@ void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID)
     RayDesc Ray;
     float3 worldPosition = ReconstructWorldPosition(DispatchIndex, Depth, DispatchDim);
     float4 normalEncoded = GBufferA.Load(int3(DispatchIndex, 0));
-    float3 normalView = normalize(normalEncoded.xyz * 2.0f - 1.0f);
-    float3 worldNormal = normalize(mul(normalView, (float3x3) ViewInverse));
+    float3 worldNormal = normalize(normalEncoded.xyz * 2.0f - 1.0f);
     if (any(isnan(worldNormal)) || all(worldNormal == 0.0f))
     {
         worldNormal = float3(0.0f, 1.0f, 0.0f);

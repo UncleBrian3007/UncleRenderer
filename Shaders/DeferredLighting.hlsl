@@ -65,7 +65,7 @@ float4 PSMain(VSOutput Input) : SV_Target
     Texture2D GtaoTexture = ResourceDescriptorHeap[GtaoTextureIndex];
 
     float4 normalEncoded = GBufferA.Sample(GBufferSampler, Input.UV);
-    float3 normal = normalize(normalEncoded.xyz * 2.0f - 1.0f);
+    float3 worldNormal = normalize(normalEncoded.xyz * 2.0f - 1.0f);
     float4 smr = GBufferB.Sample(GBufferSampler, Input.UV);
     float depth = DepthBuffer.Sample(GBufferSampler, Input.UV).r;
     float3 albedo = GBufferC.Sample(GBufferSampler, Input.UV).rgb;
@@ -75,11 +75,10 @@ float4 PSMain(VSOutput Input) : SV_Target
 	float3 F0 = lerp(smr.x.xxx, albedo, metallic); // Metallic Àº Albedo ¿¡ ¹Ý»çÀ²(»ö±ò) ÀúÀå
 
     float3 viewPos = ReconstructViewPosition(Input.UV, depth);
-
-    float3 V = normalize(-viewPos);
-    float3 L = normalize(mul(float4(LightDirection, 0.0f), View).xyz);
-
     float3 worldPos = mul(float4(viewPos, 1.0f), ViewInverse).xyz;
+
+    float3 V = normalize(CameraPosition - worldPos);
+    float3 L = normalize(LightDirection);
     float4 shadowPosition = mul(float4(worldPos, 1.0f), LightViewProjection);
     float3 shadowCoord = shadowPosition.xyz / shadowPosition.w;
     float2 shadowUV = shadowCoord.xy * float2(0.5f, -0.5f) + 0.5f;
@@ -107,12 +106,11 @@ float4 PSMain(VSOutput Input) : SV_Target
 
     float3 lighting = 0.0f;
 #if USE_PBR_RESEARCH
-    lighting = EvaluatePBR_Research(albedo, metallic, roughness, F0, normal, V, L) * LightIntensity * LightColor * shadow;
+    lighting = EvaluatePBR_Research(albedo, metallic, roughness, F0, worldNormal, V, L) * LightIntensity * LightColor * shadow;
 #else
-    lighting = EvaluatePBR(albedo, metallic, roughness, F0, normal, V, L) * LightIntensity * LightColor * shadow;
+    lighting = EvaluatePBR(albedo, metallic, roughness, F0, worldNormal, V, L) * LightIntensity * LightColor * shadow;
 #endif
 
-    float3 worldNormal = normalize(mul(normal, (float3x3)ViewInverse));
     float3 worldView = normalize(CameraPosition - worldPos);
     float3 reflection = reflect(-worldView, worldNormal);
 

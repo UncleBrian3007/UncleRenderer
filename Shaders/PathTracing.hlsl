@@ -181,11 +181,14 @@ struct FInstanceData
     uint NormalBufferIndex;
     uint UVBufferIndex;
     uint IndexBufferIndex;
+    uint TangentBufferIndex;
     uint BaseColorTextureIndex;
     uint NormalTextureIndex;
     uint MetallicRoughnessTextureIndex;
     uint Flags;
-    float4x4 WorldInverseTranspose;
+    float4 BaseColorFactorAndAlpha;
+    float4 MetallicRoughnessAlphaCutoff;
+    row_major float4x4 WorldInverseTranspose;
 };
 
 static const uint INSTANCE_FLAG_DOUBLE_SIDED = 1u;
@@ -227,6 +230,38 @@ float2 InterpolateFloat2(float2 v0, float2 v1, float2 v2, float2 barycentrics)
     return v0 * (1.0f - barycentrics.x - barycentrics.y) + v1 * barycentrics.x + v2 * barycentrics.y;
 }
 
+// Get interpolated UV at hit point
+float2 GetInterpolatedUV(uint instanceID, uint primitiveIndex, float2 barycentrics)
+{
+    FInstanceData instData = GetInstanceData(instanceID);
+    uint3 indices = GetTriangleIndices(instanceID, primitiveIndex);
+    
+    StructuredBuffer<float2> UVBuffer = ResourceDescriptorHeap[instData.UVBufferIndex];
+    
+    float2 uv0 = UVBuffer[indices.x];
+    float2 uv1 = UVBuffer[indices.y];
+    float2 uv2 = UVBuffer[indices.z];
+
+    return InterpolateFloat2(uv0, uv1, uv2, barycentrics);
+}
+
+float4 GetInterpolatedTangent(uint instanceID, uint primitiveIndex, float2 barycentrics)
+{
+    FInstanceData instData = GetInstanceData(instanceID);
+    uint3 indices = GetTriangleIndices(instanceID, primitiveIndex);
+
+    StructuredBuffer<float4> TangentBuffer = ResourceDescriptorHeap[instData.TangentBufferIndex];
+
+    float4 t0 = TangentBuffer[indices.x];
+    float4 t1 = TangentBuffer[indices.y];
+    float4 t2 = TangentBuffer[indices.z];
+
+    float3 tangent = InterpolateFloat3(t0.xyz, t1.xyz, t2.xyz, barycentrics);
+    float handedness = t0.w * (1.0f - barycentrics.x - barycentrics.y) + t1.w * barycentrics.x + t2.w * barycentrics.y;
+
+    return float4(tangent, handedness);
+}
+
 // Get interpolated normal at hit point (transforms from object space to world space)
 float3 GetInterpolatedNormal(uint instanceID, uint primitiveIndex, float2 barycentrics)
 {
@@ -244,44 +279,48 @@ float3 GetInterpolatedNormal(uint instanceID, uint primitiveIndex, float2 baryce
     
     // Transform to world space using inverse transpose
     float3 worldNormal = mul((float3x3)instData.WorldInverseTranspose, objectNormal);
-    
-    return normalize(worldNormal);
-}
 
-// Get interpolated UV at hit point
-float2 GetInterpolatedUV(uint instanceID, uint primitiveIndex, float2 barycentrics)
-{
-    FInstanceData instData = GetInstanceData(instanceID);
-    uint3 indices = GetTriangleIndices(instanceID, primitiveIndex);
-    
-    StructuredBuffer<float2> UVBuffer = ResourceDescriptorHeap[instData.UVBufferIndex];
-    
-    float2 uv0 = UVBuffer[indices.x];
-    float2 uv1 = UVBuffer[indices.y];
-    float2 uv2 = UVBuffer[indices.z];
-    
-    return InterpolateFloat2(uv0, uv1, uv2, barycentrics);
+    worldNormal = normalize(worldNormal);
+
+    if (instData.NormalTextureIndex == 0xFFFFFFFF)
+    {
+        return worldNormal;
+    }
+
+    float4 tangentPacked = GetInterpolatedTangent(instanceID, primitiveIndex, barycentrics);
+    float3 worldTangent = normalize(mul((float3x3)instData.WorldInverseTranspose, tangentPacked.xyz));
+    worldTangent = normalize(worldTangent - worldNormal * dot(worldNormal, worldTangent));
+    float3 worldBitangent = cross(worldNormal, worldTangent) * tangentPacked.w;
+
+    float2 uv = GetInterpolatedUV(instanceID, primitiveIndex, barycentrics);
+    Texture2D<float4> NormalTexture = ResourceDescriptorHeap[instData.NormalTextureIndex];
+    SamplerState LinearSampler = SamplerDescriptorHeap[LinearClampSamplerIndex];
+    float3 tangentNormal = NormalTexture.SampleLevel(LinearSampler, uv, 0).xyz * 2.0f - 1.0f;
+
+    float3x3 TBN = float3x3(worldTangent, worldBitangent, worldNormal);
+    return normalize(mul(tangentNormal, TBN));
 }
 
 // Sample albedo from texture
 float3 SampleAlbedo(uint instanceID, float2 uv)
 {
     FInstanceData instData = GetInstanceData(instanceID);
+    float3 baseColorFactor = instData.BaseColorFactorAndAlpha.rgb;
     
     if (instData.BaseColorTextureIndex == 0xFFFFFFFF)
     {
-        return float3(1.0f, 0.0f, 1.0f); // Default magenta if no texture (highly visible)
+        return baseColorFactor;
     }
     
     Texture2D<float4> BaseColorTexture = ResourceDescriptorHeap[instData.BaseColorTextureIndex];
     SamplerState LinearSampler = SamplerDescriptorHeap[LinearClampSamplerIndex];
-    return BaseColorTexture.SampleLevel(LinearSampler, uv, 0).rgb;
+    return baseColorFactor * BaseColorTexture.SampleLevel(LinearSampler, uv, 0).rgb;
 }
 
 float SampleOpacity(uint instanceID, uint primitiveIndex, float2 barycentrics)
 {
-    float alpha = BaseColorAlpha;
     FInstanceData instData = GetInstanceData(instanceID);
+    float alpha = instData.BaseColorFactorAndAlpha.a;
 
     if (instData.BaseColorTextureIndex == 0xFFFFFFFF)
     {
@@ -306,19 +345,21 @@ bool AlphaTest(uint instanceID, uint primitiveIndex, float2 barycentrics)
         return false;
     }
 
+    FInstanceData instData = GetInstanceData(instanceID);
     float alpha = SampleOpacity(instanceID, primitiveIndex, barycentrics);
-    return alpha >= AlphaCutoff;
+    return alpha >= instData.MetallicRoughnessAlphaCutoff.z;
 }
 
 // Sample metallic and roughness from texture
 float2 SampleMetallicRoughness(uint instanceID, float2 uv)
 {
     FInstanceData instData = GetInstanceData(instanceID);
+    float metallic = instData.MetallicRoughnessAlphaCutoff.x;
+    float roughness = instData.MetallicRoughnessAlphaCutoff.y;
     
     if (instData.MetallicRoughnessTextureIndex == 0xFFFFFFFF)
     {
-        // Default values: non-metallic, moderate roughness
-        return float2(0.0f, 0.5f);
+        return float2(saturate(metallic), max(roughness, 0.03f));
     }
     
     Texture2D<float4> MetallicRoughnessTexture = ResourceDescriptorHeap[instData.MetallicRoughnessTextureIndex];
@@ -326,8 +367,8 @@ float2 SampleMetallicRoughness(uint instanceID, float2 uv)
     float2 mr = MetallicRoughnessTexture.SampleLevel(LinearSampler, uv, 0).bg; // Blue=metallic, Green=roughness
     
     // Clamp to valid ranges
-    float metallic = saturate(mr.x);  // [0, 1]
-    float roughness = max(mr.y, 0.03f);  // Minimum roughness to avoid numerical issues
+    metallic = saturate(metallic * mr.x);  // [0, 1]
+    roughness = max(roughness * mr.y, 0.03f);  // Minimum roughness to avoid numerical issues
     
     return float2(metallic, roughness);
 }
@@ -403,8 +444,7 @@ void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID)
 
     float3 worldPosition = ReconstructWorldPosition(DispatchIndex, Depth, DispatchDim);
     float4 normalEncoded = GBufferA.Load(int3(DispatchIndex, 0));
-    float3 normalView = normalize(normalEncoded.xyz * 2.0f - 1.0f);
-    float3 worldNormal = normalize(mul(normalView, (float3x3)ViewInverse));
+    float3 worldNormal = normalize(normalEncoded.xyz * 2.0f - 1.0f);
     if (any(isnan(worldNormal)) || all(worldNormal == 0.0f))
     {
         worldNormal = float3(0.0f, 1.0f, 0.0f);

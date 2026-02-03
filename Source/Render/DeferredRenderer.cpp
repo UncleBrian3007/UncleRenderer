@@ -4675,13 +4675,12 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
 
     const auto CreateSceneTextureSrv = [&](ID3D12Resource* Texture) -> uint32_t
     {
-        ID3D12Resource* Resource = Texture ? Texture : NullTexture.Get();
-        if (!Resource)
+        if (!Texture)
         {
             return UINT32_MAX;
         }
 
-        const D3D12_RESOURCE_DESC TextureDesc = Resource->GetDesc();
+        const D3D12_RESOURCE_DESC TextureDesc = Texture->GetDesc();
 
         D3D12_SHADER_RESOURCE_VIEW_DESC SceneSrvDesc = {};
         SceneSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
@@ -4691,7 +4690,7 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         SceneSrvDesc.Texture2D.MostDetailedMip = 0;
         SceneSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
 
-        return Device->CreateBindlessSrv(Resource, SceneSrvDesc);
+        return Device->CreateBindlessSrv(Texture, SceneSrvDesc);
     };
 
     for (size_t Index = 0; Index < SceneTextures.size(); ++Index)
@@ -5016,13 +5015,14 @@ bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, const std::vect
             Requests.push_back(MetallicRoughnessRequest);
         }
 
-        // Normal texture - use default normal if path is empty
-        FTextureLoadRequest NormalRequest;
-        NormalRequest.Path = Model.NormalTexturePath;
-        NormalRequest.SolidColor = 0xff8080ff;
-        NormalRequest.bUseSolidColor = Model.NormalTexturePath.empty();
-        NormalRequest.OutTexture = &TextureSet.Normal;
-        Requests.push_back(NormalRequest);
+		if (!Model.NormalTexturePath.empty())
+		{
+			FTextureLoadRequest NormalRequest;
+            NormalRequest.Path = Model.NormalTexturePath;
+            NormalRequest.bUseSolidColor = false;
+            NormalRequest.OutTexture = &TextureSet.Normal;
+			Requests.push_back(NormalRequest);
+		}
 
         // Emissive texture - skip when missing
         if (!Model.EmissiveTexturePath.empty())

@@ -104,13 +104,13 @@ VSOutput VSMain(VSInput Input)
 
 struct PSOutput
 {
-    float4 GBufferA : SV_Target0; // Normal (encoded)
+    float4 GBufferA : SV_Target0; // Normal (world, encoded)
     float4 GBufferB : SV_Target1; // Specular/Metallic/Roughness
     float4 GBufferC : SV_Target2; // BaseColor
     float4 SceneColor : SV_Target3; // Emissive
 };
 
-float3 ComputeViewNormal(VSOutput Input, float2 normalUV)
+float3 ComputeWorldNormal(VSOutput Input, float2 normalUV)
 {
     float3 vertexNormal = normalize(Input.Normal);
 
@@ -129,9 +129,9 @@ float3 ComputeViewNormal(VSOutput Input, float2 normalUV)
     float3x3 TBN = float3x3(tangent, bitangent, vertexNormal);
     float3 worldNormal = mul(tangentNormal, TBN);
 
-    return normalize(mul(normalize(worldNormal), (float3x3)View));
+    return normalize(worldNormal);
 #else
-    return normalize(mul(vertexNormal, (float3x3)View));
+    return normalize(vertexNormal);
 #endif
 }
 
@@ -147,7 +147,7 @@ PSOutput PSMain(VSOutput Input)
     float2 normalUV = ApplyTextureTransform(Input.UV, NormalTransformOffsetScale, NormalTransformRotation);
     float2 emissiveUV = ApplyTextureTransform(Input.UV, EmissiveTransformOffsetScale, EmissiveTransformRotation);
 
-    float3 viewNormal = ComputeViewNormal(Input, normalUV);
+    float3 worldNormal = ComputeWorldNormal(Input, normalUV);
 
     float3 albedo = BaseColor * Input.Color.rgb;
     float alpha = BaseColorAlpha * Input.Color.a;
@@ -163,7 +163,7 @@ PSOutput PSMain(VSOutput Input)
     }
 #endif
 
-    Output.GBufferA = float4(viewNormal * 0.5f + 0.5f, 1.0f);
+    Output.GBufferA = float4(worldNormal * 0.5f + 0.5f, 1.0f);
 
     const float specular = 0.04f;
     float metallic = MetallicFactor;

@@ -1551,13 +1551,12 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
 
     const auto CreateSceneTextureSrv = [&](ID3D12Resource* Texture)
     {
-        ID3D12Resource* Resource = Texture ? Texture : NullTexture.Get();
-        if (!Resource)
+        if (!Texture)
         {
             return UINT32_MAX;
         }
 
-        const D3D12_RESOURCE_DESC TextureDesc = Resource->GetDesc();
+        const D3D12_RESOURCE_DESC TextureDesc = Texture->GetDesc();
 
         D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc = {};
         SrvDesc.Format = TextureDesc.Format;
@@ -1567,7 +1566,7 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
         SrvDesc.Texture2D.MostDetailedMip = 0;
         SrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
 
-        return Device->CreateBindlessSrv(Resource, SrvDesc);
+        return Device->CreateBindlessSrv(Texture, SrvDesc);
     };
 
     D3D12_SHADER_RESOURCE_VIEW_DESC ShadowSrvDesc = {};
