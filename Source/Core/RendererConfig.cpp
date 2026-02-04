@@ -138,6 +138,11 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
         OutConfig.bEnablePathTracingAccumulation = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
 
+    if (LowerKey == "enablepathtracingvndf" || LowerKey == "pathtracingvndf" || LowerKey == "pathtracingusevndf")
+    {
+        OutConfig.bEnablePathTracingVndf = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+
     if (LowerKey == "shadowbias")
     {
         try

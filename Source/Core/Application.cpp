@@ -159,6 +159,7 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     bRayTracedShadowsEnabled = RendererConfig.bEnableRayTracedShadows;
     bPathTracingEnabled = RendererConfig.bEnablePathTracing;
     bPathTracingAccumulationEnabled = RendererConfig.bEnablePathTracingAccumulation;
+    bPathTracingVndfEnabled = RendererConfig.bEnablePathTracingVndf;
     bGpuTimingEnabled = RendererConfig.bEnableGpuTiming;
     bGpuDebugPrintEnabled = RendererConfig.bEnableGpuDebugPrint;
     ShadowBias = RendererConfig.ShadowBias;
@@ -946,6 +947,7 @@ bool FApplication::ReloadScene(const std::wstring& ScenePath)
     ReloadConfig.bEnableShadows = bShadowsEnabled;
     ReloadConfig.bEnableRayTracedShadows = bRayTracedShadowsEnabled;
     ReloadConfig.bEnablePathTracing = bPathTracingEnabled;
+    ReloadConfig.bEnablePathTracingVndf = bPathTracingVndfEnabled;
     ReloadConfig.ShadowBias = ShadowBias;
     ReloadConfig.bEnableHZB = bHZBEnabled;
     ReloadConfig.bEnableGtao = bGtaoEnabled;
@@ -1073,6 +1075,7 @@ void FApplication::StartAsyncSceneReload(const std::wstring& ScenePath)
     AsyncConfig.bEnableShadows = bShadowsEnabled;
     AsyncConfig.bEnableRayTracedShadows = bRayTracedShadowsEnabled;
     AsyncConfig.bEnablePathTracing = bPathTracingEnabled;
+    AsyncConfig.bEnablePathTracingVndf = bPathTracingVndfEnabled;
     AsyncConfig.ShadowBias = ShadowBias;
     AsyncConfig.bEnableTonemap = bTonemapEnabled;
     AsyncConfig.TonemapExposure = TonemapExposure;
@@ -1793,7 +1796,7 @@ void FApplication::RenderUI()
         {
             ImGui::SameLine();
             bool bPathTracingAccumulation = bPathTracingAccumulationEnabled;
-            if (ImGui::Checkbox("PT Accumulation", &bPathTracingAccumulation))
+            if (ImGui::Checkbox("Accumulation", &bPathTracingAccumulation))
             {
                 bPathTracingAccumulationEnabled = bPathTracingAccumulation;
                 RendererConfig.bEnablePathTracingAccumulation = bPathTracingAccumulationEnabled;
@@ -1809,8 +1812,26 @@ void FApplication::RenderUI()
                 }
             }
 
+			ImGui::SameLine();
+			bool bPathTracingVndf = bPathTracingVndfEnabled;
+			if (ImGui::Checkbox("PT GGX VNDF", &bPathTracingVndf))
+			{
+				bPathTracingVndfEnabled = bPathTracingVndf;
+				RendererConfig.bEnablePathTracingVndf = bPathTracingVndfEnabled;
+
+				if (DeferredRenderer)
+				{
+					DeferredRenderer->SetPathTracingVndfEnabled(bPathTracingVndfEnabled);
+				}
+
+				if (ForwardRenderer)
+				{
+					ForwardRenderer->SetPathTracingVndfEnabled(bPathTracingVndfEnabled);
+				}
+			}
+
             int PathTracingMaxBounces = static_cast<int>(RendererConfig.PathTracingMaxBounces);
-            if (ImGui::SliderInt("PT Max Bounces", &PathTracingMaxBounces, 1, 16))
+            if (ImGui::SliderInt("Max Bounces", &PathTracingMaxBounces, 1, 16))
             {
                 RendererConfig.PathTracingMaxBounces = static_cast<uint32_t>(PathTracingMaxBounces);
 

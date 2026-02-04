@@ -86,6 +86,7 @@ private:
     bool bRayTracedShadowsEnabled = false;
     bool bPathTracingEnabled = false;
     bool bPathTracingAccumulationEnabled = true;
+    bool bPathTracingVndfEnabled = true;
     bool bHZBEnabled = true;
     bool bHzbTwoPassEnabled = true;
     bool bGpuTimingEnabled = false;

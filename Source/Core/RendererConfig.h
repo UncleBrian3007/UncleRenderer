@@ -21,6 +21,7 @@ struct FRendererConfig
     bool bEnableRayTracedShadows = false;
     bool bEnablePathTracing = false;
     bool bEnablePathTracingAccumulation = true;
+    bool bEnablePathTracingVndf = true;
     uint32_t PathTracingMaxBounces = 8;
     float ShadowBias = 0.0f;
     bool bEnableTonemap = true;

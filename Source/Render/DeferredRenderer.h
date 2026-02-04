@@ -109,6 +109,12 @@ public:
 
     void SetPathTracingMaxBounces(uint32_t MaxBounces) { PathTracingMaxBounces = MaxBounces; }
     uint32_t GetPathTracingMaxBounces() const { return PathTracingMaxBounces; }
+    void SetPathTracingVndfEnabled(bool bEnabled) override
+    {
+        bPathTracingUseVndf = bEnabled;
+        std::fill(PathTracingAccumulationHistoryValid.begin(), PathTracingAccumulationHistoryValid.end(), false);
+        PathTracingAccumulatedFrames = 0;
+    }
 
     void SetPathTracingDebugMode(int Mode) 
     { 

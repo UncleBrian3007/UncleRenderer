@@ -2476,7 +2476,15 @@ void FDeferredRenderer::AddPathTracingPass(FRenderGraph& Graph, const FCamera& C
         const uint32_t GroupCountX = (DispatchWidth + RayQueryThreadGroupSize - 1u) / RayQueryThreadGroupSize;
         const uint32_t GroupCountY = (DispatchHeight + RayQueryThreadGroupSize - 1u) / RayQueryThreadGroupSize;
 
-        ID3D12PipelineState* PathTracingPipeline = PathTracingDebugMode > 0 ? RayQueryPathDebugPipeline.Get() : RayQueryPathPipeline.Get();
+        ID3D12PipelineState* PathTracingPipeline = nullptr;
+        if (PathTracingDebugMode > 0)
+        {
+            PathTracingPipeline = bPathTracingUseVndf ? RayQueryPathDebugVndfPipeline.Get() : RayQueryPathDebugPipeline.Get();
+        }
+        else
+        {
+            PathTracingPipeline = bPathTracingUseVndf ? RayQueryPathVndfPipeline.Get() : RayQueryPathPipeline.Get();
+        }
         if (!PathTracingPipeline)
         {
             return;
@@ -2522,7 +2530,7 @@ void FDeferredRenderer::AddPathTracingAccumulationPass(FRenderGraph& Graph, cons
         uint32_t WriteIndex = 0;
     };
 
-    Graph.AddPass<FPathTracingAccumulationPassData>("PathTracingAccumulation", [&](FPathTracingAccumulationPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FPathTracingAccumulationPassData>("PTAccumulation", [&](FPathTracingAccumulationPassData& Data, FRGPassBuilder& Builder)
     {
         // Always enable if we have PathTracingTemp and LightingHandle, even if accumulation is disabled
         // When disabled, we'll just copy temp to lighting without accumulation

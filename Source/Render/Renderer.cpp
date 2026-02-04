@@ -102,6 +102,7 @@ void FRenderer::InitializeCommonSettings(uint32_t Width, uint32_t Height, const 
     bShadowsEnabled = Config.bEnableShadows;
     bRayTracedShadowsEnabled = Config.bEnableRayTracedShadows;
     bPathTracingEnabled = Config.bEnablePathTracing;
+    bPathTracingUseVndf = Config.bEnablePathTracingVndf;
     ShadowBias = Config.ShadowBias;
     bLogResourceBarriers = Config.bLogResourceBarriers;
     bEnableGraphDump = Config.bEnableGraphDump;
@@ -1566,6 +1567,8 @@ bool FRenderer::CreateRayTracingPipeline(FDX12Device* Device)
     RayQueryShadowPipeline.Reset();
     RayQueryPathPipeline.Reset();
     RayQueryPathDebugPipeline.Reset();
+    RayQueryPathVndfPipeline.Reset();
+    RayQueryPathDebugVndfPipeline.Reset();
 
     std::vector<uint8_t> ShadowBytecode;
     if (!Compiler.CompileFromFile(L"Shaders/ShadowRays.hlsl", L"CSMain", L"cs_6_6", ShadowBytecode))
@@ -1587,7 +1590,8 @@ bool FRenderer::CreateRayTracingPipeline(FDX12Device* Device)
     RayQueryShadowPipeline->SetName(L"RayQueryShadowPipeline");
 
     std::vector<uint8_t> PathBytecode;
-    if (!Compiler.CompileFromFile(L"Shaders/PathTracing.hlsl", L"CSMain", L"cs_6_6", PathBytecode))
+    const std::vector<std::wstring> PathDefines = { L"PATH_TRACING_USE_VNDF=0" };
+    if (!Compiler.CompileFromFile(L"Shaders/PathTracing.hlsl", L"CSMain", L"cs_6_6", PathBytecode, PathDefines))
     {
         LogError("Failed to compile ray query path tracing shader.");
         return false;
@@ -1605,8 +1609,27 @@ bool FRenderer::CreateRayTracingPipeline(FDX12Device* Device)
     }
     RayQueryPathPipeline->SetName(L"RayQueryPathPipeline");
 
+    std::vector<uint8_t> PathVndfBytecode;
+    const std::vector<std::wstring> PathVndfDefines = { L"PATH_TRACING_USE_VNDF=1" };
+    if (!Compiler.CompileFromFile(L"Shaders/PathTracing.hlsl", L"CSMain", L"cs_6_6", PathVndfBytecode, PathVndfDefines))
+    {
+        LogError("Failed to compile ray query path tracing VNDF shader.");
+        return false;
+    }
+
+    D3D12_COMPUTE_PIPELINE_STATE_DESC PathVndfPsoDesc = PathPsoDesc;
+    PathVndfPsoDesc.CS.pShaderBytecode = PathVndfBytecode.data();
+    PathVndfPsoDesc.CS.BytecodeLength = PathVndfBytecode.size();
+    HR_CHECK(Device->GetDevice()->CreateComputePipelineState(&PathVndfPsoDesc, IID_PPV_ARGS(RayQueryPathVndfPipeline.ReleaseAndGetAddressOf())));
+    if (!RayQueryPathVndfPipeline)
+    {
+        LogError("Ray query path tracing VNDF pipeline state creation failed.");
+        return false;
+    }
+    RayQueryPathVndfPipeline->SetName(L"RayQueryPathVndfPipeline");
+
     std::vector<uint8_t> PathDebugBytecode;
-    const std::vector<std::wstring> PathDebugDefines = { L"PATH_TRACING_DEBUG=1" };
+    const std::vector<std::wstring> PathDebugDefines = { L"PATH_TRACING_DEBUG=1", L"PATH_TRACING_USE_VNDF=0" };
     if (!Compiler.CompileFromFile(L"Shaders/PathTracing.hlsl", L"CSMain", L"cs_6_6", PathDebugBytecode, PathDebugDefines))
     {
         LogError("Failed to compile ray query path tracing debug shader.");
@@ -1624,6 +1647,25 @@ bool FRenderer::CreateRayTracingPipeline(FDX12Device* Device)
         return false;
     }
     RayQueryPathDebugPipeline->SetName(L"RayQueryPathDebugPipeline");
+
+    std::vector<uint8_t> PathDebugVndfBytecode;
+    const std::vector<std::wstring> PathDebugVndfDefines = { L"PATH_TRACING_DEBUG=1", L"PATH_TRACING_USE_VNDF=1" };
+    if (!Compiler.CompileFromFile(L"Shaders/PathTracing.hlsl", L"CSMain", L"cs_6_6", PathDebugVndfBytecode, PathDebugVndfDefines))
+    {
+        LogError("Failed to compile ray query path tracing debug VNDF shader.");
+        return false;
+    }
+
+    D3D12_COMPUTE_PIPELINE_STATE_DESC PathDebugVndfPsoDesc = PathDebugPsoDesc;
+    PathDebugVndfPsoDesc.CS.pShaderBytecode = PathDebugVndfBytecode.data();
+    PathDebugVndfPsoDesc.CS.BytecodeLength = PathDebugVndfBytecode.size();
+    HR_CHECK(Device->GetDevice()->CreateComputePipelineState(&PathDebugVndfPsoDesc, IID_PPV_ARGS(RayQueryPathDebugVndfPipeline.ReleaseAndGetAddressOf())));
+    if (!RayQueryPathDebugVndfPipeline)
+    {
+        LogError("Ray query path tracing debug VNDF pipeline state creation failed.");
+        return false;
+    }
+    RayQueryPathDebugVndfPipeline->SetName(L"RayQueryPathDebugVndfPipeline");
 
     RayTracingDepthSrvBindlessIndices.assign(FramesInFlight, UINT32_MAX);
     RayTracingDepthResources.assign(FramesInFlight, nullptr);

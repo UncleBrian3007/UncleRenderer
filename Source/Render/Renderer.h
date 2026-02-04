@@ -56,6 +56,8 @@ public:
     virtual void SetPathTracingEnabled(bool bEnabled) { bPathTracingEnabled = bEnabled; }
     virtual bool IsPathTracingEnabled() const { return bPathTracingEnabled; }
     virtual void SetPathTracingAccumulationEnabled(bool bEnabled) { }
+    virtual void SetPathTracingVndfEnabled(bool bEnabled) { bPathTracingUseVndf = bEnabled; }
+    bool IsPathTracingVndfEnabled() const { return bPathTracingUseVndf; }
 
     void SetFrameIndex(uint32_t FrameIndex);
     uint32_t GetFrameIndex() const { return CurrentFrameIndex; }
@@ -361,6 +363,8 @@ protected:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RayQueryShadowPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RayQueryPathPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RayQueryPathDebugPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> RayQueryPathVndfPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> RayQueryPathDebugVndfPipeline;
     bool bRayTracingPipelineReady = false;
     std::vector<uint32_t> RayTracingDepthSrvBindlessIndices;
     std::vector<ID3D12Resource*> RayTracingDepthResources;
@@ -395,6 +399,7 @@ protected:
     bool bShadowsEnabled = true;
     bool bRayTracedShadowsEnabled = false;
     bool bPathTracingEnabled = false;
+    bool bPathTracingUseVndf = true;
     bool bLogResourceBarriers = false;
     bool bEnableGraphDump = false;
     bool bEnableGpuTiming = false;
