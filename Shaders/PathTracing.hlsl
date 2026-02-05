@@ -444,7 +444,7 @@ static const uint RayQueryThreadGroupSize = 8;
 static const uint PathRayFlags = RAY_FLAG_NONE;
 static const uint ShadowRayFlags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES;
 static const float MaxRayDistance = 1000.0f;
-static const float FireflyThreshold = 5.0f;
+static const float FireflyThreshold = 100.0f;
 
 bool TraceVisibilityRay(RayDesc ray)
 {
@@ -559,9 +559,9 @@ void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID)
 		float3 lightDirSample = SampleConeUniform(randLight, LightRadius, LightDirection);
 		float3 wi = lightDirSample;
         RayDesc ShadowRay;
-        ShadowRay.Origin = position + N * 0.01f;
+        ShadowRay.Origin = position + N * 0.01f + wi * 0.01f;
         ShadowRay.Direction = wi;
-        ShadowRay.TMin = 0.0f;
+        ShadowRay.TMin = 1e-3f;
         ShadowRay.TMax = MaxRayDistance;
 
         float visibility = TraceVisibilityRay(ShadowRay) ? 1.0f : 0.0f;

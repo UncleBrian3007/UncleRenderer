@@ -34,6 +34,7 @@ namespace
     };
 
     constexpr DXGI_FORMAT LightingBufferFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    constexpr DXGI_FORMAT PathTracingBufferFormat = DXGI_FORMAT_R32G32B32A32_FLOAT;
 
     float HaltonSequence(uint32_t Index, uint32_t Base)
     {
@@ -834,7 +835,7 @@ void FDeferredRenderer::ImportFrameResources(FRenderGraph& Graph, FDeferredFrame
         "PathTracingTemp",
         PathTracingTempTexture.Get(),
         &PathTracingTempState,
-        { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), LightingBufferFormat });
+        { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), PathTracingBufferFormat });
 
     OutResources.PathTracingAccumulationHandles.reserve(PathTracingAccumulationTextures.size());
     for (size_t Index = 0; Index < PathTracingAccumulationTextures.size(); ++Index)
@@ -844,7 +845,7 @@ void FDeferredRenderer::ImportFrameResources(FRenderGraph& Graph, FDeferredFrame
             HandleName,
             PathTracingAccumulationTextures[Index].Get(),
             &PathTracingAccumulationStates[Index],
-            { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), LightingBufferFormat }));
+            { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), PathTracingBufferFormat }));
     }
 
     OutResources.HZBHandle = Graph.ImportTexture(
@@ -4535,7 +4536,7 @@ bool FDeferredRenderer::CreatePathTracingAccumulationResources(FDX12Device* Devi
     Desc.Height = Height;
     Desc.DepthOrArraySize = 1;
     Desc.MipLevels = 1;
-    Desc.Format = LightingBufferFormat;
+    Desc.Format = PathTracingBufferFormat;
     Desc.SampleDesc.Count = 1;
     Desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
@@ -4838,7 +4839,7 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
     {
         D3D12_UNORDERED_ACCESS_VIEW_DESC PathTracingTempUavDesc = {};
         PathTracingTempUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-        PathTracingTempUavDesc.Format = LightingBufferFormat;
+        PathTracingTempUavDesc.Format = PathTracingBufferFormat;
         PathTracingTempUavDesc.Texture2D.MipSlice = 0;
         PathTracingTempBindlessIndex = Device->CreateBindlessUav(PathTracingTempTexture.Get(), nullptr, PathTracingTempUavDesc);
     }
@@ -4854,13 +4855,13 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         D3D12_SHADER_RESOURCE_VIEW_DESC AccumSrvDesc = {};
         AccumSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         AccumSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        AccumSrvDesc.Format = LightingBufferFormat;
+        AccumSrvDesc.Format = PathTracingBufferFormat;
         AccumSrvDesc.Texture2D.MipLevels = 1;
         PathTracingAccumulationSrvBindlessIndices[Index] = Device->CreateBindlessSrv(PathTracingAccumulationTextures[Index].Get(), AccumSrvDesc);
 
         D3D12_UNORDERED_ACCESS_VIEW_DESC AccumUavDesc = {};
         AccumUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-        AccumUavDesc.Format = LightingBufferFormat;
+        AccumUavDesc.Format = PathTracingBufferFormat;
         AccumUavDesc.Texture2D.MipSlice = 0;
         AccumUavDesc.Texture2D.PlaneSlice = 0;
         PathTracingAccumulationUavBindlessIndices[Index] = Device->CreateBindlessUav(PathTracingAccumulationTextures[Index].Get(), nullptr, AccumUavDesc);

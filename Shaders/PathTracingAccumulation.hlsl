@@ -56,8 +56,9 @@ void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID)
         return;
 	}
 */
-	static const float MAX_ACCUMULATION_SAMPLES = 60*5.0f;
-	float sampleCount = min(float(FrameIndex) + 1.0f, MAX_ACCUMULATION_SAMPLES);
+//	static const float MAX_ACCUMULATION_SAMPLES = 60*5.0f;
+//	float sampleCount = min(float(FrameIndex) + 1.0f, MAX_ACCUMULATION_SAMPLES);
+	float sampleCount = float(FrameIndex) + 1.0f;
     float weight = 1.0f / float(sampleCount);
     float4 accumulated = history + (current - history) * weight;
     
