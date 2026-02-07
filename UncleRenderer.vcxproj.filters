@@ -473,5 +473,8 @@
     <None Include="Shaders\PathTracing.hlsl">
       <Filter>Shaders</Filter>
     </None>
+    <None Include="Shaders\ScreenSpaceReflections.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
   </ItemGroup>
 </Project>

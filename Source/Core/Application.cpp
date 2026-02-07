@@ -180,6 +180,13 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     bGtaoJitterEnabled = RendererConfig.bEnableGtaoJitter;
     GtaoRadius = RendererConfig.GtaoRadius;
     GtaoThickness = RendererConfig.GtaoThickness;
+    bSsrEnabled = RendererConfig.bEnableSsr;
+    SsrMaxSteps = RendererConfig.SsrMaxSteps;
+    SsrMaxDistance = RendererConfig.SsrMaxDistance;
+    SsrThickness = RendererConfig.SsrThickness;
+    SsrStride = RendererConfig.SsrStride;
+    SsrRoughnessCutoff = RendererConfig.SsrRoughnessCutoff;
+    SsrIntensity = RendererConfig.SsrIntensity;
 
     if (bTaskSystemEnabled)
     {
@@ -954,6 +961,13 @@ bool FApplication::ReloadScene(const std::wstring& ScenePath)
     ReloadConfig.bEnableGtaoJitter = bGtaoJitterEnabled;
     ReloadConfig.GtaoRadius = GtaoRadius;
     ReloadConfig.GtaoThickness = GtaoThickness;
+    ReloadConfig.bEnableSsr = bSsrEnabled;
+    ReloadConfig.SsrMaxSteps = SsrMaxSteps;
+    ReloadConfig.SsrMaxDistance = SsrMaxDistance;
+    ReloadConfig.SsrThickness = SsrThickness;
+    ReloadConfig.SsrStride = SsrStride;
+    ReloadConfig.SsrRoughnessCutoff = SsrRoughnessCutoff;
+    ReloadConfig.SsrIntensity = SsrIntensity;
     ReloadConfig.bEnableIndirectDraw = bIndirectDrawEnabled;
     ReloadConfig.bEnableSkinningIndirectDraw = bSkinningIndirectDrawEnabled;
     ReloadConfig.bEnablePbrResearch = bPbrResearchEnabled;
@@ -1092,6 +1106,13 @@ void FApplication::StartAsyncSceneReload(const std::wstring& ScenePath)
     AsyncConfig.bEnableGtaoJitter = bGtaoJitterEnabled;
     AsyncConfig.GtaoRadius = GtaoRadius;
     AsyncConfig.GtaoThickness = GtaoThickness;
+    AsyncConfig.bEnableSsr = bSsrEnabled;
+    AsyncConfig.SsrMaxSteps = SsrMaxSteps;
+    AsyncConfig.SsrMaxDistance = SsrMaxDistance;
+    AsyncConfig.SsrThickness = SsrThickness;
+    AsyncConfig.SsrStride = SsrStride;
+    AsyncConfig.SsrRoughnessCutoff = SsrRoughnessCutoff;
+    AsyncConfig.SsrIntensity = SsrIntensity;
     AsyncConfig.bEnableIndirectDraw = bIndirectDrawEnabled;
     AsyncConfig.bEnableSkinningIndirectDraw = bSkinningIndirectDrawEnabled;
     AsyncConfig.bEnablePbrResearch = bPbrResearchEnabled;
@@ -1664,6 +1685,90 @@ void FApplication::RenderUI()
             if (ForwardRenderer)
             {
                 ForwardRenderer->SetGtaoThickness(GtaoThickness);
+            }
+        }
+
+        bool bSsr = bSsrEnabled;
+        if (ImGui::Checkbox("SSR", &bSsr))
+        {
+            bSsrEnabled = bSsr;
+            RendererConfig.bEnableSsr = bSsrEnabled;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetSsrEnabled(bSsrEnabled);
+            }
+        }
+
+        int SsrMaxStepsValue = static_cast<int>(SsrMaxSteps);
+        if (ImGui::SliderInt("SSR Max Steps", &SsrMaxStepsValue, 8, 256))
+        {
+            SsrMaxSteps = static_cast<uint32_t>(SsrMaxStepsValue);
+            RendererConfig.SsrMaxSteps = SsrMaxSteps;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetSsrMaxSteps(SsrMaxSteps);
+            }
+        }
+
+        float SsrDistanceValue = SsrMaxDistance;
+        if (ImGui::SliderFloat("SSR Max Distance", &SsrDistanceValue, 1.0f, 200.0f, "%.1f"))
+        {
+            SsrMaxDistance = SsrDistanceValue;
+            RendererConfig.SsrMaxDistance = SsrMaxDistance;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetSsrMaxDistance(SsrMaxDistance);
+            }
+        }
+
+        float SsrThicknessValue = SsrThickness;
+        if (ImGui::SliderFloat("SSR Thickness", &SsrThicknessValue, 0.01f, 1.0f, "%.2f"))
+        {
+            SsrThickness = SsrThicknessValue;
+            RendererConfig.SsrThickness = SsrThickness;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetSsrThickness(SsrThickness);
+            }
+        }
+
+        float SsrStrideValue = SsrStride;
+        if (ImGui::SliderFloat("SSR Stride", &SsrStrideValue, 0.05f, 2.0f, "%.2f"))
+        {
+            SsrStride = SsrStrideValue;
+            RendererConfig.SsrStride = SsrStride;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetSsrStride(SsrStride);
+            }
+        }
+
+        float SsrRoughnessCutoffValue = SsrRoughnessCutoff;
+        if (ImGui::SliderFloat("SSR Roughness Cutoff", &SsrRoughnessCutoffValue, 0.0f, 1.0f, "%.2f"))
+        {
+            SsrRoughnessCutoff = SsrRoughnessCutoffValue;
+            RendererConfig.SsrRoughnessCutoff = SsrRoughnessCutoff;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetSsrRoughnessCutoff(SsrRoughnessCutoff);
+            }
+        }
+
+        float SsrIntensityValue = SsrIntensity;
+        if (ImGui::SliderFloat("SSR Intensity", &SsrIntensityValue, 0.0f, 2.0f, "%.2f"))
+        {
+            SsrIntensity = SsrIntensityValue;
+            RendererConfig.SsrIntensity = SsrIntensity;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetSsrIntensity(SsrIntensity);
             }
         }
 

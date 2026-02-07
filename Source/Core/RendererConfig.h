@@ -45,6 +45,7 @@ struct FRendererConfig
     bool bEnableHZB = true;
     bool bEnableGtao = true;
     bool bEnableGtaoJitter = true;
+    bool bEnableSsr = true;
     bool bEnableIndirectDraw = true;
     bool bEnableSkinningIndirectDraw = false;
     bool bEnablePbrResearch = false;
@@ -55,6 +56,12 @@ struct FRendererConfig
     float GtaoThickness = 0.1f;
     uint32_t GtaoDirectionCount = 6;
     uint32_t GtaoStepCount = 4;
+	uint32_t SsrMaxSteps = 32;
+	float SsrMaxDistance = 50.0f;
+	float SsrThickness = 1.00f;
+	float SsrStride = 1.0f;
+	float SsrRoughnessCutoff = 0.6f;
+	float SsrIntensity = 0.3f;
     uint32_t WindowWidth = 1280;
     uint32_t WindowHeight = 720;
 };

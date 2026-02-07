@@ -19,6 +19,7 @@ cbuffer LightingBindlessConstants : register(b1)
     uint BrdfLutIndex;
     uint DepthBufferIndex;
     uint GtaoTextureIndex;
+    uint SsrTextureIndex;
 };
 SamplerState GBufferSampler : register(s0);
 SamplerComparisonState ShadowSampler : register(s1);
@@ -63,6 +64,7 @@ float4 PSMain(VSOutput Input) : SV_Target
     Texture2D BrdfLut = ResourceDescriptorHeap[BrdfLutIndex];
     Texture2D DepthBuffer = ResourceDescriptorHeap[DepthBufferIndex];
     Texture2D GtaoTexture = ResourceDescriptorHeap[GtaoTextureIndex];
+    Texture2D SsrTexture = ResourceDescriptorHeap[SsrTextureIndex];
 
     float4 normalEncoded = GBufferA.Sample(GBufferSampler, Input.UV);
     float3 worldNormal = normalize(normalEncoded.xyz * 2.0f - 1.0f);
@@ -121,6 +123,10 @@ float4 PSMain(VSOutput Input) : SV_Target
     float NdotV = saturate(dot(worldNormal, worldView));
     float2 brdf = BrdfLut.Sample(IblSampler, float2(NdotV, roughness)).rg;
     float3 specularIbl = prefilteredColor * (F0 * brdf.x + brdf.y);
+
+    float4 ssrSample = SsrTexture.Sample(GBufferSampler, Input.UV);
+    float ssrWeight = saturate(ssrSample.a);
+    specularIbl = lerp(specularIbl, ssrSample.rgb, ssrWeight);
 
     float3 irradiance = EnvironmentMap.SampleLevel(IblSampler, worldNormal, maxMip).rgb;
     float3 diffuseIbl = irradiance * albedo * (1.0f - metallic);

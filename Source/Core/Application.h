@@ -100,6 +100,13 @@ private:
     bool bGtaoJitterEnabled = false;
     float GtaoRadius = 0.75f;
     float GtaoThickness = 0.1f;
+    bool bSsrEnabled = true;
+    uint32_t SsrMaxSteps = 32;
+    float SsrMaxDistance = 50.0f;
+    float SsrThickness = 1.00f;
+    float SsrStride = 1.0f;
+    float SsrRoughnessCutoff = 0.6f;
+    float SsrIntensity = 0.3f;
     bool bCasEnabled = true;
     float CasSharpness = 0.2f;
     float TonemapExposure = 0.5f;

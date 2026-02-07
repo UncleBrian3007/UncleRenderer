@@ -324,6 +324,10 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     {
         OutConfig.bEnableGtao = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
+    if (LowerKey == "ssr" || LowerKey == "enablessr" || LowerKey == "enablescreenspacereflections")
+    {
+        OutConfig.bEnableSsr = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
     if (LowerKey == "gtaojitter" || LowerKey == "enablegtaojitter")
     {
         OutConfig.bEnableGtaoJitter = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
@@ -374,6 +378,78 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
         catch (...)
         {
             LogWarning("Invalid GTAO thickness value in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "ssrmaxsteps")
+    {
+        try
+        {
+            OutConfig.SsrMaxSteps = static_cast<uint32_t>(std::stoul(Value));
+        }
+        catch (...)
+        {
+            LogWarning("Invalid SSR max steps value in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "ssrmaxdistance")
+    {
+        try
+        {
+            OutConfig.SsrMaxDistance = std::stof(Value);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid SSR max distance value in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "ssrthickness")
+    {
+        try
+        {
+            OutConfig.SsrThickness = std::stof(Value);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid SSR thickness value in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "ssrstride")
+    {
+        try
+        {
+            OutConfig.SsrStride = std::stof(Value);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid SSR stride value in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "ssrroughnesscutoff")
+    {
+        try
+        {
+            OutConfig.SsrRoughnessCutoff = std::stof(Value);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid SSR roughness cutoff value in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "ssrintensity")
+    {
+        try
+        {
+            OutConfig.SsrIntensity = std::stof(Value);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid SSR intensity value in renderer config: " + Value);
         }
     }
 

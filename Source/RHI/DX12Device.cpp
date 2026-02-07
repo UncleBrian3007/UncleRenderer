@@ -297,9 +297,31 @@ bool FDX12Device::CreateSamplerDescriptorHeap()
         
         Device->CreateSampler(&SamplerDesc, SamplerHandle);
         AnisotropicWrapSamplerIndex = 3;
+        SamplerHandle.Offset(1, SamplerDescriptorSize);
     }
 
-    LogInfo("Sampler descriptor heap created with 4 samplers: LinearClamp(0), LinearWrap(1), AnisotropicClamp(2), AnisotropicWrap(3)");
+    // Sampler 4: Point filter with Clamp address mode
+    {
+        D3D12_SAMPLER_DESC SamplerDesc = {};
+        SamplerDesc.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+        SamplerDesc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        SamplerDesc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        SamplerDesc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        SamplerDesc.MipLODBias = 0.0f;
+        SamplerDesc.MaxAnisotropy = 1;
+        SamplerDesc.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+        SamplerDesc.BorderColor[0] = 0.0f;
+        SamplerDesc.BorderColor[1] = 0.0f;
+        SamplerDesc.BorderColor[2] = 0.0f;
+        SamplerDesc.BorderColor[3] = 0.0f;
+        SamplerDesc.MinLOD = 0.0f;
+        SamplerDesc.MaxLOD = D3D12_FLOAT32_MAX;
+
+        Device->CreateSampler(&SamplerDesc, SamplerHandle);
+        PointClampSamplerIndex = 4;
+    }
+
+    LogInfo("Sampler descriptor heap created with 5 samplers: LinearClamp(0), LinearWrap(1), AnisotropicClamp(2), AnisotropicWrap(3), PointClamp(4)");
     return true;
 }
 

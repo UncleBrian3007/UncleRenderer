@@ -126,6 +126,13 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     bHZBEnabled = Config.bEnableHZB;
     bHZBReady = false;
     bEnablePbrResearch = Config.bEnablePbrResearch;
+    bSsrEnabled = Config.bEnableSsr;
+    SsrMaxSteps = Config.SsrMaxSteps;
+    SsrMaxDistance = Config.SsrMaxDistance;
+    SsrThickness = Config.SsrThickness;
+    SsrStride = Config.SsrStride;
+    SsrRoughnessCutoff = Config.SsrRoughnessCutoff;
+    SsrIntensity = Config.SsrIntensity;
 
     InitializeCommonSettings(Width, Height, Config);
 
@@ -207,6 +214,13 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     if (!CreateGtaoRootSignature(Device) || !CreateGtaoPipeline(Device))
     {
         LogError("Deferred renderer initialization failed: GTAO pipeline creation failed");
+        return false;
+    }
+
+    LogInfo("Creating deferred renderer SSR root signature and pipeline...");
+    if (!CreateSsrRootSignature(Device) || !CreateSsrPipeline(Device))
+    {
+        LogError("Deferred renderer initialization failed: SSR pipeline creation failed");
         return false;
     }
 
@@ -310,6 +324,12 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     if (!CreateGtaoResources(Device, Width, Height))
     {
         LogError("Deferred renderer initialization failed: GTAO resource creation failed");
+        return false;
+    }
+
+    if (!CreateSsrResources(Device, Width, Height))
+    {
+        LogError("Deferred renderer initialization failed: SSR resource creation failed");
         return false;
     }
 
@@ -521,7 +541,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
             UINT32_MAX,
             PrevVisibleListSrvIndex,
             PrevVisibleCountSrvIndex,
-            "GPU Culling (Early)");
+            "GPUCulling Early");
 
         AddBasePass(
             Graph,
@@ -532,7 +552,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
             Resources.LightingHandle,
             true,
             true,
-            "GBuffer (Early)",
+            "GBuffer Early",
             true);
     }
     else
@@ -547,7 +567,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
             UINT32_MAX,
             UINT32_MAX,
             UINT32_MAX,
-            "GPU Culling");
+            "GPUCulling");
     }
 
     if (!bRayTracedShadowsEnabled && !bUsePathTracing)
@@ -616,7 +636,8 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 		AddRayTracingShadowPass(Graph, Camera, Resources.DepthHandle, Resources.GBufferHandles[0], Resources.ShadowMaskHandle);
 		AddLinearDepthPass(Graph, FrameState, Resources.DepthHandle, Resources.LinearDepthHandle);
 		AddGtaoPass(Graph, FrameState, Resources.GBufferHandles, Resources.LinearDepthHandle, Resources.GtaoHandle);
-		AddLightingPass(Graph, FrameState, Resources.GBufferHandles, Resources.DepthHandle, Resources.GtaoHandle, Resources.ShadowHandle, Resources.LightingHandle);
+		AddSsrPass(Graph, FrameState, Resources.GBufferHandles, Resources.LinearDepthHandle, Resources.TaaHandles, Resources.SsrHandle);
+		AddLightingPass(Graph, FrameState, Resources.GBufferHandles, Resources.DepthHandle, Resources.GtaoHandle, Resources.SsrHandle, Resources.ShadowHandle, Resources.LightingHandle);
 	}
 
 	AddSkyPass(Graph, Camera, Resources.DepthHandle, Resources.LightingHandle);
@@ -793,6 +814,12 @@ void FDeferredRenderer::ImportFrameResources(FRenderGraph& Graph, FDeferredFrame
         GtaoTexture.Get(),
         &GtaoState,
         { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), DXGI_FORMAT_R8_UNORM });
+
+    OutResources.SsrHandle = Graph.ImportTexture(
+        "SSR",
+        SsrTexture.Get(),
+        &SsrState,
+        { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), DXGI_FORMAT_R16G16B16A16_FLOAT });
 
     OutResources.LightingHandle = Graph.ImportTexture(
         "Lighting",
@@ -1313,7 +1340,7 @@ void FDeferredRenderer::AddShadowPass(FRenderGraph& Graph, const FCamera& Camera
         FScopedPixEvent ShadowEvent(LocalCommandList, L"ShadowMap");
         Cmd.ClearDepth(ShadowDSVHandle, 1.0f);
 
-        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
+        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap(), Device->GetSamplerDescriptorHeap() };
         ID3D12PipelineState* CurrentShadowPipeline = nullptr;
         const auto SetShadowPipeline = [&](bool bUseSkinning)
         {
@@ -1425,7 +1452,7 @@ void FDeferredRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Came
 
         Cmd.ClearDepth(GetDSVHandle());
 
-        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
+        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap(), Device->GetSamplerDescriptorHeap() };
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         LocalCommandList->SetGraphicsRootSignature(BasePassRootSignature.Get());
 
@@ -1560,7 +1587,7 @@ void FDeferredRenderer::AddBasePass(
             Cmd.ClearRenderTarget(LightingRTVHandle, SceneClear);
         }
 
-        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
+        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap(), Device->GetSamplerDescriptorHeap() };
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         LocalCommandList->SetGraphicsRootSignature(BasePassRootSignature.Get());
 
@@ -1770,7 +1797,7 @@ void FDeferredRenderer::AddObjectIdPass(FRenderGraph& Graph, const FCamera& Came
         FScopedPixEvent ObjectIdEvent(LocalCommandList, L"ObjectIdPass");
 
         LocalCommandList->SetPipelineState(ObjectIdPipeline.Get());
-        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
+        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap(), Device->GetSamplerDescriptorHeap() };
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         LocalCommandList->SetGraphicsRootSignature(BasePassRootSignature.Get());
         LocalCommandList->RSSetViewports(1, &Viewport);
@@ -1918,7 +1945,7 @@ void FDeferredRenderer::AddHZBPass(FRenderGraph& Graph, const FDeferredFrameStat
             return;
         }
 
-        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
+        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap(), Device->GetSamplerDescriptorHeap() };
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         LocalCommandList->SetComputeRootSignature(HZBRootSignature.Get());
 
@@ -2130,7 +2157,7 @@ void FDeferredRenderer::AddLinearDepthPass(FRenderGraph& Graph, const FDeferredF
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
         FScopedPixEvent LinearDepthEvent(LocalCommandList, L"LinearDepth");
 
-        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
+        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap(), Device->GetSamplerDescriptorHeap() };
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         Cmd.SetRenderTarget(LinearDepthRtvHandle, nullptr);
 
@@ -2184,7 +2211,7 @@ void FDeferredRenderer::AddGtaoPass(FRenderGraph& Graph, const FDeferredFrameSta
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
         FScopedPixEvent GtaoEvent(LocalCommandList, L"GTAO");
 
-        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
+        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap(), Device->GetSamplerDescriptorHeap() };
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         Cmd.SetRenderTarget(GtaoRtvHandle, nullptr);
 
@@ -2211,7 +2238,116 @@ void FDeferredRenderer::AddGtaoPass(FRenderGraph& Graph, const FDeferredFrameSta
     });
 }
 
-void FDeferredRenderer::AddLightingPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle GtaoHandle, FRGResourceHandle ShadowHandle, FRGResourceHandle LightingHandle)
+void FDeferredRenderer::AddSsrPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LinearDepthHandle, const std::vector<FRGResourceHandle>& TaaHandles, FRGResourceHandle SsrHandle)
+{
+    struct FSsrPassData
+    {
+        bool bEnabled = false;
+        bool bUseHistory = false;
+        uint32_t HistoryIndex = 0;
+    };
+
+    Graph.AddPass<FSsrPassData>("SSR", [this, GBufferHandles, LinearDepthHandle, TaaHandles, SsrHandle, FrameState](FSsrPassData& Data, FRGPassBuilder& Builder)
+    {
+        Data.bEnabled = bSsrEnabled && SsrPipeline && SsrRootSignature;
+        Data.HistoryIndex = FrameState.TaaReadIndex;
+        Data.bUseHistory = FrameState.bTaaHistoryReady && Data.HistoryIndex < TaaHandles.size();
+
+        Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(GBufferHandles[1], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(LinearDepthHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        if (Data.bUseHistory)
+        {
+            Builder.ReadTexture(TaaHandles[Data.HistoryIndex], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        }
+        Builder.WriteTexture(SsrHandle, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    }, [this](const FSsrPassData& Data, FDX12CommandContext& Cmd)
+    {
+        ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
+        FScopedPixEvent SsrEvent(LocalCommandList, L"SSR");
+
+        if (!Device || !Device->GetBindlessDescriptorHeap())
+        {
+            return;
+        }
+
+        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap(), Device->GetSamplerDescriptorHeap() };
+        LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        Cmd.SetRenderTarget(SsrRtvHandle, nullptr);
+
+        const float ClearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+        LocalCommandList->ClearRenderTargetView(SsrRtvHandle, ClearColor, 0, nullptr);
+
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        if (GBufferBindlessIndices[0] == UINT32_MAX || GBufferBindlessIndices[1] == UINT32_MAX || LinearDepthBindlessIndex == UINT32_MAX)
+        {
+            return;
+        }
+
+        const uint32_t HistoryIndex = Data.bUseHistory && Data.HistoryIndex < TaaSrvBindlessIndices.size()
+            ? TaaSrvBindlessIndices[Data.HistoryIndex]
+            : GBufferBindlessIndices[2];
+        if (HistoryIndex == UINT32_MAX)
+        {
+            return;
+        }
+
+        LocalCommandList->SetPipelineState(SsrPipeline.Get());
+        LocalCommandList->SetGraphicsRootSignature(SsrRootSignature.Get());
+
+        LocalCommandList->RSSetViewports(1, &Viewport);
+        LocalCommandList->RSSetScissorRects(1, &ScissorRect);
+
+        LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        LocalCommandList->SetGraphicsRootConstantBufferView(0, GetSceneConstantBufferAddress());
+
+        struct FSsrConstants
+        {
+            uint32_t OutputWidth = 0;
+            uint32_t OutputHeight = 0;
+            uint32_t MaxSteps = 0;
+            float Thickness = 0.0f;
+            float MaxDistance = 0.0f;
+            float Stride = 0.0f;
+            float RoughnessCutoff = 0.0f;
+            float Intensity = 0.0f;
+            uint32_t UseHistory = 0;
+        };
+
+        const FSsrConstants SsrConstants =
+        {
+            static_cast<uint32_t>(Viewport.Width),
+            static_cast<uint32_t>(Viewport.Height),
+            SsrMaxSteps,
+            SsrThickness,
+            SsrMaxDistance,
+            SsrStride,
+            SsrRoughnessCutoff,
+            SsrIntensity,
+            Data.bUseHistory ? 1u : 0u
+        };
+        LocalCommandList->SetGraphicsRoot32BitConstants(1, sizeof(FSsrConstants) / sizeof(uint32_t), &SsrConstants, 0);
+
+        const uint32_t SsrBindlessIndices[] =
+        {
+            GBufferBindlessIndices[0],
+            GBufferBindlessIndices[1],
+            LinearDepthBindlessIndex,
+            HistoryIndex,
+            Device->GetPointClampSamplerIndex(),
+            Device->GetLinearClampSamplerIndex()
+        };
+        LocalCommandList->SetGraphicsRoot32BitConstants(2, _countof(SsrBindlessIndices), SsrBindlessIndices, 0);
+
+        LocalCommandList->DrawInstanced(3, 1, 0, 0);
+    });
+}
+
+void FDeferredRenderer::AddLightingPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle GtaoHandle, FRGResourceHandle SsrHandle, FRGResourceHandle ShadowHandle, FRGResourceHandle LightingHandle)
 {
     struct FLightingPassData
     {
@@ -2227,6 +2363,7 @@ void FDeferredRenderer::AddLightingPass(FRenderGraph& Graph, const FDeferredFram
         Builder.ReadTexture(GBufferHandles[2], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(DepthHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(GtaoHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(SsrHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
         if (Data.bUseShadows)
         {
@@ -2247,14 +2384,14 @@ void FDeferredRenderer::AddLightingPass(FRenderGraph& Graph, const FDeferredFram
 
         const uint32_t DepthIndex = GetFrameIndex() % static_cast<uint32_t>(DepthBindlessIndices.size());
         const uint32_t DepthBindlessIndex = DepthBindlessIndices.empty() ? UINT32_MAX : DepthBindlessIndices[DepthIndex];
-        if (DepthBindlessIndex == UINT32_MAX || GtaoBindlessIndex == UINT32_MAX || ShadowMapBindlessIndex == UINT32_MAX
+        if (DepthBindlessIndex == UINT32_MAX || GtaoBindlessIndex == UINT32_MAX || SsrBindlessIndex == UINT32_MAX || ShadowMapBindlessIndex == UINT32_MAX
             || EnvironmentCubeBindlessIndex == UINT32_MAX || BrdfLutBindlessIndex == UINT32_MAX
             || GBufferBindlessIndices[0] == UINT32_MAX || GBufferBindlessIndices[1] == UINT32_MAX || GBufferBindlessIndices[2] == UINT32_MAX)
         {
             return;
         }
 
-        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
+        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap(), Device->GetSamplerDescriptorHeap() };
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         Cmd.SetRenderTarget(LightingRTVHandle, nullptr);
 
@@ -2279,7 +2416,8 @@ void FDeferredRenderer::AddLightingPass(FRenderGraph& Graph, const FDeferredFram
             EnvironmentCubeBindlessIndex,
             BrdfLutBindlessIndex,
             DepthBindlessIndex,
-            GtaoBindlessIndex
+            GtaoBindlessIndex,
+            SsrBindlessIndex
         };
         LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(LightingBindlessIndices), LightingBindlessIndices, 0);
 
@@ -2873,10 +3011,10 @@ void FDeferredRenderer::AddTonemapPass(FRenderGraph& Graph, const FDeferredFrame
             TonemapGamma
         };
 
-        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
+        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap(), Device->GetSamplerDescriptorHeap() };
+		LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         LocalCommandList->SetPipelineState(TonemapPipeline.Get());
         LocalCommandList->SetGraphicsRootSignature(TonemapRootSignature.Get());
-        LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
 
         LocalCommandList->RSSetViewports(1, &Viewport);
         LocalCommandList->RSSetScissorRects(1, &ScissorRect);
@@ -3048,7 +3186,8 @@ bool FDeferredRenderer::CreateBasePassRootSignature(FDX12Device* Device)
     RootSigDesc.Desc_1_1.NumStaticSamplers = 1;
     RootSigDesc.Desc_1_1.pStaticSamplers = &SamplerDesc;
     RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
-        | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+        | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
+        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
 
     ComPtr<ID3DBlob> SerializedSig;
     ComPtr<ID3DBlob> ErrorBlob;
@@ -3078,7 +3217,7 @@ bool FDeferredRenderer::CreateLightingRootSignature(FDX12Device* Device)
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     RootParams[1].Constants.ShaderRegister = 1;
     RootParams[1].Constants.RegisterSpace = 0;
-    RootParams[1].Constants.Num32BitValues = 9;
+    RootParams[1].Constants.Num32BitValues = 10;
 
     D3D12_STATIC_SAMPLER_DESC Samplers[3] = {};
     Samplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
@@ -3124,7 +3263,8 @@ bool FDeferredRenderer::CreateLightingRootSignature(FDX12Device* Device)
     RootSigDesc.Desc_1_1.NumStaticSamplers = _countof(Samplers);
     RootSigDesc.Desc_1_1.pStaticSamplers = Samplers;
     RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
-        | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+        | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
+        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
 
     ComPtr<ID3DBlob> SerializedSig;
     ComPtr<ID3DBlob> ErrorBlob;
@@ -3369,7 +3509,8 @@ bool FDeferredRenderer::CreateLinearDepthRootSignature(FDX12Device* Device)
     RootSigDesc.Desc_1_1.NumStaticSamplers = 1;
     RootSigDesc.Desc_1_1.pStaticSamplers = &SamplerDesc;
     RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
-        | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+        | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
+        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
 
     ComPtr<ID3DBlob> SerializedSig;
     ComPtr<ID3DBlob> ErrorBlob;
@@ -3548,7 +3689,8 @@ bool FDeferredRenderer::CreateGtaoRootSignature(FDX12Device* Device)
     RootSigDesc.Desc_1_1.NumStaticSamplers = 1;
     RootSigDesc.Desc_1_1.pStaticSamplers = &SamplerDesc;
     RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
-        | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+        | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
+        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
 
     ComPtr<ID3DBlob> SerializedSig;
     ComPtr<ID3DBlob> ErrorBlob;
@@ -3617,6 +3759,101 @@ bool FDeferredRenderer::CreateGtaoPipeline(FDX12Device* Device)
     HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(GtaoPipelines[0].GetAddressOf())));
     PsoDesc.PS = { PSByteCodes[1].data(), PSByteCodes[1].size() };
     HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(GtaoPipelines[1].GetAddressOf())));
+    return true;
+}
+
+bool FDeferredRenderer::CreateSsrRootSignature(FDX12Device* Device)
+{
+    D3D12_ROOT_PARAMETER1 RootParams[3] = {};
+
+    // RootParams[0]: Scene constants (b0), used in Shaders/ScreenSpaceReflections.hlsl PSMain
+    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    RootParams[0].Descriptor.ShaderRegister = 0;
+    RootParams[0].Descriptor.RegisterSpace = 0;
+    RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+
+    // RootParams[1]: SSR constants (b1), used in Shaders/ScreenSpaceReflections.hlsl PSMain
+    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    RootParams[1].Constants.Num32BitValues = 9;
+    RootParams[1].Constants.RegisterSpace = 0;
+    RootParams[1].Constants.ShaderRegister = 1;
+
+    // RootParams[2]: SSR bindless indices (b2), used in Shaders/ScreenSpaceReflections.hlsl PSMain
+    RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    RootParams[2].Constants.Num32BitValues = 6;
+    RootParams[2].Constants.RegisterSpace = 0;
+    RootParams[2].Constants.ShaderRegister = 2;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
+    RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    RootSigDesc.Desc_1_1.NumParameters = _countof(RootParams);
+    RootSigDesc.Desc_1_1.pParameters = RootParams;
+    RootSigDesc.Desc_1_1.NumStaticSamplers = 0;
+    RootSigDesc.Desc_1_1.pStaticSamplers = nullptr;
+    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+        | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
+        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
+
+    ComPtr<ID3DBlob> SerializedSig;
+    ComPtr<ID3DBlob> ErrorBlob;
+    HR_CHECK(D3D12SerializeVersionedRootSignature(&RootSigDesc, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
+
+    if (ErrorBlob)
+    {
+        OutputDebugStringA(static_cast<const char*>(ErrorBlob->GetBufferPointer()));
+    }
+
+    HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(SsrRootSignature.GetAddressOf())));
+    return true;
+}
+
+bool FDeferredRenderer::CreateSsrPipeline(FDX12Device* Device)
+{
+    FShaderCompiler Compiler;
+    std::vector<uint8_t> VSByteCode;
+    std::vector<uint8_t> PSByteCode;
+
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
+    const std::wstring PSTarget = RendererUtils::BuildShaderTarget(L"ps", ShaderModel);
+
+    if (!Compiler.CompileFromFile(L"Shaders/ScreenSpaceReflections.hlsl", L"VSMain", VSTarget, VSByteCode))
+    {
+        return false;
+    }
+    if (!Compiler.CompileFromFile(L"Shaders/ScreenSpaceReflections.hlsl", L"PSMain", PSTarget, PSByteCode))
+    {
+        return false;
+    }
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
+    PsoDesc.pRootSignature = SsrRootSignature.Get();
+    PsoDesc.VS = { VSByteCode.data(), VSByteCode.size() };
+    PsoDesc.PS = { PSByteCode.data(), PSByteCode.size() };
+    PsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    PsoDesc.SampleDesc.Count = 1;
+    PsoDesc.SampleMask = UINT_MAX;
+
+    PsoDesc.RasterizerState = {};
+    PsoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    PsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    PsoDesc.RasterizerState.FrontCounterClockwise = TRUE;
+    PsoDesc.RasterizerState.DepthClipEnable = TRUE;
+
+    PsoDesc.BlendState = {};
+    PsoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    PsoDesc.DepthStencilState = {};
+    PsoDesc.DepthStencilState.DepthEnable = FALSE;
+    PsoDesc.DepthStencilState.StencilEnable = FALSE;
+    PsoDesc.NumRenderTargets = 1;
+    PsoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    PsoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
+
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(SsrPipeline.GetAddressOf())));
     return true;
 }
 
@@ -3909,7 +4146,8 @@ bool FDeferredRenderer::CreateTonemapRootSignature(FDX12Device* Device)
     RootSigDesc.Desc_1_1.NumStaticSamplers = 1;
     RootSigDesc.Desc_1_1.pStaticSamplers = &SamplerDesc;
     RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
-        | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+        | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
+        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
 
     ComPtr<ID3DBlob> SerializedSig;
     ComPtr<ID3DBlob> ErrorBlob;
@@ -4318,6 +4556,65 @@ bool FDeferredRenderer::CreateGtaoResources(FDX12Device* Device, uint32_t Width,
     Device->GetDevice()->CreateRenderTargetView(GtaoTexture.Get(), &RtvDesc, GtaoRtvHandle);
 
     GtaoState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    return true;
+}
+
+bool FDeferredRenderer::CreateSsrResources(FDX12Device* Device, uint32_t Width, uint32_t Height)
+{
+    if (Device == nullptr)
+    {
+        return false;
+    }
+
+    CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
+
+    CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
+        DXGI_FORMAT_R16G16B16A16_FLOAT,
+        Width,
+        Height,
+        1,
+        1,
+        1,
+        0,
+        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+
+    D3D12_CLEAR_VALUE ClearValue = {};
+    ClearValue.Format = Desc.Format;
+    ClearValue.Color[0] = 0.0f;
+    ClearValue.Color[1] = 0.0f;
+    ClearValue.Color[2] = 0.0f;
+    ClearValue.Color[3] = 0.0f;
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &HeapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &Desc,
+        D3D12_RESOURCE_STATE_RENDER_TARGET,
+        &ClearValue,
+        IID_PPV_ARGS(SsrTexture.GetAddressOf())));
+
+    if (SsrTexture)
+    {
+        SsrTexture->SetName(L"SSR");
+    }
+
+    D3D12_DESCRIPTOR_HEAP_DESC RtvHeapDesc = {};
+    RtvHeapDesc.NumDescriptors = 1;
+    RtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    RtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&RtvHeapDesc, IID_PPV_ARGS(SsrRtvHeap.GetAddressOf())));
+    if (SsrRtvHeap)
+    {
+        SsrRtvHeap->SetName(L"SSR_RTVHeap");
+    }
+
+    SsrRtvHandle = SsrRtvHeap->GetCPUDescriptorHandleForHeapStart();
+    D3D12_RENDER_TARGET_VIEW_DESC RtvDesc = {};
+    RtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+    RtvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    Device->GetDevice()->CreateRenderTargetView(SsrTexture.Get(), &RtvDesc, SsrRtvHandle);
+
+    SsrState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     return true;
 }
 
@@ -4775,6 +5072,15 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         GtaoSrvDesc.Format = DXGI_FORMAT_R8_UNORM;
         GtaoSrvDesc.Texture2D.MipLevels = 1;
         GtaoBindlessIndex = Device->CreateBindlessSrv(GtaoTexture.Get(), GtaoSrvDesc);
+    }
+
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC SsrSrvDesc = {};
+        SsrSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        SsrSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        SsrSrvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        SsrSrvDesc.Texture2D.MipLevels = 1;
+        SsrBindlessIndex = Device->CreateBindlessSrv(SsrTexture.Get(), SsrSrvDesc);
     }
 
     {

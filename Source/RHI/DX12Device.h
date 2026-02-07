@@ -25,6 +25,7 @@ public:
     uint32_t             GetLinearWrapSamplerIndex() const { return LinearWrapSamplerIndex; }
     uint32_t             GetAnisotropicClampSamplerIndex() const { return AnisotropicClampSamplerIndex; }
     uint32_t             GetAnisotropicWrapSamplerIndex() const { return AnisotropicWrapSamplerIndex; }
+    uint32_t             GetPointClampSamplerIndex() const { return PointClampSamplerIndex; }
 
     IDXGIFactory6*       GetFactory() const { return Factory.Get(); }
     IDXGIAdapter4*       GetAdapter() const { return Adapter.Get(); }
@@ -59,6 +60,7 @@ private:
     uint32_t LinearWrapSamplerIndex = 0;
     uint32_t AnisotropicClampSamplerIndex = 0;
     uint32_t AnisotropicWrapSamplerIndex = 0;
+    uint32_t PointClampSamplerIndex = 0;
 
     std::unique_ptr<FDX12CommandQueue> GraphicsQueue;
 
