@@ -94,6 +94,7 @@ public:
     bool IsGtaoEnabled() const { return bGtaoEnabled; }
     void SetPbrResearchEnabled(bool bEnabled) { bEnablePbrResearch = bEnabled; }
     void SetSsrEnabled(bool bEnabled) { bSsrEnabled = bEnabled; }
+    void SetSsrHzbEnabled(bool bEnabled) { bSsrHzbEnabled = bEnabled; }
     bool IsSsrEnabled() const { return bSsrEnabled; }
     void SetSsrMaxSteps(uint32_t Steps) { SsrMaxSteps = Steps; }
     uint32_t GetSsrMaxSteps() const { return SsrMaxSteps; }
@@ -287,7 +288,7 @@ private:
     void AddHZBPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle HZBHandle);
     void AddLinearDepthPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle LinearDepthHandle);
     void AddGtaoPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle GtaoHandle);
-    void AddSsrPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LinearDepthHandle, const std::vector<FRGResourceHandle>& TaaHandles, FRGResourceHandle SsrHandle);
+    void AddSsrPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LinearDepthHandle, const std::vector<FRGResourceHandle>& TaaHandles, FRGResourceHandle HZBHandle, FRGResourceHandle SsrHandle);
     void AddLightingPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle GtaoHandle, FRGResourceHandle SsrHandle, FRGResourceHandle ShadowHandle, FRGResourceHandle LightingHandle);
     void AddPathTracingPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle DepthHandle, FRGResourceHandle GBufferAHandle, FRGResourceHandle GBufferBHandle, FRGResourceHandle GBufferCHandle, FRGResourceHandle OutputHandle);
     void AddPathTracingAccumulationPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle PathTracingTempHandle, FRGResourceHandle LightingHandle, const std::vector<FRGResourceHandle>& AccumulationHandles);
@@ -315,7 +316,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> GtaoRootSignature;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2> GtaoPipelines;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> SsrRootSignature;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> SsrPipeline;
+    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2> SsrPipelines;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> LightingPipelines;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> HZBPipelines;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> AutoExposurePipeline;
@@ -444,6 +445,7 @@ private:
     bool bEnableHzbTwoPass = true;
     bool bEnablePbrResearch = false;
     bool bSsrEnabled = true;
+    bool bSsrHzbEnabled = true;
 	uint32_t SsrMaxSteps = 32;
 	float SsrMaxDistance = 50.0f;
 	float SsrThickness = 1.00f;

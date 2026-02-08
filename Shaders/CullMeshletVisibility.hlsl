@@ -45,7 +45,7 @@ void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
         }
     }
 
-    Texture2D<float> HZBTexture = ResourceDescriptorHeap[HZBTextureIndex];
+    Texture2D<float2> HZBTexture = ResourceDescriptorHeap[HZBTextureIndex];
     bool visible;
     bool frustumVisible;
     bool coneVisible;

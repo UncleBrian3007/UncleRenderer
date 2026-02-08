@@ -48,7 +48,7 @@ float4 ProjectToClip(float3 position)
     return mul(float4(position, 1.0f), ViewProjection);
 }
 
-bool IsOccluded(float3 center, float radius, Texture2D<float> HZBTexture)
+bool IsOccluded(float3 center, float radius, Texture2D<float2> HZBTexture)
 {
     float3 boundsMin = center - radius;
     float3 boundsMax = center + radius;
@@ -122,10 +122,10 @@ bool IsOccluded(float3 center, float radius, Texture2D<float> HZBTexture)
     maxCoord = min(maxCoord, uint2(mipWidth - 1, mipHeight - 1));
 
     float hzbDepth = 1.0f;
-    hzbDepth = min(hzbDepth, HZBTexture.Load(int3(minCoord, mipLevel)));
-    hzbDepth = min(hzbDepth, HZBTexture.Load(int3(maxCoord.x, minCoord.y, mipLevel)));
-    hzbDepth = min(hzbDepth, HZBTexture.Load(int3(minCoord.x, maxCoord.y, mipLevel)));
-    hzbDepth = min(hzbDepth, HZBTexture.Load(int3(maxCoord, mipLevel)));
+    hzbDepth = min(hzbDepth, HZBTexture.Load(int3(minCoord, mipLevel)).x);
+    hzbDepth = min(hzbDepth, HZBTexture.Load(int3(maxCoord.x, minCoord.y, mipLevel)).x);
+    hzbDepth = min(hzbDepth, HZBTexture.Load(int3(minCoord.x, maxCoord.y, mipLevel)).x);
+    hzbDepth = min(hzbDepth, HZBTexture.Load(int3(maxCoord, mipLevel)).x);
 
     return maxDepth < hzbDepth;
 }
@@ -134,7 +134,7 @@ void EvaluateMeshletVisibility(
     uint index,
     StructuredBuffer<float4> ModelBounds,
     StructuredBuffer<float4> MeshletConeAxisCutoff,
-    Texture2D<float> HZBTexture,
+    Texture2D<float2> HZBTexture,
     out bool visible,
     out bool frustumVisible,
     out bool coneVisible,

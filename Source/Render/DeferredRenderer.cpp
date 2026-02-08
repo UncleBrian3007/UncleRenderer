@@ -127,6 +127,7 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     bHZBReady = false;
     bEnablePbrResearch = Config.bEnablePbrResearch;
     bSsrEnabled = Config.bEnableSsr;
+    bSsrHzbEnabled = Config.bEnableSsrHzb;
     SsrMaxSteps = Config.SsrMaxSteps;
     SsrMaxDistance = Config.SsrMaxDistance;
     SsrThickness = Config.SsrThickness;
@@ -636,7 +637,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 		AddRayTracingShadowPass(Graph, Camera, Resources.DepthHandle, Resources.GBufferHandles[0], Resources.ShadowMaskHandle);
 		AddLinearDepthPass(Graph, FrameState, Resources.DepthHandle, Resources.LinearDepthHandle);
 		AddGtaoPass(Graph, FrameState, Resources.GBufferHandles, Resources.LinearDepthHandle, Resources.GtaoHandle);
-		AddSsrPass(Graph, FrameState, Resources.GBufferHandles, Resources.LinearDepthHandle, Resources.TaaHandles, Resources.SsrHandle);
+        AddSsrPass(Graph, FrameState, Resources.GBufferHandles, Resources.LinearDepthHandle, Resources.TaaHandles, Resources.HZBHandle, Resources.SsrHandle);
 		AddLightingPass(Graph, FrameState, Resources.GBufferHandles, Resources.DepthHandle, Resources.GtaoHandle, Resources.SsrHandle, Resources.ShadowHandle, Resources.LightingHandle);
 	}
 
@@ -879,7 +880,7 @@ void FDeferredRenderer::ImportFrameResources(FRenderGraph& Graph, FDeferredFrame
         "HZB",
         HierarchicalZBuffer.Get(),
         &HZBState,
-        { HZBWidth, HZBHeight, DXGI_FORMAT_R32_FLOAT });
+        { HZBWidth, HZBHeight, DXGI_FORMAT_R32G32_FLOAT });
 }
 
 void FDeferredRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle DepthHandle, FRGResourceHandle GBufferHandle, FRGResourceHandle& ShadowMaskHandle)
@@ -1962,6 +1963,7 @@ void FDeferredRenderer::AddHZBPass(FRenderGraph& Graph, const FDeferredFrameStat
             uint32_t DestWidth3;
             uint32_t DestHeight3;
             uint32_t SourceMip;
+            uint32_t SourceIsDepth;
         };
 
         uint32_t CurrentWidth = Data.Width;
@@ -2000,13 +2002,14 @@ void FDeferredRenderer::AddHZBPass(FRenderGraph& Graph, const FDeferredFrameStat
             Constants.DestHeight2 = DestHeight2;
             Constants.DestWidth3 = DestWidth3;
             Constants.DestHeight3 = DestHeight3;
-            Constants.SourceMip = 0u;
+            Constants.SourceMip = (MipIndex > 0) ? (MipIndex - 1) : 0u;
+            Constants.SourceIsDepth = (MipIndex == 0) ? 1u : 0u;
 
             uint32_t SourceBindlessIndex = Data.DepthBindlessIndex;
             if (MipIndex > 0)
             {
                 const uint32_t SourceMipIndex = MipIndex - 1;
-                SourceBindlessIndex = (SourceMipIndex < Data.HZBSrvMips.size()) ? Data.HZBSrvMips[SourceMipIndex] : UINT32_MAX;
+                SourceBindlessIndex = HZBSrvBindlessIndex;
 
                 if (SourceMipIndex < MipStates.size() && MipStates[SourceMipIndex] != D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
                 {
@@ -2052,7 +2055,7 @@ void FDeferredRenderer::AddHZBPass(FRenderGraph& Graph, const FDeferredFrameStat
 
             LocalCommandList->SetPipelineState(SelectedPipeline);
             LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(Constants) / sizeof(uint32_t), &Constants, 0);
-            const uint32_t HZBBindlessIndices[] = { SourceBindlessIndex, DestIndex0, DestIndex1, DestIndex2, DestIndex3 };
+            const uint32_t HZBBindlessIndices[] = { Data.DepthBindlessIndex, SourceBindlessIndex, DestIndex0, DestIndex1, DestIndex2, DestIndex3 };
             LocalCommandList->SetComputeRoot32BitConstants(1, _countof(HZBBindlessIndices), HZBBindlessIndices, 0);
 
             const uint32_t GroupX = (Constants.DestWidth + 7) / 8;
@@ -2238,24 +2241,32 @@ void FDeferredRenderer::AddGtaoPass(FRenderGraph& Graph, const FDeferredFrameSta
     });
 }
 
-void FDeferredRenderer::AddSsrPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LinearDepthHandle, const std::vector<FRGResourceHandle>& TaaHandles, FRGResourceHandle SsrHandle)
+void FDeferredRenderer::AddSsrPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LinearDepthHandle, const std::vector<FRGResourceHandle>& TaaHandles, FRGResourceHandle HZBHandle, FRGResourceHandle SsrHandle)
 {
     struct FSsrPassData
     {
         bool bEnabled = false;
         bool bUseHistory = false;
         uint32_t HistoryIndex = 0;
+        bool bUseHzb = false;
     };
 
-    Graph.AddPass<FSsrPassData>("SSR", [this, GBufferHandles, LinearDepthHandle, TaaHandles, SsrHandle, FrameState](FSsrPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FSsrPassData>("SSR", [this, GBufferHandles, LinearDepthHandle, TaaHandles, HZBHandle, SsrHandle, FrameState](FSsrPassData& Data, FRGPassBuilder& Builder)
     {
-        Data.bEnabled = bSsrEnabled && SsrPipeline && SsrRootSignature;
+        Data.bUseHzb = bSsrHzbEnabled && bHZBReady && HZBSrvBindlessIndex != UINT32_MAX;
         Data.HistoryIndex = FrameState.TaaReadIndex;
         Data.bUseHistory = FrameState.bTaaHistoryReady && Data.HistoryIndex < TaaHandles.size();
+        Data.bUseHzb = Data.bUseHzb && static_cast<bool>(HZBHandle);
+        const uint32_t PipelineIndex = Data.bUseHzb ? 1u : 0u;
+        Data.bEnabled = bSsrEnabled && SsrRootSignature && SsrPipelines[PipelineIndex];
 
         Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(GBufferHandles[1], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(LinearDepthHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        if (Data.bUseHzb)
+        {
+            Builder.ReadTexture(HZBHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        }
         if (Data.bUseHistory)
         {
             Builder.ReadTexture(TaaHandles[Data.HistoryIndex], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -2296,7 +2307,8 @@ void FDeferredRenderer::AddSsrPass(FRenderGraph& Graph, const FDeferredFrameStat
             return;
         }
 
-        LocalCommandList->SetPipelineState(SsrPipeline.Get());
+        const uint32_t PipelineIndex = Data.bUseHzb ? 1u : 0u;
+        LocalCommandList->SetPipelineState(SsrPipelines[PipelineIndex].Get());
         LocalCommandList->SetGraphicsRootSignature(SsrRootSignature.Get());
 
         LocalCommandList->RSSetViewports(1, &Viewport);
@@ -2316,6 +2328,10 @@ void FDeferredRenderer::AddSsrPass(FRenderGraph& Graph, const FDeferredFrameStat
             float RoughnessCutoff = 0.0f;
             float Intensity = 0.0f;
             uint32_t UseHistory = 0;
+            uint32_t HZBWidth = 0;
+            uint32_t HZBHeight = 0;
+            uint32_t HZBMipCount = 0;
+            uint32_t HZBAvailable = 0;
         };
 
         const FSsrConstants SsrConstants =
@@ -2328,16 +2344,22 @@ void FDeferredRenderer::AddSsrPass(FRenderGraph& Graph, const FDeferredFrameStat
             SsrStride,
             SsrRoughnessCutoff,
             SsrIntensity,
-            Data.bUseHistory ? 1u : 0u
+            Data.bUseHistory ? 1u : 0u,
+            HZBWidth,
+            HZBHeight,
+            HZBMipCount,
+            Data.bUseHzb ? 1u : 0u
         };
         LocalCommandList->SetGraphicsRoot32BitConstants(1, sizeof(FSsrConstants) / sizeof(uint32_t), &SsrConstants, 0);
 
+        const uint32_t HzbIndex = (HZBSrvBindlessIndex != UINT32_MAX) ? HZBSrvBindlessIndex : LinearDepthBindlessIndex;
         const uint32_t SsrBindlessIndices[] =
         {
             GBufferBindlessIndices[0],
             GBufferBindlessIndices[1],
             LinearDepthBindlessIndex,
             HistoryIndex,
+            HzbIndex,
             Device->GetPointClampSamplerIndex(),
             Device->GetLinearClampSamplerIndex()
         };
@@ -3776,14 +3798,14 @@ bool FDeferredRenderer::CreateSsrRootSignature(FDX12Device* Device)
     // RootParams[1]: SSR constants (b1), used in Shaders/ScreenSpaceReflections.hlsl PSMain
     RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    RootParams[1].Constants.Num32BitValues = 9;
+    RootParams[1].Constants.Num32BitValues = 13;
     RootParams[1].Constants.RegisterSpace = 0;
     RootParams[1].Constants.ShaderRegister = 1;
 
     // RootParams[2]: SSR bindless indices (b2), used in Shaders/ScreenSpaceReflections.hlsl PSMain
     RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    RootParams[2].Constants.Num32BitValues = 6;
+    RootParams[2].Constants.Num32BitValues = 7;
     RootParams[2].Constants.RegisterSpace = 0;
     RootParams[2].Constants.ShaderRegister = 2;
 
@@ -3814,7 +3836,7 @@ bool FDeferredRenderer::CreateSsrPipeline(FDX12Device* Device)
 {
     FShaderCompiler Compiler;
     std::vector<uint8_t> VSByteCode;
-    std::vector<uint8_t> PSByteCode;
+    std::array<std::vector<uint8_t>, 2> PSByteCodes;
 
     const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
     const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
@@ -3824,7 +3846,14 @@ bool FDeferredRenderer::CreateSsrPipeline(FDX12Device* Device)
     {
         return false;
     }
-    if (!Compiler.CompileFromFile(L"Shaders/ScreenSpaceReflections.hlsl", L"PSMain", PSTarget, PSByteCode))
+
+    const std::vector<std::wstring> HzbOffDefines = { L"HZB_ENABLED=0" };
+    const std::vector<std::wstring> HzbOnDefines = { L"HZB_ENABLED=1" };
+    if (!Compiler.CompileFromFile(L"Shaders/ScreenSpaceReflections.hlsl", L"PSMain", PSTarget, PSByteCodes[0], HzbOffDefines))
+    {
+        return false;
+    }
+    if (!Compiler.CompileFromFile(L"Shaders/ScreenSpaceReflections.hlsl", L"PSMain", PSTarget, PSByteCodes[1], HzbOnDefines))
     {
         return false;
     }
@@ -3832,7 +3861,7 @@ bool FDeferredRenderer::CreateSsrPipeline(FDX12Device* Device)
     D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
     PsoDesc.pRootSignature = SsrRootSignature.Get();
     PsoDesc.VS = { VSByteCode.data(), VSByteCode.size() };
-    PsoDesc.PS = { PSByteCode.data(), PSByteCode.size() };
+    PsoDesc.PS = { PSByteCodes[0].data(), PSByteCodes[0].size() };
     PsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     PsoDesc.SampleDesc.Count = 1;
     PsoDesc.SampleMask = UINT_MAX;
@@ -3853,7 +3882,9 @@ bool FDeferredRenderer::CreateSsrPipeline(FDX12Device* Device)
     PsoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
     PsoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
 
-    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(SsrPipeline.GetAddressOf())));
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(SsrPipelines[0].GetAddressOf())));
+    PsoDesc.PS = { PSByteCodes[1].data(), PSByteCodes[1].size() };
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(SsrPipelines[1].GetAddressOf())));
     return true;
 }
 
@@ -3864,14 +3895,14 @@ bool FDeferredRenderer::CreateHZBRootSignature(FDX12Device* Device)
     // RootParams[0]: HZB constants (mip counts, dimensions, source mip), used in Shaders/BuildHZB.hlsl BuildHZB
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[0].Constants.Num32BitValues = 11;
+    RootParams[0].Constants.Num32BitValues = 12;
     RootParams[0].Constants.RegisterSpace = 0;
     RootParams[0].Constants.ShaderRegister = 0;
 
     // RootParams[1]: HZB bindless indices (b1), used in Shaders/BuildHZB.hlsl BuildHZB
     RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[1].Constants.Num32BitValues = 5;
+    RootParams[1].Constants.Num32BitValues = 6;
     RootParams[1].Constants.RegisterSpace = 0;
     RootParams[1].Constants.ShaderRegister = 1;
 
@@ -4923,7 +4954,7 @@ bool FDeferredRenderer::CreateHZBResources(FDX12Device* Device, uint32_t Width, 
     }
 
     CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
-        DXGI_FORMAT_R32_FLOAT,
+        DXGI_FORMAT_R32G32_FLOAT,
         BaseWidth,
         BaseHeight,
         1,
@@ -4952,7 +4983,7 @@ bool FDeferredRenderer::CreateHZBResources(FDX12Device* Device, uint32_t Width, 
         NullDesc.Height = 1;
         NullDesc.DepthOrArraySize = 1;
         NullDesc.MipLevels = 1;
-        NullDesc.Format = DXGI_FORMAT_R32_FLOAT;
+        NullDesc.Format = DXGI_FORMAT_R32G32_FLOAT;
         NullDesc.SampleDesc.Count = 1;
         NullDesc.SampleDesc.Quality = 0;
         NullDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
@@ -5192,7 +5223,7 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         D3D12_SHADER_RESOURCE_VIEW_DESC HZBSrvDesc = {};
         HZBSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         HZBSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        HZBSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+        HZBSrvDesc.Format = DXGI_FORMAT_R32G32_FLOAT;
         HZBSrvDesc.Texture2D.MipLevels = HZBMipCount;
         HZBSrvDesc.Texture2D.MostDetailedMip = 0;
         HZBSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
@@ -5206,7 +5237,7 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         D3D12_SHADER_RESOURCE_VIEW_DESC HZBMipSrvDesc = {};
         HZBMipSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         HZBMipSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        HZBMipSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+        HZBMipSrvDesc.Format = DXGI_FORMAT_R32G32_FLOAT;
         HZBMipSrvDesc.Texture2D.MipLevels = 1;
         HZBMipSrvDesc.Texture2D.MostDetailedMip = Mip;
         HZBMipSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
@@ -5220,7 +5251,7 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
     {
         D3D12_UNORDERED_ACCESS_VIEW_DESC UavDesc = {};
         UavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-        UavDesc.Format = DXGI_FORMAT_R32_FLOAT;
+        UavDesc.Format = DXGI_FORMAT_R32G32_FLOAT;
         UavDesc.Texture2D.MipSlice = Mip;
         UavDesc.Texture2D.PlaneSlice = 0;
 
@@ -5230,7 +5261,7 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
     {
         D3D12_UNORDERED_ACCESS_VIEW_DESC NullUavDesc = {};
         NullUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-        NullUavDesc.Format = DXGI_FORMAT_R32_FLOAT;
+        NullUavDesc.Format = DXGI_FORMAT_R32G32_FLOAT;
         NullUavDesc.Texture2D.MipSlice = 0;
         NullUavDesc.Texture2D.PlaneSlice = 0;
 

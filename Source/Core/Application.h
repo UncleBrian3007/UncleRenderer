@@ -101,6 +101,7 @@ private:
     float GtaoRadius = 0.75f;
     float GtaoThickness = 0.1f;
     bool bSsrEnabled = true;
+    bool bSsrHzbEnabled = true;
     uint32_t SsrMaxSteps = 32;
     float SsrMaxDistance = 50.0f;
     float SsrThickness = 1.00f;

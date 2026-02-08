@@ -328,6 +328,10 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     {
         OutConfig.bEnableSsr = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
+    if (LowerKey == "ssrhzb" || LowerKey == "enablessrhzb" || LowerKey == "ssr_hzb")
+    {
+        OutConfig.bEnableSsrHzb = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
     if (LowerKey == "gtaojitter" || LowerKey == "enablegtaojitter")
     {
         OutConfig.bEnableGtaoJitter = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");

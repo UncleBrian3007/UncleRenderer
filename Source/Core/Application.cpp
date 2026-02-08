@@ -181,6 +181,7 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     GtaoRadius = RendererConfig.GtaoRadius;
     GtaoThickness = RendererConfig.GtaoThickness;
     bSsrEnabled = RendererConfig.bEnableSsr;
+    bSsrHzbEnabled = RendererConfig.bEnableSsrHzb;
     SsrMaxSteps = RendererConfig.SsrMaxSteps;
     SsrMaxDistance = RendererConfig.SsrMaxDistance;
     SsrThickness = RendererConfig.SsrThickness;
@@ -962,6 +963,7 @@ bool FApplication::ReloadScene(const std::wstring& ScenePath)
     ReloadConfig.GtaoRadius = GtaoRadius;
     ReloadConfig.GtaoThickness = GtaoThickness;
     ReloadConfig.bEnableSsr = bSsrEnabled;
+    ReloadConfig.bEnableSsrHzb = bSsrHzbEnabled;
     ReloadConfig.SsrMaxSteps = SsrMaxSteps;
     ReloadConfig.SsrMaxDistance = SsrMaxDistance;
     ReloadConfig.SsrThickness = SsrThickness;
@@ -1107,6 +1109,7 @@ void FApplication::StartAsyncSceneReload(const std::wstring& ScenePath)
     AsyncConfig.GtaoRadius = GtaoRadius;
     AsyncConfig.GtaoThickness = GtaoThickness;
     AsyncConfig.bEnableSsr = bSsrEnabled;
+    AsyncConfig.bEnableSsrHzb = bSsrHzbEnabled;
     AsyncConfig.SsrMaxSteps = SsrMaxSteps;
     AsyncConfig.SsrMaxDistance = SsrMaxDistance;
     AsyncConfig.SsrThickness = SsrThickness;
@@ -1697,6 +1700,20 @@ void FApplication::RenderUI()
             if (DeferredRenderer)
             {
                 DeferredRenderer->SetSsrEnabled(bSsrEnabled);
+            }
+        }
+
+        ImGui::SameLine();
+
+        bool bSsrHzb = bSsrHzbEnabled;
+        if (ImGui::Checkbox("HZB", &bSsrHzb))
+        {
+            bSsrHzbEnabled = bSsrHzb;
+            RendererConfig.bEnableSsrHzb = bSsrHzbEnabled;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetSsrHzbEnabled(bSsrHzbEnabled);
             }
         }
 
