@@ -166,6 +166,7 @@ protected:
     bool CreateRayTracingPipeline(FDX12Device* Device);
     bool CreateSkinningPipeline(FDX12Device* Device);
     D3D12_CPU_DESCRIPTOR_HANDLE GetBindlessCpuHandle(uint32_t Index) const;
+    D3D12_CPU_DESCRIPTOR_HANDLE GetBindlessCpuClearHandle(uint32_t Index) const;
     D3D12_GPU_DESCRIPTOR_HANDLE GetBindlessGpuHandle(uint32_t Index) const;
     void WriteBindlessSrv(uint32_t Index, ID3D12Resource* Resource, const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc) const;
     void WriteBindlessUav(uint32_t Index, ID3D12Resource* Resource, ID3D12Resource* Counter, const D3D12_UNORDERED_ACCESS_VIEW_DESC& Desc) const;
@@ -361,6 +362,7 @@ protected:
     FRayTracingDevice RayTracingDevice;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> RayQueryRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RayQueryShadowPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> RayQuerySsrFallbackPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RayQueryPathPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RayQueryPathDebugPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RayQueryPathVndfPipeline;

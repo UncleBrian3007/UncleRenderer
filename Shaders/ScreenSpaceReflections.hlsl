@@ -8,6 +8,10 @@
 #define SSR_REFINE_ENABLED 1
 #endif
 
+#ifndef SW_SSR_ENABLED
+#define SW_SSR_ENABLED 1
+#endif
+
 struct VSOutput
 {
     float4 Position : SV_Position;
@@ -23,11 +27,13 @@ cbuffer SSRConstants : register(b1)
     float Stride;
     float RoughnessCutoff;
     float Intensity;
+    uint MaxRayCount;
     uint UseHistory;
     uint HZBWidth;
     uint HZBHeight;
     uint HZBMipCount;
     uint HZBAvailable;
+    uint HwEnabled;
 };
 
 cbuffer SSRBindlessConstants : register(b2)
@@ -39,6 +45,19 @@ cbuffer SSRBindlessConstants : register(b2)
     uint HZBIndex;
     uint GBufferPointSamplerIndex;
     uint SceneColorLinearSamplerIndex;
+    uint RayCounterIndex;
+    uint RayListIndex;
+};
+
+struct RayItem
+{
+    float3 OriginVS;
+    float TMin;
+    float3 DirVS;
+    float TMax;
+    uint2 PixelCoord;
+    float Roughness;
+    float Padding;
 };
 
 VSOutput VSMain(uint VertexId : SV_VertexID)
@@ -117,6 +136,13 @@ float4 PSMain(VSOutput Input) : SV_Target
         return 0.0f;
     }
 
+#if !SW_SSR_ENABLED
+    if (HwEnabled == 0)
+    {
+        return 0.0f;
+    }
+#endif
+
     Texture2D GBufferA = ResourceDescriptorHeap[GBufferAIndex];
     Texture2D GBufferB = ResourceDescriptorHeap[GBufferBIndex];
     Texture2D LinearDepth = ResourceDescriptorHeap[LinearDepthIndex];
@@ -148,7 +174,33 @@ float4 PSMain(VSOutput Input) : SV_Target
     float3 viewNormal = normalize(mul(worldNormal, (float3x3)View));
     float3 rayDir = normalize(reflect(-viewDir, viewNormal));
     float thickness = Thickness * rcp(max(abs(rayDir.z), 1e-3f));
+    float normalBiasVS = max(0.01, 0.001f * abs(viewPos.z));
+    float tMinBias = 0.01f;
 
+#if !SW_SSR_ENABLED
+    if (MaxRayCount > 0 && RayCounterIndex != 0xFFFFFFFFu && RayListIndex != 0xFFFFFFFFu)
+    {
+        RWByteAddressBuffer RayCounter = ResourceDescriptorHeap[RayCounterIndex];
+        RWStructuredBuffer<RayItem> RayList = ResourceDescriptorHeap[RayListIndex];
+        uint writeIndex = 0;
+        RayCounter.InterlockedAdd(0, 1, writeIndex);
+        if (writeIndex < MaxRayCount)
+        {
+            RayItem item;
+            item.OriginVS = viewPos + viewNormal * normalBiasVS;
+            item.TMin = tMinBias;
+            item.DirVS = rayDir;
+            item.TMax = MaxDistance;
+            item.PixelCoord = uint2(Input.Position.xy);
+            item.Roughness = roughness;
+            item.Padding = 0.0f;
+            RayList[writeIndex] = item;
+        }
+    }
+    return 0.0f;
+#endif
+
+    bool bHit = false;
     float3 rayPos = viewPos;
     float t = 0.0f;
     float tPrev = 0.0f;
@@ -256,6 +308,7 @@ float4 PSMain(VSOutput Input) : SV_Target
                     float fade = 1.0f - saturate(tMid / MaxDistance);
                     hitColor = SceneColor.SampleLevel(SceneColorLinearSampler, midUv, 0).rgb;
                     hitWeight = fade;
+                    bHit = true;
                     bRefinedHit = true;
                     break;
                 }
@@ -280,12 +333,44 @@ float4 PSMain(VSOutput Input) : SV_Target
                 float fade = 1.0f - saturate(t / MaxDistance);
                 hitColor = SceneColor.SampleLevel(SceneColorLinearSampler, uv, 0).rgb;
                 hitWeight = fade;
+                bHit = true;
                 break;
             }
 #endif
         }
 
         prevUv = uv;
+    }
+
+    float r01 = saturate(roughness / max(RoughnessCutoff, 1e-4f));
+    float roughAtten = 1.0f - r01;
+    roughAtten = roughAtten * roughAtten;
+    hitWeight *= roughAtten;
+
+    if (bHit)
+    {
+        hitWeight = max(hitWeight, 1e-4f);
+    }
+
+    if (HwEnabled != 0 && !bHit && UseHistory != 0 && MaxRayCount > 0
+        && RayCounterIndex != 0xFFFFFFFFu && RayListIndex != 0xFFFFFFFFu)
+    {
+        RWByteAddressBuffer RayCounter = ResourceDescriptorHeap[RayCounterIndex];
+        RWStructuredBuffer<RayItem> RayList = ResourceDescriptorHeap[RayListIndex];
+        uint writeIndex = 0;
+        RayCounter.InterlockedAdd(0, 1, writeIndex);
+        if (writeIndex < MaxRayCount)
+        {
+            RayItem item;
+            item.OriginVS = viewPos + viewNormal * normalBiasVS;
+            item.TMin = tMinBias;
+            item.DirVS = rayDir;
+            item.TMax = MaxDistance;
+            item.PixelCoord = uint2(Input.Position.xy);
+            item.Roughness = roughness;
+            item.Padding = 0.0f;
+            RayList[writeIndex] = item;
+        }
     }
 
     return float4(hitColor * Intensity, hitWeight);

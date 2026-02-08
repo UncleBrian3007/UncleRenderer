@@ -180,7 +180,8 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     bGtaoJitterEnabled = RendererConfig.bEnableGtaoJitter;
     GtaoRadius = RendererConfig.GtaoRadius;
     GtaoThickness = RendererConfig.GtaoThickness;
-    bSsrEnabled = RendererConfig.bEnableSsr;
+    bSsrSwEnabled = RendererConfig.bEnableSsrSw;
+    bSsrHwEnabled = RendererConfig.bEnableSsrHw;
     bSsrHzbEnabled = RendererConfig.bEnableSsrHzb;
     bSsrRefineEnabled = RendererConfig.bEnableSsrRefine;
     bSsrDenoiseEnabled = RendererConfig.bEnableSsrDenoise;
@@ -964,7 +965,8 @@ bool FApplication::ReloadScene(const std::wstring& ScenePath)
     ReloadConfig.bEnableGtaoJitter = bGtaoJitterEnabled;
     ReloadConfig.GtaoRadius = GtaoRadius;
     ReloadConfig.GtaoThickness = GtaoThickness;
-    ReloadConfig.bEnableSsr = bSsrEnabled;
+    ReloadConfig.bEnableSsrSw = bSsrSwEnabled;
+    ReloadConfig.bEnableSsrHw = bSsrHwEnabled;
     ReloadConfig.bEnableSsrHzb = bSsrHzbEnabled;
     ReloadConfig.bEnableSsrRefine = bSsrRefineEnabled;
     ReloadConfig.bEnableSsrDenoise = bSsrDenoiseEnabled;
@@ -1112,7 +1114,8 @@ void FApplication::StartAsyncSceneReload(const std::wstring& ScenePath)
     AsyncConfig.bEnableGtaoJitter = bGtaoJitterEnabled;
     AsyncConfig.GtaoRadius = GtaoRadius;
     AsyncConfig.GtaoThickness = GtaoThickness;
-    AsyncConfig.bEnableSsr = bSsrEnabled;
+    AsyncConfig.bEnableSsrSw = bSsrSwEnabled;
+    AsyncConfig.bEnableSsrHw = bSsrHwEnabled;
     AsyncConfig.bEnableSsrHzb = bSsrHzbEnabled;
     AsyncConfig.bEnableSsrRefine = bSsrRefineEnabled;
     AsyncConfig.bEnableSsrDenoise = bSsrDenoiseEnabled;
@@ -1697,15 +1700,29 @@ void FApplication::RenderUI()
             }
         }
 
-        bool bSsr = bSsrEnabled;
-        if (ImGui::Checkbox("SSR", &bSsr))
+        bool bSsrSw = bSsrSwEnabled;
+        if (ImGui::Checkbox("SW SSR", &bSsrSw))
         {
-            bSsrEnabled = bSsr;
-            RendererConfig.bEnableSsr = bSsrEnabled;
+            bSsrSwEnabled = bSsrSw;
+            RendererConfig.bEnableSsrSw = bSsrSwEnabled;
 
             if (DeferredRenderer)
             {
-                DeferredRenderer->SetSsrEnabled(bSsrEnabled);
+                DeferredRenderer->SetSsrSwEnabled(bSsrSwEnabled);
+            }
+        }
+
+        ImGui::SameLine();
+
+        bool bSsrHw = bSsrHwEnabled;
+        if (ImGui::Checkbox("HW", &bSsrHw))
+        {
+            bSsrHwEnabled = bSsrHw;
+            RendererConfig.bEnableSsrHw = bSsrHwEnabled;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetSsrHwEnabled(bSsrHwEnabled);
             }
         }
 

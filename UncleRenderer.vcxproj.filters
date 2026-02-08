@@ -476,5 +476,8 @@
     <None Include="Shaders\ScreenSpaceReflections.hlsl">
       <Filter>Shaders</Filter>
     </None>
+    <None Include="Shaders\SsrRayFallback.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
   </ItemGroup>
 </Project>

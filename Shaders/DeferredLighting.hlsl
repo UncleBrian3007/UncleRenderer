@@ -20,6 +20,7 @@ cbuffer LightingBindlessConstants : register(b1)
     uint DepthBufferIndex;
     uint GtaoTextureIndex;
     uint SsrTextureIndex;
+    uint SsrFallbackTextureIndex;
 };
 SamplerState GBufferSampler : register(s0);
 SamplerComparisonState ShadowSampler : register(s1);
@@ -65,6 +66,7 @@ float4 PSMain(VSOutput Input) : SV_Target
     Texture2D DepthBuffer = ResourceDescriptorHeap[DepthBufferIndex];
     Texture2D GtaoTexture = ResourceDescriptorHeap[GtaoTextureIndex];
     Texture2D SsrTexture = ResourceDescriptorHeap[SsrTextureIndex];
+    Texture2D SsrFallbackTexture = ResourceDescriptorHeap[SsrFallbackTextureIndex];
 
     float4 normalEncoded = GBufferA.Sample(GBufferSampler, Input.UV);
     float3 worldNormal = normalize(normalEncoded.xyz * 2.0f - 1.0f);
@@ -126,7 +128,18 @@ float4 PSMain(VSOutput Input) : SV_Target
 
     float4 ssrSample = SsrTexture.Sample(GBufferSampler, Input.UV);
     float ssrWeight = saturate(ssrSample.a);
-    specularIbl = lerp(specularIbl, ssrSample.rgb, ssrWeight);
+    if (ssrWeight > 0.0f)
+    {
+        specularIbl = lerp(specularIbl, ssrSample.rgb, ssrWeight);
+    }
+    else
+    {
+        float4 fallbackSample = SsrFallbackTexture.Sample(GBufferSampler, Input.UV);
+        if (fallbackSample.a > 0.0f)
+        {
+            specularIbl = lerp(specularIbl, fallbackSample.rgb, saturate(fallbackSample.a));
+        }
+    }
 
     float3 irradiance = EnvironmentMap.SampleLevel(IblSampler, worldNormal, maxMip).rgb;
     float3 diffuseIbl = irradiance * albedo * (1.0f - metallic);

@@ -17,6 +17,7 @@ public:
     ID3D12Device*        GetDevice() const { return Device.Get(); }
     FDX12CommandQueue*   GetGraphicsQueue() { return GraphicsQueue.get(); }
     ID3D12DescriptorHeap* GetBindlessDescriptorHeap() const { return BindlessDescriptorHeap.Get(); }
+    ID3D12DescriptorHeap* GetBindlessCpuDescriptorHeap() const { return BindlessCpuDescriptorHeap.Get(); }
     uint32_t             GetBindlessDescriptorCount() const { return BindlessDescriptorCount; }
     uint32_t             CreateBindlessSrv(ID3D12Resource* Resource, const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc);
     uint32_t             CreateBindlessUav(ID3D12Resource* Resource, ID3D12Resource* Counter, const D3D12_UNORDERED_ACCESS_VIEW_DESC& Desc);
@@ -52,6 +53,7 @@ private:
     ComPtr<IDXGIAdapter4> Adapter;
     ComPtr<ID3D12Device>  Device;
     ComPtr<ID3D12DescriptorHeap> BindlessDescriptorHeap;
+    ComPtr<ID3D12DescriptorHeap> BindlessCpuDescriptorHeap;
     std::atomic<uint32_t> BindlessDescriptorNextIndex{ 0 };
     uint32_t BindlessDescriptorCount = 0;
     uint32_t BindlessDescriptorStride = 0;

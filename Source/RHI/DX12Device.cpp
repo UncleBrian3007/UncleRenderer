@@ -187,6 +187,14 @@ bool FDX12Device::CreateBindlessDescriptorHeap()
         BindlessDescriptorHeap->SetName(L"BindlessDescriptorHeap");
     }
 
+    D3D12_DESCRIPTOR_HEAP_DESC CpuHeapDesc = HeapDesc;
+    CpuHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    HR_CHECK(Device->CreateDescriptorHeap(&CpuHeapDesc, IID_PPV_ARGS(BindlessCpuDescriptorHeap.ReleaseAndGetAddressOf())));
+    if (BindlessCpuDescriptorHeap)
+    {
+        BindlessCpuDescriptorHeap->SetName(L"BindlessCpuDescriptorHeap");
+    }
+
     BindlessDescriptorCount = HeapDesc.NumDescriptors;
     BindlessDescriptorStride = Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     BindlessDescriptorNextIndex.store(0);
@@ -363,6 +371,12 @@ uint32_t FDX12Device::CreateBindlessSrv(ID3D12Resource* Resource, const D3D12_SH
     D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle = BindlessDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
     CpuHandle.ptr += static_cast<SIZE_T>(Index) * BindlessDescriptorStride;
     Device->CreateShaderResourceView(Resource, &Desc, CpuHandle);
+    if (BindlessCpuDescriptorHeap)
+    {
+        D3D12_CPU_DESCRIPTOR_HANDLE CpuOnlyHandle = BindlessCpuDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
+        CpuOnlyHandle.ptr += static_cast<SIZE_T>(Index) * BindlessDescriptorStride;
+        Device->CreateShaderResourceView(Resource, &Desc, CpuOnlyHandle);
+    }
     return Index;
 }
 
@@ -382,6 +396,12 @@ uint32_t FDX12Device::CreateBindlessUav(ID3D12Resource* Resource, ID3D12Resource
     D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle = BindlessDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
     CpuHandle.ptr += static_cast<SIZE_T>(Index) * BindlessDescriptorStride;
     Device->CreateUnorderedAccessView(Resource, Counter, &Desc, CpuHandle);
+    if (BindlessCpuDescriptorHeap)
+    {
+        D3D12_CPU_DESCRIPTOR_HANDLE CpuOnlyHandle = BindlessCpuDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
+        CpuOnlyHandle.ptr += static_cast<SIZE_T>(Index) * BindlessDescriptorStride;
+        Device->CreateUnorderedAccessView(Resource, Counter, &Desc, CpuOnlyHandle);
+    }
     return Index;
 }
 

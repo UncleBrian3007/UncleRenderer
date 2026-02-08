@@ -34,6 +34,20 @@ D3D12_CPU_DESCRIPTOR_HANDLE FRenderer::GetBindlessCpuHandle(uint32_t Index) cons
     return Handle;
 }
 
+D3D12_CPU_DESCRIPTOR_HANDLE FRenderer::GetBindlessCpuClearHandle(uint32_t Index) const
+{
+    D3D12_CPU_DESCRIPTOR_HANDLE Handle{};
+    if (!Device || !Device->GetBindlessCpuDescriptorHeap())
+    {
+        return Handle;
+    }
+
+    const UINT Stride = Device->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    Handle = Device->GetBindlessCpuDescriptorHeap()->GetCPUDescriptorHandleForHeapStart();
+    Handle.ptr += static_cast<SIZE_T>(Index) * Stride;
+    return Handle;
+}
+
 D3D12_GPU_DESCRIPTOR_HANDLE FRenderer::GetBindlessGpuHandle(uint32_t Index) const
 {
     D3D12_GPU_DESCRIPTOR_HANDLE Handle{};
@@ -57,6 +71,11 @@ void FRenderer::WriteBindlessSrv(uint32_t Index, ID3D12Resource* Resource, const
 
     const D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle = GetBindlessCpuHandle(Index);
     Device->GetDevice()->CreateShaderResourceView(Resource, &Desc, CpuHandle);
+    const D3D12_CPU_DESCRIPTOR_HANDLE CpuClearHandle = GetBindlessCpuClearHandle(Index);
+    if (CpuClearHandle.ptr != 0)
+    {
+        Device->GetDevice()->CreateShaderResourceView(Resource, &Desc, CpuClearHandle);
+    }
 }
 
 void FRenderer::WriteBindlessUav(uint32_t Index, ID3D12Resource* Resource, ID3D12Resource* Counter, const D3D12_UNORDERED_ACCESS_VIEW_DESC& Desc) const
@@ -68,6 +87,11 @@ void FRenderer::WriteBindlessUav(uint32_t Index, ID3D12Resource* Resource, ID3D1
 
     const D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle = GetBindlessCpuHandle(Index);
     Device->GetDevice()->CreateUnorderedAccessView(Resource, Counter, &Desc, CpuHandle);
+    const D3D12_CPU_DESCRIPTOR_HANDLE CpuClearHandle = GetBindlessCpuClearHandle(Index);
+    if (CpuClearHandle.ptr != 0)
+    {
+        Device->GetDevice()->CreateUnorderedAccessView(Resource, Counter, &Desc, CpuClearHandle);
+    }
 }
 
 bool FRenderer::GetSceneModelStats(size_t& OutTotal, size_t& OutCulled) const
@@ -1565,6 +1589,7 @@ bool FRenderer::CreateRayTracingPipeline(FDX12Device* Device)
 
     FShaderCompiler Compiler;
     RayQueryShadowPipeline.Reset();
+    RayQuerySsrFallbackPipeline.Reset();
     RayQueryPathPipeline.Reset();
     RayQueryPathDebugPipeline.Reset();
     RayQueryPathVndfPipeline.Reset();
@@ -1588,6 +1613,25 @@ bool FRenderer::CreateRayTracingPipeline(FDX12Device* Device)
         return false;
     }
     RayQueryShadowPipeline->SetName(L"RayQueryShadowPipeline");
+
+    std::vector<uint8_t> SsrFallbackBytecode;
+    if (!Compiler.CompileFromFile(L"Shaders/SsrRayFallback.hlsl", L"CSMain", L"cs_6_6", SsrFallbackBytecode))
+    {
+        LogError("Failed to compile SSR ray tracing fallback shader.");
+        return false;
+    }
+
+    D3D12_COMPUTE_PIPELINE_STATE_DESC SsrFallbackPsoDesc = {};
+    SsrFallbackPsoDesc.pRootSignature = RayQueryRootSignature.Get();
+    SsrFallbackPsoDesc.CS.pShaderBytecode = SsrFallbackBytecode.data();
+    SsrFallbackPsoDesc.CS.BytecodeLength = SsrFallbackBytecode.size();
+    HR_CHECK(Device->GetDevice()->CreateComputePipelineState(&SsrFallbackPsoDesc, IID_PPV_ARGS(RayQuerySsrFallbackPipeline.ReleaseAndGetAddressOf())));
+    if (!RayQuerySsrFallbackPipeline)
+    {
+        LogError("Ray query SSR fallback pipeline state creation failed.");
+        return false;
+    }
+    RayQuerySsrFallbackPipeline->SetName(L"RayQuerySsrFallbackPipeline");
 
     std::vector<uint8_t> PathBytecode;
     const std::vector<std::wstring> PathDefines = { L"PATH_TRACING_USE_VNDF=0" };

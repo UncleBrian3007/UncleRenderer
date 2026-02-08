@@ -326,7 +326,17 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     }
     if (LowerKey == "ssr" || LowerKey == "enablessr" || LowerKey == "enablescreenspacereflections")
     {
-        OutConfig.bEnableSsr = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+        const bool bEnable = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+        OutConfig.bEnableSsrSw = bEnable;
+        OutConfig.bEnableSsrHw = bEnable;
+    }
+    if (LowerKey == "ssrsw" || LowerKey == "enablessrsw" || LowerKey == "ssr_sw")
+    {
+        OutConfig.bEnableSsrSw = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+    if (LowerKey == "ssrhw" || LowerKey == "enablessrhw" || LowerKey == "ssr_hw")
+    {
+        OutConfig.bEnableSsrHw = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
     if (LowerKey == "ssrhzb" || LowerKey == "enablessrhzb" || LowerKey == "ssr_hzb")
     {

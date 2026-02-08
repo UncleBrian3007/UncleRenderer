@@ -93,11 +93,13 @@ public:
     void SetGtaoEnabled(bool bEnabled) { bGtaoEnabled = bEnabled; }
     bool IsGtaoEnabled() const { return bGtaoEnabled; }
     void SetPbrResearchEnabled(bool bEnabled) { bEnablePbrResearch = bEnabled; }
-    void SetSsrEnabled(bool bEnabled) { bSsrEnabled = bEnabled; }
+    void SetSsrSwEnabled(bool bEnabled) { bSsrSwEnabled = bEnabled; }
+    void SetSsrHwEnabled(bool bEnabled) { bSsrHwEnabled = bEnabled; }
     void SetSsrHzbEnabled(bool bEnabled) { bSsrHzbEnabled = bEnabled; }
     void SetSsrRefineEnabled(bool bEnabled) { bSsrRefineEnabled = bEnabled; }
     void SetSsrDenoiseEnabled(bool bEnabled) { bSsrDenoiseEnabled = bEnabled; }
-    bool IsSsrEnabled() const { return bSsrEnabled; }
+    bool IsSsrSwEnabled() const { return bSsrSwEnabled; }
+    bool IsSsrHwEnabled() const { return bSsrHwEnabled; }
     void SetSsrMaxSteps(uint32_t Steps) { SsrMaxSteps = Steps; }
     uint32_t GetSsrMaxSteps() const { return SsrMaxSteps; }
     void SetSsrMaxDistance(float Distance) { SsrMaxDistance = Distance; }
@@ -195,6 +197,7 @@ private:
         FRGResourceHandle GtaoHandle{};
         FRGResourceHandle SsrHandle{};
         FRGResourceHandle SsrDenoiseHandle{};
+        FRGResourceHandle SsrFallbackHandle{};
         FRGResourceHandle LightingHandle{};
         FRGResourceHandle TonemapOutputResource{};
         std::array<FRGResourceHandle, 2> LuminanceHandles{};
@@ -294,8 +297,9 @@ private:
     void AddLinearDepthPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle LinearDepthHandle);
     void AddGtaoPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle GtaoHandle);
     void AddSsrPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LinearDepthHandle, const std::vector<FRGResourceHandle>& TaaHandles, FRGResourceHandle HZBHandle, FRGResourceHandle SsrHandle);
+    void AddSsrFallbackPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const FCamera& Camera, const std::vector<FRGResourceHandle>& TaaHandles, FRGResourceHandle SsrFallbackHandle);
     void AddSsrDenoisePass(FRenderGraph& Graph, FRGResourceHandle SsrHandle, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle SsrDenoiseHandle);
-    void AddLightingPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle GtaoHandle, FRGResourceHandle SsrHandle, FRGResourceHandle ShadowHandle, FRGResourceHandle LightingHandle);
+    void AddLightingPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle GtaoHandle, FRGResourceHandle SsrHandle, FRGResourceHandle SsrFallbackHandle, FRGResourceHandle ShadowHandle, FRGResourceHandle LightingHandle);
     void AddPathTracingPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle DepthHandle, FRGResourceHandle GBufferAHandle, FRGResourceHandle GBufferBHandle, FRGResourceHandle GBufferCHandle, FRGResourceHandle OutputHandle);
     void AddPathTracingAccumulationPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle PathTracingTempHandle, FRGResourceHandle LightingHandle, const std::vector<FRGResourceHandle>& AccumulationHandles);
     void AddSkyPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle DepthHandle, FRGResourceHandle LightingHandle);
@@ -323,7 +327,7 @@ private:
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2> GtaoPipelines;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> SsrRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> SsrDenoiseRootSignature;
-    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> SsrPipelines;
+    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 8> SsrPipelines;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> SsrDenoisePipeline;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> LightingPipelines;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> HZBPipelines;
@@ -347,6 +351,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> GtaoTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> SsrTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> SsrDenoiseTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> SsrFallbackTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> HilbertLutTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> TonemapOutput;
     std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 2> LuminanceTextures;
@@ -382,6 +387,8 @@ private:
     uint32_t GtaoBindlessIndex = UINT32_MAX;
     uint32_t SsrBindlessIndex = UINT32_MAX;
     uint32_t SsrDenoiseBindlessIndex = UINT32_MAX;
+    uint32_t SsrFallbackBindlessIndex = UINT32_MAX;
+    uint32_t SsrFallbackUavBindlessIndex = UINT32_MAX;
     uint32_t LightingBufferBindlessIndex = UINT32_MAX;
     uint32_t TonemapOutputBindlessIndex = UINT32_MAX;
     std::array<uint32_t, 2> LuminanceSrvBindlessIndices{ { UINT32_MAX, UINT32_MAX } };
@@ -408,6 +415,17 @@ private:
     D3D12_RESOURCE_STATES GtaoState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES SsrState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES SsrDenoiseState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    D3D12_RESOURCE_STATES SsrFallbackState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SsrRayListBuffers;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SsrRayCounterBuffers;
+    std::vector<uint32_t> SsrRayListSrvBindlessIndices;
+    std::vector<uint32_t> SsrRayListUavBindlessIndices;
+    std::vector<uint32_t> SsrRayCounterSrvBindlessIndices;
+    std::vector<uint32_t> SsrRayCounterUavBindlessIndices;
+    std::vector<D3D12_RESOURCE_STATES> SsrRayListStates;
+    std::vector<D3D12_RESOURCE_STATES> SsrRayCounterStates;
+    uint32_t SsrMaxRayCount = 0;
     std::vector<FGltfScene> GltfScenes;
     std::vector<FGltfAnimationPose> GltfScenePoses;
     std::vector<float> GltfSceneTimes;
@@ -456,7 +474,8 @@ private:
     bool bHZBReady = false;
     bool bEnableHzbTwoPass = true;
     bool bEnablePbrResearch = false;
-    bool bSsrEnabled = true;
+    bool bSsrSwEnabled = true;
+    bool bSsrHwEnabled = true;
     bool bSsrHzbEnabled = false;
     bool bSsrRefineEnabled = false;
     bool bSsrDenoiseEnabled = false;

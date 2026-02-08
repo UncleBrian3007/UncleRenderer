@@ -464,7 +464,7 @@ void FForwardRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCamer
         ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap(), Device->GetSamplerDescriptorHeap() };
         CommandList4->SetDescriptorHeaps(_countof(Heaps), Heaps);
         const D3D12_GPU_DESCRIPTOR_HANDLE UavGpuHandle = GetBindlessGpuHandle(RayTracingShadowMaskUavBindlessIndex);
-        const D3D12_CPU_DESCRIPTOR_HANDLE UavCpuHandle = GetBindlessCpuHandle(RayTracingShadowMaskUavBindlessIndex);
+        const D3D12_CPU_DESCRIPTOR_HANDLE UavCpuHandle = GetBindlessCpuClearHandle(RayTracingShadowMaskUavBindlessIndex);
         CommandList4->ClearUnorderedAccessViewUint(UavGpuHandle, UavCpuHandle, ShadowMask, ClearValues, 0, nullptr);
 
         const uint32_t DispatchWidth = static_cast<uint32_t>(Viewport.Width);
