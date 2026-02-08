@@ -4,6 +4,10 @@
 #define HZB_ENABLED 1
 #endif
 
+#ifndef SSR_REFINE_ENABLED
+#define SSR_REFINE_ENABLED 1
+#endif
+
 struct VSOutput
 {
     float4 Position : SV_Position;
@@ -117,7 +121,9 @@ float4 PSMain(VSOutput Input) : SV_Target
     Texture2D GBufferB = ResourceDescriptorHeap[GBufferBIndex];
     Texture2D LinearDepth = ResourceDescriptorHeap[LinearDepthIndex];
     Texture2D SceneColor = ResourceDescriptorHeap[SceneColorIndex];
+#if HZB_ENABLED
     Texture2D<float2> HZBTexture = ResourceDescriptorHeap[HZBIndex];
+#endif
     SamplerState GBufferPointSampler = SamplerDescriptorHeap[GBufferPointSamplerIndex];
     SamplerState SceneColorLinearSampler = SamplerDescriptorHeap[SceneColorLinearSamplerIndex];
 
@@ -180,6 +186,7 @@ float4 PSMain(VSOutput Input) : SV_Target
             break;
         }
 
+#if HZB_ENABLED
         const bool bUvValid = all(uv >= 0.0f) && all(uv <= 1.0f)
             && all(prevUv >= 0.0f) && all(prevUv <= 1.0f);
         if (bUvValid)
@@ -210,12 +217,16 @@ float4 PSMain(VSOutput Input) : SV_Target
         {
             nextStepScale = min(stepScaleCandidate, 2u);
         }
+#else
+        nextStepScale = 1u;
+#endif
 
         float sceneViewZ = LinearDepth.SampleLevel(GBufferPointSampler, uv, 0).r;
         float depthDelta = rayPos.z - sceneViewZ;
 
         if (depthDelta >= 0.0f)
         {
+#if SSR_REFINE_ENABLED
             float tRefineStart = tPrev;
             float tRefineEnd = t;
             bool bRefinedHit = false;
@@ -263,6 +274,15 @@ float4 PSMain(VSOutput Input) : SV_Target
             {
                 break;
             }
+#else
+            if (depthDelta <= thickness)
+            {
+                float fade = 1.0f - saturate(t / MaxDistance);
+                hitColor = SceneColor.SampleLevel(SceneColorLinearSampler, uv, 0).rgb;
+                hitWeight = fade;
+                break;
+            }
+#endif
         }
 
         prevUv = uv;

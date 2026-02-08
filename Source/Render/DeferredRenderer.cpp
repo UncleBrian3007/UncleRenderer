@@ -128,6 +128,8 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     bEnablePbrResearch = Config.bEnablePbrResearch;
     bSsrEnabled = Config.bEnableSsr;
     bSsrHzbEnabled = Config.bEnableSsrHzb;
+    bSsrRefineEnabled = Config.bEnableSsrRefine;
+    bSsrDenoiseEnabled = Config.bEnableSsrDenoise;
     SsrMaxSteps = Config.SsrMaxSteps;
     SsrMaxDistance = Config.SsrMaxDistance;
     SsrThickness = Config.SsrThickness;
@@ -219,7 +221,7 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     }
 
     LogInfo("Creating deferred renderer SSR root signature and pipeline...");
-    if (!CreateSsrRootSignature(Device) || !CreateSsrPipeline(Device))
+    if (!CreateSsrRootSignature(Device) || !CreateSsrPipeline(Device) || !CreateSsrDenoiseRootSignature(Device) || !CreateSsrDenoisePipeline(Device))
     {
         LogError("Deferred renderer initialization failed: SSR pipeline creation failed");
         return false;
@@ -638,7 +640,12 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 		AddLinearDepthPass(Graph, FrameState, Resources.DepthHandle, Resources.LinearDepthHandle);
 		AddGtaoPass(Graph, FrameState, Resources.GBufferHandles, Resources.LinearDepthHandle, Resources.GtaoHandle);
         AddSsrPass(Graph, FrameState, Resources.GBufferHandles, Resources.LinearDepthHandle, Resources.TaaHandles, Resources.HZBHandle, Resources.SsrHandle);
-		AddLightingPass(Graph, FrameState, Resources.GBufferHandles, Resources.DepthHandle, Resources.GtaoHandle, Resources.SsrHandle, Resources.ShadowHandle, Resources.LightingHandle);
+        if (bSsrDenoiseEnabled)
+        {
+            AddSsrDenoisePass(Graph, Resources.SsrHandle, Resources.GBufferHandles, Resources.LinearDepthHandle, Resources.SsrDenoiseHandle);
+        }
+        const FRGResourceHandle SsrOutputHandle = bSsrDenoiseEnabled ? Resources.SsrDenoiseHandle : Resources.SsrHandle;
+		AddLightingPass(Graph, FrameState, Resources.GBufferHandles, Resources.DepthHandle, Resources.GtaoHandle, SsrOutputHandle, Resources.ShadowHandle, Resources.LightingHandle);
 	}
 
 	AddSkyPass(Graph, Camera, Resources.DepthHandle, Resources.LightingHandle);
@@ -822,6 +829,12 @@ void FDeferredRenderer::ImportFrameResources(FRenderGraph& Graph, FDeferredFrame
         &SsrState,
         { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), DXGI_FORMAT_R16G16B16A16_FLOAT });
 
+    OutResources.SsrDenoiseHandle = Graph.ImportTexture(
+        "SSR Denoise",
+        SsrDenoiseTexture.Get(),
+        &SsrDenoiseState,
+        { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), DXGI_FORMAT_R16G16B16A16_FLOAT });
+
     OutResources.LightingHandle = Graph.ImportTexture(
         "Lighting",
         LightingBuffer.Get(),
@@ -900,7 +913,7 @@ void FDeferredRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCame
         DXGI_FORMAT_R8_UNORM
     };
 
-    Graph.AddPass<FRayTracingShadowPassData>("RayTracingShadowMask", [&, ShadowMaskDesc, DepthHandle, GBufferHandle](FRayTracingShadowPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FRayTracingShadowPassData>("RTShadowMask", [&, ShadowMaskDesc, DepthHandle, GBufferHandle](FRayTracingShadowPassData& Data, FRGPassBuilder& Builder)
     {
         if (!bRayTracedShadowsEnabled || !bRayTracingPipelineReady || !GBufferHandle)
         {
@@ -2249,6 +2262,7 @@ void FDeferredRenderer::AddSsrPass(FRenderGraph& Graph, const FDeferredFrameStat
         bool bUseHistory = false;
         uint32_t HistoryIndex = 0;
         bool bUseHzb = false;
+        uint32_t PipelineIndex = 0;
     };
 
     Graph.AddPass<FSsrPassData>("SSR", [this, GBufferHandles, LinearDepthHandle, TaaHandles, HZBHandle, SsrHandle, FrameState](FSsrPassData& Data, FRGPassBuilder& Builder)
@@ -2257,8 +2271,8 @@ void FDeferredRenderer::AddSsrPass(FRenderGraph& Graph, const FDeferredFrameStat
         Data.HistoryIndex = FrameState.TaaReadIndex;
         Data.bUseHistory = FrameState.bTaaHistoryReady && Data.HistoryIndex < TaaHandles.size();
         Data.bUseHzb = Data.bUseHzb && static_cast<bool>(HZBHandle);
-        const uint32_t PipelineIndex = Data.bUseHzb ? 1u : 0u;
-        Data.bEnabled = bSsrEnabled && SsrRootSignature && SsrPipelines[PipelineIndex];
+        Data.PipelineIndex = (Data.bUseHzb ? 2u : 0u) + (bSsrRefineEnabled ? 1u : 0u);
+        Data.bEnabled = bSsrEnabled && SsrRootSignature && SsrPipelines[Data.PipelineIndex];
 
         Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(GBufferHandles[1], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -2307,8 +2321,7 @@ void FDeferredRenderer::AddSsrPass(FRenderGraph& Graph, const FDeferredFrameStat
             return;
         }
 
-        const uint32_t PipelineIndex = Data.bUseHzb ? 1u : 0u;
-        LocalCommandList->SetPipelineState(SsrPipelines[PipelineIndex].Get());
+        LocalCommandList->SetPipelineState(SsrPipelines[Data.PipelineIndex].Get());
         LocalCommandList->SetGraphicsRootSignature(SsrRootSignature.Get());
 
         LocalCommandList->RSSetViewports(1, &Viewport);
@@ -2369,6 +2382,87 @@ void FDeferredRenderer::AddSsrPass(FRenderGraph& Graph, const FDeferredFrameStat
     });
 }
 
+void FDeferredRenderer::AddSsrDenoisePass(FRenderGraph& Graph, FRGResourceHandle SsrHandle, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle SsrDenoiseHandle)
+{
+    struct FSsrDenoisePassData
+    {
+        bool bEnabled = false;
+    };
+
+    Graph.AddPass<FSsrDenoisePassData>("SSR Denoise", [this, SsrHandle, GBufferHandles, LinearDepthHandle, SsrDenoiseHandle](FSsrDenoisePassData& Data, FRGPassBuilder& Builder)
+    {
+        Data.bEnabled = bSsrEnabled && bSsrDenoiseEnabled && SsrDenoiseRootSignature && SsrDenoisePipeline;
+
+        Builder.ReadTexture(SsrHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(LinearDepthHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Builder.WriteTexture(SsrDenoiseHandle, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    }, [this](const FSsrDenoisePassData& Data, FDX12CommandContext& Cmd)
+    {
+        ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
+        FScopedPixEvent SsrDenoiseEvent(LocalCommandList, L"SSR Denoise");
+
+        if (!Device || !Device->GetBindlessDescriptorHeap())
+        {
+            return;
+        }
+
+        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap(), Device->GetSamplerDescriptorHeap() };
+        LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        Cmd.SetRenderTarget(SsrDenoiseRtvHandle, nullptr);
+
+        const float ClearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+        LocalCommandList->ClearRenderTargetView(SsrDenoiseRtvHandle, ClearColor, 0, nullptr);
+
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        if (SsrBindlessIndex == UINT32_MAX || GBufferBindlessIndices[0] == UINT32_MAX || LinearDepthBindlessIndex == UINT32_MAX)
+        {
+            return;
+        }
+
+        LocalCommandList->SetPipelineState(SsrDenoisePipeline.Get());
+        LocalCommandList->SetGraphicsRootSignature(SsrDenoiseRootSignature.Get());
+
+        LocalCommandList->RSSetViewports(1, &Viewport);
+        LocalCommandList->RSSetScissorRects(1, &ScissorRect);
+
+        LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+        struct FSsrDenoiseConstants
+        {
+            uint32_t OutputWidth = 0;
+            uint32_t OutputHeight = 0;
+            float DepthSigma = 0.0f;
+            float NormalPower = 0.0f;
+        };
+
+        const FSsrDenoiseConstants Constants =
+        {
+            static_cast<uint32_t>(Viewport.Width),
+            static_cast<uint32_t>(Viewport.Height),
+            0.5f,
+            32.0f
+        };
+        LocalCommandList->SetGraphicsRoot32BitConstants(0, sizeof(FSsrDenoiseConstants) / sizeof(uint32_t), &Constants, 0);
+
+        const uint32_t DenoiseBindlessIndices[] =
+        {
+            SsrBindlessIndex,
+            GBufferBindlessIndices[0],
+            LinearDepthBindlessIndex,
+            Device->GetPointClampSamplerIndex(),
+            Device->GetLinearClampSamplerIndex()
+        };
+        LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(DenoiseBindlessIndices), DenoiseBindlessIndices, 0);
+
+        LocalCommandList->DrawInstanced(3, 1, 0, 0);
+    });
+}
+
 void FDeferredRenderer::AddLightingPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle GtaoHandle, FRGResourceHandle SsrHandle, FRGResourceHandle ShadowHandle, FRGResourceHandle LightingHandle)
 {
     struct FLightingPassData
@@ -2406,7 +2500,8 @@ void FDeferredRenderer::AddLightingPass(FRenderGraph& Graph, const FDeferredFram
 
         const uint32_t DepthIndex = GetFrameIndex() % static_cast<uint32_t>(DepthBindlessIndices.size());
         const uint32_t DepthBindlessIndex = DepthBindlessIndices.empty() ? UINT32_MAX : DepthBindlessIndices[DepthIndex];
-        if (DepthBindlessIndex == UINT32_MAX || GtaoBindlessIndex == UINT32_MAX || SsrBindlessIndex == UINT32_MAX || ShadowMapBindlessIndex == UINT32_MAX
+        const uint32_t SsrLightingBindlessIndex = bSsrDenoiseEnabled ? SsrDenoiseBindlessIndex : SsrBindlessIndex;
+        if (DepthBindlessIndex == UINT32_MAX || GtaoBindlessIndex == UINT32_MAX || SsrLightingBindlessIndex == UINT32_MAX || ShadowMapBindlessIndex == UINT32_MAX
             || EnvironmentCubeBindlessIndex == UINT32_MAX || BrdfLutBindlessIndex == UINT32_MAX
             || GBufferBindlessIndices[0] == UINT32_MAX || GBufferBindlessIndices[1] == UINT32_MAX || GBufferBindlessIndices[2] == UINT32_MAX)
         {
@@ -2439,7 +2534,7 @@ void FDeferredRenderer::AddLightingPass(FRenderGraph& Graph, const FDeferredFram
             BrdfLutBindlessIndex,
             DepthBindlessIndex,
             GtaoBindlessIndex,
-            SsrBindlessIndex
+            SsrLightingBindlessIndex
         };
         LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(LightingBindlessIndices), LightingBindlessIndices, 0);
 
@@ -3731,7 +3826,7 @@ bool FDeferredRenderer::CreateGtaoPipeline(FDX12Device* Device)
 {
     FShaderCompiler Compiler;
     std::vector<uint8_t> VSByteCode;
-    std::array<std::vector<uint8_t>, 2> PSByteCodes;
+    std::array<std::vector<uint8_t>, 4> PSByteCodes;
 
     const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
     const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
@@ -3836,7 +3931,7 @@ bool FDeferredRenderer::CreateSsrPipeline(FDX12Device* Device)
 {
     FShaderCompiler Compiler;
     std::vector<uint8_t> VSByteCode;
-    std::array<std::vector<uint8_t>, 2> PSByteCodes;
+    std::array<std::vector<uint8_t>, 4> PSByteCodes;
 
     const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
     const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
@@ -3847,13 +3942,23 @@ bool FDeferredRenderer::CreateSsrPipeline(FDX12Device* Device)
         return false;
     }
 
-    const std::vector<std::wstring> HzbOffDefines = { L"HZB_ENABLED=0" };
-    const std::vector<std::wstring> HzbOnDefines = { L"HZB_ENABLED=1" };
-    if (!Compiler.CompileFromFile(L"Shaders/ScreenSpaceReflections.hlsl", L"PSMain", PSTarget, PSByteCodes[0], HzbOffDefines))
+    const std::vector<std::wstring> HzbOffRefineOffDefines = { L"HZB_ENABLED=0", L"SSR_REFINE_ENABLED=0" };
+    const std::vector<std::wstring> HzbOffRefineOnDefines = { L"HZB_ENABLED=0", L"SSR_REFINE_ENABLED=1" };
+    const std::vector<std::wstring> HzbOnRefineOffDefines = { L"HZB_ENABLED=1", L"SSR_REFINE_ENABLED=0" };
+    const std::vector<std::wstring> HzbOnRefineOnDefines = { L"HZB_ENABLED=1", L"SSR_REFINE_ENABLED=1" };
+    if (!Compiler.CompileFromFile(L"Shaders/ScreenSpaceReflections.hlsl", L"PSMain", PSTarget, PSByteCodes[0], HzbOffRefineOffDefines))
     {
         return false;
     }
-    if (!Compiler.CompileFromFile(L"Shaders/ScreenSpaceReflections.hlsl", L"PSMain", PSTarget, PSByteCodes[1], HzbOnDefines))
+    if (!Compiler.CompileFromFile(L"Shaders/ScreenSpaceReflections.hlsl", L"PSMain", PSTarget, PSByteCodes[1], HzbOffRefineOnDefines))
+    {
+        return false;
+    }
+    if (!Compiler.CompileFromFile(L"Shaders/ScreenSpaceReflections.hlsl", L"PSMain", PSTarget, PSByteCodes[2], HzbOnRefineOffDefines))
+    {
+        return false;
+    }
+    if (!Compiler.CompileFromFile(L"Shaders/ScreenSpaceReflections.hlsl", L"PSMain", PSTarget, PSByteCodes[3], HzbOnRefineOnDefines))
     {
         return false;
     }
@@ -3882,9 +3987,98 @@ bool FDeferredRenderer::CreateSsrPipeline(FDX12Device* Device)
     PsoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
     PsoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
 
-    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(SsrPipelines[0].GetAddressOf())));
-    PsoDesc.PS = { PSByteCodes[1].data(), PSByteCodes[1].size() };
-    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(SsrPipelines[1].GetAddressOf())));
+    for (size_t PipelineIndex = 0; PipelineIndex < SsrPipelines.size(); ++PipelineIndex)
+    {
+        PsoDesc.PS = { PSByteCodes[PipelineIndex].data(), PSByteCodes[PipelineIndex].size() };
+        HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(SsrPipelines[PipelineIndex].GetAddressOf())));
+    }
+    return true;
+}
+
+bool FDeferredRenderer::CreateSsrDenoiseRootSignature(FDX12Device* Device)
+{
+    D3D12_ROOT_PARAMETER1 RootParams[2] = {};
+
+    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    RootParams[0].Constants.Num32BitValues = 4;
+    RootParams[0].Constants.RegisterSpace = 0;
+    RootParams[0].Constants.ShaderRegister = 0;
+
+    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    RootParams[1].Constants.Num32BitValues = 5;
+    RootParams[1].Constants.RegisterSpace = 0;
+    RootParams[1].Constants.ShaderRegister = 1;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
+    RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    RootSigDesc.Desc_1_1.NumParameters = _countof(RootParams);
+    RootSigDesc.Desc_1_1.pParameters = RootParams;
+    RootSigDesc.Desc_1_1.NumStaticSamplers = 0;
+    RootSigDesc.Desc_1_1.pStaticSamplers = nullptr;
+    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+        | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
+        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
+
+    ComPtr<ID3DBlob> SerializedSig;
+    ComPtr<ID3DBlob> ErrorBlob;
+    HR_CHECK(D3D12SerializeVersionedRootSignature(&RootSigDesc, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
+
+    if (ErrorBlob)
+    {
+        OutputDebugStringA(static_cast<const char*>(ErrorBlob->GetBufferPointer()));
+    }
+
+    HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(SsrDenoiseRootSignature.GetAddressOf())));
+    return true;
+}
+
+bool FDeferredRenderer::CreateSsrDenoisePipeline(FDX12Device* Device)
+{
+    FShaderCompiler Compiler;
+    std::vector<uint8_t> VSByteCode;
+    std::vector<uint8_t> PSByteCode;
+
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
+    const std::wstring PSTarget = RendererUtils::BuildShaderTarget(L"ps", ShaderModel);
+
+    if (!Compiler.CompileFromFile(L"Shaders/ScreenSpaceReflectionsDenoise.hlsl", L"VSMain", VSTarget, VSByteCode))
+    {
+        return false;
+    }
+
+    if (!Compiler.CompileFromFile(L"Shaders/ScreenSpaceReflectionsDenoise.hlsl", L"PSMain", PSTarget, PSByteCode))
+    {
+        return false;
+    }
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
+    PsoDesc.pRootSignature = SsrDenoiseRootSignature.Get();
+    PsoDesc.VS = { VSByteCode.data(), VSByteCode.size() };
+    PsoDesc.PS = { PSByteCode.data(), PSByteCode.size() };
+    PsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    PsoDesc.SampleDesc.Count = 1;
+    PsoDesc.SampleMask = UINT_MAX;
+
+    PsoDesc.RasterizerState = {};
+    PsoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    PsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    PsoDesc.RasterizerState.FrontCounterClockwise = TRUE;
+    PsoDesc.RasterizerState.DepthClipEnable = TRUE;
+
+    PsoDesc.BlendState = {};
+    PsoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    PsoDesc.DepthStencilState = {};
+    PsoDesc.DepthStencilState.DepthEnable = FALSE;
+    PsoDesc.DepthStencilState.StencilEnable = FALSE;
+    PsoDesc.NumRenderTargets = 1;
+    PsoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    PsoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
+
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(SsrDenoisePipeline.GetAddressOf())));
     return true;
 }
 
@@ -4624,13 +4818,26 @@ bool FDeferredRenderer::CreateSsrResources(FDX12Device* Device, uint32_t Width, 
         &ClearValue,
         IID_PPV_ARGS(SsrTexture.GetAddressOf())));
 
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &HeapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &Desc,
+        D3D12_RESOURCE_STATE_RENDER_TARGET,
+        &ClearValue,
+        IID_PPV_ARGS(SsrDenoiseTexture.GetAddressOf())));
+
     if (SsrTexture)
     {
         SsrTexture->SetName(L"SSR");
     }
 
+    if (SsrDenoiseTexture)
+    {
+        SsrDenoiseTexture->SetName(L"SSR_Denoise");
+    }
+
     D3D12_DESCRIPTOR_HEAP_DESC RtvHeapDesc = {};
-    RtvHeapDesc.NumDescriptors = 1;
+    RtvHeapDesc.NumDescriptors = 2;
     RtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     RtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&RtvHeapDesc, IID_PPV_ARGS(SsrRtvHeap.GetAddressOf())));
@@ -4640,12 +4847,17 @@ bool FDeferredRenderer::CreateSsrResources(FDX12Device* Device, uint32_t Width, 
     }
 
     SsrRtvHandle = SsrRtvHeap->GetCPUDescriptorHandleForHeapStart();
+    const UINT RtvDescriptorSize = Device->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    SsrDenoiseRtvHandle = SsrRtvHandle;
+    SsrDenoiseRtvHandle.ptr += RtvDescriptorSize;
     D3D12_RENDER_TARGET_VIEW_DESC RtvDesc = {};
     RtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
     RtvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
     Device->GetDevice()->CreateRenderTargetView(SsrTexture.Get(), &RtvDesc, SsrRtvHandle);
+    Device->GetDevice()->CreateRenderTargetView(SsrDenoiseTexture.Get(), &RtvDesc, SsrDenoiseRtvHandle);
 
     SsrState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    SsrDenoiseState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     return true;
 }
 
@@ -5112,6 +5324,7 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         SsrSrvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
         SsrSrvDesc.Texture2D.MipLevels = 1;
         SsrBindlessIndex = Device->CreateBindlessSrv(SsrTexture.Get(), SsrSrvDesc);
+        SsrDenoiseBindlessIndex = Device->CreateBindlessSrv(SsrDenoiseTexture.Get(), SsrSrvDesc);
     }
 
     {

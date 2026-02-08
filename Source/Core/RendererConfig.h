@@ -46,7 +46,9 @@ struct FRendererConfig
     bool bEnableGtao = true;
     bool bEnableGtaoJitter = true;
     bool bEnableSsr = true;
-    bool bEnableSsrHzb = true;
+    bool bEnableSsrHzb = false;
+    bool bEnableSsrRefine = false;
+    bool bEnableSsrDenoise = true;
     bool bEnableIndirectDraw = true;
     bool bEnableSkinningIndirectDraw = false;
     bool bEnablePbrResearch = false;

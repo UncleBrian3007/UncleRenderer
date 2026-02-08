@@ -325,7 +325,7 @@ void FForwardRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCamer
         DXGI_FORMAT_R8_UNORM
     };
 
-    Graph.AddPass<FRayTracingShadowPassData>("RayTracingShadowMask", [&, ShadowMaskDesc, DepthHandle, GBufferHandle](FRayTracingShadowPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FRayTracingShadowPassData>("RTShadowMask", [&, ShadowMaskDesc, DepthHandle, GBufferHandle](FRayTracingShadowPassData& Data, FRGPassBuilder& Builder)
     {
         if (!bRayTracedShadowsEnabled || !bRayTracingPipelineReady || !GBufferHandle)
         {

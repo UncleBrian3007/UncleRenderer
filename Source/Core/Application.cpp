@@ -182,6 +182,8 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     GtaoThickness = RendererConfig.GtaoThickness;
     bSsrEnabled = RendererConfig.bEnableSsr;
     bSsrHzbEnabled = RendererConfig.bEnableSsrHzb;
+    bSsrRefineEnabled = RendererConfig.bEnableSsrRefine;
+    bSsrDenoiseEnabled = RendererConfig.bEnableSsrDenoise;
     SsrMaxSteps = RendererConfig.SsrMaxSteps;
     SsrMaxDistance = RendererConfig.SsrMaxDistance;
     SsrThickness = RendererConfig.SsrThickness;
@@ -964,6 +966,8 @@ bool FApplication::ReloadScene(const std::wstring& ScenePath)
     ReloadConfig.GtaoThickness = GtaoThickness;
     ReloadConfig.bEnableSsr = bSsrEnabled;
     ReloadConfig.bEnableSsrHzb = bSsrHzbEnabled;
+    ReloadConfig.bEnableSsrRefine = bSsrRefineEnabled;
+    ReloadConfig.bEnableSsrDenoise = bSsrDenoiseEnabled;
     ReloadConfig.SsrMaxSteps = SsrMaxSteps;
     ReloadConfig.SsrMaxDistance = SsrMaxDistance;
     ReloadConfig.SsrThickness = SsrThickness;
@@ -1110,6 +1114,8 @@ void FApplication::StartAsyncSceneReload(const std::wstring& ScenePath)
     AsyncConfig.GtaoThickness = GtaoThickness;
     AsyncConfig.bEnableSsr = bSsrEnabled;
     AsyncConfig.bEnableSsrHzb = bSsrHzbEnabled;
+    AsyncConfig.bEnableSsrRefine = bSsrRefineEnabled;
+    AsyncConfig.bEnableSsrDenoise = bSsrDenoiseEnabled;
     AsyncConfig.SsrMaxSteps = SsrMaxSteps;
     AsyncConfig.SsrMaxDistance = SsrMaxDistance;
     AsyncConfig.SsrThickness = SsrThickness;
@@ -1714,6 +1720,34 @@ void FApplication::RenderUI()
             if (DeferredRenderer)
             {
                 DeferredRenderer->SetSsrHzbEnabled(bSsrHzbEnabled);
+            }
+        }
+
+        ImGui::SameLine();
+
+        bool bSsrRefine = bSsrRefineEnabled;
+        if (ImGui::Checkbox("Refine", &bSsrRefine))
+        {
+            bSsrRefineEnabled = bSsrRefine;
+            RendererConfig.bEnableSsrRefine = bSsrRefineEnabled;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetSsrRefineEnabled(bSsrRefineEnabled);
+            }
+        }
+
+        ImGui::SameLine();
+
+        bool bSsrDenoise = bSsrDenoiseEnabled;
+        if (ImGui::Checkbox("Denoise", &bSsrDenoise))
+        {
+            bSsrDenoiseEnabled = bSsrDenoise;
+            RendererConfig.bEnableSsrDenoise = bSsrDenoiseEnabled;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetSsrDenoiseEnabled(bSsrDenoiseEnabled);
             }
         }
 

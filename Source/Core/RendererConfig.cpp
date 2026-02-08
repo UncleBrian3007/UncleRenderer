@@ -332,6 +332,14 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     {
         OutConfig.bEnableSsrHzb = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
+    if (LowerKey == "ssrrefine" || LowerKey == "enablessrrefine" || LowerKey == "ssr_refine")
+    {
+        OutConfig.bEnableSsrRefine = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+    if (LowerKey == "ssrdenoise" || LowerKey == "enablessrdenoise" || LowerKey == "ssr_denoise")
+    {
+        OutConfig.bEnableSsrDenoise = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
     if (LowerKey == "gtaojitter" || LowerKey == "enablegtaojitter")
     {
         OutConfig.bEnableGtaoJitter = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
