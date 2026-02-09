@@ -2541,12 +2541,18 @@ bool FRenderer::PrepareGpuDrivenDrawData(FGpuDrivenPreparedData& OutData)
             continue;
         }
 
-        const std::array<uint32_t, 4> MaterialIndices =
+        const std::array<uint32_t, 10> MaterialIndices =
         {
             Model.BaseColorBindlessIndex,
             Model.MetallicRoughnessBindlessIndex,
             Model.NormalBindlessIndex,
-            Model.EmissiveBindlessIndex
+            Model.EmissiveBindlessIndex,
+            Model.SheenColorBindlessIndex,
+            Model.SheenRoughnessBindlessIndex,
+            Model.ClearcoatBindlessIndex,
+            Model.ClearcoatRoughnessBindlessIndex,
+            Model.ClearcoatNormalBindlessIndex,
+            Model.AnisotropyBindlessIndex
         };
         if (IndirectDrawRanges.empty()
             || IndirectDrawRanges.back().PipelineKey != PipelineKey

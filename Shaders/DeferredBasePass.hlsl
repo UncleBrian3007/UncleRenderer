@@ -35,6 +35,15 @@ struct VSOutput
 #ifndef USE_ALPHA_MASK
 #define USE_ALPHA_MASK 0
 #endif
+#ifndef SHADINGMODEL_SHEEN
+#define SHADINGMODEL_SHEEN 0
+#endif
+#ifndef SHADINGMODEL_CLEARCOAT
+#define SHADINGMODEL_CLEARCOAT 0
+#endif
+#ifndef SHADINGMODEL_ANISOTROPY
+#define SHADINGMODEL_ANISOTROPY 0
+#endif
 
 
 cbuffer BasePassBindlessConstants : register(b1)
@@ -43,6 +52,12 @@ cbuffer BasePassBindlessConstants : register(b1)
     uint MetallicRoughnessTextureIndex;
     uint NormalTextureIndex;
     uint EmissiveTextureIndex;
+    uint SheenColorTextureIndex;
+    uint SheenRoughnessTextureIndex;
+    uint ClearcoatTextureIndex;
+    uint ClearcoatRoughnessTextureIndex;
+    uint ClearcoatNormalTextureIndex;
+    uint AnisotropyTextureIndex;
 };
 SamplerState AlbedoSampler : register(s0);
 
@@ -105,9 +120,10 @@ VSOutput VSMain(VSInput Input)
 struct PSOutput
 {
     float4 GBufferA : SV_Target0; // Normal (world, encoded)
-    float4 GBufferB : SV_Target1; // Specular/Metallic/Roughness
+    float4 GBufferB : SV_Target1; // Specular/Metallic/Roughness/ShadingModelId
     float4 GBufferC : SV_Target2; // BaseColor
-    float4 SceneColor : SV_Target3; // Emissive
+    float4 GBufferD : SV_Target3; // CustomData
+    float4 SceneColor : SV_Target4; // Emissive
 };
 
 float3 ComputeWorldNormal(VSOutput Input, float2 normalUV)
@@ -135,6 +151,25 @@ float3 ComputeWorldNormal(VSOutput Input, float2 normalUV)
 #endif
 }
 
+float3 ComputeWorldNormalFromTexture(VSOutput Input, Texture2D NormalTexture, float2 normalUV)
+{
+    float3 vertexNormal = normalize(Input.Normal);
+
+    float3 tangent = normalize(Input.Tangent.xyz - vertexNormal * dot(vertexNormal, Input.Tangent.xyz));
+    float3 bitangent = normalize(cross(vertexNormal, tangent)) * Input.Tangent.w;
+
+    float2 tangentNormalRG = NormalTexture.Sample(AlbedoSampler, normalUV).rg * 2.0f - 1.0f;
+    float tangentNormalZ = sqrt(saturate(1.0f - dot(tangentNormalRG, tangentNormalRG)));
+    float3 tangentNormal = float3(tangentNormalRG, tangentNormalZ);
+    const float tangentEpsilon = 1e-5f;
+    float tangentNormalLength = length(tangentNormal);
+    tangentNormal = tangentNormalLength < tangentEpsilon ? float3(0.0f, 0.0f, 1.0f) : tangentNormal;
+
+    float3x3 TBN = float3x3(tangent, bitangent, vertexNormal);
+    float3 worldNormal = mul(tangentNormal, TBN);
+    return normalize(worldNormal);
+}
+
 PSOutput PSMain(VSOutput Input)
 {
     PSOutput Output;
@@ -146,8 +181,23 @@ PSOutput PSMain(VSOutput Input)
     float2 mrUV = ApplyTextureTransform(Input.UV, MetallicRoughnessTransformOffsetScale, MetallicRoughnessTransformRotation);
     float2 normalUV = ApplyTextureTransform(Input.UV, NormalTransformOffsetScale, NormalTransformRotation);
     float2 emissiveUV = ApplyTextureTransform(Input.UV, EmissiveTransformOffsetScale, EmissiveTransformRotation);
+    float2 sheenColorUV = ApplyTextureTransform(Input.UV, SheenColorTransformOffsetScale, SheenColorTransformRotation);
+    float2 sheenRoughnessUV = ApplyTextureTransform(Input.UV, SheenRoughnessTransformOffsetScale, SheenRoughnessTransformRotation);
+    float2 clearcoatUV = ApplyTextureTransform(Input.UV, ClearcoatTransformOffsetScale, ClearcoatTransformRotation);
+    float2 clearcoatRoughnessUV = ApplyTextureTransform(Input.UV, ClearcoatRoughnessTransformOffsetScale, ClearcoatRoughnessTransformRotation);
+    float2 clearcoatNormalUV = ApplyTextureTransform(Input.UV, ClearcoatNormalTransformOffsetScale, ClearcoatNormalTransformRotation);
+#if SHADINGMODEL_ANISOTROPY
+    float2 anisotropyUV = ApplyTextureTransform(Input.UV, AnisotropyTransformOffsetScale, AnisotropyTransformRotation);
+#endif
 
     float3 worldNormal = ComputeWorldNormal(Input, normalUV);
+#if SHADINGMODEL_CLEARCOAT
+    if (ClearcoatNormalTextureIndex != 0xFFFFFFFFu)
+    {
+        Texture2D ClearcoatNormalTexture = ResourceDescriptorHeap[ClearcoatNormalTextureIndex];
+        worldNormal = ComputeWorldNormalFromTexture(Input, ClearcoatNormalTexture, clearcoatNormalUV);
+    }
+#endif
 
     float3 albedo = BaseColor * Input.Color.rgb;
     float alpha = BaseColorAlpha * Input.Color.a;
@@ -173,9 +223,51 @@ PSOutput PSMain(VSOutput Input)
     metallic *= metallicRoughness.x;
     roughness *= metallicRoughness.y;
 #endif
-    Output.GBufferB = float4(specular, metallic, roughness, 1.0f);
+    Output.GBufferB = float4(specular, metallic, roughness, (float)ShadingModelId);
 
     Output.GBufferC = float4(albedo, 1.0);
+
+    float4 customData = 0.0f;
+#if SHADINGMODEL_SHEEN
+    float3 sheenColor = SheenColorFactor;
+    float sheenRoughness = SheenRoughnessFactor;
+    if (SheenColorTextureIndex != 0xFFFFFFFFu)
+    {
+        Texture2D SheenColorTexture = ResourceDescriptorHeap[SheenColorTextureIndex];
+        sheenColor *= SheenColorTexture.Sample(AlbedoSampler, sheenColorUV).rgb;
+    }
+    if (SheenRoughnessTextureIndex != 0xFFFFFFFFu)
+    {
+        Texture2D SheenRoughnessTexture = ResourceDescriptorHeap[SheenRoughnessTextureIndex];
+        sheenRoughness *= SheenRoughnessTexture.Sample(AlbedoSampler, sheenRoughnessUV).a;
+    }
+    customData = float4(sheenColor, sheenRoughness);
+#endif
+#if SHADINGMODEL_CLEARCOAT
+    float clearcoat = ClearcoatFactor;
+    float clearcoatRoughness = ClearcoatRoughnessFactor;
+    if (ClearcoatTextureIndex != 0xFFFFFFFFu)
+    {
+        Texture2D ClearcoatTexture = ResourceDescriptorHeap[ClearcoatTextureIndex];
+        clearcoat *= ClearcoatTexture.Sample(AlbedoSampler, clearcoatUV).r;
+    }
+    if (ClearcoatRoughnessTextureIndex != 0xFFFFFFFFu)
+    {
+        Texture2D ClearcoatRoughnessTexture = ResourceDescriptorHeap[ClearcoatRoughnessTextureIndex];
+        clearcoatRoughness *= ClearcoatRoughnessTexture.Sample(AlbedoSampler, clearcoatRoughnessUV).g;
+    }
+    customData = float4(clearcoat, clearcoatRoughness, 0.0f, 0.0f);
+#endif
+#if SHADINGMODEL_ANISOTROPY
+    float anisotropyValue = 1.0f;
+    if (AnisotropyTextureIndex != 0xFFFFFFFFu)
+    {
+        Texture2D AnisotropyTexture = ResourceDescriptorHeap[AnisotropyTextureIndex];
+        anisotropyValue = AnisotropyTexture.Sample(AlbedoSampler, anisotropyUV).r;
+    }
+    customData = float4(anisotropyValue, AnisotropyStrength, 0.0f, 0.0f);
+#endif
+    Output.GBufferD = customData;
 
     float3 emissive = EmissiveFactor;
 #if USE_EMISSIVE_MAP

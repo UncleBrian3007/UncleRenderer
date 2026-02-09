@@ -32,9 +32,17 @@
       "visible": true
     },
     {
-      "id": "RiggedSimple",
-      "path": "Models/RiggedSimple.gltf",
-      "translate": [ 0.0, 0.0, 0.0 ],
+      "id": "SheenCloth",
+      "path": "Models/SheenCloth/SheenCloth.gltf",
+      "translate": [ 15.0, 0.0, -5.0 ],
+      "rotate_euler": [ 0.0, 0.0, 0.0 ],
+      "scale": [ 20.0, 20.0, 20.0 ],
+      "visible": true
+    },
+    {
+      "id": "ClearCoatTest",
+      "path": "Models/ClearCoatTest/ClearCoatTest.gltf",
+      "translate": [ 25.0, 4.8, 5.0 ],
       "rotate_euler": [ 0.0, 0.0, 0.0 ],
       "scale": [ 1.0, 1.0, 1.0 ],
       "visible": true

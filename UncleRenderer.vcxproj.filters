@@ -54,6 +54,9 @@
     <Filter Include="Source Files\ThirdParty\meshoptimizer">
       <UniqueIdentifier>{872f13f4-ed69-462e-b90a-a014dcd6e376}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Source Files\ThirdParty\cgltf">
+      <UniqueIdentifier>{f99d4361-6ead-46fb-944a-a7bfe67e419a}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Source\Main.cpp">
@@ -348,6 +351,12 @@
     </ClInclude>
     <ClInclude Include="Source\Scene\GltfAnimation.h">
       <Filter>Header Files\Scene</Filter>
+    </ClInclude>
+    <ClInclude Include="ThirdParty\cgltf\cgltf.h">
+      <Filter>Source Files\ThirdParty\cgltf</Filter>
+    </ClInclude>
+    <ClInclude Include="ThirdParty\cgltf\cgltf_write.h">
+      <Filter>Source Files\ThirdParty\cgltf</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>

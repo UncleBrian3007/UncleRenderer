@@ -233,7 +233,7 @@ protected:
         uint32_t Start = 0;
         uint32_t Count = 0;
         uint32_t PipelineKey = 0;
-        std::array<uint32_t, 4> MaterialBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX } };
+        std::array<uint32_t, 10> MaterialBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX } };
         std::wstring Name;
     };
 

@@ -898,15 +898,15 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
         {
             auto SelectPipelineByKey = [&](uint32_t Key)
             {
-                const bool bUseSkinning = (Key & (1u << 5)) != 0;
-                const uint32_t MaterialKey = Key & 0x1Fu;
+                const bool bUseSkinning = (Key & (1u << 8)) != 0;
+                const uint32_t MaterialKey = Key & 0xFFu;
                 return bUseSkinning ? BasePassPipelinesSkinned[MaterialKey].Get() : BasePassPipelines[MaterialKey].Get();
             };
 
             for (size_t RangeIndex = 0; RangeIndex < IndirectDrawRanges.size(); ++RangeIndex)
             {
                 const FIndirectDrawRange& Range = IndirectDrawRanges[RangeIndex];
-                const bool bRangeSkinning = (Range.PipelineKey & (1u << 5)) != 0;
+                const bool bRangeSkinning = (Range.PipelineKey & (1u << 8)) != 0;
                 if (bRangeSkinning && !bEnableSkinningIndirectDraw)
                 {
                     continue;
@@ -971,13 +971,19 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                     const bool bUseEmissiveMap = !Model.EmissiveTexturePath.empty();
                     const bool bUseNormalMap = Model.bHasNormalMap;
                     const bool bUseAlphaMask = Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask);
+                    const bool bUseSheenModel = Model.ShadingModelId == 1u;
+                    const bool bUseClearcoatModel = Model.ShadingModelId == 2u;
+                    const bool bUseAnisotropyModel = Model.ShadingModelId == 3u;
 
                     const uint32_t PipelineKey =
                         (bUseNormalMap ? 1u : 0u) |
                         (bUseMetallicRoughnessMap ? 2u : 0u) |
                         (bUseBaseColorMap ? 4u : 0u) |
                         (bUseEmissiveMap ? 8u : 0u) |
-                        (bUseAlphaMask ? 16u : 0u);
+                        (bUseAlphaMask ? 16u : 0u) |
+                        (bUseSheenModel ? 32u : 0u) |
+                        (bUseClearcoatModel ? 64u : 0u) |
+                        (bUseAnisotropyModel ? 128u : 0u);
 
                     LocalCommandList->SetPipelineState(BasePassPipelinesSkinned[PipelineKey].Get());
 
@@ -1038,13 +1044,19 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                 const bool bUseNormalMap = Model.bHasNormalMap;
                 const bool bUseAlphaMask = Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask);
                 const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0;
+                const bool bUseSheenModel = Model.ShadingModelId == 1u;
+                const bool bUseClearcoatModel = Model.ShadingModelId == 2u;
+                const bool bUseAnisotropyModel = Model.ShadingModelId == 3u;
 
                 const uint32_t PipelineKey =
                     (bUseNormalMap ? 1u : 0u) |
                     (bUseMetallicRoughnessMap ? 2u : 0u) |
                     (bUseBaseColorMap ? 4u : 0u) |
                     (bUseEmissiveMap ? 8u : 0u) |
-                    (bUseAlphaMask ? 16u : 0u);
+                    (bUseAlphaMask ? 16u : 0u) |
+                    (bUseSheenModel ? 32u : 0u) |
+                    (bUseClearcoatModel ? 64u : 0u) |
+                    (bUseAnisotropyModel ? 128u : 0u);
 
                 LocalCommandList->SetPipelineState(bUseSkinning ? BasePassPipelinesSkinned[PipelineKey].Get() : BasePassPipelines[PipelineKey].Get());
 
@@ -1334,7 +1346,7 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
     FShaderCompiler Compiler;
     std::vector<uint8_t> VSByteCode;
     std::vector<uint8_t> VSByteCodeSkinned;
-    std::array<std::vector<uint8_t>, 32> PSByteCodes;
+    std::array<std::vector<uint8_t>, 256> PSByteCodes;
 
     const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
     const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
@@ -1349,19 +1361,25 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
         return false;
     }
 
-    for (uint32_t Permutation = 0; Permutation < 32; ++Permutation)
+    for (uint32_t Permutation = 0; Permutation < 256; ++Permutation)
     {
         const bool bUseNormal = (Permutation & 1u) != 0;
         const bool bUseMr = (Permutation & 2u) != 0;
         const bool bUseBaseColor = (Permutation & 4u) != 0;
         const bool bUseEmissive = (Permutation & 8u) != 0;
         const bool bUseAlphaMask = (Permutation & 16u) != 0;
+        const bool bUseSheenModel = (Permutation & 32u) != 0;
+        const bool bUseClearcoatModel = (Permutation & 64u) != 0;
+        const bool bUseAnisotropyModel = (Permutation & 128u) != 0;
 
         std::vector<std::wstring> Defines;
         Defines.push_back(bUseNormal ? L"USE_NORMAL_MAP=1" : L"USE_NORMAL_MAP=0");
         Defines.push_back(bUseMr ? L"USE_METALLIC_ROUGHNESS_MAP=1" : L"USE_METALLIC_ROUGHNESS_MAP=0");
         Defines.push_back(bUseBaseColor ? L"USE_BASE_COLOR_MAP=1" : L"USE_BASE_COLOR_MAP=0");
         Defines.push_back(bUseEmissive ? L"USE_EMISSIVE_MAP=1" : L"USE_EMISSIVE_MAP=0");
+        Defines.push_back(bUseSheenModel ? L"SHADINGMODEL_SHEEN=1" : L"SHADINGMODEL_SHEEN=0");
+        Defines.push_back(bUseClearcoatModel ? L"SHADINGMODEL_CLEARCOAT=1" : L"SHADINGMODEL_CLEARCOAT=0");
+        Defines.push_back(bUseAnisotropyModel ? L"SHADINGMODEL_ANISOTROPY=1" : L"SHADINGMODEL_ANISOTROPY=0");
         if (bUseAlphaMask)
         {
             Defines.push_back(L"USE_ALPHA_MASK=1");
@@ -1428,7 +1446,7 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
     PsoDesc.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
     PsoDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
 
-    for (uint32_t Permutation = 0; Permutation < 32; ++Permutation)
+    for (uint32_t Permutation = 0; Permutation < 256; ++Permutation)
     {
         PsoDesc.VS = { VSByteCode.data(), VSByteCode.size() };
         PsoDesc.PS = { PSByteCodes[Permutation].data(), PSByteCodes[Permutation].size() };
@@ -1462,7 +1480,7 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
     }
 
     SceneTextures.clear();
-    SceneTextures.reserve(Models.size() * 4); // 4 textures per model (base color + metallic roughness + normal + emissive)
+    SceneTextures.reserve(Models.size() * 10); // base color + metallic roughness + normal + emissive + sheen + clearcoat + anisotropy
     ShadowMapBindlessIndex = UINT32_MAX;
     EnvironmentCubeBindlessIndex = UINT32_MAX;
     BrdfLutBindlessIndex = UINT32_MAX;
@@ -1479,11 +1497,17 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
         Microsoft::WRL::ComPtr<ID3D12Resource> MetallicRoughness;
         Microsoft::WRL::ComPtr<ID3D12Resource> Normal;
         Microsoft::WRL::ComPtr<ID3D12Resource> Emissive;
+        Microsoft::WRL::ComPtr<ID3D12Resource> SheenColor;
+        Microsoft::WRL::ComPtr<ID3D12Resource> SheenRoughness;
+        Microsoft::WRL::ComPtr<ID3D12Resource> Clearcoat;
+        Microsoft::WRL::ComPtr<ID3D12Resource> ClearcoatRoughness;
+        Microsoft::WRL::ComPtr<ID3D12Resource> ClearcoatNormal;
+        Microsoft::WRL::ComPtr<ID3D12Resource> Anisotropy;
     };
     
     std::vector<FTextureLoadResult> LoadResults(Models.size());
     std::vector<FTextureLoadRequest> Requests;
-    Requests.reserve(Models.size() * 4);
+    Requests.reserve(Models.size() * 10);
 
     const auto ClampToByte = [](float Value)
     {
@@ -1538,6 +1562,61 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
             EmissiveRequest.bUseSRGB = true;
             EmissiveRequest.OutTexture = &LoadResults[Index].Emissive;
             Requests.push_back(EmissiveRequest);
+        }
+
+        if (!Models[Index].SheenColorTexturePath.empty())
+        {
+            FTextureLoadRequest SheenColorRequest;
+            SheenColorRequest.Path = Models[Index].SheenColorTexturePath;
+            SheenColorRequest.bUseSolidColor = false;
+            SheenColorRequest.bUseSRGB = true;
+            SheenColorRequest.OutTexture = &LoadResults[Index].SheenColor;
+            Requests.push_back(SheenColorRequest);
+        }
+
+        if (!Models[Index].SheenRoughnessTexturePath.empty())
+        {
+            FTextureLoadRequest SheenRoughnessRequest;
+            SheenRoughnessRequest.Path = Models[Index].SheenRoughnessTexturePath;
+            SheenRoughnessRequest.bUseSolidColor = false;
+            SheenRoughnessRequest.OutTexture = &LoadResults[Index].SheenRoughness;
+            Requests.push_back(SheenRoughnessRequest);
+        }
+
+        if (!Models[Index].ClearcoatTexturePath.empty())
+        {
+            FTextureLoadRequest ClearcoatRequest;
+            ClearcoatRequest.Path = Models[Index].ClearcoatTexturePath;
+            ClearcoatRequest.bUseSolidColor = false;
+            ClearcoatRequest.OutTexture = &LoadResults[Index].Clearcoat;
+            Requests.push_back(ClearcoatRequest);
+        }
+
+        if (!Models[Index].ClearcoatRoughnessTexturePath.empty())
+        {
+            FTextureLoadRequest ClearcoatRoughnessRequest;
+            ClearcoatRoughnessRequest.Path = Models[Index].ClearcoatRoughnessTexturePath;
+            ClearcoatRoughnessRequest.bUseSolidColor = false;
+            ClearcoatRoughnessRequest.OutTexture = &LoadResults[Index].ClearcoatRoughness;
+            Requests.push_back(ClearcoatRoughnessRequest);
+        }
+
+        if (!Models[Index].ClearcoatNormalTexturePath.empty())
+        {
+            FTextureLoadRequest ClearcoatNormalRequest;
+            ClearcoatNormalRequest.Path = Models[Index].ClearcoatNormalTexturePath;
+            ClearcoatNormalRequest.bUseSolidColor = false;
+            ClearcoatNormalRequest.OutTexture = &LoadResults[Index].ClearcoatNormal;
+            Requests.push_back(ClearcoatNormalRequest);
+        }
+
+        if (!Models[Index].AnisotropyTexturePath.empty())
+        {
+            FTextureLoadRequest AnisotropyRequest;
+            AnisotropyRequest.Path = Models[Index].AnisotropyTexturePath;
+            AnisotropyRequest.bUseSolidColor = false;
+            AnisotropyRequest.OutTexture = &LoadResults[Index].Anisotropy;
+            Requests.push_back(AnisotropyRequest);
         }
     }
 
@@ -1626,6 +1705,54 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
             LoadResults[Index].Emissive->SetName(Name.c_str());
         }
         SceneModels[Index].EmissiveBindlessIndex = CreateSceneTextureSrv(LoadResults[Index].Emissive.Get());
+
+        SceneTextures.push_back(LoadResults[Index].SheenColor);
+        if (LoadResults[Index].SheenColor)
+        {
+            const std::wstring Name = L"SheenColorTexture_" + std::to_wstring(Index);
+            LoadResults[Index].SheenColor->SetName(Name.c_str());
+        }
+        SceneModels[Index].SheenColorBindlessIndex = CreateSceneTextureSrv(LoadResults[Index].SheenColor.Get());
+
+        SceneTextures.push_back(LoadResults[Index].SheenRoughness);
+        if (LoadResults[Index].SheenRoughness)
+        {
+            const std::wstring Name = L"SheenRoughnessTexture_" + std::to_wstring(Index);
+            LoadResults[Index].SheenRoughness->SetName(Name.c_str());
+        }
+        SceneModels[Index].SheenRoughnessBindlessIndex = CreateSceneTextureSrv(LoadResults[Index].SheenRoughness.Get());
+
+        SceneTextures.push_back(LoadResults[Index].Clearcoat);
+        if (LoadResults[Index].Clearcoat)
+        {
+            const std::wstring Name = L"ClearcoatTexture_" + std::to_wstring(Index);
+            LoadResults[Index].Clearcoat->SetName(Name.c_str());
+        }
+        SceneModels[Index].ClearcoatBindlessIndex = CreateSceneTextureSrv(LoadResults[Index].Clearcoat.Get());
+
+        SceneTextures.push_back(LoadResults[Index].ClearcoatRoughness);
+        if (LoadResults[Index].ClearcoatRoughness)
+        {
+            const std::wstring Name = L"ClearcoatRoughnessTexture_" + std::to_wstring(Index);
+            LoadResults[Index].ClearcoatRoughness->SetName(Name.c_str());
+        }
+        SceneModels[Index].ClearcoatRoughnessBindlessIndex = CreateSceneTextureSrv(LoadResults[Index].ClearcoatRoughness.Get());
+
+        SceneTextures.push_back(LoadResults[Index].ClearcoatNormal);
+        if (LoadResults[Index].ClearcoatNormal)
+        {
+            const std::wstring Name = L"ClearcoatNormalTexture_" + std::to_wstring(Index);
+            LoadResults[Index].ClearcoatNormal->SetName(Name.c_str());
+        }
+        SceneModels[Index].ClearcoatNormalBindlessIndex = CreateSceneTextureSrv(LoadResults[Index].ClearcoatNormal.Get());
+
+        SceneTextures.push_back(LoadResults[Index].Anisotropy);
+        if (LoadResults[Index].Anisotropy)
+        {
+            const std::wstring Name = L"AnisotropyTexture_" + std::to_wstring(Index);
+            LoadResults[Index].Anisotropy->SetName(Name.c_str());
+        }
+        SceneModels[Index].AnisotropyBindlessIndex = CreateSceneTextureSrv(LoadResults[Index].Anisotropy.Get());
     }
 
     ShadowMapBindlessIndex = Device->CreateBindlessSrv(ShadowMap.Get(), ShadowSrvDesc);

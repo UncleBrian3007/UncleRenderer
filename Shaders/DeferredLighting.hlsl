@@ -13,6 +13,7 @@ cbuffer LightingBindlessConstants : register(b1)
     uint GBufferAIndex;
     uint GBufferBIndex;
     uint GBufferCIndex;
+    uint GBufferDIndex;
     uint ShadowMapIndex;
     uint ShadowMaskIndex;
     uint EnvironmentMapIndex;
@@ -59,6 +60,7 @@ float4 PSMain(VSOutput Input) : SV_Target
     Texture2D GBufferA = ResourceDescriptorHeap[GBufferAIndex];
     Texture2D GBufferB = ResourceDescriptorHeap[GBufferBIndex];
     Texture2D GBufferC = ResourceDescriptorHeap[GBufferCIndex];
+    Texture2D GBufferD = ResourceDescriptorHeap[GBufferDIndex];
     Texture2D ShadowMap = ResourceDescriptorHeap[ShadowMapIndex];
     Texture2D ShadowMaskTexture = ResourceDescriptorHeap[ShadowMaskIndex];
     TextureCube EnvironmentMap = ResourceDescriptorHeap[EnvironmentMapIndex];
@@ -73,10 +75,12 @@ float4 PSMain(VSOutput Input) : SV_Target
     float4 smr = GBufferB.Sample(GBufferSampler, Input.UV);
     float depth = DepthBuffer.Sample(GBufferSampler, Input.UV).r;
     float3 albedo = GBufferC.Sample(GBufferSampler, Input.UV).rgb;
+    float4 customData = GBufferD.Sample(GBufferSampler, Input.UV);
 
     float roughness = smr.z;
     float metallic = smr.y;
 	float3 F0 = lerp(smr.x.xxx, albedo, metallic); // Metallic Àº Albedo ¿¡ ¹Ý»çÀ²(»ö±ò) ÀúÀå
+    uint shadingModelId = (uint)round(smr.w);
 
     float3 viewPos = ReconstructViewPosition(Input.UV, depth);
     float3 worldPos = mul(float4(viewPos, 1.0f), ViewInverse).xyz;
@@ -109,22 +113,75 @@ float4 PSMain(VSOutput Input) : SV_Target
 #endif
 
     float3 lighting = 0.0f;
+    static const uint SHADINGMODEL_DEFAULT = 0u;
+    static const uint SHADINGMODEL_SHEEN = 1u;
+    static const uint SHADINGMODEL_CLEARCOAT = 2u;
+    static const uint SHADINGMODEL_ANISOTROPY = 3u;
+    if (shadingModelId == SHADINGMODEL_SHEEN)
+    {
+        float3 sheenColor = customData.rgb;
+        float sheenRoughness = customData.a;
+        lighting = EvaluatePBRWithSheen(albedo, metallic, roughness, F0, worldNormal, V, L, sheenColor, sheenRoughness) * LightIntensity * LightColor * shadow;
+    }
+    else if (shadingModelId == SHADINGMODEL_CLEARCOAT)
+    {
+        float clearcoat = customData.x;
+        float clearcoatRoughness = customData.y;
+        lighting = EvaluatePBRWithClearcoat(albedo, metallic, roughness, F0, worldNormal, V, L, clearcoat, clearcoatRoughness) * LightIntensity * LightColor * shadow;
+    }
+    else if (shadingModelId == SHADINGMODEL_ANISOTROPY)
+    {
+        float anisotropyValue = customData.x;
+        float anisotropyStrength = customData.y;
+        lighting = EvaluatePBRWithAnisotropy(albedo, metallic, roughness, F0, worldNormal, V, L, anisotropyValue, anisotropyStrength) * LightIntensity * LightColor * shadow;
+    }
+    else
+    {
 #if USE_PBR_RESEARCH
-    lighting = EvaluatePBR_Research(albedo, metallic, roughness, F0, worldNormal, V, L) * LightIntensity * LightColor * shadow;
+        lighting = EvaluatePBR_Research(albedo, metallic, roughness, F0, worldNormal, V, L) * LightIntensity * LightColor * shadow;
 #else
-    lighting = EvaluatePBR(albedo, metallic, roughness, F0, worldNormal, V, L) * LightIntensity * LightColor * shadow;
+        lighting = EvaluatePBR(albedo, metallic, roughness, F0, worldNormal, V, L) * LightIntensity * LightColor * shadow;
 #endif
+    }
 
     float3 worldView = normalize(CameraPosition - worldPos);
     float3 reflection = reflect(-worldView, worldNormal);
 
     float maxMip = max(0.0f, EnvMapMipCount - 1.0f);
-    float mipLevel = roughness * maxMip;
+    float specularRoughness = roughness;
+    if (shadingModelId == SHADINGMODEL_ANISOTROPY)
+    {
+        float anisotropyValue = customData.x;
+        float anisotropyStrength = customData.y;
+        float anisotropy = saturate(anisotropyValue * anisotropyStrength);
+        specularRoughness = lerp(roughness, max(0.03f, roughness * 0.5f), anisotropy);
+    }
+    float mipLevel = specularRoughness * maxMip;
     float3 prefilteredColor = EnvironmentMap.SampleLevel(IblSampler, reflection, mipLevel).rgb;
 
     float NdotV = saturate(dot(worldNormal, worldView));
-    float2 brdf = BrdfLut.Sample(IblSampler, float2(NdotV, roughness)).rg;
+    float2 brdf = BrdfLut.Sample(IblSampler, float2(NdotV, specularRoughness)).rg;
     float3 specularIbl = prefilteredColor * (F0 * brdf.x + brdf.y);
+    if (shadingModelId == SHADINGMODEL_SHEEN)
+    {
+        float sheenRoughness = customData.a;
+        float3 sheenColor = customData.rgb;
+        float sheenMip = sheenRoughness * maxMip;
+        float3 sheenPrefiltered = EnvironmentMap.SampleLevel(IblSampler, reflection, sheenMip).rgb;
+        float2 sheenBrdf = BrdfLut.Sample(IblSampler, float2(NdotV, sheenRoughness)).rg;
+        float3 sheenSpecIbl = sheenPrefiltered * (sheenColor * sheenBrdf.x + sheenBrdf.y);
+        specularIbl += sheenSpecIbl;
+    }
+    else if (shadingModelId == SHADINGMODEL_CLEARCOAT)
+    {
+        float clearcoat = customData.x;
+        float clearcoatRoughness = customData.y;
+        float clearcoatMip = clearcoatRoughness * maxMip;
+        float3 clearcoatPrefiltered = EnvironmentMap.SampleLevel(IblSampler, reflection, clearcoatMip).rgb;
+        float2 clearcoatBrdf = BrdfLut.Sample(IblSampler, float2(NdotV, clearcoatRoughness)).rg;
+        float3 clearcoatSpecIbl = clearcoatPrefiltered * (0.04.xxx * clearcoatBrdf.x + clearcoatBrdf.y);
+        specularIbl += clearcoatSpecIbl * clearcoat;
+    }
 
     float4 ssrSample = SsrTexture.Sample(GBufferSampler, Input.UV);
     float ssrWeight = saturate(ssrSample.a);

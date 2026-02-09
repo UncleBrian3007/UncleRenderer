@@ -316,6 +316,41 @@ namespace
         TextureSet.EmissiveFactor.y = Material->emissive_factor[1];
         TextureSet.EmissiveFactor.z = Material->emissive_factor[2];
 
+        if (Material->has_sheen)
+        {
+            TextureSet.SheenColor = ResolveTexturePath(BasePath, Material->sheen.sheen_color_texture.texture);
+            TextureSet.SheenColorTransform = ResolveTextureTransform(Material->sheen.sheen_color_texture);
+            TextureSet.SheenColorFactor.x = Material->sheen.sheen_color_factor[0];
+            TextureSet.SheenColorFactor.y = Material->sheen.sheen_color_factor[1];
+            TextureSet.SheenColorFactor.z = Material->sheen.sheen_color_factor[2];
+            TextureSet.SheenRoughness = ResolveTexturePath(BasePath, Material->sheen.sheen_roughness_texture.texture);
+            TextureSet.SheenRoughnessTransform = ResolveTextureTransform(Material->sheen.sheen_roughness_texture);
+            TextureSet.SheenRoughnessFactor = Material->sheen.sheen_roughness_factor;
+            TextureSet.ShadingModelId = 1;
+        }
+
+        if (Material->has_clearcoat)
+        {
+            TextureSet.Clearcoat = ResolveTexturePath(BasePath, Material->clearcoat.clearcoat_texture.texture);
+            TextureSet.ClearcoatTransform = ResolveTextureTransform(Material->clearcoat.clearcoat_texture);
+            TextureSet.ClearcoatRoughness = ResolveTexturePath(BasePath, Material->clearcoat.clearcoat_roughness_texture.texture);
+            TextureSet.ClearcoatRoughnessTransform = ResolveTextureTransform(Material->clearcoat.clearcoat_roughness_texture);
+            TextureSet.ClearcoatNormal = ResolveTexturePath(BasePath, Material->clearcoat.clearcoat_normal_texture.texture);
+            TextureSet.ClearcoatNormalTransform = ResolveTextureTransform(Material->clearcoat.clearcoat_normal_texture);
+            TextureSet.ClearcoatFactor = Material->clearcoat.clearcoat_factor;
+            TextureSet.ClearcoatRoughnessFactor = Material->clearcoat.clearcoat_roughness_factor;
+            TextureSet.ShadingModelId = 2;
+        }
+
+        if (Material->has_anisotropy)
+        {
+            TextureSet.Anisotropy = ResolveTexturePath(BasePath, Material->anisotropy.anisotropy_texture.texture);
+            TextureSet.AnisotropyTransform = ResolveTextureTransform(Material->anisotropy.anisotropy_texture);
+            TextureSet.AnisotropyStrength = Material->anisotropy.anisotropy_strength;
+            TextureSet.AnisotropyRotation = Material->anisotropy.anisotropy_rotation;
+            TextureSet.ShadingModelId = 3;
+        }
+
         if (Material->alpha_mode == cgltf_alpha_mode_mask)
         {
             TextureSet.bAlphaMask = true;

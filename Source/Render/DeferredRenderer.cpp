@@ -26,11 +26,12 @@ FDeferredRenderer::FDeferredRenderer() = default;
 
 namespace
 {
-    constexpr DXGI_FORMAT GBufferFormats[3] =
+    constexpr DXGI_FORMAT GBufferFormats[4] =
     {
         DXGI_FORMAT_R10G10B10A2_UNORM,
         DXGI_FORMAT_R16G16B16A16_FLOAT,
         DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+        DXGI_FORMAT_R16G16B16A16_FLOAT,
     };
 
     constexpr DXGI_FORMAT LightingBufferFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -833,6 +834,7 @@ void FDeferredRenderer::ImportFrameResources(FRenderGraph& Graph, FDeferredFrame
         Graph.ImportTexture("GBufferA", GBufferA.Get(), &GBufferStates[0], { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), GBufferFormats[0] }),
         Graph.ImportTexture("GBufferB", GBufferB.Get(), &GBufferStates[1], { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), GBufferFormats[1] }),
         Graph.ImportTexture("GBufferC", GBufferC.Get(), &GBufferStates[2], { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), GBufferFormats[2] }),
+        Graph.ImportTexture("GBufferD", GBufferD.Get(), &GBufferStates[3], { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), GBufferFormats[3] }),
     };
 
     OutResources.LinearDepthHandle = Graph.ImportTexture(
@@ -1453,7 +1455,7 @@ void FDeferredRenderer::AddShadowPass(FRenderGraph& Graph, const FCamera& Camera
             LocalCommandList->SetGraphicsRootConstantBufferView(
                 0,
                 ConstantBufferAddress + ConstantBufferOffset);
-            const uint32_t BindlessIndices[] = { 0u, 0u, 0u, 0u };
+            const uint32_t BindlessIndices[] = { 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u };
             LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
 
             if (AreModelPixEventsEnabled())
@@ -1549,7 +1551,7 @@ void FDeferredRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Came
             LocalCommandList->SetGraphicsRootConstantBufferView(
                 0,
                 ConstantBufferAddress + ConstantBufferOffset);
-            const uint32_t BindlessIndices[] = { 0u, 0u, 0u, 0u };
+            const uint32_t BindlessIndices[] = { 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u };
             LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
 
             if (AreModelPixEventsEnabled())
@@ -1572,7 +1574,7 @@ void FDeferredRenderer::AddBasePass(
     FRenderGraph& Graph,
     const FCamera& Camera,
     const FDeferredFrameState& FrameState,
-    const std::array<FRGResourceHandle, 3>& GBufferHandles,
+    const std::array<FRGResourceHandle, 4>& GBufferHandles,
     FRGResourceHandle DepthHandle,
     FRGResourceHandle LightingHandle,
     bool bClearTargets,
@@ -1600,7 +1602,7 @@ void FDeferredRenderer::AddBasePass(
         Data.bAllowSkinningFallback = bAllowSkinningFallback;
         Data.Camera = &Camera;
 
-        for (int i = 0; i < 3; ++i)
+        for (int i = 0; i < 4; ++i)
         {
             Builder.WriteTexture(GBufferHandles[i], D3D12_RESOURCE_STATE_RENDER_TARGET);
         }
@@ -1613,11 +1615,12 @@ void FDeferredRenderer::AddBasePass(
 
         FScopedPixEvent GBufferEvent(LocalCommandList, PassLabel.c_str());
 
-        D3D12_CPU_DESCRIPTOR_HANDLE BasePassRTVs[4] =
+        D3D12_CPU_DESCRIPTOR_HANDLE BasePassRTVs[5] =
         {
             GBufferRTVHandles[0],
             GBufferRTVHandles[1],
             GBufferRTVHandles[2],
+            GBufferRTVHandles[3],
             LightingRTVHandle
         };
 
@@ -1662,15 +1665,15 @@ void FDeferredRenderer::AddBasePass(
         {
             auto SelectPipelineByKey = [&](uint32_t Key)
             {
-                const bool bUseSkinning = (Key & (1u << 5)) != 0;
-                const uint32_t MaterialKey = Key & 0x1Fu;
+                const bool bUseSkinning = (Key & (1u << 8)) != 0;
+                const uint32_t MaterialKey = Key & 0xFFu;
                 return bUseSkinning ? BasePassPipelinesSkinned[MaterialKey].Get() : BasePassPipelines[MaterialKey].Get();
             };
 
             for (size_t RangeIndex = 0; RangeIndex < IndirectDrawRanges.size(); ++RangeIndex)
             {
                 const FIndirectDrawRange& Range = IndirectDrawRanges[RangeIndex];
-                const bool bRangeSkinning = (Range.PipelineKey & (1u << 5)) != 0;
+                const bool bRangeSkinning = (Range.PipelineKey & (1u << 8)) != 0;
                 if (bRangeSkinning && !bEnableSkinningIndirectDraw)
                 {
                     continue;
@@ -1723,7 +1726,13 @@ void FDeferredRenderer::AddBasePass(
                         Model.BaseColorBindlessIndex,
                         Model.MetallicRoughnessBindlessIndex,
                         Model.NormalBindlessIndex,
-                        Model.EmissiveBindlessIndex
+                        Model.EmissiveBindlessIndex,
+                        Model.SheenColorBindlessIndex,
+                        Model.SheenRoughnessBindlessIndex,
+                        Model.ClearcoatBindlessIndex,
+                        Model.ClearcoatRoughnessBindlessIndex,
+                        Model.ClearcoatNormalBindlessIndex,
+                        Model.AnisotropyBindlessIndex
                     };
                     LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
 
@@ -1732,13 +1741,19 @@ void FDeferredRenderer::AddBasePass(
                     const bool bUseBaseColorMap = !Model.BaseColorTexturePath.empty();
                     const bool bUseEmissiveMap = !Model.EmissiveTexturePath.empty();
                     const bool bUseAlphaMask = Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask);
+                    const bool bUseSheenModel = Model.ShadingModelId == 1u;
+                    const bool bUseClearcoatModel = Model.ShadingModelId == 2u;
+                    const bool bUseAnisotropyModel = Model.ShadingModelId == 3u;
 
                     const uint32_t PipelineKey = 
                         (bUseNormalMap ? 1u : 0u) |
                         (bUseMetallicRoughnessMap ? 2u : 0u) |
                         (bUseBaseColorMap ? 4u : 0u) |
                         (bUseEmissiveMap ? 8u : 0u) |
-                        (bUseAlphaMask ? 16u : 0u);
+                        (bUseAlphaMask ? 16u : 0u) |
+                        (bUseSheenModel ? 32u : 0u) |
+                        (bUseClearcoatModel ? 64u : 0u) |
+                        (bUseAnisotropyModel ? 128u : 0u);
 
                     LocalCommandList->SetPipelineState(BasePassPipelinesSkinned[PipelineKey].Get());
 
@@ -1780,7 +1795,13 @@ void FDeferredRenderer::AddBasePass(
                     Model.BaseColorBindlessIndex,
                     Model.MetallicRoughnessBindlessIndex,
                     Model.NormalBindlessIndex,
-                    Model.EmissiveBindlessIndex
+                    Model.EmissiveBindlessIndex,
+                    Model.SheenColorBindlessIndex,
+                    Model.SheenRoughnessBindlessIndex,
+                    Model.ClearcoatBindlessIndex,
+                    Model.ClearcoatRoughnessBindlessIndex,
+                    Model.ClearcoatNormalBindlessIndex,
+                    Model.AnisotropyBindlessIndex
                 };
                 LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
 
@@ -1789,15 +1810,21 @@ void FDeferredRenderer::AddBasePass(
                 const bool bUseBaseColorMap = !Model.BaseColorTexturePath.empty();
                 const bool bUseEmissiveMap = !Model.EmissiveTexturePath.empty();
                 const bool bUseAlphaMask = Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask);
+                const bool bUseSheenModel = Model.ShadingModelId == 1u;
+                const bool bUseClearcoatModel = Model.ShadingModelId == 2u;
+                const bool bUseAnisotropyModel = Model.ShadingModelId == 3u;
                 const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0;
 
-                // Build pipeline key from material properties (bit 0: Normal, bit 1: MR, bit 2: BaseColor, bit 3: Emissive, bit 4: AlphaMask)
+                // Build pipeline key from material properties (bit 0: Normal, bit 1: MR, bit 2: BaseColor, bit 3: Emissive, bit 4: AlphaMask, bit 5: SheenModel, bit 6: ClearcoatModel, bit 7: AnisotropyModel)
                 const uint32_t PipelineKey = 
                     (bUseNormalMap ? 1u : 0u) |
                     (bUseMetallicRoughnessMap ? 2u : 0u) |
                     (bUseBaseColorMap ? 4u : 0u) |
                     (bUseEmissiveMap ? 8u : 0u) |
-                    (bUseAlphaMask ? 16u : 0u);
+                    (bUseAlphaMask ? 16u : 0u) |
+                    (bUseSheenModel ? 32u : 0u) |
+                    (bUseClearcoatModel ? 64u : 0u) |
+                    (bUseAnisotropyModel ? 128u : 0u);
 
                 LocalCommandList->SetPipelineState(bUseSkinning ? BasePassPipelinesSkinned[PipelineKey].Get() : BasePassPipelines[PipelineKey].Get());
 
@@ -2234,7 +2261,7 @@ void FDeferredRenderer::AddLinearDepthPass(FRenderGraph& Graph, const FDeferredF
     });
 }
 
-void FDeferredRenderer::AddGtaoPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle GtaoHandle)
+void FDeferredRenderer::AddGtaoPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle GtaoHandle)
 {
     struct FGtaoPassData
     {
@@ -2358,7 +2385,7 @@ void FDeferredRenderer::AddSsrRayCounterClearPass(FRenderGraph& Graph, uint32_t 
     });
 }
 
-void FDeferredRenderer::AddSsrRayGatherPass(FRenderGraph& Graph, uint32_t FrameIndex, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LinearDepthHandle)
+void FDeferredRenderer::AddSsrRayGatherPass(FRenderGraph& Graph, uint32_t FrameIndex, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle)
 {
     struct FSsrRayGatherPassData
     {
@@ -2979,7 +3006,7 @@ void FDeferredRenderer::AddSsrHwTracePass(FRenderGraph& Graph, uint32_t FrameInd
     });
 }
 
-void FDeferredRenderer::AddSsrResolvePass(FRenderGraph& Graph, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle SsrInputHandle, FRGResourceHandle SsrResolveHandle)
+void FDeferredRenderer::AddSsrResolvePass(FRenderGraph& Graph, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle SsrInputHandle, FRGResourceHandle SsrResolveHandle)
 {
     struct FSsrResolvePassData
     {
@@ -3055,7 +3082,7 @@ void FDeferredRenderer::AddSsrResolvePass(FRenderGraph& Graph, const std::array<
     });
 }
 
-void FDeferredRenderer::AddSsrPass(FRenderGraph& Graph, uint32_t FrameIndex, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LinearDepthHandle, const std::vector<FRGResourceHandle>& TaaHandles, FRGResourceHandle HZBHandle, FRGResourceHandle SsrHandle)
+void FDeferredRenderer::AddSsrPass(FRenderGraph& Graph, uint32_t FrameIndex, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle, const std::vector<FRGResourceHandle>& TaaHandles, FRGResourceHandle HZBHandle, FRGResourceHandle SsrHandle)
 {
     struct FSsrPassData
     {
@@ -3414,7 +3441,7 @@ void FDeferredRenderer::AddSsrFallbackPass(FRenderGraph& Graph, uint32_t FrameIn
     });
 }
 
-void FDeferredRenderer::AddSsrDenoisePass(FRenderGraph& Graph, FRGResourceHandle SsrHandle, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle SsrDenoiseHandle)
+void FDeferredRenderer::AddSsrDenoisePass(FRenderGraph& Graph, FRGResourceHandle SsrHandle, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle SsrDenoiseHandle)
 {
     struct FSsrDenoisePassData
     {
@@ -3496,7 +3523,7 @@ void FDeferredRenderer::AddSsrDenoisePass(FRenderGraph& Graph, FRGResourceHandle
     });
 }
 
-void FDeferredRenderer::AddLightingPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle GtaoHandle, FRGResourceHandle SsrHandle, FRGResourceHandle SsrFallbackHandle, FRGResourceHandle ShadowHandle, FRGResourceHandle LightingHandle)
+void FDeferredRenderer::AddLightingPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle GtaoHandle, FRGResourceHandle SsrHandle, FRGResourceHandle SsrFallbackHandle, FRGResourceHandle ShadowHandle, FRGResourceHandle LightingHandle)
 {
     struct FLightingPassData
     {
@@ -3510,6 +3537,7 @@ void FDeferredRenderer::AddLightingPass(FRenderGraph& Graph, const FDeferredFram
         Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(GBufferHandles[1], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(GBufferHandles[2], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(GBufferHandles[3], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(DepthHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(GtaoHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(SsrHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -3564,6 +3592,7 @@ void FDeferredRenderer::AddLightingPass(FRenderGraph& Graph, const FDeferredFram
             GBufferBindlessIndices[0],
             GBufferBindlessIndices[1],
             GBufferBindlessIndices[2],
+            GBufferBindlessIndices[3],
             ShadowMapBindlessIndex,
             ResolvedShadowMaskIndex,
             EnvironmentCubeBindlessIndex,
@@ -4105,7 +4134,7 @@ void FDeferredRenderer::AddAutoExposurePass(FRenderGraph& Graph, const FDeferred
     });
 }
 
-void FDeferredRenderer::AddTonemapPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LightingHandle, FRGResourceHandle TonemapOutputResource, const std::array<FRGResourceHandle, 2>& LuminanceHandles, const std::vector<FRGResourceHandle>& TaaHandles, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle)
+void FDeferredRenderer::AddTonemapPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LightingHandle, FRGResourceHandle TonemapOutputResource, const std::array<FRGResourceHandle, 2>& LuminanceHandles, const std::vector<FRGResourceHandle>& TaaHandles, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle)
 {
     struct FTonemapPassData
     {
@@ -4138,7 +4167,7 @@ void FDeferredRenderer::AddTonemapPass(FRenderGraph& Graph, const FDeferredFrame
             Builder.WriteTexture(TonemapOutputResource, D3D12_RESOURCE_STATE_RENDER_TARGET);
         }
         Builder.ReadTexture(LuminanceHandles[Data.LuminanceIndex], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        for (int i = 0; i < 3; ++i)
+        for (int i = 0; i < 4; ++i)
         {
             Builder.WriteTexture(GBufferHandles[i], D3D12_RESOURCE_STATE_RENDER_TARGET);
         }
@@ -4316,7 +4345,7 @@ bool FDeferredRenderer::CreateBasePassRootSignature(FDX12Device* Device)
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     RootParams[1].Constants.ShaderRegister = 1;
     RootParams[1].Constants.RegisterSpace = 0;
-    RootParams[1].Constants.Num32BitValues = 4;
+    RootParams[1].Constants.Num32BitValues = 10;
 
     D3D12_STATIC_SAMPLER_DESC SamplerDesc = {};
     SamplerDesc.Filter = D3D12_FILTER_ANISOTROPIC;
@@ -4371,7 +4400,7 @@ bool FDeferredRenderer::CreateLightingRootSignature(FDX12Device* Device)
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     RootParams[1].Constants.ShaderRegister = 1;
     RootParams[1].Constants.RegisterSpace = 0;
-    RootParams[1].Constants.Num32BitValues = 11;
+    RootParams[1].Constants.Num32BitValues = 12;
 
     D3D12_STATIC_SAMPLER_DESC Samplers[3] = {};
     Samplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
@@ -4453,22 +4482,28 @@ bool FDeferredRenderer::CreateBasePassPipeline(FDX12Device* Device, DXGI_FORMAT 
     }
 
     // Generate shader defines for all permutations programmatically
-    // Permutation key bits: 0=Normal, 1=MR, 2=BaseColor, 3=Emissive, 4=AlphaMask
-    std::array<std::vector<uint8_t>, 32> PSByteCodes;
+    // Permutation key bits: 0=Normal, 1=MR, 2=BaseColor, 3=Emissive, 4=AlphaMask, 5=SheenModel, 6=ClearcoatModel, 7=AnisotropyModel
+    std::array<std::vector<uint8_t>, 256> PSByteCodes;
     
-    for (uint32_t Permutation = 0; Permutation < 32; ++Permutation)
+    for (uint32_t Permutation = 0; Permutation < 256; ++Permutation)
     {
         const bool bUseNormal = (Permutation & 1) != 0;
         const bool bUseMR = (Permutation & 2) != 0;
         const bool bUseBaseColor = (Permutation & 4) != 0;
         const bool bUseEmissive = (Permutation & 8) != 0;
         const bool bUseAlphaMask = (Permutation & 16) != 0;
+        const bool bUseSheenModel = (Permutation & 32) != 0;
+        const bool bUseClearcoatModel = (Permutation & 64) != 0;
+        const bool bUseAnisotropyModel = (Permutation & 128) != 0;
 
         std::vector<std::wstring> Defines;
         Defines.push_back(bUseNormal ? L"USE_NORMAL_MAP=1" : L"USE_NORMAL_MAP=0");
         Defines.push_back(bUseMR ? L"USE_METALLIC_ROUGHNESS_MAP=1" : L"USE_METALLIC_ROUGHNESS_MAP=0");
         Defines.push_back(bUseBaseColor ? L"USE_BASE_COLOR_MAP=1" : L"USE_BASE_COLOR_MAP=0");
         Defines.push_back(bUseEmissive ? L"USE_EMISSIVE_MAP=1" : L"USE_EMISSIVE_MAP=0");
+        Defines.push_back(bUseSheenModel ? L"SHADINGMODEL_SHEEN=1" : L"SHADINGMODEL_SHEEN=0");
+        Defines.push_back(bUseClearcoatModel ? L"SHADINGMODEL_CLEARCOAT=1" : L"SHADINGMODEL_CLEARCOAT=0");
+        Defines.push_back(bUseAnisotropyModel ? L"SHADINGMODEL_ANISOTROPY=1" : L"SHADINGMODEL_ANISOTROPY=0");
         if (bUseAlphaMask)
         {
             Defines.push_back(L"USE_ALPHA_MASK=1");
@@ -4506,7 +4541,7 @@ bool FDeferredRenderer::CreateBasePassPipeline(FDX12Device* Device, DXGI_FORMAT 
         Desc.BlendState = {};
         Desc.BlendState.AlphaToCoverageEnable = FALSE;
         Desc.BlendState.IndependentBlendEnable = TRUE;
-        for (int i = 0; i < 4; ++i)
+        for (int i = 0; i < 5; ++i)
         {
             D3D12_RENDER_TARGET_BLEND_DESC RtBlend = {};
             RtBlend.BlendEnable = FALSE;
@@ -4534,18 +4569,19 @@ bool FDeferredRenderer::CreateBasePassPipeline(FDX12Device* Device, DXGI_FORMAT 
         Desc.DepthStencilState.FrontFace.StencilPassOp = D3D12_STENCIL_OP_KEEP;
         Desc.DepthStencilState.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS;
         Desc.DepthStencilState.BackFace = Desc.DepthStencilState.FrontFace;
-        Desc.NumRenderTargets = 4;
+        Desc.NumRenderTargets = 5;
         Desc.RTVFormats[0] = GBufferFormats[0];
         Desc.RTVFormats[1] = GBufferFormats[1];
         Desc.RTVFormats[2] = GBufferFormats[2];
-        Desc.RTVFormats[3] = LightingFormat;
+        Desc.RTVFormats[3] = GBufferFormats[3];
+        Desc.RTVFormats[4] = LightingFormat;
         Desc.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
         Desc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
     };
 
     // Create all pipeline state objects programmatically
     D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
-    for (uint32_t Permutation = 0; Permutation < 32; ++Permutation)
+    for (uint32_t Permutation = 0; Permutation < 256; ++Permutation)
     {
         InitializeBasePassDesc(PsoDesc, VSByteCode);
         PsoDesc.PS = { PSByteCodes[Permutation].data(), PSByteCodes[Permutation].size() };
@@ -5875,8 +5911,8 @@ bool FDeferredRenderer::CreateCasPipeline(FDX12Device* Device, DXGI_FORMAT BackB
 
 bool FDeferredRenderer::CreateGBufferResources(FDX12Device* Device, uint32_t Width, uint32_t Height)
 {
-    Microsoft::WRL::ComPtr<ID3D12Resource>* Targets[3] = { &GBufferA, &GBufferB, &GBufferC };
-    const wchar_t* GBufferNames[3] = { L"GBufferA", L"GBufferB", L"GBufferC" };
+    Microsoft::WRL::ComPtr<ID3D12Resource>* Targets[4] = { &GBufferA, &GBufferB, &GBufferC, &GBufferD };
+    const wchar_t* GBufferNames[4] = { L"GBufferA", L"GBufferB", L"GBufferC", L"GBufferD" };
 
     CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
 
@@ -5885,7 +5921,7 @@ bool FDeferredRenderer::CreateGBufferResources(FDX12Device* Device, uint32_t Wid
     RtvHandle.ptr = 0;
 
     D3D12_DESCRIPTOR_HEAP_DESC RtvHeapDesc = {};
-    RtvHeapDesc.NumDescriptors = 5;
+    RtvHeapDesc.NumDescriptors = 6;
     RtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     RtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&RtvHeapDesc, IID_PPV_ARGS(GBufferRTVHeap.GetAddressOf())));
@@ -5896,7 +5932,7 @@ bool FDeferredRenderer::CreateGBufferResources(FDX12Device* Device, uint32_t Wid
 
     RtvHandle = GBufferRTVHeap->GetCPUDescriptorHandleForHeapStart();
 
-    for (int i = 0; i < 3; ++i)
+    for (int i = 0; i < 4; ++i)
     {
         CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
             GBufferFormats[i],
@@ -6840,10 +6876,16 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         SceneModels[Index].MetallicRoughnessBindlessIndex = CreateSceneTextureSrv(SceneTextures[Index].MetallicRoughness.Get());
         SceneModels[Index].NormalBindlessIndex = CreateSceneTextureSrv(SceneTextures[Index].Normal.Get());
         SceneModels[Index].EmissiveBindlessIndex = CreateSceneTextureSrv(SceneTextures[Index].Emissive.Get());
+        SceneModels[Index].SheenColorBindlessIndex = CreateSceneTextureSrv(SceneTextures[Index].SheenColor.Get());
+        SceneModels[Index].SheenRoughnessBindlessIndex = CreateSceneTextureSrv(SceneTextures[Index].SheenRoughness.Get());
+        SceneModels[Index].ClearcoatBindlessIndex = CreateSceneTextureSrv(SceneTextures[Index].Clearcoat.Get());
+        SceneModels[Index].ClearcoatRoughnessBindlessIndex = CreateSceneTextureSrv(SceneTextures[Index].ClearcoatRoughness.Get());
+        SceneModels[Index].ClearcoatNormalBindlessIndex = CreateSceneTextureSrv(SceneTextures[Index].ClearcoatNormal.Get());
+        SceneModels[Index].AnisotropyBindlessIndex = CreateSceneTextureSrv(SceneTextures[Index].Anisotropy.Get());
     }
 
-    ID3D12Resource* Buffers[3] = { GBufferA.Get(), GBufferB.Get(), GBufferC.Get() };
-    for (int i = 0; i < 3; ++i)
+    ID3D12Resource* Buffers[4] = { GBufferA.Get(), GBufferB.Get(), GBufferC.Get(), GBufferD.Get() };
+    for (int i = 0; i < 4; ++i)
     {
         D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc = {};
         SrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
@@ -7150,7 +7192,7 @@ bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, const std::vect
 
     // Prepare all texture load requests
     std::vector<FTextureLoadRequest> Requests;
-    Requests.reserve(Models.size() * 4); // 4 textures per model
+    Requests.reserve(Models.size() * 10); // 10 textures per model
 
     // Pre-allocate texture sets
     for (const FSceneModelResource& Model : Models)
@@ -7204,6 +7246,61 @@ bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, const std::vect
             EmissiveRequest.bUseSRGB = true;
             EmissiveRequest.OutTexture = &TextureSet.Emissive;
             Requests.push_back(EmissiveRequest);
+        }
+
+        if (!Model.SheenColorTexturePath.empty())
+        {
+            FTextureLoadRequest SheenColorRequest;
+            SheenColorRequest.Path = Model.SheenColorTexturePath;
+            SheenColorRequest.bUseSolidColor = false;
+            SheenColorRequest.bUseSRGB = true;
+            SheenColorRequest.OutTexture = &TextureSet.SheenColor;
+            Requests.push_back(SheenColorRequest);
+        }
+
+        if (!Model.SheenRoughnessTexturePath.empty())
+        {
+            FTextureLoadRequest SheenRoughnessRequest;
+            SheenRoughnessRequest.Path = Model.SheenRoughnessTexturePath;
+            SheenRoughnessRequest.bUseSolidColor = false;
+            SheenRoughnessRequest.OutTexture = &TextureSet.SheenRoughness;
+            Requests.push_back(SheenRoughnessRequest);
+        }
+
+        if (!Model.ClearcoatTexturePath.empty())
+        {
+            FTextureLoadRequest ClearcoatRequest;
+            ClearcoatRequest.Path = Model.ClearcoatTexturePath;
+            ClearcoatRequest.bUseSolidColor = false;
+            ClearcoatRequest.OutTexture = &TextureSet.Clearcoat;
+            Requests.push_back(ClearcoatRequest);
+        }
+
+        if (!Model.ClearcoatRoughnessTexturePath.empty())
+        {
+            FTextureLoadRequest ClearcoatRoughnessRequest;
+            ClearcoatRoughnessRequest.Path = Model.ClearcoatRoughnessTexturePath;
+            ClearcoatRoughnessRequest.bUseSolidColor = false;
+            ClearcoatRoughnessRequest.OutTexture = &TextureSet.ClearcoatRoughness;
+            Requests.push_back(ClearcoatRoughnessRequest);
+        }
+
+        if (!Model.ClearcoatNormalTexturePath.empty())
+        {
+            FTextureLoadRequest ClearcoatNormalRequest;
+            ClearcoatNormalRequest.Path = Model.ClearcoatNormalTexturePath;
+            ClearcoatNormalRequest.bUseSolidColor = false;
+            ClearcoatNormalRequest.OutTexture = &TextureSet.ClearcoatNormal;
+            Requests.push_back(ClearcoatNormalRequest);
+        }
+
+        if (!Model.AnisotropyTexturePath.empty())
+        {
+            FTextureLoadRequest AnisotropyRequest;
+            AnisotropyRequest.Path = Model.AnisotropyTexturePath;
+            AnisotropyRequest.bUseSolidColor = false;
+            AnisotropyRequest.OutTexture = &TextureSet.Anisotropy;
+            Requests.push_back(AnisotropyRequest);
         }
     }
 

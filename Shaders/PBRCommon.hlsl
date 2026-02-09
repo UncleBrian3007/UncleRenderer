@@ -93,3 +93,62 @@ float3 EvaluatePBR(float3 albedo, float metallic, float roughness, float3 F0, fl
 
 	return (diffuse + specular) * NdotL;
 }
+
+float3 EvaluateSheenLobe(float3 sheenColor, float sheenRoughness, float3 N, float3 V, float3 L)
+{
+    float3 H = normalize(V + L);
+
+    float NdotL = saturate(dot(N, L));
+    float NdotV = saturate(dot(N, V));
+    float NdotH = saturate(dot(N, H));
+    float VdotH = saturate(dot(V, H));
+
+    float roughness = max(sheenRoughness, 0.03f);
+    float alpha = roughness * roughness;
+    float D = D_GGX(NdotH, alpha);
+    float V_G = V_SmithGGX(NdotV, NdotL, alpha);
+    float3 F = FresnelSchlick(VdotH, sheenColor);
+
+    float3 specular = D * V_G * F;
+    return specular * NdotL;
+}
+
+float3 EvaluatePBRWithSheen(float3 albedo, float metallic, float roughness, float3 F0, float3 N, float3 V, float3 L, float3 sheenColor, float sheenRoughness)
+{
+    float3 baseLighting = EvaluatePBR(albedo, metallic, roughness, F0, N, V, L);
+    float3 sheenLighting = EvaluateSheenLobe(sheenColor, sheenRoughness, N, V, L);
+    return baseLighting + sheenLighting;
+}
+
+float3 EvaluateClearcoatLobe(float clearcoat, float clearcoatRoughness, float3 N, float3 V, float3 L)
+{
+    float3 H = normalize(V + L);
+
+    float NdotL = saturate(dot(N, L));
+    float NdotV = saturate(dot(N, V));
+    float NdotH = saturate(dot(N, H));
+    float VdotH = saturate(dot(V, H));
+
+    float roughness = max(clearcoatRoughness, 0.03f);
+    float alpha = roughness * roughness;
+    float D = D_GGX(NdotH, alpha);
+    float V_G = V_SmithGGX(NdotV, NdotL, alpha);
+    float3 F = FresnelSchlick(VdotH, 0.04.xxx);
+
+    float3 specular = D * V_G * F;
+    return specular * NdotL * clearcoat;
+}
+
+float3 EvaluatePBRWithClearcoat(float3 albedo, float metallic, float roughness, float3 F0, float3 N, float3 V, float3 L, float clearcoat, float clearcoatRoughness)
+{
+    float3 baseLighting = EvaluatePBR(albedo, metallic, roughness, F0, N, V, L);
+    float3 clearcoatLighting = EvaluateClearcoatLobe(clearcoat, clearcoatRoughness, N, V, L);
+    return baseLighting + clearcoatLighting;
+}
+
+float3 EvaluatePBRWithAnisotropy(float3 albedo, float metallic, float roughness, float3 F0, float3 N, float3 V, float3 L, float anisotropyValue, float anisotropyStrength)
+{
+    float anisotropy = saturate(anisotropyValue * anisotropyStrength);
+    float anisotropicRoughness = lerp(roughness, max(0.03f, roughness * 0.5f), anisotropy);
+    return EvaluatePBR(albedo, metallic, anisotropicRoughness, F0, N, V, L);
+}

@@ -22,19 +22,38 @@ struct FGltfMaterialTextureSet
     std::wstring MetallicRoughness;
     std::wstring Normal;
     std::wstring Emissive;
+    std::wstring SheenColor;
+    std::wstring SheenRoughness;
+    std::wstring Clearcoat;
+    std::wstring ClearcoatRoughness;
+    std::wstring ClearcoatNormal;
+    std::wstring Anisotropy;
     FFloat3 BaseColorFactor{ 1.0f, 1.0f, 1.0f };
     float BaseColorAlpha = 1.0f;
     float MetallicFactor = 1.0f;
     float RoughnessFactor = 1.0f;
     FFloat3 EmissiveFactor{ 0.0f, 0.0f, 0.0f };
+    FFloat3 SheenColorFactor{ 0.0f, 0.0f, 0.0f };
+    float SheenRoughnessFactor = 0.0f;
+    float ClearcoatFactor = 0.0f;
+    float ClearcoatRoughnessFactor = 0.0f;
+    float AnisotropyStrength = 0.0f;
+    float AnisotropyRotation = 0.0f;
     float AlphaCutoff = 0.5f;
     bool bAlphaMask = false;
     bool bAlphaBlend = false;
     bool bDoubleSided = false;
+    uint32_t ShadingModelId = 0;
     FGltfTextureTransform BaseColorTransform;
     FGltfTextureTransform MetallicRoughnessTransform;
     FGltfTextureTransform NormalTransform;
     FGltfTextureTransform EmissiveTransform;
+    FGltfTextureTransform SheenColorTransform;
+    FGltfTextureTransform SheenRoughnessTransform;
+    FGltfTextureTransform ClearcoatTransform;
+    FGltfTextureTransform ClearcoatRoughnessTransform;
+    FGltfTextureTransform ClearcoatNormalTransform;
+    FGltfTextureTransform AnisotropyTransform;
 };
 
 struct FGltfMaterialTextures

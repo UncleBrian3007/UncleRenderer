@@ -110,7 +110,7 @@ void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID)
     float3 albedo = GBufferC.Load(int3(DispatchIndex, 0)).rgb;
 
     // Load material properties from GBufferB
-    // GBufferB format: float4(specular, metallic, roughness, 1.0)
+    // GBufferB format: float4(specular, metallic, roughness, shadingModelId)
     float4 materialProps = GBufferB.Load(int3(DispatchIndex, 0));
     float currentMetallic = materialProps.g;   // Green channel = metallic
     float currentRoughness = max(materialProps.b, 0.03f);  // Blue channel = roughness, min 0.03 for stability

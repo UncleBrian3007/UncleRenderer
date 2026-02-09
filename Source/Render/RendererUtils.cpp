@@ -1009,21 +1009,40 @@ bool RendererUtils::CreateSceneModelsFromJson(
                 const std::wstring& MetallicRoughnessPath = !Material.MetallicRoughness.empty() ? Material.MetallicRoughness : EmptyTexture;
                 const std::wstring& NormalPath = !Material.Normal.empty() ? Material.Normal : EmptyTexture;
                 const std::wstring& EmissivePath = !Material.Emissive.empty() ? Material.Emissive : EmptyTexture;
+                const std::wstring& SheenColorPath = !Material.SheenColor.empty() ? Material.SheenColor : EmptyTexture;
+                const std::wstring& SheenRoughnessPath = !Material.SheenRoughness.empty() ? Material.SheenRoughness : EmptyTexture;
+                const std::wstring& ClearcoatPath = !Material.Clearcoat.empty() ? Material.Clearcoat : EmptyTexture;
+                const std::wstring& ClearcoatRoughnessPath = !Material.ClearcoatRoughness.empty() ? Material.ClearcoatRoughness : EmptyTexture;
+                const std::wstring& ClearcoatNormalPath = !Material.ClearcoatNormal.empty() ? Material.ClearcoatNormal : EmptyTexture;
+                const std::wstring& AnisotropyPath = !Material.Anisotropy.empty() ? Material.Anisotropy : EmptyTexture;
 
                 ModelResource.BaseColorTexturePath = Model.BaseColorTexturePath.empty() ? BaseColorPath : Model.BaseColorTexturePath;
                 ModelResource.MetallicRoughnessTexturePath = Model.MetallicRoughnessTexturePath.empty() ? MetallicRoughnessPath : Model.MetallicRoughnessTexturePath;
                 ModelResource.NormalTexturePath = Model.NormalTexturePath.empty() ? NormalPath : Model.NormalTexturePath;
                 ModelResource.EmissiveTexturePath = Model.EmissiveTexturePath.empty() ? EmissivePath : Model.EmissiveTexturePath;
+                ModelResource.SheenColorTexturePath = SheenColorPath;
+                ModelResource.SheenRoughnessTexturePath = SheenRoughnessPath;
+                ModelResource.ClearcoatTexturePath = ClearcoatPath;
+                ModelResource.ClearcoatRoughnessTexturePath = ClearcoatRoughnessPath;
+                ModelResource.ClearcoatNormalTexturePath = ClearcoatNormalPath;
+                ModelResource.AnisotropyTexturePath = AnisotropyPath;
                 ModelResource.BaseColorFactor = Material.BaseColorFactor;
                 ModelResource.BaseColorAlpha = Material.BaseColorAlpha;
                 ModelResource.MetallicFactor = Material.MetallicFactor;
                 ModelResource.RoughnessFactor = Material.RoughnessFactor;
                 ModelResource.EmissiveFactor = Material.EmissiveFactor;
+                ModelResource.SheenColorFactor = Material.SheenColorFactor;
+                ModelResource.SheenRoughnessFactor = Material.SheenRoughnessFactor;
+                ModelResource.ClearcoatFactor = Material.ClearcoatFactor;
+                ModelResource.ClearcoatRoughnessFactor = Material.ClearcoatRoughnessFactor;
+                ModelResource.AnisotropyStrength = Material.AnisotropyStrength;
+                ModelResource.AnisotropyRotation = Material.AnisotropyRotation;
                 ModelResource.AlphaCutoff = Material.AlphaCutoff;
                 ModelResource.AlphaMode = static_cast<uint32_t>(Material.bAlphaBlend
                     ? EAlphaMode::Blend
                     : (Material.bAlphaMask ? EAlphaMode::Mask : EAlphaMode::Opaque));
                 ModelResource.bDoubleSided = Material.bDoubleSided;
+                ModelResource.ShadingModelId = Material.ShadingModelId;
                 ModelResource.bHasNormalMap = !ModelResource.NormalTexturePath.empty();
 
                 ModelResource.BaseColorTransformOffsetScale = BuildOffsetScale(Material.BaseColorTransform);
@@ -1034,6 +1053,18 @@ bool RendererUtils::CreateSceneModelsFromJson(
                 ModelResource.NormalTransformRotation = BuildRotationConstants(Material.NormalTransform);
                 ModelResource.EmissiveTransformOffsetScale = BuildOffsetScale(Material.EmissiveTransform);
                 ModelResource.EmissiveTransformRotation = BuildRotationConstants(Material.EmissiveTransform);
+                ModelResource.SheenColorTransformOffsetScale = BuildOffsetScale(Material.SheenColorTransform);
+                ModelResource.SheenColorTransformRotation = BuildRotationConstants(Material.SheenColorTransform);
+                ModelResource.SheenRoughnessTransformOffsetScale = BuildOffsetScale(Material.SheenRoughnessTransform);
+                ModelResource.SheenRoughnessTransformRotation = BuildRotationConstants(Material.SheenRoughnessTransform);
+                ModelResource.ClearcoatTransformOffsetScale = BuildOffsetScale(Material.ClearcoatTransform);
+                ModelResource.ClearcoatTransformRotation = BuildRotationConstants(Material.ClearcoatTransform);
+                ModelResource.ClearcoatRoughnessTransformOffsetScale = BuildOffsetScale(Material.ClearcoatRoughnessTransform);
+                ModelResource.ClearcoatRoughnessTransformRotation = BuildRotationConstants(Material.ClearcoatRoughnessTransform);
+                ModelResource.ClearcoatNormalTransformOffsetScale = BuildOffsetScale(Material.ClearcoatNormalTransform);
+                ModelResource.ClearcoatNormalTransformRotation = BuildRotationConstants(Material.ClearcoatNormalTransform);
+                ModelResource.AnisotropyTransformOffsetScale = BuildOffsetScale(Material.AnisotropyTransform);
+                ModelResource.AnisotropyTransformRotation = BuildRotationConstants(Material.AnisotropyTransform);
 
                 if (SectionIndex >= MeshPrimitives.size())
                 {
@@ -1786,6 +1817,13 @@ void RendererUtils::UpdateSceneConstants(
     Constants.BaseColorAlpha = Model.BaseColorAlpha;
     Constants.AlphaCutoff = Model.AlphaCutoff;
     Constants.AlphaMode = Model.AlphaMode;
+    Constants.SheenColorFactor = Model.SheenColorFactor;
+    Constants.SheenRoughnessFactor = Model.SheenRoughnessFactor;
+    Constants.ShadingModelId = Model.ShadingModelId;
+    Constants.ClearcoatFactor = Model.ClearcoatFactor;
+    Constants.ClearcoatRoughnessFactor = Model.ClearcoatRoughnessFactor;
+    Constants.AnisotropyStrength = Model.AnisotropyStrength;
+    Constants.AnisotropyRotation = Model.AnisotropyRotation;
     Constants.EnvMapMipCount = EnvMapMipCount;
     Constants.TaaJitter = TaaJitter;
     Constants.GtaoTemporalIndex = GtaoTemporalIndex;
@@ -1815,6 +1853,12 @@ void RendererUtils::UpdateSceneConstants(
     FillTransformConstants(Model.MetallicRoughnessTransformOffsetScale, Model.MetallicRoughnessTransformRotation, Constants.MetallicRoughnessTransformOffsetScale, Constants.MetallicRoughnessTransformRotation);
     FillTransformConstants(Model.NormalTransformOffsetScale, Model.NormalTransformRotation, Constants.NormalTransformOffsetScale, Constants.NormalTransformRotation);
     FillTransformConstants(Model.EmissiveTransformOffsetScale, Model.EmissiveTransformRotation, Constants.EmissiveTransformOffsetScale, Constants.EmissiveTransformRotation);
+    FillTransformConstants(Model.SheenColorTransformOffsetScale, Model.SheenColorTransformRotation, Constants.SheenColorTransformOffsetScale, Constants.SheenColorTransformRotation);
+    FillTransformConstants(Model.SheenRoughnessTransformOffsetScale, Model.SheenRoughnessTransformRotation, Constants.SheenRoughnessTransformOffsetScale, Constants.SheenRoughnessTransformRotation);
+    FillTransformConstants(Model.ClearcoatTransformOffsetScale, Model.ClearcoatTransformRotation, Constants.ClearcoatTransformOffsetScale, Constants.ClearcoatTransformRotation);
+    FillTransformConstants(Model.ClearcoatRoughnessTransformOffsetScale, Model.ClearcoatRoughnessTransformRotation, Constants.ClearcoatRoughnessTransformOffsetScale, Constants.ClearcoatRoughnessTransformRotation);
+    FillTransformConstants(Model.ClearcoatNormalTransformOffsetScale, Model.ClearcoatNormalTransformRotation, Constants.ClearcoatNormalTransformOffsetScale, Constants.ClearcoatNormalTransformRotation);
+    FillTransformConstants(Model.AnisotropyTransformOffsetScale, Model.AnisotropyTransformRotation, Constants.AnisotropyTransformOffsetScale, Constants.AnisotropyTransformRotation);
 
     memcpy(ConstantBufferMapped + ConstantBufferOffset, &Constants, sizeof(Constants));
 }
@@ -1956,6 +2000,10 @@ uint32_t RendererUtils::BuildPipelineKey(const FSceneModelResource& Model)
     const uint32_t UseBase = !Model.BaseColorTexturePath.empty() ? 1u : 0u;
     const uint32_t UseEmissive = !Model.EmissiveTexturePath.empty() ? 1u : 0u;
     const uint32_t UseAlphaMask = (Model.AlphaMode == 1u) ? 1u : 0u;
+    const uint32_t UseSheenModel = (Model.ShadingModelId == 1u) ? 1u : 0u;
+    const uint32_t UseClearcoatModel = (Model.ShadingModelId == 2u) ? 1u : 0u;
+    const uint32_t UseAnisotropyModel = (Model.ShadingModelId == 3u) ? 1u : 0u;
     const uint32_t UseSkinning = (Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0) ? 1u : 0u;
-    return (UseNormal) | (UseMr << 1) | (UseBase << 2) | (UseEmissive << 3) | (UseAlphaMask << 4) | (UseSkinning << 5);
+    return (UseNormal) | (UseMr << 1) | (UseBase << 2) | (UseEmissive << 3) | (UseAlphaMask << 4)
+        | (UseSheenModel << 5) | (UseClearcoatModel << 6) | (UseAnisotropyModel << 7) | (UseSkinning << 8);
 }

@@ -25,6 +25,12 @@ struct FModelTextureSet
     Microsoft::WRL::ComPtr<ID3D12Resource> MetallicRoughness;
     Microsoft::WRL::ComPtr<ID3D12Resource> Normal;
     Microsoft::WRL::ComPtr<ID3D12Resource> Emissive;
+    Microsoft::WRL::ComPtr<ID3D12Resource> SheenColor;
+    Microsoft::WRL::ComPtr<ID3D12Resource> SheenRoughness;
+    Microsoft::WRL::ComPtr<ID3D12Resource> Clearcoat;
+    Microsoft::WRL::ComPtr<ID3D12Resource> ClearcoatRoughness;
+    Microsoft::WRL::ComPtr<ID3D12Resource> ClearcoatNormal;
+    Microsoft::WRL::ComPtr<ID3D12Resource> Anisotropy;
 };
 
 class FDeferredRenderer : public FRenderer
@@ -195,7 +201,7 @@ private:
         FRGResourceHandle ShadowMaskHandle{};
         FRGResourceHandle DepthHandle{};
         FRGResourceHandle ObjectIdHandle{};
-        std::array<FRGResourceHandle, 3> GBufferHandles{};
+        std::array<FRGResourceHandle, 4> GBufferHandles{};
         FRGResourceHandle LinearDepthHandle{};
         FRGResourceHandle GtaoHandle{};
         FRGResourceHandle SsrHandle{};
@@ -298,7 +304,7 @@ private:
         FRenderGraph& Graph,
         const FCamera& Camera,
         const FDeferredFrameState& FrameState,
-        const std::array<FRGResourceHandle, 3>& GBufferHandles,
+        const std::array<FRGResourceHandle, 4>& GBufferHandles,
         FRGResourceHandle DepthHandle,
         FRGResourceHandle LightingHandle,
         bool bClearTargets,
@@ -308,23 +314,23 @@ private:
     void AddObjectIdPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle ObjectIdHandle, FRGResourceHandle DepthHandle);
     void AddHZBPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle HZBHandle);
     void AddLinearDepthPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle LinearDepthHandle);
-    void AddGtaoPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle GtaoHandle);
+    void AddGtaoPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle GtaoHandle);
     void AddSsrRayCounterClearPass(FRenderGraph& Graph, uint32_t FrameIndex);
-    void AddSsrRayGatherPass(FRenderGraph& Graph, uint32_t FrameIndex, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LinearDepthHandle);
+    void AddSsrRayGatherPass(FRenderGraph& Graph, uint32_t FrameIndex, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle);
     void AddSsrBuildIndirectArgsPass(FRenderGraph& Graph, uint32_t FrameIndex, bool bHwMiss);
     void AddSsrSwTracePass(FRenderGraph& Graph, uint32_t FrameIndex, const FDeferredFrameState& FrameState, const std::vector<FRGResourceHandle>& TaaHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle HZBHandle, FRGResourceHandle SsrHandle);
     void AddSsrHwTracePass(FRenderGraph& Graph, uint32_t FrameIndex, const FDeferredFrameState& FrameState, const FCamera& Camera, const std::vector<FRGResourceHandle>& TaaHandles, FRGResourceHandle SsrHandle);
-    void AddSsrResolvePass(FRenderGraph& Graph, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle SsrInputHandle, FRGResourceHandle SsrResolveHandle);
-    void AddSsrPass(FRenderGraph& Graph, uint32_t FrameIndex, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LinearDepthHandle, const std::vector<FRGResourceHandle>& TaaHandles, FRGResourceHandle HZBHandle, FRGResourceHandle SsrHandle);
+    void AddSsrResolvePass(FRenderGraph& Graph, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle SsrInputHandle, FRGResourceHandle SsrResolveHandle);
+    void AddSsrPass(FRenderGraph& Graph, uint32_t FrameIndex, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle, const std::vector<FRGResourceHandle>& TaaHandles, FRGResourceHandle HZBHandle, FRGResourceHandle SsrHandle);
     void AddSsrFallbackPass(FRenderGraph& Graph, uint32_t FrameIndex, const FDeferredFrameState& FrameState, const FCamera& Camera, const std::vector<FRGResourceHandle>& TaaHandles, FRGResourceHandle SsrFallbackHandle);
-    void AddSsrDenoisePass(FRenderGraph& Graph, FRGResourceHandle SsrHandle, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle SsrDenoiseHandle);
-    void AddLightingPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle GtaoHandle, FRGResourceHandle SsrHandle, FRGResourceHandle SsrFallbackHandle, FRGResourceHandle ShadowHandle, FRGResourceHandle LightingHandle);
+    void AddSsrDenoisePass(FRenderGraph& Graph, FRGResourceHandle SsrHandle, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle SsrDenoiseHandle);
+    void AddLightingPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle GtaoHandle, FRGResourceHandle SsrHandle, FRGResourceHandle SsrFallbackHandle, FRGResourceHandle ShadowHandle, FRGResourceHandle LightingHandle);
     void AddPathTracingPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle DepthHandle, FRGResourceHandle GBufferAHandle, FRGResourceHandle GBufferBHandle, FRGResourceHandle GBufferCHandle, FRGResourceHandle OutputHandle);
     void AddPathTracingAccumulationPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle PathTracingTempHandle, FRGResourceHandle LightingHandle, const std::vector<FRGResourceHandle>& AccumulationHandles);
     void AddSkyPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle DepthHandle, FRGResourceHandle LightingHandle);
     void AddTemporalAAPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle LightingHandle, const std::vector<FRGResourceHandle>& TaaHandles);
     void AddAutoExposurePass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle LightingHandle, const std::array<FRGResourceHandle, 2>& LuminanceHandles, float DeltaTime);
-    void AddTonemapPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LightingHandle, FRGResourceHandle TonemapOutputResource, const std::array<FRGResourceHandle, 2>& LuminanceHandles, const std::vector<FRGResourceHandle>& TaaHandles, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle);
+    void AddTonemapPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LightingHandle, FRGResourceHandle TonemapOutputResource, const std::array<FRGResourceHandle, 2>& LuminanceHandles, const std::vector<FRGResourceHandle>& TaaHandles, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle);
     void AddCasPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle TonemapOutputResource, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle);
     void AddDebugPrintPass(FRenderGraph& Graph, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle);
     void FinalizeFrameState(const FDeferredFrameState& FrameState);
@@ -333,9 +339,9 @@ private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> BasePassRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> LightingRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> HZBRootSignature;
-    // Base pass pipelines indexed by permutation key (bit 0: Normal, bit 1: MR, bit 2: BaseColor, bit 3: Emissive, bit 4: AlphaMask)
-    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 32> BasePassPipelines;
-    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 32> BasePassPipelinesSkinned;
+    // Base pass pipelines indexed by permutation key (bit 0: Normal, bit 1: MR, bit 2: BaseColor, bit 3: Emissive, bit 4: AlphaMask, bit 5: SheenModel, bit 6: ClearcoatModel, bit 7: AnisotropyModel)
+    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 256> BasePassPipelines;
+    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 256> BasePassPipelinesSkinned;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassPipelineSkinned;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ShadowPipeline;
@@ -396,18 +402,19 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> GBufferA;
     Microsoft::WRL::ComPtr<ID3D12Resource> GBufferB;
     Microsoft::WRL::ComPtr<ID3D12Resource> GBufferC;
+    Microsoft::WRL::ComPtr<ID3D12Resource> GBufferD;
     float SkySphereRadius = 100.0f;
 
     DXGI_FORMAT BackBufferFormat = DXGI_FORMAT_UNKNOWN;
 
-    D3D12_CPU_DESCRIPTOR_HANDLE GBufferRTVHandles[3]{};
+    D3D12_CPU_DESCRIPTOR_HANDLE GBufferRTVHandles[4]{};
     D3D12_CPU_DESCRIPTOR_HANDLE LightingRTVHandle{};
     D3D12_CPU_DESCRIPTOR_HANDLE LinearDepthRtvHandle{};
     D3D12_CPU_DESCRIPTOR_HANDLE GtaoRtvHandle{};
     D3D12_CPU_DESCRIPTOR_HANDLE SsrRtvHandle{};
     D3D12_CPU_DESCRIPTOR_HANDLE SsrDenoiseRtvHandle{};
     D3D12_CPU_DESCRIPTOR_HANDLE TonemapOutputRtvHandle{};
-    std::array<uint32_t, 3> GBufferBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX } };
+    std::array<uint32_t, 4> GBufferBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX } };
     uint32_t ShadowMapBindlessIndex = UINT32_MAX;
     uint32_t EnvironmentCubeBindlessIndex = UINT32_MAX;
     uint32_t BrdfLutBindlessIndex = UINT32_MAX;
@@ -435,8 +442,9 @@ private:
     std::vector<uint32_t> HZBSrvMipBindlessIndices;
     std::vector<uint32_t> HZBUavBindlessIndices;
     uint32_t HZBNullUavBindlessIndex = UINT32_MAX;
-    D3D12_RESOURCE_STATES GBufferStates[3] =
+    D3D12_RESOURCE_STATES GBufferStates[4] =
     {
+        D3D12_RESOURCE_STATE_RENDER_TARGET,
         D3D12_RESOURCE_STATE_RENDER_TARGET,
         D3D12_RESOURCE_STATE_RENDER_TARGET,
         D3D12_RESOURCE_STATE_RENDER_TARGET,
