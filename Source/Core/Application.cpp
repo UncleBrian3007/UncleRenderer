@@ -191,6 +191,8 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     SsrStride = RendererConfig.SsrStride;
     SsrRoughnessCutoff = RendererConfig.SsrRoughnessCutoff;
     SsrIntensity = RendererConfig.SsrIntensity;
+    SsrMode = RendererConfig.SsrMode;
+    SsrSamplesPerQuad = RendererConfig.SsrSamplesPerQuad;
 
     if (bTaskSystemEnabled)
     {
@@ -976,6 +978,8 @@ bool FApplication::ReloadScene(const std::wstring& ScenePath)
     ReloadConfig.SsrStride = SsrStride;
     ReloadConfig.SsrRoughnessCutoff = SsrRoughnessCutoff;
     ReloadConfig.SsrIntensity = SsrIntensity;
+    ReloadConfig.SsrMode = SsrMode;
+    ReloadConfig.SsrSamplesPerQuad = SsrSamplesPerQuad;
     ReloadConfig.bEnableIndirectDraw = bIndirectDrawEnabled;
     ReloadConfig.bEnableSkinningIndirectDraw = bSkinningIndirectDrawEnabled;
     ReloadConfig.bEnablePbrResearch = bPbrResearchEnabled;
@@ -1125,6 +1129,8 @@ void FApplication::StartAsyncSceneReload(const std::wstring& ScenePath)
     AsyncConfig.SsrStride = SsrStride;
     AsyncConfig.SsrRoughnessCutoff = SsrRoughnessCutoff;
     AsyncConfig.SsrIntensity = SsrIntensity;
+    AsyncConfig.SsrMode = SsrMode;
+    AsyncConfig.SsrSamplesPerQuad = SsrSamplesPerQuad;
     AsyncConfig.bEnableIndirectDraw = bIndirectDrawEnabled;
     AsyncConfig.bEnableSkinningIndirectDraw = bSkinningIndirectDrawEnabled;
     AsyncConfig.bEnablePbrResearch = bPbrResearchEnabled;
@@ -1765,6 +1771,45 @@ void FApplication::RenderUI()
             if (DeferredRenderer)
             {
                 DeferredRenderer->SetSsrDenoiseEnabled(bSsrDenoiseEnabled);
+            }
+        }
+
+        const char* SsrModeItems[] = { "PS", "CS" };
+        int SsrModeIndex = (SsrMode == ESSRMode::CS) ? 1 : 0;
+        ImGui::SetNextItemWidth(80.0f);
+        if (ImGui::Combo("SSR Mode", &SsrModeIndex, SsrModeItems, IM_ARRAYSIZE(SsrModeItems)))
+        {
+            SsrMode = (SsrModeIndex == 1) ? ESSRMode::CS : ESSRMode::PS;
+            RendererConfig.SsrMode = SsrMode;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetSsrMode(SsrMode);
+            }
+        }
+
+        ImGui::SameLine();
+
+        const int SampleOptions[] = { 4, 2, 1 };
+        int SampleIndex = 2;
+        for (int OptionIndex = 0; OptionIndex < 3; ++OptionIndex)
+        {
+            if (SsrSamplesPerQuad == static_cast<uint32_t>(SampleOptions[OptionIndex]))
+            {
+                SampleIndex = OptionIndex;
+                break;
+            }
+        }
+        const char* SampleLabels[] = { "4", "2", "1" };
+        ImGui::SetNextItemWidth(80.0f);
+        if (ImGui::Combo("Samples Per Quad", &SampleIndex, SampleLabels, IM_ARRAYSIZE(SampleLabels)))
+        {
+            SsrSamplesPerQuad = static_cast<uint32_t>(SampleOptions[SampleIndex]);
+            RendererConfig.SsrSamplesPerQuad = SsrSamplesPerQuad;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetSsrSamplesPerQuad(SsrSamplesPerQuad);
             }
         }
 

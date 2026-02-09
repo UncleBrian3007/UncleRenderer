@@ -105,6 +105,8 @@ private:
     bool bSsrHzbEnabled = false;
     bool bSsrRefineEnabled = false;
     bool bSsrDenoiseEnabled = false;
+    ESSRMode SsrMode = ESSRMode::PS;
+    uint32_t SsrSamplesPerQuad = 1;
     uint32_t SsrMaxSteps = 32;
     float SsrMaxDistance = 50.0f;
     float SsrThickness = 1.00f;

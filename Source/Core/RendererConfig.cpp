@@ -350,6 +350,30 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     {
         OutConfig.bEnableSsrDenoise = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
+    if (LowerKey == "ssrmode")
+    {
+        if (LowerValue == "cs")
+        {
+            OutConfig.SsrMode = ESSRMode::CS;
+        }
+        else
+        {
+            OutConfig.SsrMode = ESSRMode::PS;
+        }
+    }
+    if (LowerKey == "ssrsamplesperquad")
+    {
+        try
+        {
+            const int32_t ParsedValue = std::stoi(Value);
+            const int32_t ClampedValue = std::clamp(ParsedValue, 1, 4);
+            OutConfig.SsrSamplesPerQuad = static_cast<uint32_t>(ClampedValue);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid SSR samples per quad value in renderer config: " + Value);
+        }
+    }
     if (LowerKey == "gtaojitter" || LowerKey == "enablegtaojitter")
     {
         OutConfig.bEnableGtaoJitter = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");

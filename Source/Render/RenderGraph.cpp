@@ -114,6 +114,11 @@ FRGResourceHandle FRGPassBuilder::CreateTexture(const std::string& Name, const F
     return Graph->RegisterTexture(Name, Desc);
 }
 
+FRGBufferHandle FRGPassBuilder::CreateBuffer(const std::string& Name, const FRGBufferDesc& Desc)
+{
+    return Graph->RegisterBuffer(Name, Desc);
+}
+
 FRGResourceHandle FRGPassBuilder::ReadTexture(const FRGResourceHandle& Handle, D3D12_RESOURCE_STATES RequiredState)
 {
     Graph->RegisterUsage(*Entry, Handle, RequiredState, ERGResourceAccess::Read);
@@ -121,6 +126,18 @@ FRGResourceHandle FRGPassBuilder::ReadTexture(const FRGResourceHandle& Handle, D
 }
 
 FRGResourceHandle FRGPassBuilder::WriteTexture(const FRGResourceHandle& Handle, D3D12_RESOURCE_STATES RequiredState)
+{
+    Graph->RegisterUsage(*Entry, Handle, RequiredState, ERGResourceAccess::Write);
+    return Handle;
+}
+
+FRGBufferHandle FRGPassBuilder::ReadBuffer(const FRGBufferHandle& Handle, D3D12_RESOURCE_STATES RequiredState)
+{
+    Graph->RegisterUsage(*Entry, Handle, RequiredState, ERGResourceAccess::Read);
+    return Handle;
+}
+
+FRGBufferHandle FRGPassBuilder::WriteBuffer(const FRGBufferHandle& Handle, D3D12_RESOURCE_STATES RequiredState)
 {
     Graph->RegisterUsage(*Entry, Handle, RequiredState, ERGResourceAccess::Write);
     return Handle;
@@ -153,6 +170,36 @@ FRGResourceHandle FRenderGraph::ImportTexture(
     return Handle;
 }
 
+FRGBufferHandle FRenderGraph::ImportBuffer(
+    const std::string& Name,
+    ID3D12Resource* Resource,
+    D3D12_RESOURCE_STATES* StatePtr,
+    const FRGBufferDesc& Desc)
+{
+    FRGBufferHandle Handle = RegisterBuffer(Name, Desc);
+    FRGBufferResource& ResourceEntry = Buffers[Handle.Id];
+    ResourceEntry.Resource = Resource;
+    ResourceEntry.ExternalState = StatePtr;
+    ResourceEntry.bExternal = true;
+    if (StatePtr)
+    {
+        ResourceEntry.CurrentState = *StatePtr;
+    }
+
+    return Handle;
+}
+
+ID3D12Resource* FRenderGraph::GetBufferResource(const FRGBufferHandle& Handle) const
+{
+    if (!Handle || Handle.Id >= Buffers.size())
+    {
+        return nullptr;
+    }
+
+    const FRGBufferResource& Resource = Buffers[Handle.Id];
+    return Resource.Resource;
+}
+
 FRGResourceHandle FRenderGraph::RegisterTexture(const std::string& Name, const FRGTextureDesc& Desc)
 {
     FRGResourceHandle Handle = { static_cast<uint32>(Textures.size()) };
@@ -160,6 +207,16 @@ FRGResourceHandle FRenderGraph::RegisterTexture(const std::string& Name, const F
     Resource.Name = Name;
     Resource.Desc = Desc;
     Textures.push_back(Resource);
+    return Handle;
+}
+
+FRGBufferHandle FRenderGraph::RegisterBuffer(const std::string& Name, const FRGBufferDesc& Desc)
+{
+    FRGBufferHandle Handle = { static_cast<uint32>(Buffers.size()) };
+    FRGBufferResource Resource;
+    Resource.Name = Name;
+    Resource.Desc = Desc;
+    Buffers.push_back(Resource);
     return Handle;
 }
 
@@ -183,6 +240,16 @@ void FRenderGraph::RegisterUsage(PassEntry& Entry, const FRGResourceHandle& Hand
 
     AccumulateResourceFlags(Handle, RequiredState, Access);
     Entry.ResourceUsages.push_back({ Handle, RequiredState, Access });
+}
+
+void FRenderGraph::RegisterUsage(PassEntry& Entry, const FRGBufferHandle& Handle, D3D12_RESOURCE_STATES RequiredState, ERGResourceAccess Access)
+{
+    if (!Handle)
+    {
+        return;
+    }
+
+    Entry.BufferUsages.push_back({ { Handle.Id }, RequiredState, Access });
 }
 
 void FRenderGraph::AccumulateResourceFlags(const FRGResourceHandle& Handle, D3D12_RESOURCE_STATES RequiredState, ERGResourceAccess Access)
@@ -222,6 +289,16 @@ FRenderGraph::FRGTextureResource* FRenderGraph::ResolveResource(const FRGResourc
     return &Textures[Handle.Id];
 }
 
+FRenderGraph::FRGBufferResource* FRenderGraph::ResolveBuffer(const FRGBufferHandle& Handle)
+{
+    if (!Handle || Handle.Id >= Buffers.size())
+    {
+        return nullptr;
+    }
+
+    return &Buffers[Handle.Id];
+}
+
 void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
 {
     if (!Device)
@@ -236,10 +313,14 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
     ProcessPendingGpuTimings(CmdContext, CmdContext.GetCurrentFrameIndex());
 
     const size_t ResourceCount = Textures.size();
+    const size_t BufferCount = Buffers.size();
 
     std::vector<int32_t> FirstUse(ResourceCount, -1);
     std::vector<int32_t> LastUse(ResourceCount, -1);
     std::vector<bool> ResourceRead(ResourceCount, false);
+    std::vector<int32_t> BufferFirstUse(BufferCount, -1);
+    std::vector<int32_t> BufferLastUse(BufferCount, -1);
+    std::vector<bool> BufferRead(BufferCount, false);
 
     for (int32_t PassIndex = 0; PassIndex < static_cast<int32_t>(Passes.size()); ++PassIndex)
     {
@@ -261,12 +342,35 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
                 ResourceRead[Usage.Handle.Id] = true;
             }
         }
+
+        for (const FRGResourceUsage& Usage : Entry.BufferUsages)
+        {
+            if (Usage.Handle.Id >= Buffers.size())
+            {
+                continue;
+            }
+
+            if (BufferFirstUse[Usage.Handle.Id] == -1)
+            {
+                BufferFirstUse[Usage.Handle.Id] = PassIndex;
+            }
+            BufferLastUse[Usage.Handle.Id] = PassIndex;
+            if (Usage.Access == ERGResourceAccess::Read)
+            {
+                BufferRead[Usage.Handle.Id] = true;
+            }
+        }
     }
 
     for (uint32_t Index = 0; Index < ResourceCount; ++Index)
     {
         Textures[Index].FirstUsePass = FirstUse[Index];
         Textures[Index].LastUsePass = LastUse[Index];
+    }
+    for (uint32_t Index = 0; Index < BufferCount; ++Index)
+    {
+        Buffers[Index].FirstUsePass = BufferFirstUse[Index];
+        Buffers[Index].LastUsePass = BufferLastUse[Index];
     }
 
     std::vector<bool> ResourceRequired(ResourceCount, false);
@@ -279,6 +383,18 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
         else if (Textures[Index].ExternalState && FirstUse[Index] != -1)
         {
             ResourceRequired[Index] = true;
+        }
+    }
+    std::vector<bool> BufferRequired(BufferCount, false);
+    for (uint32_t Index = 0; Index < BufferCount; ++Index)
+    {
+        if (BufferRead[Index])
+        {
+            BufferRequired[Index] = true;
+        }
+        else if (Buffers[Index].ExternalState && BufferFirstUse[Index] != -1)
+        {
+            BufferRequired[Index] = true;
         }
     }
 
@@ -302,6 +418,23 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
             }
         }
 
+        if (!bTouchesRequiredResource)
+        {
+            for (const FRGResourceUsage& Usage : Entry.BufferUsages)
+            {
+                if (Usage.Handle.Id >= Buffers.size())
+                {
+                    continue;
+                }
+
+                if (BufferRequired[Usage.Handle.Id])
+                {
+                    bTouchesRequiredResource = true;
+                    break;
+                }
+            }
+        }
+
         if (!bTouchesRequiredResource && !Entry.bForceExecute)
         {
             continue;
@@ -317,6 +450,16 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
             }
 
             ResourceRequired[Usage.Handle.Id] = true;
+        }
+
+        for (const FRGResourceUsage& Usage : Entry.BufferUsages)
+        {
+            if (Usage.Handle.Id >= Buffers.size())
+            {
+                continue;
+            }
+
+            BufferRequired[Usage.Handle.Id] = true;
         }
     }
 
@@ -420,7 +563,7 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
         }
 
         std::vector<D3D12_RESOURCE_BARRIER> PendingBarriers;
-        PendingBarriers.reserve(Entry.ResourceUsages.size());
+        PendingBarriers.reserve(Entry.ResourceUsages.size() + Entry.BufferUsages.size());
 
         for (const FRGResourceUsage& Usage : Entry.ResourceUsages)
         {
@@ -463,6 +606,45 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
 
                 StateRef = Usage.RequiredState;
                 Resource->CurrentState = Usage.RequiredState;
+            }
+        }
+
+        for (const FRGResourceUsage& Usage : Entry.BufferUsages)
+        {
+            if (Usage.Handle.Id >= Buffers.size())
+            {
+                continue;
+            }
+
+            FRGBufferResource& Resource = Buffers[Usage.Handle.Id];
+            if (!Resource.Resource)
+            {
+                continue;
+            }
+
+            D3D12_RESOURCE_STATES& StateRef = Resource.ExternalState ? *Resource.ExternalState : Resource.CurrentState;
+            if (StateRef != Usage.RequiredState)
+            {
+                D3D12_RESOURCE_BARRIER Barrier = {};
+                Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                Barrier.Transition.pResource = Resource.Resource;
+                Barrier.Transition.StateBefore = StateRef;
+                Barrier.Transition.StateAfter = Usage.RequiredState;
+                Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                PendingBarriers.push_back(Barrier);
+
+                if (bEnableBarrierLogs)
+                {
+                    std::ostringstream Stream;
+                    Stream << "[RG] Pass '" << Entry.Name << "' transitioning buffer '"
+                        << (Resource.Name.empty() ? "<Unnamed>" : Resource.Name) << "': "
+                        << RendererUtils::ResourceStateToString(StateRef) << " -> "
+                        << RendererUtils::ResourceStateToString(Usage.RequiredState);
+                    LogInfo(Stream.str());
+                }
+
+                StateRef = Usage.RequiredState;
+                Resource.CurrentState = Usage.RequiredState;
             }
         }
 

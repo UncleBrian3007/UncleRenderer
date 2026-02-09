@@ -10,6 +10,12 @@ enum class ERendererType
     Forward
 };
 
+enum class ESSRMode
+{
+    PS,
+    CS
+};
+
 struct FRendererConfig
 {
     ERendererType RendererType = ERendererType::Deferred;
@@ -63,9 +69,11 @@ struct FRendererConfig
 	uint32_t SsrMaxSteps = 32;
 	float SsrMaxDistance = 50.0f;
 	float SsrThickness = 1.00f;
-	float SsrStride = 1.0f;
-	float SsrRoughnessCutoff = 0.6f;
-	float SsrIntensity = 0.3f;
+    float SsrStride = 1.0f;
+    float SsrRoughnessCutoff = 0.6f;
+    float SsrIntensity = 0.3f;
+    ESSRMode SsrMode = ESSRMode::CS;
+    uint32_t SsrSamplesPerQuad = 1;
     uint32_t WindowWidth = 1280;
     uint32_t WindowHeight = 720;
 };

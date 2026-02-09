@@ -340,7 +340,25 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     </None>
   </ItemGroup>
   <ItemGroup>
-    <None Include="Shaders\ScreenSpaceReflections.hlsl">
+    <None Include="Shaders\SsrBuildIndirectArgs.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\SsrHWTraceCS.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\SsrRayGather.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\SsrResolve.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\SsrShared.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\SsrSWTraceCS.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\SsrSWTracePS.hlsl">
       <FileType>Document</FileType>
     </None>
   </ItemGroup>

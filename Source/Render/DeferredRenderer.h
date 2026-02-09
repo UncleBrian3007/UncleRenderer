@@ -13,6 +13,7 @@
 #include "RendererUtils.h"
 #include "TextureLoader.h"
 #include "RenderGraph.h"
+#include "../Core/RendererConfig.h"
 #include "../Scene/GltfAnimation.h"
 
 class FDX12Device;
@@ -98,6 +99,8 @@ public:
     void SetSsrHzbEnabled(bool bEnabled) { bSsrHzbEnabled = bEnabled; }
     void SetSsrRefineEnabled(bool bEnabled) { bSsrRefineEnabled = bEnabled; }
     void SetSsrDenoiseEnabled(bool bEnabled) { bSsrDenoiseEnabled = bEnabled; }
+    void SetSsrMode(ESSRMode Mode) { SsrMode = Mode; }
+    void SetSsrSamplesPerQuad(uint32_t Samples) { SsrSamplesPerQuad = Samples; }
     bool IsSsrSwEnabled() const { return bSsrSwEnabled; }
     bool IsSsrHwEnabled() const { return bSsrHwEnabled; }
     void SetSsrMaxSteps(uint32_t Steps) { SsrMaxSteps = Steps; }
@@ -198,6 +201,7 @@ private:
         FRGResourceHandle SsrHandle{};
         FRGResourceHandle SsrDenoiseHandle{};
         FRGResourceHandle SsrFallbackHandle{};
+        FRGResourceHandle SsrResolveHandle{};
         FRGResourceHandle LightingHandle{};
         FRGResourceHandle TonemapOutputResource{};
         std::array<FRGResourceHandle, 2> LuminanceHandles{};
@@ -219,6 +223,15 @@ private:
     bool CreateSsrPipeline(FDX12Device* Device);
     bool CreateSsrDenoiseRootSignature(FDX12Device* Device);
     bool CreateSsrDenoisePipeline(FDX12Device* Device);
+    bool CreateSsrRayGatherRootSignature(FDX12Device* Device);
+    bool CreateSsrRayGatherPipeline(FDX12Device* Device);
+    bool CreateSsrSwTraceRootSignature(FDX12Device* Device);
+    bool CreateSsrSwTracePipeline(FDX12Device* Device);
+    bool CreateSsrBuildIndirectArgsRootSignature(FDX12Device* Device);
+    bool CreateSsrBuildIndirectArgsPipeline(FDX12Device* Device);
+    bool CreateSsrResolveRootSignature(FDX12Device* Device);
+    bool CreateSsrResolvePipeline(FDX12Device* Device);
+    bool CreateSsrDispatchCommandSignature(FDX12Device* Device);
     bool CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateHZBRootSignature(FDX12Device* Device);
     bool CreateHZBPipeline(FDX12Device* Device);
@@ -296,8 +309,14 @@ private:
     void AddHZBPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle HZBHandle);
     void AddLinearDepthPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle LinearDepthHandle);
     void AddGtaoPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle GtaoHandle);
-    void AddSsrPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LinearDepthHandle, const std::vector<FRGResourceHandle>& TaaHandles, FRGResourceHandle HZBHandle, FRGResourceHandle SsrHandle);
-    void AddSsrFallbackPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const FCamera& Camera, const std::vector<FRGResourceHandle>& TaaHandles, FRGResourceHandle SsrFallbackHandle);
+    void AddSsrRayCounterClearPass(FRenderGraph& Graph, uint32_t FrameIndex);
+    void AddSsrRayGatherPass(FRenderGraph& Graph, uint32_t FrameIndex, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LinearDepthHandle);
+    void AddSsrBuildIndirectArgsPass(FRenderGraph& Graph, uint32_t FrameIndex, bool bHwMiss);
+    void AddSsrSwTracePass(FRenderGraph& Graph, uint32_t FrameIndex, const FDeferredFrameState& FrameState, const std::vector<FRGResourceHandle>& TaaHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle HZBHandle, FRGResourceHandle SsrHandle);
+    void AddSsrHwTracePass(FRenderGraph& Graph, uint32_t FrameIndex, const FDeferredFrameState& FrameState, const FCamera& Camera, const std::vector<FRGResourceHandle>& TaaHandles, FRGResourceHandle SsrHandle);
+    void AddSsrResolvePass(FRenderGraph& Graph, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle SsrInputHandle, FRGResourceHandle SsrResolveHandle);
+    void AddSsrPass(FRenderGraph& Graph, uint32_t FrameIndex, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LinearDepthHandle, const std::vector<FRGResourceHandle>& TaaHandles, FRGResourceHandle HZBHandle, FRGResourceHandle SsrHandle);
+    void AddSsrFallbackPass(FRenderGraph& Graph, uint32_t FrameIndex, const FDeferredFrameState& FrameState, const FCamera& Camera, const std::vector<FRGResourceHandle>& TaaHandles, FRGResourceHandle SsrFallbackHandle);
     void AddSsrDenoisePass(FRenderGraph& Graph, FRGResourceHandle SsrHandle, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle SsrDenoiseHandle);
     void AddLightingPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 3>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle GtaoHandle, FRGResourceHandle SsrHandle, FRGResourceHandle SsrFallbackHandle, FRGResourceHandle ShadowHandle, FRGResourceHandle LightingHandle);
     void AddPathTracingPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle DepthHandle, FRGResourceHandle GBufferAHandle, FRGResourceHandle GBufferBHandle, FRGResourceHandle GBufferCHandle, FRGResourceHandle OutputHandle);
@@ -329,6 +348,15 @@ private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> SsrDenoiseRootSignature;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 8> SsrPipelines;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> SsrDenoisePipeline;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> SsrRayGatherRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> SsrRayGatherPipeline;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> SsrSwTraceRootSignature;
+    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 8> SsrSwTracePipelines;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> SsrBuildIndirectArgsRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> SsrBuildIndirectArgsPipeline;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> SsrResolveRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> SsrResolvePipeline;
+    Microsoft::WRL::ComPtr<ID3D12CommandSignature> SsrDispatchCommandSignature;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> LightingPipelines;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> HZBPipelines;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> AutoExposurePipeline;
@@ -352,6 +380,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> SsrTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> SsrDenoiseTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> SsrFallbackTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> SsrResolveTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> HilbertLutTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> TonemapOutput;
     std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 2> LuminanceTextures;
@@ -389,6 +418,9 @@ private:
     uint32_t SsrDenoiseBindlessIndex = UINT32_MAX;
     uint32_t SsrFallbackBindlessIndex = UINT32_MAX;
     uint32_t SsrFallbackUavBindlessIndex = UINT32_MAX;
+    uint32_t SsrUavBindlessIndex = UINT32_MAX;
+    uint32_t SsrResolveBindlessIndex = UINT32_MAX;
+    uint32_t SsrResolveUavBindlessIndex = UINT32_MAX;
     uint32_t LightingBufferBindlessIndex = UINT32_MAX;
     uint32_t TonemapOutputBindlessIndex = UINT32_MAX;
     std::array<uint32_t, 2> LuminanceSrvBindlessIndices{ { UINT32_MAX, UINT32_MAX } };
@@ -416,6 +448,7 @@ private:
     D3D12_RESOURCE_STATES SsrState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES SsrDenoiseState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES SsrFallbackState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    D3D12_RESOURCE_STATES SsrResolveState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SsrRayListBuffers;
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SsrRayCounterBuffers;
@@ -425,6 +458,28 @@ private:
     std::vector<uint32_t> SsrRayCounterUavBindlessIndices;
     std::vector<D3D12_RESOURCE_STATES> SsrRayListStates;
     std::vector<D3D12_RESOURCE_STATES> SsrRayCounterStates;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SsrRayListPrimaryBuffers;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SsrRayCounterPrimaryBuffers;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SsrRayListHwMissBuffers;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SsrRayCounterHwMissBuffers;
+    std::vector<uint32_t> SsrRayListPrimarySrvBindlessIndices;
+    std::vector<uint32_t> SsrRayListPrimaryUavBindlessIndices;
+    std::vector<uint32_t> SsrRayCounterPrimarySrvBindlessIndices;
+    std::vector<uint32_t> SsrRayCounterPrimaryUavBindlessIndices;
+    std::vector<uint32_t> SsrRayListHwMissSrvBindlessIndices;
+    std::vector<uint32_t> SsrRayListHwMissUavBindlessIndices;
+    std::vector<uint32_t> SsrRayCounterHwMissSrvBindlessIndices;
+    std::vector<uint32_t> SsrRayCounterHwMissUavBindlessIndices;
+    std::vector<D3D12_RESOURCE_STATES> SsrRayListPrimaryStates;
+    std::vector<D3D12_RESOURCE_STATES> SsrRayCounterPrimaryStates;
+    std::vector<D3D12_RESOURCE_STATES> SsrRayListHwMissStates;
+    std::vector<D3D12_RESOURCE_STATES> SsrRayCounterHwMissStates;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SsrIndirectArgsPrimaryBuffers;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SsrIndirectArgsHwMissBuffers;
+    std::vector<uint32_t> SsrIndirectArgsPrimaryUavBindlessIndices;
+    std::vector<uint32_t> SsrIndirectArgsHwMissUavBindlessIndices;
+    std::vector<D3D12_RESOURCE_STATES> SsrIndirectArgsPrimaryStates;
+    std::vector<D3D12_RESOURCE_STATES> SsrIndirectArgsHwMissStates;
     uint32_t SsrMaxRayCount = 0;
     std::vector<FGltfScene> GltfScenes;
     std::vector<FGltfAnimationPose> GltfScenePoses;
@@ -485,6 +540,8 @@ private:
 	float SsrStride = 1.0f;
 	float SsrRoughnessCutoff = 0.6f;
 	float SsrIntensity = 0.3f;
+    ESSRMode SsrMode = ESSRMode::PS;
+    uint32_t SsrSamplesPerQuad = 1;
 
     uint32_t HZBWidth = 0;
     uint32_t HZBHeight = 0;

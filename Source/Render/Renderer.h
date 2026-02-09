@@ -363,6 +363,7 @@ protected:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> RayQueryRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RayQueryShadowPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RayQuerySsrFallbackPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> RayQuerySsrHwPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RayQueryPathPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RayQueryPathDebugPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RayQueryPathVndfPipeline;

@@ -473,7 +473,25 @@
     <None Include="Shaders\PathTracing.hlsl">
       <Filter>Shaders</Filter>
     </None>
-    <None Include="Shaders\ScreenSpaceReflections.hlsl">
+    <None Include="Shaders\SsrBuildIndirectArgs.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\SsrHWTraceCS.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\SsrRayGather.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\SsrResolve.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\SsrShared.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\SsrSWTraceCS.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\SsrSWTracePS.hlsl">
       <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\SsrRayFallback.hlsl">

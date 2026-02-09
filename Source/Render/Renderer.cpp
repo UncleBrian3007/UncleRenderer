@@ -1590,6 +1590,7 @@ bool FRenderer::CreateRayTracingPipeline(FDX12Device* Device)
     FShaderCompiler Compiler;
     RayQueryShadowPipeline.Reset();
     RayQuerySsrFallbackPipeline.Reset();
+    RayQuerySsrHwPipeline.Reset();
     RayQueryPathPipeline.Reset();
     RayQueryPathDebugPipeline.Reset();
     RayQueryPathVndfPipeline.Reset();
@@ -1632,6 +1633,25 @@ bool FRenderer::CreateRayTracingPipeline(FDX12Device* Device)
         return false;
     }
     RayQuerySsrFallbackPipeline->SetName(L"RayQuerySsrFallbackPipeline");
+
+    std::vector<uint8_t> SsrHwBytecode;
+    if (!Compiler.CompileFromFile(L"Shaders/SsrHWTraceCS.hlsl", L"CSMain", L"cs_6_6", SsrHwBytecode))
+    {
+        LogError("Failed to compile SSR HW trace shader.");
+        return false;
+    }
+
+    D3D12_COMPUTE_PIPELINE_STATE_DESC SsrHwPsoDesc = {};
+    SsrHwPsoDesc.pRootSignature = RayQueryRootSignature.Get();
+    SsrHwPsoDesc.CS.pShaderBytecode = SsrHwBytecode.data();
+    SsrHwPsoDesc.CS.BytecodeLength = SsrHwBytecode.size();
+    HR_CHECK(Device->GetDevice()->CreateComputePipelineState(&SsrHwPsoDesc, IID_PPV_ARGS(RayQuerySsrHwPipeline.ReleaseAndGetAddressOf())));
+    if (!RayQuerySsrHwPipeline)
+    {
+        LogError("Ray query SSR HW trace pipeline state creation failed.");
+        return false;
+    }
+    RayQuerySsrHwPipeline->SetName(L"RayQuerySsrHwPipeline");
 
     std::vector<uint8_t> PathBytecode;
     const std::vector<std::wstring> PathDefines = { L"PATH_TRACING_USE_VNDF=0" };

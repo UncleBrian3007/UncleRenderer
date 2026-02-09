@@ -21,7 +21,19 @@ struct FRGTextureDesc
     DXGI_FORMAT Format = DXGI_FORMAT_UNKNOWN;
 };
 
+struct FRGBufferDesc
+{
+    uint64 Size = 0;
+    D3D12_RESOURCE_FLAGS Flags = D3D12_RESOURCE_FLAG_NONE;
+};
+
 struct FRGResourceHandle
+{
+    uint32 Id = UINT32_MAX;
+    explicit operator bool() const { return Id != UINT32_MAX; }
+};
+
+struct FRGBufferHandle
 {
     uint32 Id = UINT32_MAX;
     explicit operator bool() const { return Id != UINT32_MAX; }
@@ -59,6 +71,12 @@ public:
         D3D12_RESOURCE_STATES* StatePtr,
         const FRGTextureDesc& Desc);
     ID3D12Resource* GetTextureResource(const FRGResourceHandle& Handle) const;
+    FRGBufferHandle ImportBuffer(
+        const std::string& Name,
+        ID3D12Resource* Resource,
+        D3D12_RESOURCE_STATES* StatePtr,
+        const FRGBufferDesc& Desc);
+    ID3D12Resource* GetBufferResource(const FRGBufferHandle& Handle) const;
 
     template <typename PassData, typename SetupFunc, typename ExecuteFunc>
     void AddPass(const std::string& Name, SetupFunc&& Setup, ExecuteFunc&& Execute)
@@ -118,12 +136,25 @@ private:
         bool bExternal = false;
     };
 
+    struct FRGBufferResource
+    {
+        std::string Name;
+        FRGBufferDesc Desc;
+        ID3D12Resource* Resource = nullptr;
+        D3D12_RESOURCE_STATES* ExternalState = nullptr;
+        D3D12_RESOURCE_STATES CurrentState = D3D12_RESOURCE_STATE_COMMON;
+        int32 FirstUsePass = -1;
+        int32 LastUsePass = -1;
+        bool bExternal = false;
+    };
+
     struct PassEntry
     {
         std::string Name;
         std::vector<uint8_t> DataStorage;
         std::function<void(const std::vector<uint8_t>&, FDX12CommandContext&)> ExecuteFunc;
         std::vector<FRGResourceUsage> ResourceUsages;
+        std::vector<FRGResourceUsage> BufferUsages;
         bool bCulled = false;
         bool bForceExecute = false;
         double ElapsedMs = 0.0;
@@ -131,7 +162,9 @@ private:
     };
 
     FRGResourceHandle RegisterTexture(const std::string& Name, const FRGTextureDesc& Desc);
+    FRGBufferHandle RegisterBuffer(const std::string& Name, const FRGBufferDesc& Desc);
     void RegisterUsage(PassEntry& Entry, const FRGResourceHandle& Handle, D3D12_RESOURCE_STATES RequiredState, ERGResourceAccess Access);
+    void RegisterUsage(PassEntry& Entry, const FRGBufferHandle& Handle, D3D12_RESOURCE_STATES RequiredState, ERGResourceAccess Access);
 
     void AccumulateResourceFlags(const FRGResourceHandle& Handle, D3D12_RESOURCE_STATES RequiredState, ERGResourceAccess Access);
     bool AcquireTransientTexture(FRGTextureResource& Texture, D3D12_RESOURCE_STATES InitialState);
@@ -140,10 +173,12 @@ private:
     void LogTimingSummary();
 
     FRGTextureResource* ResolveResource(const FRGResourceHandle& Handle);
+    FRGBufferResource* ResolveBuffer(const FRGBufferHandle& Handle);
 
     FDX12Device* Device = nullptr;
 
     std::vector<FRGTextureResource> Textures;
+    std::vector<FRGBufferResource> Buffers;
     std::vector<PassEntry> Passes;
 
     struct FPooledTexture
@@ -209,8 +244,11 @@ public:
     FRGPassBuilder(FRenderGraph& InGraph, FRenderGraph::PassEntry& InEntry);
 
     FRGResourceHandle CreateTexture(const std::string& Name, const FRGTextureDesc& Desc);
+    FRGBufferHandle CreateBuffer(const std::string& Name, const FRGBufferDesc& Desc);
     FRGResourceHandle ReadTexture(const FRGResourceHandle& Handle, D3D12_RESOURCE_STATES RequiredState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     FRGResourceHandle WriteTexture(const FRGResourceHandle& Handle, D3D12_RESOURCE_STATES RequiredState = D3D12_RESOURCE_STATE_RENDER_TARGET);
+    FRGBufferHandle ReadBuffer(const FRGBufferHandle& Handle, D3D12_RESOURCE_STATES RequiredState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    FRGBufferHandle WriteBuffer(const FRGBufferHandle& Handle, D3D12_RESOURCE_STATES RequiredState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     void KeepAlive();
 
 private:
