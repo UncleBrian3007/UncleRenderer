@@ -20,8 +20,17 @@ cbuffer LightingBindlessConstants : register(b1)
     uint BrdfLutIndex;
     uint DepthBufferIndex;
     uint GtaoTextureIndex;
+    uint RestirGITextureIndex;
     uint SsrTextureIndex;
     uint SsrFallbackTextureIndex;
+};
+
+cbuffer RestirGIConstants : register(b2)
+{
+    float RestirGIIntensity;
+    uint RestirGIEnabled;
+    uint RestirGISamplesPerPixel;
+    uint RestirGIPadding;
 };
 SamplerState GBufferSampler : register(s0);
 SamplerComparisonState ShadowSampler : register(s1);
@@ -67,6 +76,7 @@ float4 PSMain(VSOutput Input) : SV_Target
     Texture2D BrdfLut = ResourceDescriptorHeap[BrdfLutIndex];
     Texture2D DepthBuffer = ResourceDescriptorHeap[DepthBufferIndex];
     Texture2D GtaoTexture = ResourceDescriptorHeap[GtaoTextureIndex];
+    Texture2D RestirGITexture = ResourceDescriptorHeap[RestirGITextureIndex];
     Texture2D SsrTexture = ResourceDescriptorHeap[SsrTextureIndex];
     Texture2D SsrFallbackTexture = ResourceDescriptorHeap[SsrFallbackTextureIndex];
 
@@ -203,6 +213,11 @@ float4 PSMain(VSOutput Input) : SV_Target
 
     float ao = (GtaoIntensity <= 0.0f) ? 1.0f : GtaoTexture.Sample(GBufferSampler, Input.UV).r;
     float3 ambient = (diffuseIbl + specularIbl) * ao;
+    if (RestirGIEnabled > 0 && RestirGIIntensity > 0.0f)
+    {
+        float3 restirGI = RestirGITexture.Sample(GBufferSampler, Input.UV).rgb;
+        ambient += restirGI * RestirGIIntensity;
+    }
     float3 color = lighting + ambient;
     return float4(color, 1.0);
 }

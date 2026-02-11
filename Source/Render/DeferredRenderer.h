@@ -121,6 +121,12 @@ public:
     float GetSsrRoughnessCutoff() const { return SsrRoughnessCutoff; }
     void SetSsrIntensity(float Intensity) { SsrIntensity = Intensity; }
     float GetSsrIntensity() const { return SsrIntensity; }
+    void SetRestirGIEnabled(bool bEnabled) { bRestirGIEnabled = bEnabled; }
+    bool IsRestirGIEnabled() const { return bRestirGIEnabled; }
+    void SetRestirGISamplesPerPixel(uint32_t Samples) { RestirGISamplesPerPixel = Samples; }
+    uint32_t GetRestirGISamplesPerPixel() const { return RestirGISamplesPerPixel; }
+    void SetRestirGIIntensity(float Intensity) { RestirGIIntensity = Intensity; }
+    float GetRestirGIIntensity() const { return RestirGIIntensity; }
 
     void SetPathTracingAccumulationEnabled(bool bEnabled)
     {
@@ -204,6 +210,7 @@ private:
         std::array<FRGResourceHandle, 4> GBufferHandles{};
         FRGResourceHandle LinearDepthHandle{};
         FRGResourceHandle GtaoHandle{};
+        FRGResourceHandle RestirGIHandle{};
         FRGResourceHandle SsrHandle{};
         FRGResourceHandle SsrDenoiseHandle{};
         FRGResourceHandle SsrFallbackHandle{};
@@ -219,6 +226,7 @@ private:
 
     bool CreateBasePassRootSignature(FDX12Device* Device);
     bool CreateLightingRootSignature(FDX12Device* Device);
+    bool CreateRestirGIRootSignature(FDX12Device* Device);
     bool CreateBasePassPipeline(FDX12Device* Device, DXGI_FORMAT LightingFormat);
     bool CreateDepthPrepassPipeline(FDX12Device* Device);
     bool CreateLinearDepthRootSignature(FDX12Device* Device);
@@ -239,6 +247,7 @@ private:
     bool CreateSsrResolvePipeline(FDX12Device* Device);
     bool CreateSsrDispatchCommandSignature(FDX12Device* Device);
     bool CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
+    bool CreateRestirGIPipeline(FDX12Device* Device);
     bool CreateHZBRootSignature(FDX12Device* Device);
     bool CreateHZBPipeline(FDX12Device* Device);
     bool CreateAutoExposureRootSignature(FDX12Device* Device);
@@ -252,6 +261,7 @@ private:
     bool CreateGBufferResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateLinearDepthResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateGtaoResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
+    bool CreateRestirGIResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateSsrResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateHilbertLutResources(FDX12Device* Device);
     bool CreateHZBResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
@@ -315,6 +325,7 @@ private:
     void AddHZBPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle HZBHandle);
     void AddLinearDepthPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle LinearDepthHandle);
     void AddGtaoPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle GtaoHandle);
+    void AddRestirGIPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle LinearDepthHandle, FRGResourceHandle RestirGIHandle);
     void AddSsrRayCounterClearPass(FRenderGraph& Graph, uint32_t FrameIndex);
     void AddSsrRayGatherPass(FRenderGraph& Graph, uint32_t FrameIndex, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle);
     void AddSsrBuildIndirectArgsPass(FRenderGraph& Graph, uint32_t FrameIndex, bool bHwMiss);
@@ -324,7 +335,7 @@ private:
     void AddSsrPass(FRenderGraph& Graph, uint32_t FrameIndex, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle, const std::vector<FRGResourceHandle>& TaaHandles, FRGResourceHandle HZBHandle, FRGResourceHandle SsrHandle);
     void AddSsrFallbackPass(FRenderGraph& Graph, uint32_t FrameIndex, const FDeferredFrameState& FrameState, const FCamera& Camera, const std::vector<FRGResourceHandle>& TaaHandles, FRGResourceHandle SsrFallbackHandle);
     void AddSsrDenoisePass(FRenderGraph& Graph, FRGResourceHandle SsrHandle, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle SsrDenoiseHandle);
-    void AddLightingPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle GtaoHandle, FRGResourceHandle SsrHandle, FRGResourceHandle SsrFallbackHandle, FRGResourceHandle ShadowHandle, FRGResourceHandle LightingHandle);
+    void AddLightingPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle GtaoHandle, FRGResourceHandle RestirGIHandle, FRGResourceHandle SsrHandle, FRGResourceHandle SsrFallbackHandle, FRGResourceHandle ShadowHandle, FRGResourceHandle LightingHandle);
     void AddPathTracingPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle DepthHandle, FRGResourceHandle GBufferAHandle, FRGResourceHandle GBufferBHandle, FRGResourceHandle GBufferCHandle, FRGResourceHandle OutputHandle);
     void AddPathTracingAccumulationPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle PathTracingTempHandle, FRGResourceHandle LightingHandle, const std::vector<FRGResourceHandle>& AccumulationHandles);
     void AddSkyPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle DepthHandle, FRGResourceHandle LightingHandle);
@@ -338,6 +349,7 @@ private:
 private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> BasePassRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> LightingRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> RestirGIRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> HZBRootSignature;
     // Base pass pipelines indexed by permutation key (bit 0: Normal, bit 1: MR, bit 2: BaseColor, bit 3: Emissive, bit 4: AlphaMask, bit 5: SheenModel, bit 6: ClearcoatModel, bit 7: AnisotropyModel)
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 256> BasePassPipelines;
@@ -364,6 +376,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> SsrResolvePipeline;
     Microsoft::WRL::ComPtr<ID3D12CommandSignature> SsrDispatchCommandSignature;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> LightingPipelines;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGIPipeline;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> HZBPipelines;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> AutoExposurePipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> TaaPipeline;
@@ -383,6 +396,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> LightingBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> LinearDepthTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> GtaoTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGITexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> SsrTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> SsrDenoiseTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> SsrFallbackTexture;
@@ -421,6 +435,8 @@ private:
     uint32_t LinearDepthBindlessIndex = UINT32_MAX;
     uint32_t HilbertLutBindlessIndex = UINT32_MAX;
     uint32_t GtaoBindlessIndex = UINT32_MAX;
+    uint32_t RestirGIBindlessIndex = UINT32_MAX;
+    uint32_t RestirGIUavBindlessIndex = UINT32_MAX;
     uint32_t SsrBindlessIndex = UINT32_MAX;
     uint32_t SsrDenoiseBindlessIndex = UINT32_MAX;
     uint32_t SsrFallbackBindlessIndex = UINT32_MAX;
@@ -453,6 +469,7 @@ private:
     D3D12_RESOURCE_STATES LightingBufferState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES LinearDepthState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES GtaoState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    D3D12_RESOURCE_STATES RestirGIState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES SsrState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES SsrDenoiseState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES SsrFallbackState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -542,12 +559,15 @@ private:
     bool bSsrHzbEnabled = false;
     bool bSsrRefineEnabled = false;
     bool bSsrDenoiseEnabled = false;
+    bool bRestirGIEnabled = false;
 	uint32_t SsrMaxSteps = 32;
 	float SsrMaxDistance = 50.0f;
 	float SsrThickness = 1.00f;
 	float SsrStride = 1.0f;
 	float SsrRoughnessCutoff = 0.6f;
 	float SsrIntensity = 0.3f;
+    uint32_t RestirGISamplesPerPixel = 2;
+    float RestirGIIntensity = 1.0f;
     ESSRMode SsrMode = ESSRMode::PS;
     uint32_t SsrSamplesPerQuad = 1;
 

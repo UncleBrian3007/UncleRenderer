@@ -133,12 +133,15 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     bSsrHzbEnabled = Config.bEnableSsrHzb;
     bSsrRefineEnabled = Config.bEnableSsrRefine;
     bSsrDenoiseEnabled = Config.bEnableSsrDenoise;
+    bRestirGIEnabled = Config.bEnableRestirGI;
     SsrMaxSteps = Config.SsrMaxSteps;
     SsrMaxDistance = Config.SsrMaxDistance;
     SsrThickness = Config.SsrThickness;
     SsrStride = Config.SsrStride;
     SsrRoughnessCutoff = Config.SsrRoughnessCutoff;
     SsrIntensity = Config.SsrIntensity;
+    RestirGISamplesPerPixel = std::clamp(Config.RestirGISamplesPerPixel, 1u, 32u);
+    RestirGIIntensity = (std::max)(0.0f, Config.RestirGIIntensity);
     SsrMode = Config.SsrMode;
     SsrSamplesPerQuad = Config.SsrSamplesPerQuad;
 
@@ -222,6 +225,13 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     if (!CreateGtaoRootSignature(Device) || !CreateGtaoPipeline(Device))
     {
         LogError("Deferred renderer initialization failed: GTAO pipeline creation failed");
+        return false;
+    }
+
+    LogInfo("Creating deferred renderer ReSTIR GI root signature and pipeline...");
+    if (!CreateRestirGIRootSignature(Device) || !CreateRestirGIPipeline(Device))
+    {
+        LogError("Deferred renderer initialization failed: ReSTIR GI pipeline creation failed");
         return false;
     }
 
@@ -337,6 +347,12 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     if (!CreateGtaoResources(Device, Width, Height))
     {
         LogError("Deferred renderer initialization failed: GTAO resource creation failed");
+        return false;
+    }
+
+    if (!CreateRestirGIResources(Device, Width, Height))
+    {
+        LogError("Deferred renderer initialization failed: ReSTIR GI resource creation failed");
         return false;
     }
 
@@ -649,6 +665,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 		AddRayTracingShadowPass(Graph, Camera, Resources.DepthHandle, Resources.GBufferHandles[0], Resources.ShadowMaskHandle);
 		AddLinearDepthPass(Graph, FrameState, Resources.DepthHandle, Resources.LinearDepthHandle);
 		AddGtaoPass(Graph, FrameState, Resources.GBufferHandles, Resources.LinearDepthHandle, Resources.GtaoHandle);
+        AddRestirGIPass(Graph, FrameState, Resources.GBufferHandles, Resources.DepthHandle, Resources.LinearDepthHandle, Resources.RestirGIHandle);
         if (SsrMode == ESSRMode::CS)
         {
             AddSsrRayCounterClearPass(Graph, FrameIndex);
@@ -670,7 +687,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
             AddSsrDenoisePass(Graph, SsrBaseHandle, Resources.GBufferHandles, Resources.LinearDepthHandle, Resources.SsrDenoiseHandle);
         }
         const FRGResourceHandle SsrOutputHandle = bSsrDenoiseEnabled ? Resources.SsrDenoiseHandle : SsrBaseHandle;
-		AddLightingPass(Graph, FrameState, Resources.GBufferHandles, Resources.DepthHandle, Resources.GtaoHandle, SsrOutputHandle, Resources.SsrFallbackHandle, Resources.ShadowHandle, Resources.LightingHandle);
+		AddLightingPass(Graph, FrameState, Resources.GBufferHandles, Resources.DepthHandle, Resources.GtaoHandle, Resources.RestirGIHandle, SsrOutputHandle, Resources.SsrFallbackHandle, Resources.ShadowHandle, Resources.LightingHandle);
 	}
 
 	AddSkyPass(Graph, Camera, Resources.DepthHandle, Resources.LightingHandle);
@@ -848,6 +865,12 @@ void FDeferredRenderer::ImportFrameResources(FRenderGraph& Graph, FDeferredFrame
         GtaoTexture.Get(),
         &GtaoState,
         { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), DXGI_FORMAT_R8_UNORM });
+
+    OutResources.RestirGIHandle = Graph.ImportTexture(
+        "ReSTIR GI",
+        RestirGITexture.Get(),
+        &RestirGIState,
+        { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), DXGI_FORMAT_R16G16B16A16_FLOAT });
 
     OutResources.SsrHandle = Graph.ImportTexture(
         "SSR",
@@ -2330,6 +2353,112 @@ void FDeferredRenderer::AddGtaoPass(FRenderGraph& Graph, const FDeferredFrameSta
     });
 }
 
+void FDeferredRenderer::AddRestirGIPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle LinearDepthHandle, FRGResourceHandle RestirGIHandle)
+{
+    struct FRestirGIPassData
+    {
+        bool bEnabled = false;
+        FRGResourceHandle OutputHandle{};
+        FRGResourceHandle DepthHandle{};
+        FRGResourceHandle LinearDepthHandle{};
+        std::array<FRGResourceHandle, 4> GBufferHandles{};
+    };
+
+    Graph.AddPass<FRestirGIPassData>("ReSTIR GI", [&, DepthHandle, LinearDepthHandle, GBufferHandles, RestirGIHandle](FRestirGIPassData& Data, FRGPassBuilder& Builder)
+    {
+        Data.bEnabled = bRestirGIEnabled && RestirGIRootSignature && RestirGIPipeline;
+        Data.OutputHandle = RestirGIHandle;
+        Data.DepthHandle = DepthHandle;
+        Data.LinearDepthHandle = LinearDepthHandle;
+        Data.GBufferHandles = GBufferHandles;
+
+        if (!Data.bEnabled || !Data.OutputHandle)
+        {
+            return;
+        }
+
+        Builder.WriteTexture(Data.OutputHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.ReadTexture(Data.DepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(Data.LinearDepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(Data.GBufferHandles[0], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(Data.GBufferHandles[1], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(Data.GBufferHandles[2], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(Data.GBufferHandles[3], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    }, [this, &FrameState](const FRestirGIPassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!Data.bEnabled || !Device || !Device->GetBindlessDescriptorHeap())
+        {
+            return;
+        }
+
+        const uint32_t OutputBindlessIndex = RestirGIUavBindlessIndex;
+        const uint32_t DepthIndex = GetFrameIndex() % static_cast<uint32_t>(DepthBindlessIndices.size());
+        const uint32_t DepthBindlessIndex = DepthBindlessIndices.empty() ? UINT32_MAX : DepthBindlessIndices[DepthIndex];
+        if (OutputBindlessIndex == UINT32_MAX || DepthBindlessIndex == UINT32_MAX || LinearDepthBindlessIndex == UINT32_MAX
+            || GBufferBindlessIndices[0] == UINT32_MAX || GBufferBindlessIndices[1] == UINT32_MAX || GBufferBindlessIndices[2] == UINT32_MAX || GBufferBindlessIndices[3] == UINT32_MAX)
+        {
+            return;
+        }
+
+        ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
+        FScopedPixEvent RestirEvent(LocalCommandList, L"ReSTIR GI");
+
+        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
+        LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        LocalCommandList->SetComputeRootSignature(RestirGIRootSignature.Get());
+        LocalCommandList->SetPipelineState(RestirGIPipeline.Get());
+
+        const uint32_t OutputWidth = static_cast<uint32_t>(Viewport.Width);
+        const uint32_t OutputHeight = static_cast<uint32_t>(Viewport.Height);
+
+        struct FRestirGIConstants
+        {
+            uint32_t Width = 0;
+            uint32_t Height = 0;
+            uint32_t FrameIndex = 0;
+            uint32_t SamplesPerPixel = 0;
+            float Intensity = 0.0f;
+            uint32_t Enabled = 0;
+            uint32_t Padding0 = 0;
+            uint32_t Padding1 = 0;
+        };
+
+        const uint32_t EffectiveRestirGISamples = std::clamp(RestirGISamplesPerPixel, 1u, 32u);
+        const float EffectiveRestirGIIntensity = (std::max)(0.0f, RestirGIIntensity);
+
+        const FRestirGIConstants Constants =
+        {
+            OutputWidth,
+            OutputHeight,
+            FrameState.bTaaActive ? FrameState.TaaFrameIndex : GetFrameIndex(),
+            EffectiveRestirGISamples,
+            EffectiveRestirGIIntensity,
+            bRestirGIEnabled ? 1u : 0u,
+            0u,
+            0u
+        };
+
+        const uint32_t BindlessIndices[] =
+        {
+            OutputBindlessIndex,
+            DepthBindlessIndex,
+            LinearDepthBindlessIndex,
+            GBufferBindlessIndices[0],
+            GBufferBindlessIndices[1],
+            GBufferBindlessIndices[2],
+            GBufferBindlessIndices[3]
+        };
+
+        LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(FRestirGIConstants) / sizeof(uint32_t), &Constants, 0);
+        LocalCommandList->SetComputeRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
+
+        const uint32_t GroupSize = 8;
+        const uint32_t DispatchX = (OutputWidth + GroupSize - 1) / GroupSize;
+        const uint32_t DispatchY = (OutputHeight + GroupSize - 1) / GroupSize;
+        LocalCommandList->Dispatch(DispatchX, DispatchY, 1);
+    });
+}
+
 void FDeferredRenderer::AddSsrRayCounterClearPass(FRenderGraph& Graph, uint32_t FrameIndex)
 {
     struct FSsrRayCounterClearPassData
@@ -3558,7 +3687,7 @@ void FDeferredRenderer::AddSsrDenoisePass(FRenderGraph& Graph, FRGResourceHandle
     });
 }
 
-void FDeferredRenderer::AddLightingPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle GtaoHandle, FRGResourceHandle SsrHandle, FRGResourceHandle SsrFallbackHandle, FRGResourceHandle ShadowHandle, FRGResourceHandle LightingHandle)
+void FDeferredRenderer::AddLightingPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle GtaoHandle, FRGResourceHandle RestirGIHandle, FRGResourceHandle SsrHandle, FRGResourceHandle SsrFallbackHandle, FRGResourceHandle ShadowHandle, FRGResourceHandle LightingHandle)
 {
     struct FLightingPassData
     {
@@ -3575,6 +3704,7 @@ void FDeferredRenderer::AddLightingPass(FRenderGraph& Graph, const FDeferredFram
         Builder.ReadTexture(GBufferHandles[3], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(DepthHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(GtaoHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(RestirGIHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(SsrHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(SsrFallbackHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
@@ -3600,7 +3730,7 @@ void FDeferredRenderer::AddLightingPass(FRenderGraph& Graph, const FDeferredFram
         const uint32_t BaseSsrIndex = (SsrMode == ESSRMode::CS) ? SsrResolveBindlessIndex : SsrBindlessIndex;
         const uint32_t SsrLightingBindlessIndex = bSsrDenoiseEnabled ? SsrDenoiseBindlessIndex : BaseSsrIndex;
         const uint32_t SsrFallbackIndex = SsrFallbackBindlessIndex;
-        if (DepthBindlessIndex == UINT32_MAX || GtaoBindlessIndex == UINT32_MAX || SsrLightingBindlessIndex == UINT32_MAX || SsrFallbackIndex == UINT32_MAX || ShadowMapBindlessIndex == UINT32_MAX
+        if (DepthBindlessIndex == UINT32_MAX || GtaoBindlessIndex == UINT32_MAX || RestirGIBindlessIndex == UINT32_MAX || SsrLightingBindlessIndex == UINT32_MAX || SsrFallbackIndex == UINT32_MAX || ShadowMapBindlessIndex == UINT32_MAX
             || EnvironmentCubeBindlessIndex == UINT32_MAX || BrdfLutBindlessIndex == UINT32_MAX
             || GBufferBindlessIndices[0] == UINT32_MAX || GBufferBindlessIndices[1] == UINT32_MAX || GBufferBindlessIndices[2] == UINT32_MAX)
         {
@@ -3634,10 +3764,31 @@ void FDeferredRenderer::AddLightingPass(FRenderGraph& Graph, const FDeferredFram
             BrdfLutBindlessIndex,
             DepthBindlessIndex,
             GtaoBindlessIndex,
+            RestirGIBindlessIndex,
             SsrLightingBindlessIndex,
             SsrFallbackIndex
         };
         LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(LightingBindlessIndices), LightingBindlessIndices, 0);
+
+        struct FRestirGIConstants
+        {
+            float Intensity = 0.0f;
+            uint32_t Enabled = 0;
+            uint32_t SamplesPerPixel = 0;
+            uint32_t Padding = 0;
+        };
+
+        const float EffectiveRestirGIIntensity = (std::max)(0.0f, RestirGIIntensity);
+        const uint32_t EffectiveRestirGISamples = std::clamp(RestirGISamplesPerPixel, 1u, 32u);
+
+        const FRestirGIConstants RestirGIConstants =
+        {
+            EffectiveRestirGIIntensity,
+            bRestirGIEnabled ? 1u : 0u,
+            EffectiveRestirGISamples,
+            0u
+        };
+        LocalCommandList->SetGraphicsRoot32BitConstants(2, sizeof(FRestirGIConstants) / sizeof(uint32_t), &RestirGIConstants, 0);
 
         LocalCommandList->DrawInstanced(3, 1, 0, 0);
     });
@@ -4434,7 +4585,7 @@ bool FDeferredRenderer::CreateBasePassRootSignature(FDX12Device* Device)
 
 bool FDeferredRenderer::CreateLightingRootSignature(FDX12Device* Device)
 {
-    D3D12_ROOT_PARAMETER1 RootParams[2] = {};
+    D3D12_ROOT_PARAMETER1 RootParams[3] = {};
     // RootParams[0]: Lighting constants (b0), used in Shaders/DeferredLighting.hlsl PSMain
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
@@ -4447,7 +4598,14 @@ bool FDeferredRenderer::CreateLightingRootSignature(FDX12Device* Device)
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     RootParams[1].Constants.ShaderRegister = 1;
     RootParams[1].Constants.RegisterSpace = 0;
-    RootParams[1].Constants.Num32BitValues = 12;
+    RootParams[1].Constants.Num32BitValues = 13;
+
+    // RootParams[2]: ReSTIR GI constants (b2), used in Shaders/DeferredLighting.hlsl PSMain
+    RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    RootParams[2].Constants.ShaderRegister = 2;
+    RootParams[2].Constants.RegisterSpace = 0;
+    RootParams[2].Constants.Num32BitValues = 4;
 
     D3D12_STATIC_SAMPLER_DESC Samplers[3] = {};
     Samplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
@@ -4506,6 +4664,45 @@ bool FDeferredRenderer::CreateLightingRootSignature(FDX12Device* Device)
     }
 
     HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(LightingRootSignature.GetAddressOf())));
+    return true;
+}
+
+bool FDeferredRenderer::CreateRestirGIRootSignature(FDX12Device* Device)
+{
+    D3D12_ROOT_PARAMETER1 RootParams[2] = {};
+
+    // RootParams[0]: ReSTIR GI constants (b0), used in Shaders/RestirGI.hlsl CSMain
+    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[0].Constants.Num32BitValues = 8;
+    RootParams[0].Constants.RegisterSpace = 0;
+    RootParams[0].Constants.ShaderRegister = 0;
+
+    // RootParams[1]: ReSTIR GI bindless indices (b1), used in Shaders/RestirGI.hlsl CSMain
+    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[1].Constants.Num32BitValues = 7;
+    RootParams[1].Constants.RegisterSpace = 0;
+    RootParams[1].Constants.ShaderRegister = 1;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
+    RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    RootSigDesc.Desc_1_1.NumParameters = _countof(RootParams);
+    RootSigDesc.Desc_1_1.pParameters = RootParams;
+    RootSigDesc.Desc_1_1.NumStaticSamplers = 0;
+    RootSigDesc.Desc_1_1.pStaticSamplers = nullptr;
+    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+
+    ComPtr<ID3DBlob> SerializedSig;
+    ComPtr<ID3DBlob> ErrorBlob;
+    HR_CHECK(D3D12SerializeVersionedRootSignature(&RootSigDesc, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
+
+    if (ErrorBlob)
+    {
+        OutputDebugStringA(static_cast<const char*>(ErrorBlob->GetBufferPointer()));
+    }
+
+    HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(RestirGIRootSignature.GetAddressOf())));
     return true;
 }
 
@@ -4886,6 +5083,30 @@ bool FDeferredRenderer::CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT 
         PsoDesc.PS = { PSByteCodes[Index].data(), PSByteCodes[Index].size() };
         HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(LightingPipelines[Index].GetAddressOf())));
     }
+    return true;
+}
+
+bool FDeferredRenderer::CreateRestirGIPipeline(FDX12Device* Device)
+{
+    if (!Device)
+    {
+        return false;
+    }
+
+    FShaderCompiler Compiler;
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring CSTarget = RendererUtils::BuildShaderTarget(L"cs", ShaderModel);
+
+    std::vector<uint8_t> CSByteCode;
+    if (!Compiler.CompileFromFile(L"Shaders/RestirGI.hlsl", L"CSMain", CSTarget, CSByteCode))
+    {
+        return false;
+    }
+
+    D3D12_COMPUTE_PIPELINE_STATE_DESC PsoDesc = {};
+    PsoDesc.pRootSignature = RestirGIRootSignature.Get();
+    PsoDesc.CS = { CSByteCode.data(), CSByteCode.size() };
+    HR_CHECK(Device->GetDevice()->CreateComputePipelineState(&PsoDesc, IID_PPV_ARGS(RestirGIPipeline.GetAddressOf())));
     return true;
 }
 
@@ -6206,6 +6427,42 @@ bool FDeferredRenderer::CreateGtaoResources(FDX12Device* Device, uint32_t Width,
     return true;
 }
 
+bool FDeferredRenderer::CreateRestirGIResources(FDX12Device* Device, uint32_t Width, uint32_t Height)
+{
+    if (Device == nullptr)
+    {
+        return false;
+    }
+
+    CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
+
+    CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
+        DXGI_FORMAT_R16G16B16A16_FLOAT,
+        Width,
+        Height,
+        1,
+        1,
+        1,
+        0,
+        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &HeapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &Desc,
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        nullptr,
+        IID_PPV_ARGS(RestirGITexture.GetAddressOf())));
+
+    if (RestirGITexture)
+    {
+        RestirGITexture->SetName(L"ReSTIR_GI");
+    }
+
+    RestirGIState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    return true;
+}
+
 bool FDeferredRenderer::CreateSsrResources(FDX12Device* Device, uint32_t Width, uint32_t Height)
 {
     if (Device == nullptr)
@@ -6997,6 +7254,21 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         GtaoSrvDesc.Format = DXGI_FORMAT_R8_UNORM;
         GtaoSrvDesc.Texture2D.MipLevels = 1;
         GtaoBindlessIndex = Device->CreateBindlessSrv(GtaoTexture.Get(), GtaoSrvDesc);
+    }
+
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC RestirSrvDesc = {};
+        RestirSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        RestirSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        RestirSrvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        RestirSrvDesc.Texture2D.MipLevels = 1;
+        RestirGIBindlessIndex = Device->CreateBindlessSrv(RestirGITexture.Get(), RestirSrvDesc);
+
+        D3D12_UNORDERED_ACCESS_VIEW_DESC RestirUavDesc = {};
+        RestirUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        RestirUavDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        RestirUavDesc.Texture2D.MipSlice = 0;
+        RestirGIUavBindlessIndex = Device->CreateBindlessUav(RestirGITexture.Get(), nullptr, RestirUavDesc);
     }
 
     {

@@ -56,6 +56,9 @@ struct FRendererConfig
     bool bEnableSsrHzb = false;
     bool bEnableSsrRefine = false;
     bool bEnableSsrDenoise = true;
+    bool bEnableRestirGI = false;
+    uint32_t RestirGISamplesPerPixel = 2;
+    float RestirGIIntensity = 1.0f;
     bool bEnableIndirectDraw = true;
     bool bEnableSkinningIndirectDraw = false;
     bool bEnablePbrResearch = false;

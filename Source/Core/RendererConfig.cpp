@@ -350,6 +350,35 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     {
         OutConfig.bEnableSsrDenoise = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
+    if (LowerKey == "restirgi" || LowerKey == "enablerestirgi")
+    {
+        OutConfig.bEnableRestirGI = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+    if (LowerKey == "restirgisamplesperpixel")
+    {
+        try
+        {
+            const int32_t ParsedValue = std::stoi(Value);
+            const int32_t ClampedValue = std::clamp(ParsedValue, 1, 32);
+            OutConfig.RestirGISamplesPerPixel = static_cast<uint32_t>(ClampedValue);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid ReSTIR GI samples per pixel in renderer config: " + Value);
+        }
+    }
+    if (LowerKey == "restirgiintensity")
+    {
+        try
+        {
+            const float ParsedValue = std::stof(Value);
+            OutConfig.RestirGIIntensity = (std::max)(0.0f, ParsedValue);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid ReSTIR GI intensity in renderer config: " + Value);
+        }
+    }
     if (LowerKey == "ssrmode")
     {
         if (LowerValue == "cs")
