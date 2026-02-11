@@ -3,6 +3,7 @@
 #include "EngineTime.h"
 #include "ImGuiSupport.h"
 #include "Logger.h"
+#include "../RHI/DX12DeviceRemoved.h"
 #include "GpuDebugMarkers.h"
 #include "TaskSystem.h"
 #include "../RHI/DX12Device.h"
@@ -559,7 +560,12 @@ bool FApplication::RenderFrame()
 
     const UINT PresentFlags = SwapChain->AllowsTearing() ? DXGI_PRESENT_ALLOW_TEARING : 0;
     LogVerbose("Present called (Flags: " + std::to_string(PresentFlags) + ")");
-    HR_CHECK(SwapChain->GetSwapChain()->Present(0, PresentFlags));
+    const HRESULT PresentHr = SwapChain->GetSwapChain()->Present(0, PresentFlags);
+    if (FAILED(PresentHr))
+    {
+        ReportDxFailure(Device ? Device->GetDevice() : nullptr, PresentHr, L"IDXGISwapChain::Present");
+        return false;
+    }
 
     const uint64 FenceValue = Device->GetGraphicsQueue()->Signal();
     if (!bFrameOverlapEnabled)

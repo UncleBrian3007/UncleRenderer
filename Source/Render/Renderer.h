@@ -387,9 +387,11 @@ protected:
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> TlasResultBuffers;
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> TlasInstanceBuffers;
     std::vector<bool> TlasBuilt;
+    std::vector<uint32_t> TlasPrevInstanceCount;
+    std::vector<uint64_t> TlasPrevInstanceHash;
     uint32_t TlasInstanceCapacity = 0;
-    Microsoft::WRL::ComPtr<ID3D12Resource> PathTracingInstanceDataBuffer;
-    uint32_t PathTracingInstanceDataBindlessIndex = UINT32_MAX;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> PathTracingInstanceDataBuffers;
+    std::vector<uint32_t> PathTracingInstanceDataBindlessIndices;
     D3D12_RESOURCE_STATES GpuDebugPrintState = D3D12_RESOURCE_STATE_COMMON;
     D3D12_RESOURCE_STATES GpuDebugPrintStatsState = D3D12_RESOURCE_STATE_COMMON;
 

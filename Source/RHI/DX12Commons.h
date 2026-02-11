@@ -19,4 +19,9 @@ using int32  = int32_t;
 using int64  = int64_t;
 
 #define SAFE_RELEASE(P) if (P) { P->Release(); P = nullptr; }
-#define HR_CHECK(x) { HRESULT hr__ = (x); if (FAILED(hr__)) { __debugbreak(); } }
+
+void ReportDxFailure(ID3D12Device* Device, HRESULT Hr, const wchar_t* Where, IUnknown* RelatedObject = nullptr);
+
+#define HR_CHECK(x) do { HRESULT hr__ = (x); if (FAILED(hr__)) { ReportDxFailure(nullptr, hr__, L#x, nullptr); } } while (0)
+#define HR_CHECK_DX(DevicePtr, Expr, WhereString) do { HRESULT hr__ = (Expr); if (FAILED(hr__)) { ReportDxFailure((DevicePtr), hr__, (WhereString), nullptr); } } while (0)
+#define HR_CHECK_DX_OBJ(DevicePtr, ObjPtr, Expr, WhereString) do { HRESULT hr__ = (Expr); if (FAILED(hr__)) { ReportDxFailure((DevicePtr), hr__, (WhereString), (ObjPtr)); } } while (0)

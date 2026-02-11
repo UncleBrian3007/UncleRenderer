@@ -195,6 +195,7 @@ bool CreateDebugPrintFontResources(
     ComPtr<ID3D12GraphicsCommandList> UploadList;
     HR_CHECK(Device->GetDevice()->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(UploadAllocator.GetAddressOf())));
     HR_CHECK(Device->GetDevice()->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, UploadAllocator.Get(), nullptr, IID_PPV_ARGS(UploadList.GetAddressOf())));
+    UploadList->SetName(L"DebugPrintFont_Upload_CL");
 
     D3D12_RESOURCE_BARRIER PreCopyBarriers[2] = {};
     PreCopyBarriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;

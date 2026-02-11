@@ -1110,6 +1110,18 @@ void FDeferredRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCame
         UpdateSceneConstants(*Data.Camera, SceneModels.front(), ConstantBufferOffset);
         const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
         CommandList4->SetComputeRootConstantBufferView(1, ConstantBufferAddress + ConstantBufferOffset);
+
+        if (FrameIndex >= PathTracingInstanceDataBindlessIndices.size())
+        {
+            return;
+        }
+
+        const uint32_t PathTracingInstanceDataBindlessIndex = PathTracingInstanceDataBindlessIndices[FrameIndex];
+        if (PathTracingInstanceDataBindlessIndex == UINT32_MAX)
+        {
+            return;
+        }
+
         const uint32_t BindlessIndices[] =
         {
             DepthBindlessIndex,
@@ -2981,6 +2993,17 @@ void FDeferredRenderer::AddSsrHwTracePass(FRenderGraph& Graph, uint32_t FrameInd
         const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
         CommandList4->SetComputeRootConstantBufferView(1, ConstantBufferAddress + ConstantBufferOffset);
 
+        if (FrameIndex >= PathTracingInstanceDataBindlessIndices.size())
+        {
+            return;
+        }
+
+        const uint32_t PathTracingInstanceDataBindlessIndex = PathTracingInstanceDataBindlessIndices[FrameIndex];
+        if (PathTracingInstanceDataBindlessIndex == UINT32_MAX)
+        {
+            return;
+        }
+
         std::array<uint32_t, 13> BindlessIndices =
         {
             RayListHwMissIndex,
@@ -3417,6 +3440,18 @@ void FDeferredRenderer::AddSsrFallbackPass(FRenderGraph& Graph, uint32_t FrameIn
         UpdateSceneConstants(*Data.Camera, SceneModels.front(), ConstantBufferOffset);
         const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
         CommandList4->SetComputeRootConstantBufferView(1, ConstantBufferAddress + ConstantBufferOffset);
+
+        if (FrameIndex >= PathTracingInstanceDataBindlessIndices.size())
+        {
+            return;
+        }
+
+        const uint32_t PathTracingInstanceDataBindlessIndex = PathTracingInstanceDataBindlessIndices[FrameIndex];
+        if (PathTracingInstanceDataBindlessIndex == UINT32_MAX)
+        {
+            return;
+        }
+
         std::array<uint32_t, 13> BindlessIndices =
         {
             RayListIndex,
@@ -3818,6 +3853,18 @@ void FDeferredRenderer::AddPathTracingPass(FRenderGraph& Graph, const FCamera& C
         UpdateSceneConstants(*Data.Camera, SceneModels.front(), ConstantBufferOffset);
         const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
         CommandList4->SetComputeRootConstantBufferView(1, ConstantBufferAddress + ConstantBufferOffset);
+
+        if (FrameIndex >= PathTracingInstanceDataBindlessIndices.size())
+        {
+            return;
+        }
+
+        const uint32_t PathTracingInstanceDataBindlessIndex = PathTracingInstanceDataBindlessIndices[FrameIndex];
+        if (PathTracingInstanceDataBindlessIndex == UINT32_MAX)
+        {
+            return;
+        }
+
         const uint32_t BindlessIndices[] =
         {
             DepthBindlessIndex,
@@ -6562,6 +6609,7 @@ bool FDeferredRenderer::CreateHilbertLutResources(FDX12Device* Device)
     ComPtr<ID3D12GraphicsCommandList> UploadList;
     HR_CHECK(Device->GetDevice()->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(UploadAllocator.GetAddressOf())));
     HR_CHECK(Device->GetDevice()->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, UploadAllocator.Get(), nullptr, IID_PPV_ARGS(UploadList.GetAddressOf())));
+    UploadList->SetName(L"DeferredRenderer_HilbertUpload_CL");
 
     D3D12_TEXTURE_COPY_LOCATION DstLocation = {};
     DstLocation.pResource = HilbertLutTexture.Get();

@@ -122,6 +122,7 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <ClCompile Include="Source\RHI\DX12CommandQueue.cpp" />
     <ClCompile Include="Source\RHI\DX12DescriptorHeap.cpp" />
     <ClCompile Include="Source\RHI\DX12Device.cpp" />
+    <ClCompile Include="Source\RHI\DX12DeviceRemoved.cpp" />
     <ClCompile Include="Source\RHI\DX12Fence.cpp" />
     <ClCompile Include="Source\RHI\DX12Resource.cpp" />
     <ClCompile Include="Source\RHI\DX12SwapChain.cpp" />
@@ -177,6 +178,7 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <ClInclude Include="Source\RHI\DX12Commons.h" />
     <ClInclude Include="Source\RHI\DX12DescriptorHeap.h" />
     <ClInclude Include="Source\RHI\DX12Device.h" />
+    <ClInclude Include="Source\RHI\DX12DeviceRemoved.h" />
     <ClInclude Include="Source\RHI\DX12Fence.h" />
     <ClInclude Include="Source\RHI\DX12Resource.h" />
     <ClInclude Include="Source\RHI\DX12SwapChain.h" />

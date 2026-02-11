@@ -2,6 +2,7 @@
 #include "DX12Device.h"
 #include "DX12CommandQueue.h"
 #include "../Core/Logger.h"
+#include <cwchar>
 
 FDX12CommandContext::FDX12CommandContext()
     : Device(nullptr)
@@ -46,6 +47,7 @@ bool FDX12CommandContext::Initialize(FDX12Device* InDevice, FDX12CommandQueue* I
         nullptr,
         IID_PPV_ARGS(CommandList.GetAddressOf())));
 
+    CommandList->SetName(L"FrameCommandList_Init");
     HR_CHECK(CommandList->Close());
 
     LogInfo("Command context initialization complete");
@@ -70,6 +72,11 @@ void FDX12CommandContext::BeginFrame(uint32 FrameIndex)
 
     HR_CHECK(CommandAllocators[CurrentAllocatorIndex]->Reset());
     HR_CHECK(CommandList->Reset(CommandAllocators[CurrentAllocatorIndex].Get(), nullptr));
+
+    wchar_t CommandListName[64] = {};
+    swprintf_s(CommandListName, L"Frame_%u_Main_CL", CurrentAllocatorIndex);
+    CommandList->SetName(CommandListName);
+
     CommandList4.Reset();
 }
 

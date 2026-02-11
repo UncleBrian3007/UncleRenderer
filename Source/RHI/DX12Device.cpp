@@ -1,5 +1,6 @@
 #include "DX12Device.h"
 #include "RayTracing.h"
+#include "DX12DeviceRemoved.h"
 #include "../Core/Logger.h"
 #include <string>
 #include <sstream>
@@ -121,6 +122,14 @@ bool FDX12Device::CreateFactory()
         if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&DebugController))))
         {
             DebugController->EnableDebugLayer();
+
+            ComPtr<ID3D12Debug1> DebugController1;
+            if (SUCCEEDED(DebugController.As(&DebugController1)))
+            {
+                DebugController1->SetEnableGPUBasedValidation(TRUE);
+                LogInfo("D3D12 GPU-based validation enabled");
+            }
+
             Flags |= DXGI_CREATE_FACTORY_DEBUG;
         }
     }
@@ -162,11 +171,25 @@ bool FDX12Device::PickAdapter()
 
 bool FDX12Device::CreateDevice()
 {
+    ConfigureDredSettingsBeforeDeviceCreation();
+
     HR_CHECK(D3D12CreateDevice(
         Adapter.Get(),
         D3D_FEATURE_LEVEL_12_1,
         IID_PPV_ARGS(Device.GetAddressOf())
     ));
+
+#if defined(_DEBUG)
+    {
+        ComPtr<ID3D12InfoQueue> InfoQueue;
+        if (SUCCEEDED(Device.As(&InfoQueue)))
+        {
+            InfoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, FALSE);
+            InfoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, FALSE);
+            LogInfo("D3D12 InfoQueue break-on-error disabled to allow DRED logging");
+        }
+    }
+#endif
 
     LogLoadedModulePath(L"d3d12.dll", "D3D12.dll load path");
     LogLoadedModulePath(L"d3d12core.dll", "D3D12Core.dll load path");

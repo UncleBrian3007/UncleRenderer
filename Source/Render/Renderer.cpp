@@ -17,6 +17,57 @@
 #include <algorithm>
 #include <cstring>
 #include <cmath>
+#include <string>
+
+namespace
+{
+    constexpr uint64 GFnvOffsetBasis64 = 1469598103934665603ull;
+    constexpr uint64 GFnvPrime64 = 1099511628211ull;
+
+    inline void HashU64(uint64& Hash, uint64 Value)
+    {
+        Hash ^= Value;
+        Hash *= GFnvPrime64;
+    }
+
+    inline void HashU32(uint64& Hash, uint32 Value)
+    {
+        HashU64(Hash, static_cast<uint64>(Value));
+    }
+
+    inline void HashF32Bits(uint64& Hash, float Value)
+    {
+        uint32 Bits = 0;
+        static_assert(sizeof(Bits) == sizeof(Value), "float and uint32 size mismatch");
+        std::memcpy(&Bits, &Value, sizeof(uint32));
+        HashU32(Hash, Bits);
+    }
+
+    uint64 ComputeTlasInstanceHash(const std::vector<D3D12_RAYTRACING_INSTANCE_DESC>& Instances)
+    {
+        uint64 Hash = GFnvOffsetBasis64;
+
+        for (const D3D12_RAYTRACING_INSTANCE_DESC& Instance : Instances)
+        {
+            HashU64(Hash, Instance.AccelerationStructure);
+            HashU32(Hash, Instance.InstanceID);
+            HashU32(Hash, Instance.InstanceMask);
+            HashU32(Hash, Instance.InstanceContributionToHitGroupIndex);
+            HashU32(Hash, Instance.Flags);
+
+            for (uint32 Row = 0; Row < 3; ++Row)
+            {
+                for (uint32 Col = 0; Col < 4; ++Col)
+                {
+                    HashF32Bits(Hash, Instance.Transform[Row][Col]);
+                }
+            }
+        }
+
+        return Hash;
+    }
+}
+
 
 FRenderer::~FRenderer() = default;
 
@@ -2229,9 +2280,17 @@ void FRenderer::BuildRayTracingTlas(FDX12CommandContext& CmdContext)
         return;
     }
 
-    // Create or update the instance data buffer
+    const uint32_t FrameIndex = CmdContext.GetCurrentFrameIndex();
+
+    if (PathTracingInstanceDataBuffers.size() != GetFramesInFlight())
+    {
+        PathTracingInstanceDataBuffers.resize(GetFramesInFlight());
+        PathTracingInstanceDataBindlessIndices.assign(GetFramesInFlight(), UINT32_MAX);
+    }
+
+    // Create or update the per-frame instance data buffer
     const uint64_t InstanceDataBufferSize = sizeof(FPathTracingInstanceData) * InstanceDataArray.size();
-    if (!PathTracingInstanceDataBuffer || PathTracingInstanceDataBuffer->GetDesc().Width < InstanceDataBufferSize)
+    if (!PathTracingInstanceDataBuffers[FrameIndex] || PathTracingInstanceDataBuffers[FrameIndex]->GetDesc().Width < InstanceDataBufferSize)
     {
         CD3DX12_HEAP_PROPERTIES UploadHeap(D3D12_HEAP_TYPE_UPLOAD);
         CD3DX12_RESOURCE_DESC BufferDesc = CD3DX12_RESOURCE_DESC::Buffer(InstanceDataBufferSize);
@@ -2242,9 +2301,10 @@ void FRenderer::BuildRayTracingTlas(FDX12CommandContext& CmdContext)
             &BufferDesc,
             D3D12_RESOURCE_STATE_GENERIC_READ,
             nullptr,
-            IID_PPV_ARGS(PathTracingInstanceDataBuffer.ReleaseAndGetAddressOf())));
+            IID_PPV_ARGS(PathTracingInstanceDataBuffers[FrameIndex].ReleaseAndGetAddressOf())));
 
-        PathTracingInstanceDataBuffer->SetName(L"PathTracingInstanceDataBuffer");
+        std::wstring BufferName = L"PathTracingInstanceDataBuffer_Frame_" + std::to_wstring(FrameIndex);
+        PathTracingInstanceDataBuffers[FrameIndex]->SetName(BufferName.c_str());
 
         // Create bindless SRV
         CD3DX12_SHADER_RESOURCE_VIEW_DESC SrvDesc = {};
@@ -2256,26 +2316,31 @@ void FRenderer::BuildRayTracingTlas(FDX12CommandContext& CmdContext)
         SrvDesc.Buffer.StructureByteStride = sizeof(FPathTracingInstanceData);
         SrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
 
-        PathTracingInstanceDataBindlessIndex = Device->CreateBindlessSrv(PathTracingInstanceDataBuffer.Get(), SrvDesc);
+        PathTracingInstanceDataBindlessIndices[FrameIndex] = Device->CreateBindlessSrv(PathTracingInstanceDataBuffers[FrameIndex].Get(), SrvDesc);
     }
 
     // Update buffer data
-    if (PathTracingInstanceDataBuffer)
+    if (PathTracingInstanceDataBuffers[FrameIndex])
     {
         void* MappedData = nullptr;
         D3D12_RANGE EmptyRange = { 0, 0 };
-        HR_CHECK(PathTracingInstanceDataBuffer->Map(0, &EmptyRange, &MappedData));
+        HR_CHECK_DX_OBJ(
+            Device ? Device->GetDevice() : nullptr,
+            PathTracingInstanceDataBuffers[FrameIndex].Get(),
+            PathTracingInstanceDataBuffers[FrameIndex]->Map(0, &EmptyRange, &MappedData),
+            L"PathTracingInstanceDataBuffer::Map");
         std::memcpy(MappedData, InstanceDataArray.data(), sizeof(FPathTracingInstanceData) * InstanceDataArray.size());
-        PathTracingInstanceDataBuffer->Unmap(0, nullptr);
+        PathTracingInstanceDataBuffers[FrameIndex]->Unmap(0, nullptr);
     }
 
-    const uint32_t FrameIndex = CmdContext.GetCurrentFrameIndex();
     if (TlasScratchBuffers.size() != GetFramesInFlight())
     {
         TlasScratchBuffers.resize(GetFramesInFlight());
         TlasResultBuffers.resize(GetFramesInFlight());
         TlasInstanceBuffers.resize(GetFramesInFlight());
         TlasBuilt.assign(GetFramesInFlight(), false);
+        TlasPrevInstanceCount.assign(GetFramesInFlight(), 0);
+        TlasPrevInstanceHash.assign(GetFramesInFlight(), 0);
         TlasInstanceCapacity = 0;
     }
 
@@ -2284,6 +2349,27 @@ void FRenderer::BuildRayTracingTlas(FDX12CommandContext& CmdContext)
     {
         TlasInstanceCapacity = InstanceCount;
     }
+
+
+    if (TlasPrevInstanceCount.size() != GetFramesInFlight())
+    {
+        TlasPrevInstanceCount.assign(GetFramesInFlight(), 0);
+    }
+    if (TlasPrevInstanceHash.size() != GetFramesInFlight())
+    {
+        TlasPrevInstanceHash.assign(GetFramesInFlight(), 0);
+    }
+
+    const uint64_t CurrentInstanceHash = ComputeTlasInstanceHash(Instances);
+
+    const bool bInstanceCountChanged = TlasPrevInstanceCount[FrameIndex] != InstanceCount;
+    const bool bInstanceCompositionChanged = TlasPrevInstanceHash[FrameIndex] != CurrentInstanceHash;
+    if (TlasBuilt[FrameIndex] && (bInstanceCountChanged || bInstanceCompositionChanged))
+    {
+        TlasBuilt[FrameIndex] = false;
+    }
+    TlasPrevInstanceCount[FrameIndex] = InstanceCount;
+    TlasPrevInstanceHash[FrameIndex] = CurrentInstanceHash;
 
     const uint64_t InstanceBufferSize = sizeof(D3D12_RAYTRACING_INSTANCE_DESC) * TlasInstanceCapacity;
     if (!TlasInstanceBuffers[FrameIndex] || TlasInstanceBuffers[FrameIndex]->GetDesc().Width < InstanceBufferSize)
@@ -2320,7 +2406,8 @@ void FRenderer::BuildRayTracingTlas(FDX12CommandContext& CmdContext)
     D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO PrebuildInfo = {};
     RayTracingDevice.GetDevice()->GetRaytracingAccelerationStructurePrebuildInfo(&Inputs, &PrebuildInfo);
 
-    const uint64_t ScratchSize = (PrebuildInfo.ScratchDataSizeInBytes + 255) & ~255ull;
+    const uint64_t MaxScratchSize = (std::max)(PrebuildInfo.ScratchDataSizeInBytes, PrebuildInfo.UpdateScratchDataSizeInBytes);
+    const uint64_t ScratchSize = (MaxScratchSize + 255) & ~255ull;
     const uint64_t ResultSize = (PrebuildInfo.ResultDataMaxSizeInBytes + 255) & ~255ull;
 
     const auto EnsureBuffer = [&](Microsoft::WRL::ComPtr<ID3D12Resource>& Buffer, uint64_t Size, D3D12_RESOURCE_STATES State, const wchar_t* Name)
@@ -3272,6 +3359,7 @@ bool FRenderer::UploadGpuDrivenBuffers(FDX12Device* Device, const FGpuDrivenPrep
     ComPtr<ID3D12GraphicsCommandList> UploadList;
     HR_CHECK(Device->GetDevice()->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(UploadAllocator.GetAddressOf())));
     HR_CHECK(Device->GetDevice()->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, UploadAllocator.Get(), nullptr, IID_PPV_ARGS(UploadList.GetAddressOf())));
+    UploadList->SetName(L"Renderer_InitUpload_CL");
 
     // Pre-copy barriers
     std::vector<D3D12_RESOURCE_BARRIER> PreCopyBarriers;

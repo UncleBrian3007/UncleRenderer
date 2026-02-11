@@ -320,6 +320,7 @@ bool FTextureLoader::LoadTextureInternal(const std::wstring& FilePath, ComPtr<ID
         ComPtr<ID3D12GraphicsCommandList> UploadList;
         HR_CHECK(Device->GetDevice()->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(UploadAllocator.GetAddressOf())));
         HR_CHECK(Device->GetDevice()->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, UploadAllocator.Get(), nullptr, IID_PPV_ARGS(UploadList.GetAddressOf())));
+        UploadList->SetName(L"TextureLoader_DDSUpload_CL");
 
         for (UINT Subresource = 0; Subresource < SubresourceCount; ++Subresource)
         {
@@ -455,6 +456,7 @@ bool FTextureLoader::LoadTextureInternal(const std::wstring& FilePath, ComPtr<ID
     ComPtr<ID3D12GraphicsCommandList> UploadList;
     HR_CHECK(Device->GetDevice()->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(UploadAllocator.GetAddressOf())));
     HR_CHECK(Device->GetDevice()->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, UploadAllocator.Get(), nullptr, IID_PPV_ARGS(UploadList.GetAddressOf())));
+    UploadList->SetName(L"TextureLoader_WICUpload_CL");
 
     D3D12_TEXTURE_COPY_LOCATION DstLocation = {};
     DstLocation.pResource = OutTexture.Get();
@@ -589,6 +591,7 @@ bool FTextureLoader::CreateDefaultGridTexture(ComPtr<ID3D12Resource>& OutTexture
     ComPtr<ID3D12GraphicsCommandList> UploadList;
     HR_CHECK(Device->GetDevice()->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(UploadAllocator.GetAddressOf())));
     HR_CHECK(Device->GetDevice()->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, UploadAllocator.Get(), nullptr, IID_PPV_ARGS(UploadList.GetAddressOf())));
+    UploadList->SetName(L"TextureLoader_DataUpload_CL");
 
     D3D12_TEXTURE_COPY_LOCATION DstLocation = {};
     DstLocation.pResource = OutTexture.Get();
@@ -704,6 +707,7 @@ bool FTextureLoader::CreateSolidColorTexture(uint32_t Color, ComPtr<ID3D12Resour
     ComPtr<ID3D12GraphicsCommandList> UploadList;
     HR_CHECK(Device->GetDevice()->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(UploadAllocator.GetAddressOf())));
     HR_CHECK(Device->GetDevice()->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, UploadAllocator.Get(), nullptr, IID_PPV_ARGS(UploadList.GetAddressOf())));
+    UploadList->SetName(L"TextureLoader_SolidColorUpload_CL");
 
     D3D12_TEXTURE_COPY_LOCATION DstLocation = {};
     DstLocation.pResource = OutTexture.Get();

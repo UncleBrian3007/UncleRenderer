@@ -704,6 +704,7 @@ namespace
             Allocator.Get(),
             nullptr,
             IID_PPV_ARGS(CommandList.ReleaseAndGetAddressOf())));
+        CommandList->SetName(L"RendererUtils_BLASBuild_CL");
 
         ComPtr<ID3D12GraphicsCommandList4> CommandList4;
         if (FAILED(CommandList.As(&CommandList4)))

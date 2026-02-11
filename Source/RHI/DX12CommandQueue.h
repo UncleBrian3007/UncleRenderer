@@ -27,6 +27,7 @@ public:
 
 private:
     ComPtr<ID3D12CommandQueue> D3DCommandQueue;
+    ComPtr<ID3D12Device>       OwnerDevice;
     ComPtr<ID3D12Fence>        Fence;
     HANDLE                      FenceEvent;
     uint64                      CurrentFenceValue;
