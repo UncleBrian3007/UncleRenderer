@@ -1778,7 +1778,13 @@ void RendererUtils::UpdateSceneConstants(
     uint32_t GtaoDirectionCount,
     uint32_t GtaoStepCount,
     uint8_t* ConstantBufferMapped,
-    uint64_t ConstantBufferOffset)
+    uint64_t ConstantBufferOffset,
+    const DirectX::XMMATRIX& PreviousViewProjection,
+    bool bHasPreviousViewProjection,
+    const DirectX::XMMATRIX& PreviousWorld,
+    bool bHasPreviousWorld,
+    uint32_t PreviousSkinnedPositionBindlessIndex,
+    bool bHasPreviousSkinning)
 {
     if (ConstantBufferMapped == nullptr)
     {
@@ -1802,6 +1808,12 @@ void RendererUtils::UpdateSceneConstants(
     XMStoreFloat4x4(&Constants.Projection, Projection);
     const XMMATRIX ViewProjection = View * Projection;
     XMStoreFloat4x4(&Constants.ViewProjectionInverse, XMMatrixInverse(nullptr, ViewProjection));
+    XMStoreFloat4x4(&Constants.PreviousViewProjection, PreviousViewProjection);
+    XMStoreFloat4x4(&Constants.PreviousWorld, PreviousWorld);
+    Constants.HasPreviousViewProjection = bHasPreviousViewProjection ? 1u : 0u;
+    Constants.HasPreviousWorld = bHasPreviousWorld ? 1u : 0u;
+    Constants.HasPreviousSkinning = bHasPreviousSkinning ? 1u : 0u;
+    Constants.PreviousSkinnedPositionBindlessIndex = PreviousSkinnedPositionBindlessIndex;
     Constants.BaseColor = BaseColorFactor;
     Constants.LightIntensity = LightIntensity;
     XMStoreFloat3(&Constants.LightDirection, XMVector3Normalize(LightDirection));

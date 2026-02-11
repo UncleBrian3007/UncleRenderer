@@ -5,6 +5,12 @@ cbuffer SceneConstants : register(b0)
     row_major float4x4 ViewInverse;
     row_major float4x4 Projection;
     row_major float4x4 ViewProjectionInverse;
+    row_major float4x4 PreviousViewProjection;
+    row_major float4x4 PreviousWorld;
+    uint HasPreviousViewProjection;
+    uint HasPreviousWorld;
+    uint HasPreviousSkinning;
+    uint PreviousSkinnedPositionBindlessIndex;
     float3 BaseColor;
     float LightIntensity;
     float3 LightDirection;

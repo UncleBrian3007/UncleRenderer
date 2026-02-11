@@ -235,6 +235,13 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
         return false;
     }
 
+    LogInfo("Creating deferred renderer velocity root signature and pipeline...");
+    if (!CreateVelocityRootSignature(Device) || !CreateVelocityPipeline(Device))
+    {
+        LogError("Deferred renderer initialization failed: velocity pipeline creation failed");
+        return false;
+    }
+
     LogInfo("Creating deferred renderer SSR root signature and pipeline...");
     if (!CreateSsrRootSignature(Device) || !CreateSsrPipeline(Device) || !CreateSsrDenoiseRootSignature(Device) || !CreateSsrDenoisePipeline(Device)
         || !CreateSsrRayGatherRootSignature(Device) || !CreateSsrRayGatherPipeline(Device)
@@ -356,6 +363,12 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
         return false;
     }
 
+    if (!CreateVelocityResources(Device, Width, Height))
+    {
+        LogError("Deferred renderer initialization failed: velocity resource creation failed");
+        return false;
+    }
+
     if (!CreateSsrResources(Device, Width, Height))
     {
         LogError("Deferred renderer initialization failed: SSR resource creation failed");
@@ -413,6 +426,11 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     }
 
     SceneWorldMatrix = SceneModels.front().WorldMatrix;
+    for (FSceneModelResource& Model : SceneModels)
+    {
+        Model.PreviousWorldMatrix = Model.WorldMatrix;
+        Model.bHasPreviousWorldMatrix = false;
+    }
 
     SceneConstantBufferStride = (sizeof(FSceneConstants) + 255ULL) & ~255ULL;
     const uint64_t ConstantBufferSize = SceneConstantBufferStride * (std::max<uint64_t>(1, SceneModels.size()));
@@ -692,6 +710,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
 	AddSkyPass(Graph, Camera, Resources.DepthHandle, Resources.LightingHandle);
 	AddObjectIdPass(Graph, Camera, Resources.ObjectIdHandle, Resources.DepthHandle);
+    AddVelocityPass(Graph, Camera, Resources.VelocityHandle, Resources.DepthHandle);
     AddTemporalAAPass(Graph, FrameState, Resources.LightingHandle, Resources.TaaHandles);
     AddAutoExposurePass(Graph, FrameState, Resources.LightingHandle, Resources.LuminanceHandles, DeltaTime);
     AddTonemapPass(Graph, FrameState, Resources.GBufferHandles, Resources.LightingHandle, Resources.TonemapOutputResource, Resources.LuminanceHandles, Resources.TaaHandles, RtvHandle);
@@ -797,6 +816,10 @@ void FDeferredRenderer::PrepareFrameState(const FCamera& Camera, FDeferredFrameS
     }
     TaaProjection = DirectX::XMLoadFloat4x4(&ProjectionMatrix);
 
+    const DirectX::XMMATRIX CurrentProjection = bUseTaaJitter ? TaaProjection : Camera.GetProjectionMatrix();
+    const DirectX::XMMATRIX CurrentViewProjection = Camera.GetViewMatrix() * CurrentProjection;
+    DirectX::XMStoreFloat4x4(&CurrentViewProjectionMatrix, CurrentViewProjection);
+
     OutState.bRenderShadows = bShadowsEnabled && ShadowPipeline && ShadowMap;
     OutState.bDoDepthPrepass = bDepthPrepassEnabled && DepthPrepassPipeline;
     if (!bHZBEnabled)
@@ -846,6 +869,11 @@ void FDeferredRenderer::ImportFrameResources(FRenderGraph& Graph, FDeferredFrame
         ObjectIdTexture.Get(),
         &ObjectIdState,
         { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), DXGI_FORMAT_R32_UINT });
+    OutResources.VelocityHandle = Graph.ImportTexture(
+        "Velocity",
+        VelocityTexture.Get(),
+        &VelocityState,
+        { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), DXGI_FORMAT_R16G16_FLOAT });
     OutResources.GBufferHandles =
     {
         Graph.ImportTexture("GBufferA", GBufferA.Get(), &GBufferStates[0], { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), GBufferFormats[0] }),
@@ -1130,7 +1158,7 @@ void FDeferredRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCame
         CommandList4->SetComputeRootSignature(RayQueryRootSignature.Get());
         CommandList4->SetComputeRootShaderResourceView(0, TlasResultBuffers[FrameIndex]->GetGPUVirtualAddress());
         const uint64_t ConstantBufferOffset = 0;
-        UpdateSceneConstants(*Data.Camera, SceneModels.front(), ConstantBufferOffset);
+        UpdateSceneConstants(*Data.Camera, SceneModels.front(), 0u, ConstantBufferOffset);
         const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
         CommandList4->SetComputeRootConstantBufferView(1, ConstantBufferAddress + ConstantBufferOffset);
 
@@ -1466,7 +1494,7 @@ void FDeferredRenderer::AddShadowPass(FRenderGraph& Graph, const FCamera& Camera
                 continue;
             }
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
-            UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset);
+            UpdateSceneConstants(*Data.Camera, Model, ModelIndex, ConstantBufferOffset);
         }
 
         for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
@@ -1555,7 +1583,7 @@ void FDeferredRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Came
         {
             const FSceneModelResource& Model = SceneModels[ModelIndex];
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
-            UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset);
+            UpdateSceneConstants(*Data.Camera, Model, ModelIndex, ConstantBufferOffset);
         }
 
         ID3D12PipelineState* CurrentPipeline = nullptr;
@@ -1691,7 +1719,7 @@ void FDeferredRenderer::AddBasePass(
         {
             const FSceneModelResource& Model = SceneModels[ModelIndex];
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
-            UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset);
+            UpdateSceneConstants(*Data.Camera, Model, ModelIndex, ConstantBufferOffset);
         }
 
         ID3D12Resource* IndirectBuffer = GetIndirectCommandBuffer();
@@ -1926,7 +1954,7 @@ void FDeferredRenderer::AddObjectIdPass(FRenderGraph& Graph, const FCamera& Came
         {
             const FSceneModelResource& Model = SceneModels[ModelIndex];
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
-            UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset);
+            UpdateSceneConstants(*Data.Camera, Model, ModelIndex, ConstantBufferOffset);
         }
 
         for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
@@ -2002,6 +2030,94 @@ void FDeferredRenderer::AddObjectIdPass(FRenderGraph& Graph, const FCamera& Came
         LocalCommandList->ResourceBarrier(1, &Barrier);
 
         bObjectIdReadbackRecorded = true;
+    });
+}
+
+void FDeferredRenderer::AddVelocityPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle VelocityHandle, FRGResourceHandle DepthHandle)
+{
+    struct FVelocityPassData
+    {
+        const FCamera* Camera = nullptr;
+    };
+
+    Graph.AddPass<FVelocityPassData>("Velocity", [this, &Camera, VelocityHandle, DepthHandle](FVelocityPassData& Data, FRGPassBuilder& Builder)
+    {
+        Data.Camera = &Camera;
+        Builder.WriteTexture(VelocityHandle, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        Builder.ReadTexture(DepthHandle, D3D12_RESOURCE_STATE_DEPTH_READ);
+    }, [this](const FVelocityPassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!VelocityRootSignature || !VelocityTexture)
+        {
+            return;
+        }
+
+        ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
+        FScopedPixEvent VelocityEvent(LocalCommandList, L"VelocityPass");
+
+        const float ClearValue[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+        Cmd.ClearRenderTarget(VelocityRtvHandle, ClearValue);
+
+        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap(), Device->GetSamplerDescriptorHeap() };
+        LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        LocalCommandList->SetGraphicsRootSignature(VelocityRootSignature.Get());
+        LocalCommandList->RSSetViewports(1, &Viewport);
+        LocalCommandList->RSSetScissorRects(1, &ScissorRect);
+        LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+        const D3D12_CPU_DESCRIPTOR_HANDLE& DepthDsvHandle = GetDSVHandle();
+        LocalCommandList->OMSetRenderTargets(1, &VelocityRtvHandle, FALSE, &DepthDsvHandle);
+
+        for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+        {
+            const FSceneModelResource& Model = SceneModels[ModelIndex];
+            const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
+            UpdateSceneConstants(*Data.Camera, Model, ModelIndex, ConstantBufferOffset);
+        }
+
+        for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+        {
+            if (!SceneModelVisibility.empty() && !SceneModelVisibility[ModelIndex])
+            {
+                continue;
+            }
+
+            const FSceneModelResource& Model = SceneModels[ModelIndex];
+            if (Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+            {
+                continue;
+            }
+
+            const bool bUseAlphaMask = Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask);
+            const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0;
+            const uint32_t PipelineIndex = bUseAlphaMask ? 1u : 0u;
+            ID3D12PipelineState* Pipeline = bUseSkinning ? VelocityPipelinesSkinned[PipelineIndex].Get() : VelocityPipelines[PipelineIndex].Get();
+            if (!Pipeline)
+            {
+                continue;
+            }
+
+            const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
+            const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
+            LocalCommandList->SetPipelineState(Pipeline);
+            LocalCommandList->SetGraphicsRootConstantBufferView(0, ConstantBufferAddress + ConstantBufferOffset);
+
+            const uint32_t BindlessIndices[] =
+            {
+                Model.BaseColorBindlessIndex,
+                Model.MetallicRoughnessBindlessIndex,
+                Model.NormalBindlessIndex,
+                Model.EmissiveBindlessIndex,
+                Model.SheenColorBindlessIndex,
+                Model.SheenRoughnessBindlessIndex,
+                Model.ClearcoatBindlessIndex,
+                Model.ClearcoatRoughnessBindlessIndex,
+                Model.ClearcoatNormalBindlessIndex,
+                Model.AnisotropyBindlessIndex
+            };
+            LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
+            LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0);
+        }
     });
 }
 
@@ -3118,7 +3234,7 @@ void FDeferredRenderer::AddSsrHwTracePass(FRenderGraph& Graph, uint32_t FrameInd
         CommandList4->SetComputeRootSignature(RayQueryRootSignature.Get());
         CommandList4->SetComputeRootShaderResourceView(0, TlasResultBuffers[FrameIndex]->GetGPUVirtualAddress());
         const uint64_t ConstantBufferOffset = 0;
-        UpdateSceneConstants(*Data.Camera, SceneModels.front(), ConstantBufferOffset);
+        UpdateSceneConstants(*Data.Camera, SceneModels.front(), 0u, ConstantBufferOffset);
         const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
         CommandList4->SetComputeRootConstantBufferView(1, ConstantBufferAddress + ConstantBufferOffset);
 
@@ -3566,7 +3682,7 @@ void FDeferredRenderer::AddSsrFallbackPass(FRenderGraph& Graph, uint32_t FrameIn
         CommandList4->SetComputeRootSignature(RayQueryRootSignature.Get());
         CommandList4->SetComputeRootShaderResourceView(0, TlasResultBuffers[FrameIndex]->GetGPUVirtualAddress());
         const uint64_t ConstantBufferOffset = 0;
-        UpdateSceneConstants(*Data.Camera, SceneModels.front(), ConstantBufferOffset);
+        UpdateSceneConstants(*Data.Camera, SceneModels.front(), 0u, ConstantBufferOffset);
         const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
         CommandList4->SetComputeRootConstantBufferView(1, ConstantBufferAddress + ConstantBufferOffset);
 
@@ -4001,7 +4117,7 @@ void FDeferredRenderer::AddPathTracingPass(FRenderGraph& Graph, const FCamera& C
         CommandList4->SetComputeRootSignature(RayQueryRootSignature.Get());
         CommandList4->SetComputeRootShaderResourceView(0, TlasResultBuffers[FrameIndex]->GetGPUVirtualAddress());
         const uint64_t ConstantBufferOffset = 0;
-        UpdateSceneConstants(*Data.Camera, SceneModels.front(), ConstantBufferOffset);
+        UpdateSceneConstants(*Data.Camera, SceneModels.front(), 0u, ConstantBufferOffset);
         const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
         CommandList4->SetComputeRootConstantBufferView(1, ConstantBufferAddress + ConstantBufferOffset);
 
@@ -4526,6 +4642,15 @@ void FDeferredRenderer::FinalizeFrameState(const FDeferredFrameState& FrameState
     {
         bLuminanceHistoryValid = false;
     }
+
+    PreviousViewProjectionMatrix = CurrentViewProjectionMatrix;
+    bHasPreviousViewProjection = true;
+
+    for (FSceneModelResource& Model : SceneModels)
+    {
+        Model.PreviousWorldMatrix = Model.WorldMatrix;
+        Model.bHasPreviousWorldMatrix = true;
+    }
 }
 
 bool FDeferredRenderer::CreateBasePassRootSignature(FDX12Device* Device)
@@ -4703,6 +4828,130 @@ bool FDeferredRenderer::CreateRestirGIRootSignature(FDX12Device* Device)
     }
 
     HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(RestirGIRootSignature.GetAddressOf())));
+    return true;
+}
+
+bool FDeferredRenderer::CreateVelocityRootSignature(FDX12Device* Device)
+{
+    D3D12_ROOT_PARAMETER1 RootParams[2] = {};
+    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[0].Descriptor.ShaderRegister = 0;
+    RootParams[0].Descriptor.RegisterSpace = 0;
+    RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+
+    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    RootParams[1].Constants.ShaderRegister = 1;
+    RootParams[1].Constants.RegisterSpace = 0;
+    RootParams[1].Constants.Num32BitValues = 10;
+
+    D3D12_STATIC_SAMPLER_DESC SamplerDesc = {};
+    SamplerDesc.Filter = D3D12_FILTER_ANISOTROPIC;
+    SamplerDesc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    SamplerDesc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    SamplerDesc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    SamplerDesc.MipLODBias = 0.0f;
+    SamplerDesc.MaxAnisotropy = 4;
+    SamplerDesc.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    SamplerDesc.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+    SamplerDesc.MinLOD = 0.0f;
+    SamplerDesc.MaxLOD = D3D12_FLOAT32_MAX;
+    SamplerDesc.ShaderRegister = 0;
+    SamplerDesc.RegisterSpace = 0;
+    SamplerDesc.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
+    RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    RootSigDesc.Desc_1_1.NumParameters = _countof(RootParams);
+    RootSigDesc.Desc_1_1.pParameters = RootParams;
+    RootSigDesc.Desc_1_1.NumStaticSamplers = 1;
+    RootSigDesc.Desc_1_1.pStaticSamplers = &SamplerDesc;
+    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+        | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
+        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
+
+    ComPtr<ID3DBlob> SerializedSig;
+    ComPtr<ID3DBlob> ErrorBlob;
+    HR_CHECK(D3D12SerializeVersionedRootSignature(&RootSigDesc, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
+
+    if (ErrorBlob)
+    {
+        OutputDebugStringA(static_cast<const char*>(ErrorBlob->GetBufferPointer()));
+    }
+
+    HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(VelocityRootSignature.GetAddressOf())));
+    return true;
+}
+
+bool FDeferredRenderer::CreateVelocityPipeline(FDX12Device* Device)
+{
+    FShaderCompiler Compiler;
+    std::vector<uint8_t> VSByteCode;
+    std::vector<uint8_t> VSByteCodeSkinned;
+
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
+    const std::wstring PSTarget = RendererUtils::BuildShaderTarget(L"ps", ShaderModel);
+
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"VSMain", VSTarget, VSByteCode))
+    {
+        return false;
+    }
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"VSMain", VSTarget, VSByteCodeSkinned, { L"USE_SKINNING=1" }))
+    {
+        return false;
+    }
+
+    std::array<std::vector<uint8_t>, 2> PSByteCodes;
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"PSMainVelocity", PSTarget, PSByteCodes[0], { L"USE_ALPHA_MASK=0" }))
+    {
+        return false;
+    }
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"PSMainVelocity", PSTarget, PSByteCodes[1], { L"USE_ALPHA_MASK=1" }))
+    {
+        return false;
+    }
+
+    auto InitializeVelocityDesc = [&](D3D12_GRAPHICS_PIPELINE_STATE_DESC& Desc, const std::vector<uint8_t>& VertexShader)
+    {
+        Desc = {};
+        Desc.pRootSignature = VelocityRootSignature.Get();
+        Desc.InputLayout = { nullptr, 0 };
+        Desc.VS = { VertexShader.data(), VertexShader.size() };
+        Desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        Desc.SampleDesc.Count = 1;
+        Desc.SampleMask = UINT_MAX;
+
+        Desc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+        Desc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+        Desc.RasterizerState.FrontCounterClockwise = TRUE;
+
+        Desc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+        Desc.BlendState.IndependentBlendEnable = FALSE;
+
+        Desc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+        Desc.DepthStencilState.DepthEnable = TRUE;
+        Desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+        Desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+
+        Desc.NumRenderTargets = 1;
+        Desc.RTVFormats[0] = DXGI_FORMAT_R16G16_FLOAT;
+        Desc.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
+    for (uint32_t Permutation = 0; Permutation < 2; ++Permutation)
+    {
+        InitializeVelocityDesc(PsoDesc, VSByteCode);
+        PsoDesc.PS = { PSByteCodes[Permutation].data(), PSByteCodes[Permutation].size() };
+        HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(VelocityPipelines[Permutation].GetAddressOf())));
+
+        InitializeVelocityDesc(PsoDesc, VSByteCodeSkinned);
+        PsoDesc.PS = { PSByteCodes[Permutation].data(), PSByteCodes[Permutation].size() };
+        HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(VelocityPipelinesSkinned[Permutation].GetAddressOf())));
+    }
+
     return true;
 }
 
@@ -6463,6 +6712,65 @@ bool FDeferredRenderer::CreateRestirGIResources(FDX12Device* Device, uint32_t Wi
     return true;
 }
 
+bool FDeferredRenderer::CreateVelocityResources(FDX12Device* Device, uint32_t Width, uint32_t Height)
+{
+    if (Device == nullptr)
+    {
+        return false;
+    }
+
+    CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
+    CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
+        DXGI_FORMAT_R16G16_FLOAT,
+        Width,
+        Height,
+        1,
+        1,
+        1,
+        0,
+        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+
+    D3D12_CLEAR_VALUE ClearValue = {};
+    ClearValue.Format = DXGI_FORMAT_R16G16_FLOAT;
+    ClearValue.Color[0] = 0.0f;
+    ClearValue.Color[1] = 0.0f;
+    ClearValue.Color[2] = 0.0f;
+    ClearValue.Color[3] = 0.0f;
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &HeapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &Desc,
+        D3D12_RESOURCE_STATE_RENDER_TARGET,
+        &ClearValue,
+        IID_PPV_ARGS(VelocityTexture.GetAddressOf())));
+
+    if (VelocityTexture)
+    {
+        VelocityTexture->SetName(L"Velocity");
+    }
+
+    D3D12_DESCRIPTOR_HEAP_DESC RtvHeapDesc = {};
+    RtvHeapDesc.NumDescriptors = 1;
+    RtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    RtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&RtvHeapDesc, IID_PPV_ARGS(VelocityRtvHeap.GetAddressOf())));
+
+    if (VelocityRtvHeap)
+    {
+        VelocityRtvHeap->SetName(L"VelocityRtvHeap");
+    }
+
+    VelocityRtvHandle = VelocityRtvHeap->GetCPUDescriptorHandleForHeapStart();
+    D3D12_RENDER_TARGET_VIEW_DESC RtvDesc = {};
+    RtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+    RtvDesc.Format = DXGI_FORMAT_R16G16_FLOAT;
+    Device->GetDevice()->CreateRenderTargetView(VelocityTexture.Get(), &RtvDesc, VelocityRtvHandle);
+
+    VelocityState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    return true;
+}
+
 bool FDeferredRenderer::CreateSsrResources(FDX12Device* Device, uint32_t Width, uint32_t Height)
 {
     if (Device == nullptr)
@@ -7697,14 +8005,33 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
 }
 
 
-void FDeferredRenderer::UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, uint64_t ConstantBufferOffset)
+void FDeferredRenderer::UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, size_t ModelIndex, uint64_t ConstantBufferOffset)
 {
+    (void)ModelIndex;
+
     const DirectX::XMVECTOR LightDir = DirectX::XMLoadFloat3(&LightDirection);
     const DirectX::XMMATRIX LightVP = RendererUtils::BuildDirectionalLightViewProjection(SceneCenter, SceneRadius, LightDirection);
     DirectX::XMStoreFloat4x4(&LightViewProjection, LightVP);
     const DirectX::XMMATRIX Projection = bUseTaaJitter ? TaaProjection : Camera.GetProjectionMatrix();
     const DirectX::XMFLOAT2 Jitter = (bGtaoEnabled && bGtaoJitterEnabled) ? TaaJitter : DirectX::XMFLOAT2(0.0f, 0.0f);
     const uint32_t GtaoTemporalIndex = (bGtaoEnabled && bGtaoJitterEnabled) ? TaaSampleIndex : 0u;
+
+    const DirectX::XMMATRIX PreviousWorld = Model.bHasPreviousWorldMatrix
+        ? DirectX::XMLoadFloat4x4(&Model.PreviousWorldMatrix)
+        : DirectX::XMMatrixIdentity();
+    const bool bHasPreviousWorld = Model.bHasPreviousWorldMatrix;
+
+    uint32_t PreviousSkinnedPositionBindlessIndex = UINT32_MAX;
+    bool bHasPreviousSkinning = false;
+    const uint32_t FrameCount = GetFramesInFlight();
+    const uint32_t PrevFrameIndex = FrameCount > 0 ? (GetFrameIndex() + FrameCount - 1u) % FrameCount : 0u;
+    if (Model.BoneMatrixBindlessIndex != UINT32_MAX
+        && Model.BoneMatrixCount > 0
+        && PrevFrameIndex < Model.SkinnedPositionSrvBindlessIndices.size())
+    {
+        PreviousSkinnedPositionBindlessIndex = Model.SkinnedPositionSrvBindlessIndices[PrevFrameIndex];
+        bHasPreviousSkinning = PreviousSkinnedPositionBindlessIndex != UINT32_MAX;
+    }
 
     RendererUtils::UpdateSceneConstants(
         Camera,
@@ -7729,7 +8056,13 @@ void FDeferredRenderer::UpdateSceneConstants(const FCamera& Camera, const FScene
         GtaoDirectionCount,
         GtaoStepCount,
         GetSceneConstantBufferMapped(),
-        ConstantBufferOffset);
+        ConstantBufferOffset,
+        DirectX::XMLoadFloat4x4(&PreviousViewProjectionMatrix),
+        bHasPreviousViewProjection,
+        PreviousWorld,
+        bHasPreviousWorld,
+        PreviousSkinnedPositionBindlessIndex,
+        bHasPreviousSkinning);
 }
 
 void FDeferredRenderer::UpdateSkyConstants(const FCamera& Camera)

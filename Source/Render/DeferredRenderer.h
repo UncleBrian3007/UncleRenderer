@@ -207,6 +207,7 @@ private:
         FRGResourceHandle ShadowMaskHandle{};
         FRGResourceHandle DepthHandle{};
         FRGResourceHandle ObjectIdHandle{};
+        FRGResourceHandle VelocityHandle{};
         std::array<FRGResourceHandle, 4> GBufferHandles{};
         FRGResourceHandle LinearDepthHandle{};
         FRGResourceHandle GtaoHandle{};
@@ -227,7 +228,9 @@ private:
     bool CreateBasePassRootSignature(FDX12Device* Device);
     bool CreateLightingRootSignature(FDX12Device* Device);
     bool CreateRestirGIRootSignature(FDX12Device* Device);
+    bool CreateVelocityRootSignature(FDX12Device* Device);
     bool CreateBasePassPipeline(FDX12Device* Device, DXGI_FORMAT LightingFormat);
+    bool CreateVelocityPipeline(FDX12Device* Device);
     bool CreateDepthPrepassPipeline(FDX12Device* Device);
     bool CreateLinearDepthRootSignature(FDX12Device* Device);
     bool CreateLinearDepthPipeline(FDX12Device* Device);
@@ -262,6 +265,7 @@ private:
     bool CreateLinearDepthResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateGtaoResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateRestirGIResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
+    bool CreateVelocityResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateSsrResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateHilbertLutResources(FDX12Device* Device);
     bool CreateHZBResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
@@ -275,7 +279,7 @@ private:
     bool CreateDescriptorHeap(FDX12Device* Device);
     bool CreateSceneTextures(FDX12Device* Device, const std::vector<FSceneModelResource>& Models);
     bool CreateGpuDrivenResources(FDX12Device* Device);
-    void UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, uint64_t ConstantBufferOffset);
+    void UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, size_t ModelIndex, uint64_t ConstantBufferOffset);
     void UpdateSkyConstants(const FCamera& Camera);
     void UpdateCullingVisibility(const FCamera& Camera);
     void PrepareFrameState(const FCamera& Camera, FDeferredFrameState& OutState);
@@ -322,6 +326,7 @@ private:
         const char* PassName,
         bool bAllowSkinningFallback);
     void AddObjectIdPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle ObjectIdHandle, FRGResourceHandle DepthHandle);
+    void AddVelocityPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle VelocityHandle, FRGResourceHandle DepthHandle);
     void AddHZBPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle HZBHandle);
     void AddLinearDepthPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle LinearDepthHandle);
     void AddGtaoPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle GtaoHandle);
@@ -350,6 +355,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> BasePassRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> LightingRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> RestirGIRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> VelocityRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> HZBRootSignature;
     // Base pass pipelines indexed by permutation key (bit 0: Normal, bit 1: MR, bit 2: BaseColor, bit 3: Emissive, bit 4: AlphaMask, bit 5: SheenModel, bit 6: ClearcoatModel, bit 7: AnisotropyModel)
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 256> BasePassPipelines;
@@ -376,6 +382,8 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> SsrResolvePipeline;
     Microsoft::WRL::ComPtr<ID3D12CommandSignature> SsrDispatchCommandSignature;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> LightingPipelines;
+    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> VelocityPipelines;
+    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> VelocityPipelinesSkinned;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGIPipeline;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> HZBPipelines;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> AutoExposurePipeline;
@@ -394,6 +402,7 @@ private:
     std::vector<FModelTextureSet> SceneTextures;
     Microsoft::WRL::ComPtr<ID3D12Resource> SceneTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> LightingBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> VelocityTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> LinearDepthTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> GtaoTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGITexture;
@@ -411,6 +420,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> HZBNullUavResource;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> GBufferRTVHeap;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> LinearDepthRtvHeap;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> VelocityRtvHeap;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> GtaoRtvHeap;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> SsrRtvHeap;
     Microsoft::WRL::ComPtr<ID3D12Resource> GBufferA;
@@ -423,6 +433,7 @@ private:
 
     D3D12_CPU_DESCRIPTOR_HANDLE GBufferRTVHandles[4]{};
     D3D12_CPU_DESCRIPTOR_HANDLE LightingRTVHandle{};
+    D3D12_CPU_DESCRIPTOR_HANDLE VelocityRtvHandle{};
     D3D12_CPU_DESCRIPTOR_HANDLE LinearDepthRtvHandle{};
     D3D12_CPU_DESCRIPTOR_HANDLE GtaoRtvHandle{};
     D3D12_CPU_DESCRIPTOR_HANDLE SsrRtvHandle{};
@@ -467,6 +478,7 @@ private:
     };
     D3D12_RESOURCE_STATES HZBState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES LightingBufferState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    D3D12_RESOURCE_STATES VelocityState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES LinearDepthState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES GtaoState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES RestirGIState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -547,6 +559,9 @@ private:
     int PathTracingDebugMode = 0; // 0=Normal PT, 1=GBuffer Albedo, 2=First Hit Albedo, 3=Texture Index Hash, 4=Direct Light, 5=Diffuse Probability, 6=Hit/Miss Mask, 7=Throughput Over Pdf, 8=Firefly Metric, 9=First Hit Distance, 10=Sky Miss Contribution, 11=First Hit NdotV, 12=Bounce1 NdotV
     DirectX::XMFLOAT3 PreviousCameraPosition{ 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT4X4 PreviousCameraViewMatrix{};
+    DirectX::XMFLOAT4X4 PreviousViewProjectionMatrix{};
+    DirectX::XMFLOAT4X4 CurrentViewProjectionMatrix{};
+    bool bHasPreviousViewProjection = false;
     bool bFirstFrame = true;
     uint32_t LuminanceWriteIndex = 0;
     bool bLuminanceHistoryValid = false;

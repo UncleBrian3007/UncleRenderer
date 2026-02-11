@@ -16,7 +16,8 @@ struct VSOutput
     float3 Normal   : NORMAL;
     float2 UV       : TEXCOORD0;
     float3 WorldPos : TEXCOORD1;
-    float4 Tangent  : TEXCOORD2;
+    float3 PrevWorldPos : TEXCOORD2;
+    float4 Tangent  : TEXCOORD3;
     float4 Color    : COLOR0;
 };
 
@@ -43,6 +44,9 @@ struct VSOutput
 #endif
 #ifndef SHADINGMODEL_ANISOTROPY
 #define SHADINGMODEL_ANISOTROPY 0
+#endif
+#ifndef VELOCITY_PASS
+#define VELOCITY_PASS 0
 #endif
 
 
@@ -87,7 +91,9 @@ VSOutput VSMain(VSInput Input)
 #endif
 
     uint vertexIndex = IndexBuffer[Input.VertexId + Input.StartVertexLocation];
-    float3 position = PositionBuffer[vertexIndex];
+    float3 basePosition = PositionBuffer[vertexIndex];
+    float3 currentPosition = basePosition;
+    float3 previousPosition = basePosition;
     float3 normal = NormalBuffer[vertexIndex];
     float2 uv = TexCoordBuffer[vertexIndex];
     float4 tangent = TangentBuffer[vertexIndex];
@@ -101,17 +107,31 @@ VSOutput VSMain(VSInput Input)
         weights.y * BoneMatrices[joints.y] +
         weights.z * BoneMatrices[joints.z] +
         weights.w * BoneMatrices[joints.w];
-    position = SkinnedPositionBuffer[vertexIndex];
+    currentPosition = SkinnedPositionBuffer[vertexIndex];
     normal = mul(normal, (float3x3)skinMatrix);
     tangent.xyz = mul(tangent.xyz, (float3x3)skinMatrix);
+
+    if (HasPreviousSkinning != 0u && PreviousSkinnedPositionBindlessIndex != 0xFFFFFFFFu)
+    {
+        StructuredBuffer<float3> PreviousSkinnedPositionBuffer = ResourceDescriptorHeap[PreviousSkinnedPositionBindlessIndex];
+        previousPosition = PreviousSkinnedPositionBuffer[vertexIndex];
+    }
+    else
+    {
+        previousPosition = currentPosition;
+    }
 #endif
 
-    float4 WorldPos = mul(float4(position, 1.0), World);
+    float4 WorldPos = mul(float4(currentPosition, 1.0), World);
+    float4 PreviousWorldPos = (HasPreviousWorld != 0u)
+        ? mul(float4(previousPosition, 1.0), PreviousWorld)
+        : WorldPos;
     float4 ViewPos = mul(WorldPos, View);
     Output.Position = mul(ViewPos, Projection);
     Output.Normal = mul(normal, (float3x3)World);
     Output.UV = uv;
     Output.WorldPos = WorldPos.xyz;
+    Output.PrevWorldPos = PreviousWorldPos.xyz;
     Output.Tangent = float4(normalize(mul(tangent.xyz, (float3x3)World)), tangent.w);
     Output.Color = color;
     return Output;
@@ -168,6 +188,45 @@ float3 ComputeWorldNormalFromTexture(VSOutput Input, Texture2D NormalTexture, fl
     float3x3 TBN = float3x3(tangent, bitangent, vertexNormal);
     float3 worldNormal = mul(tangentNormal, TBN);
     return normalize(worldNormal);
+}
+
+
+struct PSOutputVelocity
+{
+    float2 Velocity : SV_Target0;
+};
+
+PSOutputVelocity PSMainVelocity(VSOutput Input)
+{
+    PSOutputVelocity Output;
+#if USE_ALPHA_MASK
+    Texture2D AlbedoTexture = ResourceDescriptorHeap[AlbedoTextureIndex];
+    float2 baseUV = ApplyTextureTransform(Input.UV, BaseColorTransformOffsetScale, BaseColorTransformRotation);
+    float alpha = BaseColorAlpha * Input.Color.a;
+    float4 albedoSample = AlbedoTexture.Sample(AlbedoSampler, baseUV);
+    alpha *= albedoSample.a;
+    if (alpha < AlphaCutoff)
+    {
+        clip(alpha - AlphaCutoff);
+    }
+#endif
+
+    if (HasPreviousViewProjection == 0u)
+    {
+        Output.Velocity = float2(0.0f, 0.0f);
+        return Output;
+    }
+
+    const float Epsilon = 1e-6f;
+    float CurrentW = max(abs(Input.Position.w), Epsilon);
+    float2 CurrentNdc = Input.Position.xy / CurrentW;
+
+    float4 PreviousClip = mul(float4(Input.PrevWorldPos, 1.0f), PreviousViewProjection);
+    float PreviousW = max(abs(PreviousClip.w), Epsilon);
+    float2 PreviousNdc = PreviousClip.xy / PreviousW;
+
+    Output.Velocity = CurrentNdc - PreviousNdc;
+    return Output;
 }
 
 PSOutput PSMain(VSOutput Input)

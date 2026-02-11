@@ -50,6 +50,12 @@ struct FSceneConstants
     DirectX::XMFLOAT4X4 ViewInverse;
     DirectX::XMFLOAT4X4 Projection;
     DirectX::XMFLOAT4X4 ViewProjectionInverse;
+    DirectX::XMFLOAT4X4 PreviousViewProjection;
+    DirectX::XMFLOAT4X4 PreviousWorld;
+    uint32_t HasPreviousViewProjection = 0;
+    uint32_t HasPreviousWorld = 0;
+    uint32_t HasPreviousSkinning = 0;
+    uint32_t PreviousSkinnedPositionBindlessIndex = UINT32_MAX;
     DirectX::XMFLOAT3 BaseColor;
     float LightIntensity = 1.0f;
     DirectX::XMFLOAT3 LightDirection;
@@ -175,6 +181,8 @@ struct FSceneModelResource
     uint32_t DrawIndexCount = 0;
     uint32_t BaseIndexCount = 0;
     DirectX::XMFLOAT4X4 WorldMatrix{};
+    DirectX::XMFLOAT4X4 PreviousWorldMatrix{};
+    bool bHasPreviousWorldMatrix = false;
     DirectX::XMFLOAT3 Center{ 0.0f, 0.0f, 0.0f };
     float Radius = 1.0f;
     DirectX::XMFLOAT3 BaseColorFactor{ 1.0f, 1.0f, 1.0f };
@@ -364,7 +372,13 @@ namespace RendererUtils
         uint32_t GtaoDirectionCount,
         uint32_t GtaoStepCount,
         uint8_t* ConstantBufferMapped,
-        uint64_t ConstantBufferOffset = 0);
+        uint64_t ConstantBufferOffset = 0,
+        const DirectX::XMMATRIX& PreviousViewProjection = DirectX::XMMatrixIdentity(),
+        bool bHasPreviousViewProjection = false,
+        const DirectX::XMMATRIX& PreviousWorld = DirectX::XMMatrixIdentity(),
+        bool bHasPreviousWorld = false,
+        uint32_t PreviousSkinnedPositionBindlessIndex = UINT32_MAX,
+        bool bHasPreviousSkinning = false);
     void UpdateGltfSceneAnimation(
         std::vector<FSceneModelResource>& Models,
         const std::vector<FGltfScene>& Scenes,
