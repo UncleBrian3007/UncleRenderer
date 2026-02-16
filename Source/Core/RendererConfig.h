@@ -59,6 +59,17 @@ struct FRendererConfig
     bool bEnableRestirGI = false;
     uint32_t RestirGISamplesPerPixel = 2;
     float RestirGIIntensity = 1.0f;
+    float RestirGIRayLength = 100.0f;
+    float RestirGIClamp = 10.0f;
+    bool bEnableRestirGITemporalReuse = true;
+    bool bEnableRestirGISpatialReuse = false;
+    float RestirGITemporalAdditionalScale = 0.2f;
+    float RestirGISpatialAdditionalScale = 0.15f;
+    float RestirGIResolveMinDenominator = 1e-5f;
+    float RestirGIResolveMaxNormalization = 32.0f;
+    float RestirGIResolveLowSampleBoostGuard = 0.6f;
+    bool bRestirGIResolveUseConfidence = true;
+    uint32_t RestirGIMaxHistoryFrames = 1;
     bool bEnableIndirectDraw = true;
     bool bEnableSkinningIndirectDraw = false;
     bool bEnablePbrResearch = false;

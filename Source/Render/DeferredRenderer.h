@@ -127,6 +127,24 @@ public:
     uint32_t GetRestirGISamplesPerPixel() const { return RestirGISamplesPerPixel; }
     void SetRestirGIIntensity(float Intensity) { RestirGIIntensity = Intensity; }
     float GetRestirGIIntensity() const { return RestirGIIntensity; }
+    void SetRestirGIShowOnly(bool bEnabled) { bRestirGIShowOnly = bEnabled; }
+    bool IsRestirGIShowOnly() const { return bRestirGIShowOnly; }
+    void SetRestirGITemporalReuseEnabled(bool bEnabled) { bRestirGITemporalReuse = bEnabled; }
+    bool IsRestirGITemporalReuseEnabled() const { return bRestirGITemporalReuse; }
+    void SetRestirGISpatialReuseEnabled(bool bEnabled) { bRestirGISpatialReuse = bEnabled; }
+    bool IsRestirGISpatialReuseEnabled() const { return bRestirGISpatialReuse; }
+    void SetRestirGITemporalAdditionalScale(float Value) { RestirGITemporalAdditionalScale = Value; }
+    float GetRestirGITemporalAdditionalScale() const { return RestirGITemporalAdditionalScale; }
+    void SetRestirGISpatialAdditionalScale(float Value) { RestirGISpatialAdditionalScale = Value; }
+    float GetRestirGISpatialAdditionalScale() const { return RestirGISpatialAdditionalScale; }
+    void SetRestirGIResolveMinDenominator(float Value) { RestirGIResolveMinDenominator = Value; }
+    float GetRestirGIResolveMinDenominator() const { return RestirGIResolveMinDenominator; }
+    void SetRestirGIResolveMaxNormalization(float Value) { RestirGIResolveMaxNormalization = Value; }
+    float GetRestirGIResolveMaxNormalization() const { return RestirGIResolveMaxNormalization; }
+    void SetRestirGIResolveLowSampleBoostGuard(float Value) { RestirGIResolveLowSampleBoostGuard = Value; }
+    float GetRestirGIResolveLowSampleBoostGuard() const { return RestirGIResolveLowSampleBoostGuard; }
+    void SetRestirGIResolveUseConfidence(bool bEnabled) { bRestirGIResolveUseConfidence = bEnabled; }
+    bool IsRestirGIResolveUseConfidence() const { return bRestirGIResolveUseConfidence; }
 
     void SetPathTracingAccumulationEnabled(bool bEnabled)
     {
@@ -196,6 +214,8 @@ private:
         bool bGtaoJitterActive = false;
         bool bPathTracingAccumulationActive = false;
         bool bPathTracingAccumulationHistoryReady = false;
+        bool bCameraMoved = false;
+        bool bAnySkinningUpdated = false;
         uint32_t PathTracingAccumulationReadIndex = 0;
         uint32_t PathTracingAccumulationWriteIndex = 0;
         DirectX::XMMATRIX LightViewProjection = DirectX::XMMatrixIdentity();
@@ -212,6 +232,12 @@ private:
         FRGResourceHandle LinearDepthHandle{};
         FRGResourceHandle GtaoHandle{};
         FRGResourceHandle RestirGIHandle{};
+        FRGResourceHandle RestirGIHistoryHandle{};
+        FRGResourceHandle RestirGIHistoryGeomAHandle{};
+        FRGResourceHandle RestirGIHistoryGeomBHandle{};
+        FRGBufferHandle RestirGITemporalReservoirHandle{};
+        FRGBufferHandle RestirGISpatialReservoirHandle{};
+        FRGBufferHandle RestirGIReservoirHistoryHandle{};
         FRGResourceHandle SsrHandle{};
         FRGResourceHandle SsrDenoiseHandle{};
         FRGResourceHandle SsrFallbackHandle{};
@@ -282,7 +308,7 @@ private:
     void UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, size_t ModelIndex, uint64_t ConstantBufferOffset);
     void UpdateSkyConstants(const FCamera& Camera);
     void UpdateCullingVisibility(const FCamera& Camera);
-    void PrepareFrameState(const FCamera& Camera, FDeferredFrameState& OutState);
+    void PrepareFrameState(const FCamera& Camera, bool bAnySkinningUpdated, FDeferredFrameState& OutState);
     void ConfigureFrameGraph(FRenderGraph& Graph) const;
     void ImportFrameResources(FRenderGraph& Graph, FDeferredFrameResources& OutResources);
     void AddGpuCullingPass(
@@ -326,11 +352,11 @@ private:
         const char* PassName,
         bool bAllowSkinningFallback);
     void AddObjectIdPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle ObjectIdHandle, FRGResourceHandle DepthHandle);
-    void AddVelocityPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle VelocityHandle, FRGResourceHandle DepthHandle);
+    void AddVelocityPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const FCamera& Camera, FRGResourceHandle VelocityHandle, FRGResourceHandle DepthHandle);
     void AddHZBPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle HZBHandle);
     void AddLinearDepthPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle LinearDepthHandle);
     void AddGtaoPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle GtaoHandle);
-    void AddRestirGIPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle LinearDepthHandle, FRGResourceHandle RestirGIHandle);
+    void AddRestirGIPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle LinearDepthHandle, FRGResourceHandle RestirGIHandle, FRGResourceHandle RestirGIHistoryHandle, FRGResourceHandle RestirGIHistoryGeomAHandle, FRGResourceHandle RestirGIHistoryGeomBHandle, FRGBufferHandle RestirGITemporalReservoirHandle, FRGBufferHandle RestirGISpatialReservoirHandle, FRGBufferHandle RestirGIReservoirHistoryHandle);
     void AddSsrRayCounterClearPass(FRenderGraph& Graph, uint32_t FrameIndex);
     void AddSsrRayGatherPass(FRenderGraph& Graph, uint32_t FrameIndex, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle);
     void AddSsrBuildIndirectArgsPass(FRenderGraph& Graph, uint32_t FrameIndex, bool bHwMiss);
@@ -385,6 +411,8 @@ private:
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> VelocityPipelines;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> VelocityPipelinesSkinned;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGIPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGISpatialPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGIResolvePipeline;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> HZBPipelines;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> AutoExposurePipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> TaaPipeline;
@@ -406,6 +434,12 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> LinearDepthTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> GtaoTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGITexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIHistoryTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIHistoryGeomATexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIHistoryGeomBTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGITemporalReservoirBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGISpatialReservoirBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIReservoirHistoryBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> SsrTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> SsrDenoiseTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> SsrFallbackTexture;
@@ -444,10 +478,23 @@ private:
     uint32_t EnvironmentCubeBindlessIndex = UINT32_MAX;
     uint32_t BrdfLutBindlessIndex = UINT32_MAX;
     uint32_t LinearDepthBindlessIndex = UINT32_MAX;
+    uint32_t VelocityBindlessIndex = UINT32_MAX;
     uint32_t HilbertLutBindlessIndex = UINT32_MAX;
     uint32_t GtaoBindlessIndex = UINT32_MAX;
     uint32_t RestirGIBindlessIndex = UINT32_MAX;
     uint32_t RestirGIUavBindlessIndex = UINT32_MAX;
+    uint32_t RestirGIHistorySrvBindlessIndex = UINT32_MAX;
+    uint32_t RestirGIHistoryUavBindlessIndex = UINT32_MAX;
+    uint32_t RestirGIHistoryGeomASrvBindlessIndex = UINT32_MAX;
+    uint32_t RestirGIHistoryGeomAUavBindlessIndex = UINT32_MAX;
+    uint32_t RestirGIHistoryGeomBSrvBindlessIndex = UINT32_MAX;
+    uint32_t RestirGIHistoryGeomBUavBindlessIndex = UINT32_MAX;
+    uint32_t RestirGITemporalReservoirSrvBindlessIndex = UINT32_MAX;
+    uint32_t RestirGITemporalReservoirUavBindlessIndex = UINT32_MAX;
+    uint32_t RestirGISpatialReservoirSrvBindlessIndex = UINT32_MAX;
+    uint32_t RestirGISpatialReservoirUavBindlessIndex = UINT32_MAX;
+    uint32_t RestirGIReservoirHistorySrvBindlessIndex = UINT32_MAX;
+    uint32_t RestirGIReservoirHistoryUavBindlessIndex = UINT32_MAX;
     uint32_t SsrBindlessIndex = UINT32_MAX;
     uint32_t SsrDenoiseBindlessIndex = UINT32_MAX;
     uint32_t SsrFallbackBindlessIndex = UINT32_MAX;
@@ -482,6 +529,12 @@ private:
     D3D12_RESOURCE_STATES LinearDepthState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES GtaoState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES RestirGIState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    D3D12_RESOURCE_STATES RestirGIHistoryState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    D3D12_RESOURCE_STATES RestirGIHistoryGeomAState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    D3D12_RESOURCE_STATES RestirGIHistoryGeomBState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    D3D12_RESOURCE_STATES RestirGITemporalReservoirState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    D3D12_RESOURCE_STATES RestirGISpatialReservoirState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    D3D12_RESOURCE_STATES RestirGIReservoirHistoryState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     D3D12_RESOURCE_STATES SsrState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES SsrDenoiseState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES SsrFallbackState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -561,7 +614,10 @@ private:
     DirectX::XMFLOAT4X4 PreviousCameraViewMatrix{};
     DirectX::XMFLOAT4X4 PreviousViewProjectionMatrix{};
     DirectX::XMFLOAT4X4 CurrentViewProjectionMatrix{};
+    DirectX::XMFLOAT4X4 PreviousUnjitteredViewProjectionMatrix{};
+    DirectX::XMFLOAT4X4 CurrentUnjitteredViewProjectionMatrix{};
     bool bHasPreviousViewProjection = false;
+    bool bHasPreviousUnjitteredViewProjection = false;
     bool bFirstFrame = true;
     uint32_t LuminanceWriteIndex = 0;
     bool bLuminanceHistoryValid = false;
@@ -583,6 +639,20 @@ private:
 	float SsrIntensity = 0.3f;
     uint32_t RestirGISamplesPerPixel = 2;
     float RestirGIIntensity = 1.0f;
+    bool bRestirGIShowOnly = false;
+    float RestirGIRayLength = 100.0f;
+    float RestirGIClamp = 10.0f;
+    bool bRestirGITemporalReuse = true;
+    bool bRestirGISpatialReuse = false;
+    float RestirGITemporalAdditionalScale = 0.2f;
+    float RestirGISpatialAdditionalScale = 0.15f;
+    float RestirGIResolveMinDenominator = 1e-5f;
+    float RestirGIResolveMaxNormalization = 32.0f;
+    float RestirGIResolveLowSampleBoostGuard = 0.6f;
+    bool bRestirGIResolveUseConfidence = true;
+    uint32_t RestirGIMaxHistoryFrames = 1;
+    uint32_t RestirGIHistoryFrameCount = 0;
+    bool bRestirGIHistoryValid = false;
     ESSRMode SsrMode = ESSRMode::PS;
     uint32_t SsrSamplesPerQuad = 1;
 

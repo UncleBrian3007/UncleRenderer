@@ -226,6 +226,7 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <None Include="Shaders\ForwardVS.hlsl" />
     <None Include="Shaders\FullscreenTriangle.hlsl" />
     <None Include="Shaders\ObjectId.hlsl" />
+    <None Include="Shaders\RestirGIReservoir.hlsli" />
     <None Include="ThirdParty\ddspp\LICENSE" />
   </ItemGroup>
   <ItemGroup>

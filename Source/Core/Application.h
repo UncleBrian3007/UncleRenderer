@@ -100,6 +100,12 @@ private:
     bool bGtaoJitterEnabled = false;
     float GtaoRadius = 0.75f;
     float GtaoThickness = 0.1f;
+    bool bRestirGIEnabled = false;
+    bool bRestirGIShowOnly = false;
+    bool bRestirGITemporalReuseEnabled = true;
+    bool bRestirGISpatialReuseEnabled = false;
+    float RestirGITemporalAdditionalScale = 0.2f;
+    float RestirGISpatialAdditionalScale = 0.15f;
     bool bSsrSwEnabled = true;
     bool bSsrHwEnabled = true;
     bool bSsrHzbEnabled = false;

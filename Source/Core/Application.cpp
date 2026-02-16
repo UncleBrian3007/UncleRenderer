@@ -194,6 +194,12 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     SsrIntensity = RendererConfig.SsrIntensity;
     SsrMode = RendererConfig.SsrMode;
     SsrSamplesPerQuad = RendererConfig.SsrSamplesPerQuad;
+    bRestirGIEnabled = RendererConfig.bEnableRestirGI;
+    bRestirGIShowOnly = false;
+    bRestirGITemporalReuseEnabled = RendererConfig.bEnableRestirGITemporalReuse;
+    bRestirGISpatialReuseEnabled = RendererConfig.bEnableRestirGISpatialReuse;
+    RestirGITemporalAdditionalScale = RendererConfig.RestirGITemporalAdditionalScale;
+    RestirGISpatialAdditionalScale = RendererConfig.RestirGISpatialAdditionalScale;
 
     if (bTaskSystemEnabled)
     {
@@ -1712,6 +1718,81 @@ void FApplication::RenderUI()
             }
         }
 
+        ImGui::Separator();
+        bool bRestirGI = bRestirGIEnabled;
+        if (ImGui::Checkbox("ReSTIR GI", &bRestirGI))
+        {
+            bRestirGIEnabled = bRestirGI;
+            RendererConfig.bEnableRestirGI = bRestirGIEnabled;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetRestirGIEnabled(bRestirGIEnabled);
+            }
+        }
+
+        ImGui::SameLine();
+        bool bRestirGIOnly = bRestirGIShowOnly;
+        if (ImGui::Checkbox("ReSTIR GI Only", &bRestirGIOnly))
+        {
+            bRestirGIShowOnly = bRestirGIOnly;
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetRestirGIShowOnly(bRestirGIShowOnly);
+            }
+        }
+
+        bool bRestirTemporal = bRestirGITemporalReuseEnabled;
+        if (ImGui::Checkbox("Temporal Reuse", &bRestirTemporal))
+        {
+            bRestirGITemporalReuseEnabled = bRestirTemporal;
+            RendererConfig.bEnableRestirGITemporalReuse = bRestirGITemporalReuseEnabled;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetRestirGITemporalReuseEnabled(bRestirGITemporalReuseEnabled);
+            }
+        }
+
+		ImGui::SameLine();
+        bool bRestirSpatial = bRestirGISpatialReuseEnabled;
+        if (ImGui::Checkbox("Spatial Reuse", &bRestirSpatial))
+        {
+            bRestirGISpatialReuseEnabled = bRestirSpatial;
+            RendererConfig.bEnableRestirGISpatialReuse = bRestirGISpatialReuseEnabled;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetRestirGISpatialReuseEnabled(bRestirGISpatialReuseEnabled);
+            }
+        }
+
+
+        float RestirTemporalScaleValue = RestirGITemporalAdditionalScale;
+        if (ImGui::SliderFloat("Temporal Add Scale", &RestirTemporalScaleValue, 0.0f, 1.0f, "%.2f"))
+        {
+            RestirGITemporalAdditionalScale = RestirTemporalScaleValue;
+            RendererConfig.RestirGITemporalAdditionalScale = RestirGITemporalAdditionalScale;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetRestirGITemporalAdditionalScale(RestirGITemporalAdditionalScale);
+            }
+        }
+
+        float RestirSpatialScaleValue = RestirGISpatialAdditionalScale;
+        if (ImGui::SliderFloat("Spatial Add Scale", &RestirSpatialScaleValue, 0.0f, 1.0f, "%.2f"))
+        {
+            RestirGISpatialAdditionalScale = RestirSpatialScaleValue;
+            RendererConfig.RestirGISpatialAdditionalScale = RestirGISpatialAdditionalScale;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetRestirGISpatialAdditionalScale(RestirGISpatialAdditionalScale);
+            }
+        }
+
+		ImGui::Separator();
         bool bSsrSw = bSsrSwEnabled;
         if (ImGui::Checkbox("SW SSR", &bSsrSw))
         {

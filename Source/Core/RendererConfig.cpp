@@ -379,6 +379,115 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
             LogWarning("Invalid ReSTIR GI intensity in renderer config: " + Value);
         }
     }
+    if (LowerKey == "restirgiraylength")
+    {
+        try
+        {
+            const float ParsedValue = std::stof(Value);
+            OutConfig.RestirGIRayLength = (std::max)(0.1f, ParsedValue);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid ReSTIR GI ray length in renderer config: " + Value);
+        }
+    }
+    if (LowerKey == "restirgiclamp")
+    {
+        try
+        {
+            const float ParsedValue = std::stof(Value);
+            OutConfig.RestirGIClamp = (std::max)(0.1f, ParsedValue);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid ReSTIR GI clamp in renderer config: " + Value);
+        }
+    }
+    if (LowerKey == "restirgitemporalreuse" || LowerKey == "enablerestirgitemporalreuse")
+    {
+        OutConfig.bEnableRestirGITemporalReuse = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+    if (LowerKey == "restirgispatialreuse" || LowerKey == "enablerestirgispatialreuse")
+    {
+        OutConfig.bEnableRestirGISpatialReuse = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+    if (LowerKey == "restirgitemporaladditionalscale")
+    {
+        try
+        {
+            const float ParsedValue = std::stof(Value);
+            OutConfig.RestirGITemporalAdditionalScale = std::clamp(ParsedValue, 0.0f, 1.0f);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid ReSTIR GI temporal additional scale in renderer config: " + Value);
+        }
+    }
+    if (LowerKey == "restirgispatialadditionalscale")
+    {
+        try
+        {
+            const float ParsedValue = std::stof(Value);
+            OutConfig.RestirGISpatialAdditionalScale = std::clamp(ParsedValue, 0.0f, 1.0f);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid ReSTIR GI spatial additional scale in renderer config: " + Value);
+        }
+    }
+    if (LowerKey == "restirgiresolvemindenominator")
+    {
+        try
+        {
+            const float ParsedValue = std::stof(Value);
+            OutConfig.RestirGIResolveMinDenominator = (std::max)(ParsedValue, 1e-6f);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid ReSTIR GI resolve min denominator in renderer config: " + Value);
+        }
+    }
+    if (LowerKey == "restirgiresolvemaxnormalization")
+    {
+        try
+        {
+            const float ParsedValue = std::stof(Value);
+            OutConfig.RestirGIResolveMaxNormalization = (std::max)(ParsedValue, 1.0f);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid ReSTIR GI resolve max normalization in renderer config: " + Value);
+        }
+    }
+    if (LowerKey == "restirgiresolvelowsampleboostguard")
+    {
+        try
+        {
+            const float ParsedValue = std::stof(Value);
+            OutConfig.RestirGIResolveLowSampleBoostGuard = std::clamp(ParsedValue, 0.0f, 1.0f);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid ReSTIR GI resolve low-sample boost guard in renderer config: " + Value);
+        }
+    }
+    if (LowerKey == "restirgiresolveuseconfidence")
+    {
+        OutConfig.bRestirGIResolveUseConfidence = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+    if (LowerKey == "restirgimaxhistoryframes")
+    {
+        try
+        {
+            const int32_t ParsedValue = std::stoi(Value);
+            const int32_t ClampedValue = std::clamp(ParsedValue, 1, 16);
+            OutConfig.RestirGIMaxHistoryFrames = static_cast<uint32_t>(ClampedValue);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid ReSTIR GI max history frames in renderer config: " + Value);
+        }
+    }
     if (LowerKey == "ssrmode")
     {
         if (LowerValue == "cs")

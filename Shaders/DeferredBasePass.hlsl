@@ -18,6 +18,7 @@ struct VSOutput
     float3 WorldPos : TEXCOORD1;
     float3 PrevWorldPos : TEXCOORD2;
     float4 Tangent  : TEXCOORD3;
+    float4 CurrentClipPos : TEXCOORD4;
     float4 Color    : COLOR0;
 };
 
@@ -64,6 +65,13 @@ cbuffer BasePassBindlessConstants : register(b1)
     uint AnisotropyTextureIndex;
 };
 SamplerState AlbedoSampler : register(s0);
+
+cbuffer VelocityPassConstants : register(b2)
+{
+    row_major float4x4 CurrentUnjitteredViewProjection;
+    row_major float4x4 PreviousUnjitteredViewProjection;
+    uint HasPreviousUnjitteredViewProjection;
+};
 
 float2 ApplyTextureTransform(float2 uv, float4 offsetScale, float4 rotation)
 {
@@ -128,6 +136,7 @@ VSOutput VSMain(VSInput Input)
         : WorldPos;
     float4 ViewPos = mul(WorldPos, View);
     Output.Position = mul(ViewPos, Projection);
+    Output.CurrentClipPos = Output.Position;
     Output.Normal = mul(normal, (float3x3)World);
     Output.UV = uv;
     Output.WorldPos = WorldPos.xyz;
@@ -200,28 +209,34 @@ PSOutputVelocity PSMainVelocity(VSOutput Input)
 {
     PSOutputVelocity Output;
 #if USE_ALPHA_MASK
-    Texture2D AlbedoTexture = ResourceDescriptorHeap[AlbedoTextureIndex];
     float2 baseUV = ApplyTextureTransform(Input.UV, BaseColorTransformOffsetScale, BaseColorTransformRotation);
     float alpha = BaseColorAlpha * Input.Color.a;
-    float4 albedoSample = AlbedoTexture.Sample(AlbedoSampler, baseUV);
-    alpha *= albedoSample.a;
+
+    if (AlbedoTextureIndex != 0xFFFFFFFFu)
+    {
+        Texture2D AlbedoTexture = ResourceDescriptorHeap[AlbedoTextureIndex];
+        float4 albedoSample = AlbedoTexture.Sample(AlbedoSampler, baseUV);
+        alpha *= albedoSample.a;
+    }
+
     if (alpha < AlphaCutoff)
     {
         clip(alpha - AlphaCutoff);
     }
 #endif
 
-    if (HasPreviousViewProjection == 0u)
+    if (HasPreviousUnjitteredViewProjection == 0u)
     {
         Output.Velocity = float2(0.0f, 0.0f);
         return Output;
     }
 
     const float Epsilon = 1e-6f;
-    float CurrentW = max(abs(Input.Position.w), Epsilon);
-    float2 CurrentNdc = Input.Position.xy / CurrentW;
+    float4 CurrentClip = mul(float4(Input.WorldPos, 1.0f), CurrentUnjitteredViewProjection);
+    float CurrentW = max(abs(CurrentClip.w), Epsilon);
+    float2 CurrentNdc = CurrentClip.xy / CurrentW;
 
-    float4 PreviousClip = mul(float4(Input.PrevWorldPos, 1.0f), PreviousViewProjection);
+    float4 PreviousClip = mul(float4(Input.PrevWorldPos, 1.0f), PreviousUnjitteredViewProjection);
     float PreviousW = max(abs(PreviousClip.w), Epsilon);
     float2 PreviousNdc = PreviousClip.xy / PreviousW;
 

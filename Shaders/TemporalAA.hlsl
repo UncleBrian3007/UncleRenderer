@@ -12,6 +12,11 @@ cbuffer TemporalAABindlessConstants : register(b1)
     uint OutputTextureIndex;
 };
 
+bool BadFloat3(float3 Value)
+{
+    return any(isnan(Value)) || any(isinf(Value));
+}
+
 [numthreads(8, 8, 1)]
 void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID)
 {
@@ -25,13 +30,18 @@ void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID)
     Texture2D<float4> HistoryTexture = ResourceDescriptorHeap[HistoryTextureIndex];
     RWTexture2D<float4> OutputTexture = ResourceDescriptorHeap[OutputTextureIndex];
     float4 Current = CurrentTexture.Load(int3(Pixel, 0));
-
+    if (BadFloat3(Current.rgb))
+    {
+		Current.rgb = float3(0, 0, 0);
+	}
+    
     if (UseHistory == 0)
     {
         OutputTexture[Pixel] = Current;
         return;
     }
 
+    
     float3 MinColor = Current.rgb;
     float3 MaxColor = Current.rgb;
 
@@ -50,7 +60,17 @@ void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID)
 
     float3 History = HistoryTexture.Load(int3(Pixel, 0)).rgb;
     History = clamp(History, MinColor, MaxColor);
+    if (BadFloat3(History))
+	{
+		OutputTexture[Pixel] = Current;
+        return;
+	}
 
     float3 Blended = lerp(Current.rgb, History, saturate(HistoryWeight));
+	if (BadFloat3(Blended))
+	{
+		Blended = Current.rgb;
+	}
+    
     OutputTexture[Pixel] = float4(Blended, Current.a);
 }

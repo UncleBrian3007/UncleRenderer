@@ -30,6 +30,7 @@ cbuffer RestirGIConstants : register(b2)
     float RestirGIIntensity;
     uint RestirGIEnabled;
     uint RestirGISamplesPerPixel;
+    uint RestirGIShowOnly;
     uint RestirGIPadding;
 };
 SamplerState GBufferSampler : register(s0);
@@ -212,12 +213,19 @@ float4 PSMain(VSOutput Input) : SV_Target
     float3 diffuseIbl = irradiance * albedo * (1.0f - metallic);
 
     float ao = (GtaoIntensity <= 0.0f) ? 1.0f : GtaoTexture.Sample(GBufferSampler, Input.UV).r;
-    float3 ambient = (diffuseIbl + specularIbl) * ao;
+    float3 restirGI = 0.0f.xxx;
     if (RestirGIEnabled > 0 && RestirGIIntensity > 0.0f)
     {
-        float3 restirGI = RestirGITexture.Sample(GBufferSampler, Input.UV).rgb;
-        ambient += restirGI * RestirGIIntensity;
+        restirGI = RestirGITexture.Sample(GBufferSampler, Input.UV).rgb;
     }
+
+    if (RestirGIShowOnly > 0u)
+    {
+        return float4(restirGI, 1.0f);
+    }
+
+    float3 ambient = (diffuseIbl + specularIbl) * ao;
+    ambient += restirGI;
     float3 color = lighting + ambient;
     return float4(color, 1.0);
 }

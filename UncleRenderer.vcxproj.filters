@@ -218,6 +218,9 @@
     <ClCompile Include="Source\Scene\GltfAnimation.cpp">
       <Filter>Source Files\Scene</Filter>
     </ClCompile>
+    <ClCompile Include="Source\RHI\DX12DeviceRemoved.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Source\Core\Application.h">
@@ -357,6 +360,9 @@
     </ClInclude>
     <ClInclude Include="ThirdParty\cgltf\cgltf_write.h">
       <Filter>Source Files\ThirdParty\cgltf</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\RHI\DX12DeviceRemoved.h">
+      <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -507,6 +513,9 @@
       <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\RestirGI.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\RestirGIReservoir.hlsli">
       <Filter>Shaders</Filter>
     </None>
   </ItemGroup>

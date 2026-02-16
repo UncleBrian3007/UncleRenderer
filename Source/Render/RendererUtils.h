@@ -248,6 +248,7 @@ struct FSceneModelResource
     DirectX::XMFLOAT3 BoundsMax{ 0.0f, 0.0f, 0.0f };
     uint32_t ObjectId = 0;
     bool bUseSkinning = false;
+    bool bSkinningUpdatedThisFrame = false;
     bool bUseMeshletCulling = false;
     DirectX::XMFLOAT4X4 ModelTransform{};
     int GltfSceneIndex = -1;
@@ -379,7 +380,7 @@ namespace RendererUtils
         bool bHasPreviousWorld = false,
         uint32_t PreviousSkinnedPositionBindlessIndex = UINT32_MAX,
         bool bHasPreviousSkinning = false);
-    void UpdateGltfSceneAnimation(
+    bool UpdateGltfSceneAnimation(
         std::vector<FSceneModelResource>& Models,
         const std::vector<FGltfScene>& Scenes,
         std::vector<FGltfAnimationPose>& ScenePoses,

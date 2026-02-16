@@ -1500,16 +1500,21 @@ void RendererUtils::UpdateCullingVisibility(
     }
 }
 
-void RendererUtils::UpdateGltfSceneAnimation(
+bool RendererUtils::UpdateGltfSceneAnimation(
     std::vector<FSceneModelResource>& Models,
     const std::vector<FGltfScene>& Scenes,
     std::vector<FGltfAnimationPose>& ScenePoses,
     std::vector<float>& SceneTimes,
     float DeltaTime)
 {
+    for (FSceneModelResource& Model : Models)
+    {
+        Model.bSkinningUpdatedThisFrame = false;
+    }
+
     if (Scenes.empty() || Models.empty())
     {
-        return;
+        return false;
     }
 
     if (ScenePoses.size() != Scenes.size())
@@ -1532,6 +1537,15 @@ void RendererUtils::UpdateGltfSceneAnimation(
         UpdateGltfAnimationPose(Scenes[Index], SceneTimes[Index], ScenePoses[Index]);
     }
 
+
+    std::vector<bool> SceneAnimationAdvanced(Scenes.size(), false);
+    const bool bAnimationTimeAdvanced = std::abs(DeltaTime) > 1e-6f;
+    for (size_t Index = 0; Index < Scenes.size(); ++Index)
+    {
+        SceneAnimationAdvanced[Index] = bAnimationTimeAdvanced && !Scenes[Index].Animations.empty();
+    }
+
+    bool bAnySkinningUpdated = false;
     for (FSceneModelResource& Model : Models)
     {
         if (Model.GltfSceneIndex < 0 || Model.GltfNodeIndex < 0)
@@ -1577,9 +1591,17 @@ void RendererUtils::UpdateGltfSceneAnimation(
 
                 const size_t CopyBytes = MatrixCount * sizeof(DirectX::XMFLOAT4X4);
                 std::memcpy(Model.BoneMatrixBufferMapped, FinalMatrices.data(), CopyBytes);
+
+                if (SceneAnimationAdvanced[SceneIndex] && MatrixCount > 0)
+                {
+                    Model.bSkinningUpdatedThisFrame = true;
+                    bAnySkinningUpdated = true;
+                }
             }
         }
     }
+
+    return bAnySkinningUpdated;
 }
 
 bool RendererUtils::CreateMappedConstantBuffer(FDX12Device* Device, uint64_t BufferSize, FMappedConstantBuffer& OutConstantBuffer)
