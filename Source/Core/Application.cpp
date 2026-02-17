@@ -196,6 +196,7 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     SsrSamplesPerQuad = RendererConfig.SsrSamplesPerQuad;
     bRestirGIEnabled = RendererConfig.bEnableRestirGI;
     bRestirGIShowOnly = false;
+    RestirGIMode = RendererConfig.RestirGIMode;
     bRestirGITemporalReuseEnabled = RendererConfig.bEnableRestirGITemporalReuse;
     bRestirGISpatialReuseEnabled = RendererConfig.bEnableRestirGISpatialReuse;
     RestirGITemporalAdditionalScale = RendererConfig.RestirGITemporalAdditionalScale;
@@ -1728,6 +1729,19 @@ void FApplication::RenderUI()
             if (DeferredRenderer)
             {
                 DeferredRenderer->SetRestirGIEnabled(bRestirGIEnabled);
+            }
+        }
+
+        int RestirModeIndex = (RestirGIMode == ERestirGIMode::New) ? 1 : 0;
+        const char* RestirModeItems[] = { "Legacy", "New" };
+        if (ImGui::Combo("ReSTIR GI Mode", &RestirModeIndex, RestirModeItems, IM_ARRAYSIZE(RestirModeItems)))
+        {
+            RestirGIMode = (RestirModeIndex == 1) ? ERestirGIMode::New : ERestirGIMode::Legacy;
+            RendererConfig.RestirGIMode = RestirGIMode;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetRestirGIMode(RestirGIMode);
             }
         }
 

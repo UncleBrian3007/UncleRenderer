@@ -376,6 +376,12 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <None Include="Shaders\RestirGI.hlsl">
       <FileType>Document</FileType>
     </None>
+    <None Include="Shaders\RestirGINew.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\RestirGINewReservoir.hlsli">
+      <FileType>Document</FileType>
+    </None>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

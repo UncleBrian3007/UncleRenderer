@@ -354,6 +354,17 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     {
         OutConfig.bEnableRestirGI = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
+    if (LowerKey == "restirgimode")
+    {
+        if (LowerValue == "new")
+        {
+            OutConfig.RestirGIMode = ERestirGIMode::New;
+        }
+        else
+        {
+            OutConfig.RestirGIMode = ERestirGIMode::Legacy;
+        }
+    }
     if (LowerKey == "restirgisamplesperpixel")
     {
         try

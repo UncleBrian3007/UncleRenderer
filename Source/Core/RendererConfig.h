@@ -16,6 +16,12 @@ enum class ESSRMode
     CS
 };
 
+enum class ERestirGIMode
+{
+    Legacy,
+    New
+};
+
 struct FRendererConfig
 {
     ERendererType RendererType = ERendererType::Deferred;
@@ -57,6 +63,7 @@ struct FRendererConfig
     bool bEnableSsrRefine = false;
     bool bEnableSsrDenoise = true;
     bool bEnableRestirGI = false;
+    ERestirGIMode RestirGIMode = ERestirGIMode::Legacy;
     uint32_t RestirGISamplesPerPixel = 2;
     float RestirGIIntensity = 1.0f;
     float RestirGIRayLength = 100.0f;

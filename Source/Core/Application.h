@@ -102,6 +102,7 @@ private:
     float GtaoThickness = 0.1f;
     bool bRestirGIEnabled = false;
     bool bRestirGIShowOnly = false;
+    ERestirGIMode RestirGIMode = ERestirGIMode::Legacy;
     bool bRestirGITemporalReuseEnabled = true;
     bool bRestirGISpatialReuseEnabled = false;
     float RestirGITemporalAdditionalScale = 0.2f;

@@ -135,6 +135,7 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     bSsrRefineEnabled = Config.bEnableSsrRefine;
     bSsrDenoiseEnabled = Config.bEnableSsrDenoise;
     bRestirGIEnabled = Config.bEnableRestirGI;
+    RestirGIMode = Config.RestirGIMode;
     SsrMaxSteps = Config.SsrMaxSteps;
     SsrMaxDistance = Config.SsrMaxDistance;
     SsrThickness = Config.SsrThickness;
@@ -247,6 +248,7 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
             LogWarning("Deferred renderer: ReSTIR GI disabled because DXR is not supported on this device.");
         }
         bRestirGIEnabled = false;
+        RestirGIMode = ERestirGIMode::Legacy;
     }
     else
     {
@@ -259,6 +261,18 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
             RestirGIPipeline.Reset();
             RestirGISpatialPipeline.Reset();
             RestirGIResolvePipeline.Reset();
+        }
+
+        LogInfo("Creating deferred renderer ReSTIR GI New root signature and pipeline...");
+        if (!CreateRestirGINewRootSignature(Device) || !CreateRestirGINewPipeline(Device))
+        {
+            LogWarning("Deferred renderer: ReSTIR GI New pipeline creation failed. Falling back to Legacy mode.");
+            RestirGIMode = ERestirGIMode::Legacy;
+            RestirGINewRootSignature.Reset();
+            RestirGINewInitialPipeline.Reset();
+            RestirGINewTemporalPipeline.Reset();
+            RestirGINewSpatialPipeline.Reset();
+            RestirGINewResolvePipeline.Reset();
         }
     }
 
@@ -712,7 +726,32 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 		AddRayTracingShadowPass(Graph, Camera, Resources.DepthHandle, Resources.GBufferHandles[0], Resources.ShadowMaskHandle);
 		AddLinearDepthPass(Graph, FrameState, Resources.DepthHandle, Resources.LinearDepthHandle);
 		AddGtaoPass(Graph, FrameState, Resources.GBufferHandles, Resources.LinearDepthHandle, Resources.GtaoHandle);
-        AddRestirGIPass(Graph, FrameState, Resources.GBufferHandles, Resources.DepthHandle, Resources.LinearDepthHandle, Resources.RestirGIHandle, Resources.RestirGIHistoryHandle, Resources.RestirGIHistoryGeomAHandle, Resources.RestirGIHistoryGeomBHandle, Resources.RestirGITemporalReservoirHandle, Resources.RestirGISpatialReservoirHandle, Resources.RestirGIReservoirHistoryHandle);
+        if (RestirGIMode == ERestirGIMode::New)
+        {
+            AddRestirGINewPass(
+                Graph,
+                FrameState,
+                Resources.GBufferHandles,
+                Resources.DepthHandle,
+                Resources.VelocityHandle,
+                Resources.RestirGIHandle,
+                Resources.RestirGIHistoryGeomAHandle,
+                Resources.RestirGIHistoryGeomBHandle,
+                Resources.RestirGINewInitialRadianceHandle,
+                Resources.RestirGINewInitialRayDirectionHandle,
+                Resources.RestirGINewReservoirDepthNormalAHandle,
+                Resources.RestirGINewReservoirDepthNormalBHandle,
+                Resources.RestirGINewReservoirSampleRadianceAHandle,
+                Resources.RestirGINewReservoirSampleRadianceBHandle,
+                Resources.RestirGINewReservoirRayDirectionAHandle,
+                Resources.RestirGINewReservoirRayDirectionBHandle,
+                Resources.RestirGINewReservoirMWAHandle,
+                Resources.RestirGINewReservoirMWBHandle);
+        }
+        else
+        {
+            AddRestirGIPass(Graph, FrameState, Resources.GBufferHandles, Resources.DepthHandle, Resources.LinearDepthHandle, Resources.RestirGIHandle, Resources.RestirGIHistoryHandle, Resources.RestirGIHistoryGeomAHandle, Resources.RestirGIHistoryGeomBHandle, Resources.RestirGITemporalReservoirHandle, Resources.RestirGISpatialReservoirHandle, Resources.RestirGIReservoirHistoryHandle);
+        }
         if (SsrMode == ESSRMode::CS)
         {
             AddSsrRayCounterClearPass(Graph, FrameIndex);
@@ -986,6 +1025,69 @@ void FDeferredRenderer::ImportFrameResources(FRenderGraph& Graph, FDeferredFrame
         RestirGIReservoirHistoryBuffer.Get(),
         &RestirGIReservoirHistoryState,
         RestirReservoirDesc);
+
+    const uint32_t HalfWidth = (static_cast<uint32>(Viewport.Width) + 1u) / 2u;
+    const uint32_t HalfHeight = (static_cast<uint32>(Viewport.Height) + 1u) / 2u;
+
+    OutResources.RestirGINewInitialRadianceHandle = Graph.ImportTexture(
+        "ReSTIR GI New Initial Radiance",
+        RestirGINewInitialRadianceTexture.Get(),
+        &RestirGINewInitialRadianceState,
+        { HalfWidth, HalfHeight, DXGI_FORMAT_R16G16B16A16_FLOAT });
+
+    OutResources.RestirGINewInitialRayDirectionHandle = Graph.ImportTexture(
+        "ReSTIR GI New Initial RayDir",
+        RestirGINewInitialRayDirectionTexture.Get(),
+        &RestirGINewInitialRayDirectionState,
+        { HalfWidth, HalfHeight, DXGI_FORMAT_R32_UINT });
+
+    OutResources.RestirGINewReservoirDepthNormalAHandle = Graph.ImportTexture(
+        "ReSTIR GI New Reservoir DepthNormal A",
+        RestirGINewReservoirDepthNormalATexture.Get(),
+        &RestirGINewReservoirDepthNormalAState,
+        { HalfWidth, HalfHeight, DXGI_FORMAT_R32G32_UINT });
+
+    OutResources.RestirGINewReservoirDepthNormalBHandle = Graph.ImportTexture(
+        "ReSTIR GI New Reservoir DepthNormal B",
+        RestirGINewReservoirDepthNormalBTexture.Get(),
+        &RestirGINewReservoirDepthNormalBState,
+        { HalfWidth, HalfHeight, DXGI_FORMAT_R32G32_UINT });
+
+    OutResources.RestirGINewReservoirSampleRadianceAHandle = Graph.ImportTexture(
+        "ReSTIR GI New Reservoir SampleRadiance A",
+        RestirGINewReservoirSampleRadianceATexture.Get(),
+        &RestirGINewReservoirSampleRadianceAState,
+        { HalfWidth, HalfHeight, DXGI_FORMAT_R16G16B16A16_FLOAT });
+
+    OutResources.RestirGINewReservoirSampleRadianceBHandle = Graph.ImportTexture(
+        "ReSTIR GI New Reservoir SampleRadiance B",
+        RestirGINewReservoirSampleRadianceBTexture.Get(),
+        &RestirGINewReservoirSampleRadianceBState,
+        { HalfWidth, HalfHeight, DXGI_FORMAT_R16G16B16A16_FLOAT });
+
+    OutResources.RestirGINewReservoirRayDirectionAHandle = Graph.ImportTexture(
+        "ReSTIR GI New Reservoir RayDirection A",
+        RestirGINewReservoirRayDirectionATexture.Get(),
+        &RestirGINewReservoirRayDirectionAState,
+        { HalfWidth, HalfHeight, DXGI_FORMAT_R32_UINT });
+
+    OutResources.RestirGINewReservoirRayDirectionBHandle = Graph.ImportTexture(
+        "ReSTIR GI New Reservoir RayDirection B",
+        RestirGINewReservoirRayDirectionBTexture.Get(),
+        &RestirGINewReservoirRayDirectionBState,
+        { HalfWidth, HalfHeight, DXGI_FORMAT_R32_UINT });
+
+    OutResources.RestirGINewReservoirMWAHandle = Graph.ImportTexture(
+        "ReSTIR GI New Reservoir MW A",
+        RestirGINewReservoirMWATexture.Get(),
+        &RestirGINewReservoirMWAState,
+        { HalfWidth, HalfHeight, DXGI_FORMAT_R32G32_FLOAT });
+
+    OutResources.RestirGINewReservoirMWBHandle = Graph.ImportTexture(
+        "ReSTIR GI New Reservoir MW B",
+        RestirGINewReservoirMWBTexture.Get(),
+        &RestirGINewReservoirMWBState,
+        { HalfWidth, HalfHeight, DXGI_FORMAT_R32G32_FLOAT });
 
     OutResources.SsrHandle = Graph.ImportTexture(
         "SSR",
@@ -3114,6 +3216,492 @@ void FDeferredRenderer::AddRestirGIPass(FRenderGraph& Graph, const FDeferredFram
     });
 }
 
+void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle VelocityHandle, FRGResourceHandle RestirGIHandle, FRGResourceHandle RestirGIHistoryGeomAHandle, FRGResourceHandle RestirGIHistoryGeomBHandle, FRGResourceHandle RestirGINewInitialRadianceHandle, FRGResourceHandle RestirGINewInitialRayDirectionHandle, FRGResourceHandle RestirGINewReservoirDepthNormalAHandle, FRGResourceHandle RestirGINewReservoirDepthNormalBHandle, FRGResourceHandle RestirGINewReservoirSampleRadianceAHandle, FRGResourceHandle RestirGINewReservoirSampleRadianceBHandle, FRGResourceHandle RestirGINewReservoirRayDirectionAHandle, FRGResourceHandle RestirGINewReservoirRayDirectionBHandle, FRGResourceHandle RestirGINewReservoirMWAHandle, FRGResourceHandle RestirGINewReservoirMWBHandle)
+{
+    struct FRestirGINewPassData
+    {
+        bool bEnabled = false;
+    };
+
+    auto DispatchNewPass = [this, &FrameState](FDX12CommandContext& Cmd, ID3D12PipelineState* PipelineState, const wchar_t* EventName, uint32_t SpatialPassIndex, const uint32_t BindlessIndices[26], uint32_t DispatchWidth, uint32_t DispatchHeight, bool bEnabled)
+    {
+        if (!bEnabled || !Device || !Device->GetBindlessDescriptorHeap() || !PipelineState || !RestirGINewRootSignature)
+        {
+            return;
+        }
+
+        const uint32_t FrameIndex = Cmd.GetCurrentFrameIndex();
+        if (FrameIndex >= PathTracingInstanceDataBindlessIndices.size())
+        {
+            return;
+        }
+
+        ID3D12Resource* TlasResource = (FrameIndex < TlasResultBuffers.size()) ? TlasResultBuffers[FrameIndex].Get() : nullptr;
+        if (!TlasResource)
+        {
+            for (const auto& TlasBuffer : TlasResultBuffers)
+            {
+                if (TlasBuffer)
+                {
+                    TlasResource = TlasBuffer.Get();
+                    break;
+                }
+            }
+        }
+        if (!TlasResource)
+        {
+            return;
+        }
+
+        ID3D12GraphicsCommandList4* CommandList4 = Cmd.GetCommandList4();
+        if (!CommandList4)
+        {
+            return;
+        }
+
+        struct FRestirGINewConstants
+        {
+            uint32_t FullWidth = 0;
+            uint32_t FullHeight = 0;
+            uint32_t HalfWidth = 0;
+            uint32_t HalfHeight = 0;
+            uint32_t FrameIndex = 0;
+            uint32_t Enabled = 0;
+            uint32_t HistoryValid = 0;
+            uint32_t SpatialPassIndex = 0;
+            float Intensity = 0.0f;
+            float RayLength = 0.0f;
+            float ClampThreshold = 0.0f;
+            uint32_t TemporalReuseEnabled = 0;
+        };
+
+        const uint32_t FullWidth = static_cast<uint32_t>(Viewport.Width);
+        const uint32_t FullHeight = static_cast<uint32_t>(Viewport.Height);
+        const uint32_t HalfWidth = (FullWidth + 1u) / 2u;
+        const uint32_t HalfHeight = (FullHeight + 1u) / 2u;
+        const uint32_t MaxHistoryFrames = (std::max)(1u, RestirGIMaxHistoryFrames);
+
+        const FRestirGINewConstants Constants =
+        {
+            FullWidth,
+            FullHeight,
+            HalfWidth,
+            HalfHeight,
+            FrameState.bTaaActive ? FrameState.TaaFrameIndex : GetFrameIndex(),
+            bRestirGIEnabled ? 1u : 0u,
+            (bRestirGIHistoryValid && RestirGIHistoryFrameCount >= MaxHistoryFrames) ? 1u : 0u,
+            SpatialPassIndex,
+            (std::max)(0.0f, RestirGIIntensity),
+            RestirGIRayLength,
+            RestirGIClamp,
+            bRestirGITemporalReuse ? 1u : 0u
+        };
+
+        FScopedPixEvent RestirEvent(CommandList4, EventName);
+        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap(), Device->GetSamplerDescriptorHeap() };
+        CommandList4->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        CommandList4->SetComputeRootSignature(RestirGINewRootSignature.Get());
+        CommandList4->SetPipelineState(PipelineState);
+        CommandList4->SetComputeRootShaderResourceView(0, TlasResource->GetGPUVirtualAddress());
+        CommandList4->SetComputeRootConstantBufferView(1, GetSceneConstantBufferAddress());
+        CommandList4->SetComputeRoot32BitConstants(2, sizeof(FRestirGINewConstants) / sizeof(uint32_t), &Constants, 0);
+        CommandList4->SetComputeRoot32BitConstants(3, 26, BindlessIndices, 0);
+
+        const uint32_t GroupSize = 8;
+        const uint32_t DispatchX = (DispatchWidth + GroupSize - 1) / GroupSize;
+        const uint32_t DispatchY = (DispatchHeight + GroupSize - 1) / GroupSize;
+        CommandList4->Dispatch(DispatchX, DispatchY, 1);
+    };
+
+    Graph.AddPass<FRestirGINewPassData>("ReSTIR GI - initial sampling", [&, DepthHandle, GBufferHandles, RestirGINewInitialRadianceHandle, RestirGINewInitialRayDirectionHandle](FRestirGINewPassData& Data, FRGPassBuilder& Builder)
+    {
+        Data.bEnabled = bRestirGIEnabled
+            && (RestirGIMode == ERestirGIMode::New)
+            && RestirGINewRootSignature
+            && RestirGINewInitialPipeline;
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        Builder.ReadTexture(DepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(GBufferHandles[1], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(GBufferHandles[2], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.WriteTexture(RestirGINewInitialRadianceHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.WriteTexture(RestirGINewInitialRayDirectionHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    }, [this, &FrameState, DispatchNewPass](const FRestirGINewPassData& Data, FDX12CommandContext& Cmd)
+    {
+        const uint32_t DepthArrayIndex = GetFrameIndex() % static_cast<uint32_t>(DepthBindlessIndices.size());
+        const uint32_t DepthBindlessIndex = DepthBindlessIndices.empty() ? UINT32_MAX : DepthBindlessIndices[DepthArrayIndex];
+        const uint32_t FrameIndex = Cmd.GetCurrentFrameIndex();
+        const uint32_t InstanceDataBindlessIndex = (FrameIndex < PathTracingInstanceDataBindlessIndices.size()) ? PathTracingInstanceDataBindlessIndices[FrameIndex] : UINT32_MAX;
+        const uint32_t LinearClampSamplerIndex = Device ? Device->GetLinearClampSamplerIndex() : UINT32_MAX;
+
+        const bool bInputsValid = (DepthBindlessIndex != UINT32_MAX)
+            && (GBufferBindlessIndices[0] != UINT32_MAX)
+            && (GBufferBindlessIndices[1] != UINT32_MAX)
+            && (GBufferBindlessIndices[2] != UINT32_MAX)
+            && (InstanceDataBindlessIndex != UINT32_MAX)
+            && (EnvironmentCubeBindlessIndex != UINT32_MAX)
+            && (LinearClampSamplerIndex != UINT32_MAX)
+            && (RestirGINewInitialRadianceUavBindlessIndex != UINT32_MAX)
+            && (RestirGINewInitialRayDirectionUavBindlessIndex != UINT32_MAX);
+
+        const uint32_t BindlessIndices[26] =
+        {
+            RestirGINewInitialRadianceUavBindlessIndex,
+            DepthBindlessIndex,
+            VelocityBindlessIndex,
+            GBufferBindlessIndices[0],
+            GBufferBindlessIndices[1],
+            GBufferBindlessIndices[2],
+            InstanceDataBindlessIndex,
+            EnvironmentCubeBindlessIndex,
+            LinearClampSamplerIndex,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            RestirGINewInitialRadianceUavBindlessIndex,
+            RestirGINewInitialRayDirectionUavBindlessIndex,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            0u
+        };
+
+        const uint32_t FullWidth = static_cast<uint32_t>(Viewport.Width);
+        const uint32_t FullHeight = static_cast<uint32_t>(Viewport.Height);
+        DispatchNewPass(Cmd, RestirGINewInitialPipeline.Get(), L"ReSTIR GI - initial sampling", 0u, BindlessIndices, (FullWidth + 1u) / 2u, (FullHeight + 1u) / 2u, Data.bEnabled && bInputsValid);
+    });
+
+    Graph.AddPass<FRestirGINewPassData>("ReSTIR GI - temporal resampling", [&, DepthHandle, VelocityHandle, RestirGINewInitialRadianceHandle, RestirGINewInitialRayDirectionHandle, RestirGINewReservoirDepthNormalAHandle, RestirGINewReservoirDepthNormalBHandle, RestirGINewReservoirSampleRadianceAHandle, RestirGINewReservoirSampleRadianceBHandle, RestirGINewReservoirRayDirectionAHandle, RestirGINewReservoirRayDirectionBHandle, RestirGINewReservoirMWAHandle, RestirGINewReservoirMWBHandle](FRestirGINewPassData& Data, FRGPassBuilder& Builder)
+    {
+        Data.bEnabled = bRestirGIEnabled
+            && (RestirGIMode == ERestirGIMode::New)
+            && RestirGINewRootSignature
+            && RestirGINewTemporalPipeline;
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        Builder.ReadTexture(DepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(VelocityHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(RestirGINewInitialRadianceHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(RestirGINewInitialRayDirectionHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(RestirGINewReservoirDepthNormalAHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(RestirGINewReservoirSampleRadianceAHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(RestirGINewReservoirRayDirectionAHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(RestirGINewReservoirMWAHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.WriteTexture(RestirGINewReservoirDepthNormalBHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.WriteTexture(RestirGINewReservoirSampleRadianceBHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.WriteTexture(RestirGINewReservoirRayDirectionBHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.WriteTexture(RestirGINewReservoirMWBHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    }, [this, &FrameState, DispatchNewPass](const FRestirGINewPassData& Data, FDX12CommandContext& Cmd)
+    {
+        const uint32_t DepthArrayIndex = GetFrameIndex() % static_cast<uint32_t>(DepthBindlessIndices.size());
+        const uint32_t DepthBindlessIndex = DepthBindlessIndices.empty() ? UINT32_MAX : DepthBindlessIndices[DepthArrayIndex];
+        const uint32_t FrameIndex = Cmd.GetCurrentFrameIndex();
+        const uint32_t InstanceDataBindlessIndex = (FrameIndex < PathTracingInstanceDataBindlessIndices.size()) ? PathTracingInstanceDataBindlessIndices[FrameIndex] : UINT32_MAX;
+        const uint32_t LinearClampSamplerIndex = Device ? Device->GetLinearClampSamplerIndex() : UINT32_MAX;
+
+        const bool bInputsValid = (DepthBindlessIndex != UINT32_MAX)
+            && (VelocityBindlessIndex != UINT32_MAX)
+            && (GBufferBindlessIndices[0] != UINT32_MAX)
+            && (GBufferBindlessIndices[1] != UINT32_MAX)
+            && (GBufferBindlessIndices[2] != UINT32_MAX)
+            && (InstanceDataBindlessIndex != UINT32_MAX)
+            && (EnvironmentCubeBindlessIndex != UINT32_MAX)
+            && (LinearClampSamplerIndex != UINT32_MAX)
+            && (RestirGINewInitialRadianceSrvBindlessIndex != UINT32_MAX)
+            && (RestirGINewInitialRayDirectionSrvBindlessIndex != UINT32_MAX)
+            && (RestirGINewReservoirDepthNormalASrvBindlessIndex != UINT32_MAX)
+            && (RestirGINewReservoirSampleRadianceASrvBindlessIndex != UINT32_MAX)
+            && (RestirGINewReservoirRayDirectionASrvBindlessIndex != UINT32_MAX)
+            && (RestirGINewReservoirMWASrvBindlessIndex != UINT32_MAX)
+            && (RestirGINewReservoirDepthNormalBUavBindlessIndex != UINT32_MAX)
+            && (RestirGINewReservoirSampleRadianceBUavBindlessIndex != UINT32_MAX)
+            && (RestirGINewReservoirRayDirectionBUavBindlessIndex != UINT32_MAX)
+            && (RestirGINewReservoirMWBUavBindlessIndex != UINT32_MAX);
+
+        const uint32_t BindlessIndices[26] =
+        {
+            UINT32_MAX,
+            DepthBindlessIndex,
+            VelocityBindlessIndex,
+            GBufferBindlessIndices[0],
+            GBufferBindlessIndices[1],
+            GBufferBindlessIndices[2],
+            InstanceDataBindlessIndex,
+            EnvironmentCubeBindlessIndex,
+            LinearClampSamplerIndex,
+            RestirGINewInitialRadianceSrvBindlessIndex,
+            RestirGINewInitialRayDirectionSrvBindlessIndex,
+            RestirGINewReservoirDepthNormalASrvBindlessIndex,
+            RestirGINewReservoirSampleRadianceASrvBindlessIndex,
+            RestirGINewReservoirRayDirectionASrvBindlessIndex,
+            RestirGINewReservoirMWASrvBindlessIndex,
+            RestirGINewReservoirDepthNormalBUavBindlessIndex,
+            RestirGINewReservoirSampleRadianceBUavBindlessIndex,
+            RestirGINewReservoirRayDirectionBUavBindlessIndex,
+            RestirGINewReservoirMWBUavBindlessIndex,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            0u
+        };
+
+        const uint32_t FullWidth = static_cast<uint32_t>(Viewport.Width);
+        const uint32_t FullHeight = static_cast<uint32_t>(Viewport.Height);
+        DispatchNewPass(Cmd, RestirGINewTemporalPipeline.Get(), L"ReSTIR GI - temporal resampling", 0u, BindlessIndices, (FullWidth + 1u) / 2u, (FullHeight + 1u) / 2u, Data.bEnabled && bInputsValid);
+    });
+
+    Graph.AddPass<FRestirGINewPassData>("ReSTIR GI - spatial resampling 0", [&, RestirGINewReservoirDepthNormalAHandle, RestirGINewReservoirDepthNormalBHandle, RestirGINewReservoirSampleRadianceAHandle, RestirGINewReservoirSampleRadianceBHandle, RestirGINewReservoirRayDirectionAHandle, RestirGINewReservoirRayDirectionBHandle, RestirGINewReservoirMWAHandle, RestirGINewReservoirMWBHandle](FRestirGINewPassData& Data, FRGPassBuilder& Builder)
+    {
+        Data.bEnabled = bRestirGIEnabled
+            && (RestirGIMode == ERestirGIMode::New)
+            && RestirGINewRootSignature
+            && RestirGINewSpatialPipeline;
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        Builder.ReadTexture(RestirGINewReservoirDepthNormalBHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(RestirGINewReservoirSampleRadianceBHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(RestirGINewReservoirRayDirectionBHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(RestirGINewReservoirMWBHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.WriteTexture(RestirGINewReservoirDepthNormalAHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.WriteTexture(RestirGINewReservoirSampleRadianceAHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.WriteTexture(RestirGINewReservoirRayDirectionAHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.WriteTexture(RestirGINewReservoirMWAHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    }, [this, &FrameState, DispatchNewPass](const FRestirGINewPassData& Data, FDX12CommandContext& Cmd)
+    {
+        const uint32_t DepthArrayIndex = GetFrameIndex() % static_cast<uint32_t>(DepthBindlessIndices.size());
+        const uint32_t DepthBindlessIndex = DepthBindlessIndices.empty() ? UINT32_MAX : DepthBindlessIndices[DepthArrayIndex];
+        const uint32_t FrameIndex = Cmd.GetCurrentFrameIndex();
+        const uint32_t InstanceDataBindlessIndex = (FrameIndex < PathTracingInstanceDataBindlessIndices.size()) ? PathTracingInstanceDataBindlessIndices[FrameIndex] : UINT32_MAX;
+        const uint32_t LinearClampSamplerIndex = Device ? Device->GetLinearClampSamplerIndex() : UINT32_MAX;
+        const bool bInputsValid = (DepthBindlessIndex != UINT32_MAX)
+            && (GBufferBindlessIndices[0] != UINT32_MAX)
+            && (GBufferBindlessIndices[1] != UINT32_MAX)
+            && (GBufferBindlessIndices[2] != UINT32_MAX)
+            && (InstanceDataBindlessIndex != UINT32_MAX)
+            && (EnvironmentCubeBindlessIndex != UINT32_MAX)
+            && (LinearClampSamplerIndex != UINT32_MAX)
+            && (RestirGINewReservoirDepthNormalBSrvBindlessIndex != UINT32_MAX)
+            && (RestirGINewReservoirSampleRadianceBSrvBindlessIndex != UINT32_MAX)
+            && (RestirGINewReservoirRayDirectionBSrvBindlessIndex != UINT32_MAX)
+            && (RestirGINewReservoirMWBSrvBindlessIndex != UINT32_MAX)
+            && (RestirGINewReservoirDepthNormalAUavBindlessIndex != UINT32_MAX)
+            && (RestirGINewReservoirSampleRadianceAUavBindlessIndex != UINT32_MAX)
+            && (RestirGINewReservoirRayDirectionAUavBindlessIndex != UINT32_MAX)
+            && (RestirGINewReservoirMWAUavBindlessIndex != UINT32_MAX);
+
+        const uint32_t BindlessIndices[26] =
+        {
+            UINT32_MAX,
+            DepthBindlessIndex,
+            VelocityBindlessIndex,
+            GBufferBindlessIndices[0],
+            GBufferBindlessIndices[1],
+            GBufferBindlessIndices[2],
+            InstanceDataBindlessIndex,
+            EnvironmentCubeBindlessIndex,
+            LinearClampSamplerIndex,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            RestirGINewReservoirDepthNormalAUavBindlessIndex,
+            RestirGINewReservoirSampleRadianceAUavBindlessIndex,
+            RestirGINewReservoirRayDirectionAUavBindlessIndex,
+            RestirGINewReservoirMWAUavBindlessIndex,
+            RestirGINewReservoirDepthNormalBSrvBindlessIndex,
+            RestirGINewReservoirSampleRadianceBSrvBindlessIndex,
+            RestirGINewReservoirRayDirectionBSrvBindlessIndex,
+            RestirGINewReservoirMWBSrvBindlessIndex,
+            UINT32_MAX,
+            UINT32_MAX,
+            0u
+        };
+
+        const uint32_t FullWidth = static_cast<uint32_t>(Viewport.Width);
+        const uint32_t FullHeight = static_cast<uint32_t>(Viewport.Height);
+        DispatchNewPass(Cmd, RestirGINewSpatialPipeline.Get(), L"ReSTIR GI - spatial resampling 0", 0u, BindlessIndices, (FullWidth + 1u) / 2u, (FullHeight + 1u) / 2u, Data.bEnabled && bInputsValid);
+    });
+
+    Graph.AddPass<FRestirGINewPassData>("ReSTIR GI - spatial resampling 1", [&, RestirGINewReservoirDepthNormalAHandle, RestirGINewReservoirDepthNormalBHandle, RestirGINewReservoirSampleRadianceAHandle, RestirGINewReservoirSampleRadianceBHandle, RestirGINewReservoirRayDirectionAHandle, RestirGINewReservoirRayDirectionBHandle, RestirGINewReservoirMWAHandle, RestirGINewReservoirMWBHandle](FRestirGINewPassData& Data, FRGPassBuilder& Builder)
+    {
+        Data.bEnabled = bRestirGIEnabled
+            && (RestirGIMode == ERestirGIMode::New)
+            && RestirGINewRootSignature
+            && RestirGINewSpatialPipeline;
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        Builder.ReadTexture(RestirGINewReservoirDepthNormalAHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(RestirGINewReservoirSampleRadianceAHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(RestirGINewReservoirRayDirectionAHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(RestirGINewReservoirMWAHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.WriteTexture(RestirGINewReservoirDepthNormalBHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.WriteTexture(RestirGINewReservoirSampleRadianceBHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.WriteTexture(RestirGINewReservoirRayDirectionBHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.WriteTexture(RestirGINewReservoirMWBHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    }, [this, &FrameState, DispatchNewPass](const FRestirGINewPassData& Data, FDX12CommandContext& Cmd)
+    {
+        const uint32_t DepthArrayIndex = GetFrameIndex() % static_cast<uint32_t>(DepthBindlessIndices.size());
+        const uint32_t DepthBindlessIndex = DepthBindlessIndices.empty() ? UINT32_MAX : DepthBindlessIndices[DepthArrayIndex];
+        const uint32_t FrameIndex = Cmd.GetCurrentFrameIndex();
+        const uint32_t InstanceDataBindlessIndex = (FrameIndex < PathTracingInstanceDataBindlessIndices.size()) ? PathTracingInstanceDataBindlessIndices[FrameIndex] : UINT32_MAX;
+        const uint32_t LinearClampSamplerIndex = Device ? Device->GetLinearClampSamplerIndex() : UINT32_MAX;
+        const bool bInputsValid = (DepthBindlessIndex != UINT32_MAX)
+            && (GBufferBindlessIndices[0] != UINT32_MAX)
+            && (GBufferBindlessIndices[1] != UINT32_MAX)
+            && (GBufferBindlessIndices[2] != UINT32_MAX)
+            && (InstanceDataBindlessIndex != UINT32_MAX)
+            && (EnvironmentCubeBindlessIndex != UINT32_MAX)
+            && (LinearClampSamplerIndex != UINT32_MAX)
+            && (RestirGINewReservoirDepthNormalASrvBindlessIndex != UINT32_MAX)
+            && (RestirGINewReservoirSampleRadianceASrvBindlessIndex != UINT32_MAX)
+            && (RestirGINewReservoirRayDirectionASrvBindlessIndex != UINT32_MAX)
+            && (RestirGINewReservoirMWASrvBindlessIndex != UINT32_MAX)
+            && (RestirGINewReservoirDepthNormalBUavBindlessIndex != UINT32_MAX)
+            && (RestirGINewReservoirSampleRadianceBUavBindlessIndex != UINT32_MAX)
+            && (RestirGINewReservoirRayDirectionBUavBindlessIndex != UINT32_MAX)
+            && (RestirGINewReservoirMWBUavBindlessIndex != UINT32_MAX);
+
+        const uint32_t BindlessIndices[26] =
+        {
+            UINT32_MAX,
+            DepthBindlessIndex,
+            VelocityBindlessIndex,
+            GBufferBindlessIndices[0],
+            GBufferBindlessIndices[1],
+            GBufferBindlessIndices[2],
+            InstanceDataBindlessIndex,
+            EnvironmentCubeBindlessIndex,
+            LinearClampSamplerIndex,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            RestirGINewReservoirDepthNormalBUavBindlessIndex,
+            RestirGINewReservoirSampleRadianceBUavBindlessIndex,
+            RestirGINewReservoirRayDirectionBUavBindlessIndex,
+            RestirGINewReservoirMWBUavBindlessIndex,
+            RestirGINewReservoirDepthNormalASrvBindlessIndex,
+            RestirGINewReservoirSampleRadianceASrvBindlessIndex,
+            RestirGINewReservoirRayDirectionASrvBindlessIndex,
+            RestirGINewReservoirMWASrvBindlessIndex,
+            UINT32_MAX,
+            UINT32_MAX,
+            0u
+        };
+
+        const uint32_t FullWidth = static_cast<uint32_t>(Viewport.Width);
+        const uint32_t FullHeight = static_cast<uint32_t>(Viewport.Height);
+        DispatchNewPass(Cmd, RestirGINewSpatialPipeline.Get(), L"ReSTIR GI - spatial resampling 1", 1u, BindlessIndices, (FullWidth + 1u) / 2u, (FullHeight + 1u) / 2u, Data.bEnabled && bInputsValid);
+    });
+
+    Graph.AddPass<FRestirGINewPassData>("ReSTIR GI - resolve", [&, DepthHandle, GBufferHandles, RestirGIHandle, RestirGIHistoryGeomAHandle, RestirGIHistoryGeomBHandle, RestirGINewReservoirDepthNormalBHandle, RestirGINewReservoirSampleRadianceBHandle, RestirGINewReservoirRayDirectionBHandle, RestirGINewReservoirMWBHandle](FRestirGINewPassData& Data, FRGPassBuilder& Builder)
+    {
+        Data.bEnabled = bRestirGIEnabled
+            && (RestirGIMode == ERestirGIMode::New)
+            && RestirGINewRootSignature
+            && RestirGINewResolvePipeline;
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        Builder.ReadTexture(DepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(GBufferHandles[1], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(GBufferHandles[2], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(RestirGINewReservoirDepthNormalBHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(RestirGINewReservoirSampleRadianceBHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(RestirGINewReservoirRayDirectionBHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(RestirGINewReservoirMWBHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.WriteTexture(RestirGIHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.WriteTexture(RestirGIHistoryGeomAHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.WriteTexture(RestirGIHistoryGeomBHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    }, [this, &FrameState, DispatchNewPass](const FRestirGINewPassData& Data, FDX12CommandContext& Cmd)
+    {
+        const uint32_t DepthArrayIndex = GetFrameIndex() % static_cast<uint32_t>(DepthBindlessIndices.size());
+        const uint32_t DepthBindlessIndex = DepthBindlessIndices.empty() ? UINT32_MAX : DepthBindlessIndices[DepthArrayIndex];
+        const uint32_t FrameIndex = Cmd.GetCurrentFrameIndex();
+        const uint32_t InstanceDataBindlessIndex = (FrameIndex < PathTracingInstanceDataBindlessIndices.size()) ? PathTracingInstanceDataBindlessIndices[FrameIndex] : UINT32_MAX;
+        const uint32_t LinearClampSamplerIndex = Device ? Device->GetLinearClampSamplerIndex() : UINT32_MAX;
+        const bool bInputsValid = (DepthBindlessIndex != UINT32_MAX)
+            && (GBufferBindlessIndices[0] != UINT32_MAX)
+            && (GBufferBindlessIndices[1] != UINT32_MAX)
+            && (GBufferBindlessIndices[2] != UINT32_MAX)
+            && (InstanceDataBindlessIndex != UINT32_MAX)
+            && (EnvironmentCubeBindlessIndex != UINT32_MAX)
+            && (LinearClampSamplerIndex != UINT32_MAX)
+            && (RestirGIUavBindlessIndex != UINT32_MAX)
+            && (RestirGINewReservoirDepthNormalBSrvBindlessIndex != UINT32_MAX)
+            && (RestirGINewReservoirSampleRadianceBSrvBindlessIndex != UINT32_MAX)
+            && (RestirGINewReservoirRayDirectionBSrvBindlessIndex != UINT32_MAX)
+            && (RestirGINewReservoirMWBSrvBindlessIndex != UINT32_MAX)
+            && (RestirGIHistoryGeomAUavBindlessIndex != UINT32_MAX)
+            && (RestirGIHistoryGeomBUavBindlessIndex != UINT32_MAX);
+
+        const uint32_t BindlessIndices[26] =
+        {
+            RestirGIUavBindlessIndex,
+            DepthBindlessIndex,
+            VelocityBindlessIndex,
+            GBufferBindlessIndices[0],
+            GBufferBindlessIndices[1],
+            GBufferBindlessIndices[2],
+            InstanceDataBindlessIndex,
+            EnvironmentCubeBindlessIndex,
+            LinearClampSamplerIndex,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            RestirGINewReservoirDepthNormalBSrvBindlessIndex,
+            RestirGINewReservoirSampleRadianceBSrvBindlessIndex,
+            RestirGINewReservoirRayDirectionBSrvBindlessIndex,
+            RestirGINewReservoirMWBSrvBindlessIndex,
+            RestirGIHistoryGeomAUavBindlessIndex,
+            RestirGIHistoryGeomBUavBindlessIndex,
+            0u
+        };
+
+        const uint32_t FullWidth = static_cast<uint32_t>(Viewport.Width);
+        const uint32_t FullHeight = static_cast<uint32_t>(Viewport.Height);
+        DispatchNewPass(Cmd, RestirGINewResolvePipeline.Get(), L"ReSTIR GI - resolve", 0u, BindlessIndices, FullWidth, FullHeight, Data.bEnabled && bInputsValid);
+    });
+}
+
 void FDeferredRenderer::AddSsrRayCounterClearPass(FRenderGraph& Graph, uint32_t FrameIndex)
 {
     struct FSsrRayCounterClearPassData
@@ -5215,6 +5803,38 @@ void FDeferredRenderer::FinalizeFrameState(const FDeferredFrameState& FrameState
         RestirGIReservoirHistoryUavBindlessIndex = CurrentReservoirUav;
     }
 
+    if (RestirGINewReservoirDepthNormalATexture && RestirGINewReservoirDepthNormalBTexture)
+    {
+        std::swap(RestirGINewReservoirDepthNormalATexture, RestirGINewReservoirDepthNormalBTexture);
+        std::swap(RestirGINewReservoirDepthNormalAState, RestirGINewReservoirDepthNormalBState);
+        std::swap(RestirGINewReservoirDepthNormalASrvBindlessIndex, RestirGINewReservoirDepthNormalBSrvBindlessIndex);
+        std::swap(RestirGINewReservoirDepthNormalAUavBindlessIndex, RestirGINewReservoirDepthNormalBUavBindlessIndex);
+    }
+
+    if (RestirGINewReservoirSampleRadianceATexture && RestirGINewReservoirSampleRadianceBTexture)
+    {
+        std::swap(RestirGINewReservoirSampleRadianceATexture, RestirGINewReservoirSampleRadianceBTexture);
+        std::swap(RestirGINewReservoirSampleRadianceAState, RestirGINewReservoirSampleRadianceBState);
+        std::swap(RestirGINewReservoirSampleRadianceASrvBindlessIndex, RestirGINewReservoirSampleRadianceBSrvBindlessIndex);
+        std::swap(RestirGINewReservoirSampleRadianceAUavBindlessIndex, RestirGINewReservoirSampleRadianceBUavBindlessIndex);
+    }
+
+    if (RestirGINewReservoirRayDirectionATexture && RestirGINewReservoirRayDirectionBTexture)
+    {
+        std::swap(RestirGINewReservoirRayDirectionATexture, RestirGINewReservoirRayDirectionBTexture);
+        std::swap(RestirGINewReservoirRayDirectionAState, RestirGINewReservoirRayDirectionBState);
+        std::swap(RestirGINewReservoirRayDirectionASrvBindlessIndex, RestirGINewReservoirRayDirectionBSrvBindlessIndex);
+        std::swap(RestirGINewReservoirRayDirectionAUavBindlessIndex, RestirGINewReservoirRayDirectionBUavBindlessIndex);
+    }
+
+    if (RestirGINewReservoirMWATexture && RestirGINewReservoirMWBTexture)
+    {
+        std::swap(RestirGINewReservoirMWATexture, RestirGINewReservoirMWBTexture);
+        std::swap(RestirGINewReservoirMWAState, RestirGINewReservoirMWBState);
+        std::swap(RestirGINewReservoirMWASrvBindlessIndex, RestirGINewReservoirMWBSrvBindlessIndex);
+        std::swap(RestirGINewReservoirMWAUavBindlessIndex, RestirGINewReservoirMWBUavBindlessIndex);
+    }
+
     if (bRestirGIEnabled && RestirGIHistoryTexture != nullptr && RestirGIHistoryGeomATexture != nullptr && RestirGIHistoryGeomBTexture != nullptr)
     {
         const uint32_t MaxHistoryFrames = (std::max)(1u, RestirGIMaxHistoryFrames);
@@ -5425,6 +6045,60 @@ bool FDeferredRenderer::CreateRestirGIRootSignature(FDX12Device* Device)
     }
 
     HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(RestirGIRootSignature.GetAddressOf())));
+    return true;
+}
+
+bool FDeferredRenderer::CreateRestirGINewRootSignature(FDX12Device* Device)
+{
+    D3D12_ROOT_PARAMETER1 RootParams[4] = {};
+
+    // RootParams[0]: TLAS SRV (t0), used in Shaders/RestirGINew.hlsl
+    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[0].Descriptor.ShaderRegister = 0;
+    RootParams[0].Descriptor.RegisterSpace = 0;
+    RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+
+    // RootParams[1]: Scene constants CBV (b0), used in Shaders/SceneConstants.hlsl
+    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[1].Descriptor.ShaderRegister = 0;
+    RootParams[1].Descriptor.RegisterSpace = 0;
+    RootParams[1].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+
+    // RootParams[2]: ReSTIR GI New constants (b1)
+    RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[2].Constants.Num32BitValues = 12;
+    RootParams[2].Constants.RegisterSpace = 0;
+    RootParams[2].Constants.ShaderRegister = 1;
+
+    // RootParams[3]: ReSTIR GI New bindless indices (b2)
+    RootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[3].Constants.Num32BitValues = 26;
+    RootParams[3].Constants.RegisterSpace = 0;
+    RootParams[3].Constants.ShaderRegister = 2;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
+    RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    RootSigDesc.Desc_1_1.NumParameters = _countof(RootParams);
+    RootSigDesc.Desc_1_1.pParameters = RootParams;
+    RootSigDesc.Desc_1_1.NumStaticSamplers = 0;
+    RootSigDesc.Desc_1_1.pStaticSamplers = nullptr;
+    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
+        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
+
+    ComPtr<ID3DBlob> SerializedSig;
+    ComPtr<ID3DBlob> ErrorBlob;
+    HR_CHECK(D3D12SerializeVersionedRootSignature(&RootSigDesc, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
+
+    if (ErrorBlob)
+    {
+        OutputDebugStringA(static_cast<const char*>(ErrorBlob->GetBufferPointer()));
+    }
+
+    HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(RestirGINewRootSignature.GetAddressOf())));
     return true;
 }
 
@@ -6010,6 +6684,96 @@ bool FDeferredRenderer::CreateRestirGIPipeline(FDX12Device* Device)
         RestirGISpatialPipeline.Reset();
         return false;
     }
+    return true;
+}
+
+bool FDeferredRenderer::CreateRestirGINewPipeline(FDX12Device* Device)
+{
+    if (!Device)
+    {
+        return false;
+    }
+
+    if (!Device->IsRayTracingSupported())
+    {
+        LogWarning("Skipping ReSTIR GI New pipeline creation: DXR is not supported.");
+        return false;
+    }
+
+    FShaderCompiler Compiler;
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring CSTarget = RendererUtils::BuildShaderTarget(L"cs", ShaderModel);
+
+    std::vector<uint8_t> InitialByteCode;
+    if (!Compiler.CompileFromFile(L"Shaders/RestirGINew.hlsl", L"CSInitialSampling", CSTarget, InitialByteCode))
+    {
+        return false;
+    }
+
+    std::vector<uint8_t> TemporalByteCode;
+    if (!Compiler.CompileFromFile(L"Shaders/RestirGINew.hlsl", L"CSTemporalResampling", CSTarget, TemporalByteCode))
+    {
+        return false;
+    }
+
+    std::vector<uint8_t> SpatialByteCode;
+    if (!Compiler.CompileFromFile(L"Shaders/RestirGINew.hlsl", L"CSSpatialResampling", CSTarget, SpatialByteCode))
+    {
+        return false;
+    }
+
+    std::vector<uint8_t> ResolveByteCode;
+    if (!Compiler.CompileFromFile(L"Shaders/RestirGINew.hlsl", L"CSResolve", CSTarget, ResolveByteCode))
+    {
+        return false;
+    }
+
+    D3D12_COMPUTE_PIPELINE_STATE_DESC PsoDesc = {};
+    PsoDesc.pRootSignature = RestirGINewRootSignature.Get();
+
+    auto CreateComputePso = [Device](const D3D12_COMPUTE_PIPELINE_STATE_DESC& Desc, Microsoft::WRL::ComPtr<ID3D12PipelineState>& OutPipeline, const char* PipelineName)
+    {
+        const HRESULT Hr = Device->GetDevice()->CreateComputePipelineState(&Desc, IID_PPV_ARGS(OutPipeline.GetAddressOf()));
+        if (FAILED(Hr))
+        {
+            std::ostringstream Oss;
+            Oss << "ReSTIR GI New pipeline creation failed for " << PipelineName << ", hr=0x" << std::hex << static_cast<uint32_t>(Hr);
+            LogWarning(Oss.str());
+            return false;
+        }
+        return true;
+    };
+
+    PsoDesc.CS = { InitialByteCode.data(), InitialByteCode.size() };
+    if (!CreateComputePso(PsoDesc, RestirGINewInitialPipeline, "CSInitialSampling"))
+    {
+        return false;
+    }
+
+    PsoDesc.CS = { TemporalByteCode.data(), TemporalByteCode.size() };
+    if (!CreateComputePso(PsoDesc, RestirGINewTemporalPipeline, "CSTemporalResampling"))
+    {
+        RestirGINewInitialPipeline.Reset();
+        return false;
+    }
+
+    PsoDesc.CS = { SpatialByteCode.data(), SpatialByteCode.size() };
+    if (!CreateComputePso(PsoDesc, RestirGINewSpatialPipeline, "CSSpatialResampling"))
+    {
+        RestirGINewInitialPipeline.Reset();
+        RestirGINewTemporalPipeline.Reset();
+        return false;
+    }
+
+    PsoDesc.CS = { ResolveByteCode.data(), ResolveByteCode.size() };
+    if (!CreateComputePso(PsoDesc, RestirGINewResolvePipeline, "CSResolve"))
+    {
+        RestirGINewInitialPipeline.Reset();
+        RestirGINewTemporalPipeline.Reset();
+        RestirGINewSpatialPipeline.Reset();
+        return false;
+    }
+
     return true;
 }
 
@@ -7445,6 +8209,46 @@ bool FDeferredRenderer::CreateRestirGIResources(FDX12Device* Device, uint32_t Wi
         RestirGIReservoirHistoryBuffer->SetName(L"ReSTIR_GI_Reservoir_History");
     }
 
+    const uint32_t HalfWidth = (Width + 1u) / 2u;
+    const uint32_t HalfHeight = (Height + 1u) / 2u;
+
+    auto CreateRestirNewTexture = [&](DXGI_FORMAT Format, const wchar_t* Name, Microsoft::WRL::ComPtr<ID3D12Resource>& OutResource)
+    {
+        CD3DX12_RESOURCE_DESC TextureDesc = CD3DX12_RESOURCE_DESC::Tex2D(
+            Format,
+            HalfWidth,
+            HalfHeight,
+            1,
+            1,
+            1,
+            0,
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+
+        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+            &HeapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &TextureDesc,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            nullptr,
+            IID_PPV_ARGS(OutResource.ReleaseAndGetAddressOf())));
+
+        if (OutResource)
+        {
+            OutResource->SetName(Name);
+        }
+    };
+
+    CreateRestirNewTexture(DXGI_FORMAT_R16G16B16A16_FLOAT, L"ReSTIR_GI_New_InitialRadiance", RestirGINewInitialRadianceTexture);
+    CreateRestirNewTexture(DXGI_FORMAT_R32_UINT, L"ReSTIR_GI_New_InitialRayDirection", RestirGINewInitialRayDirectionTexture);
+    CreateRestirNewTexture(DXGI_FORMAT_R32G32_UINT, L"ReSTIR_GI_New_ReservoirDepthNormalA", RestirGINewReservoirDepthNormalATexture);
+    CreateRestirNewTexture(DXGI_FORMAT_R32G32_UINT, L"ReSTIR_GI_New_ReservoirDepthNormalB", RestirGINewReservoirDepthNormalBTexture);
+    CreateRestirNewTexture(DXGI_FORMAT_R16G16B16A16_FLOAT, L"ReSTIR_GI_New_ReservoirSampleRadianceA", RestirGINewReservoirSampleRadianceATexture);
+    CreateRestirNewTexture(DXGI_FORMAT_R16G16B16A16_FLOAT, L"ReSTIR_GI_New_ReservoirSampleRadianceB", RestirGINewReservoirSampleRadianceBTexture);
+    CreateRestirNewTexture(DXGI_FORMAT_R32_UINT, L"ReSTIR_GI_New_ReservoirRayDirectionA", RestirGINewReservoirRayDirectionATexture);
+    CreateRestirNewTexture(DXGI_FORMAT_R32_UINT, L"ReSTIR_GI_New_ReservoirRayDirectionB", RestirGINewReservoirRayDirectionBTexture);
+    CreateRestirNewTexture(DXGI_FORMAT_R32G32_FLOAT, L"ReSTIR_GI_New_ReservoirMWA", RestirGINewReservoirMWATexture);
+    CreateRestirNewTexture(DXGI_FORMAT_R32G32_FLOAT, L"ReSTIR_GI_New_ReservoirMWB", RestirGINewReservoirMWBTexture);
+
     RestirGIState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     RestirGIHistoryState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     RestirGIHistoryGeomAState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -7452,6 +8256,16 @@ bool FDeferredRenderer::CreateRestirGIResources(FDX12Device* Device, uint32_t Wi
     RestirGITemporalReservoirState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     RestirGISpatialReservoirState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     RestirGIReservoirHistoryState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    RestirGINewInitialRadianceState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    RestirGINewInitialRayDirectionState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    RestirGINewReservoirDepthNormalAState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    RestirGINewReservoirDepthNormalBState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    RestirGINewReservoirSampleRadianceAState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    RestirGINewReservoirSampleRadianceBState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    RestirGINewReservoirRayDirectionAState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    RestirGINewReservoirRayDirectionBState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    RestirGINewReservoirMWAState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    RestirGINewReservoirMWBState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     bRestirGIHistoryValid = false;
     return true;
 }
@@ -8364,6 +9178,47 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         RestirGISpatialReservoirUavBindlessIndex = Device->CreateBindlessUav(RestirGISpatialReservoirBuffer.Get(), nullptr, ReservoirUavDesc);
         RestirGIReservoirHistorySrvBindlessIndex = Device->CreateBindlessSrv(RestirGIReservoirHistoryBuffer.Get(), ReservoirSrvDesc);
         RestirGIReservoirHistoryUavBindlessIndex = Device->CreateBindlessUav(RestirGIReservoirHistoryBuffer.Get(), nullptr, ReservoirUavDesc);
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC RestirNewSrvDesc = {};
+        RestirNewSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        RestirNewSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        RestirNewSrvDesc.Texture2D.MipLevels = 1;
+
+        D3D12_UNORDERED_ACCESS_VIEW_DESC RestirNewUavDesc = {};
+        RestirNewUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        RestirNewUavDesc.Texture2D.MipSlice = 0;
+
+        RestirNewSrvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        RestirNewUavDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        RestirGINewInitialRadianceSrvBindlessIndex = Device->CreateBindlessSrv(RestirGINewInitialRadianceTexture.Get(), RestirNewSrvDesc);
+        RestirGINewInitialRadianceUavBindlessIndex = Device->CreateBindlessUav(RestirGINewInitialRadianceTexture.Get(), nullptr, RestirNewUavDesc);
+        RestirGINewReservoirSampleRadianceASrvBindlessIndex = Device->CreateBindlessSrv(RestirGINewReservoirSampleRadianceATexture.Get(), RestirNewSrvDesc);
+        RestirGINewReservoirSampleRadianceAUavBindlessIndex = Device->CreateBindlessUav(RestirGINewReservoirSampleRadianceATexture.Get(), nullptr, RestirNewUavDesc);
+        RestirGINewReservoirSampleRadianceBSrvBindlessIndex = Device->CreateBindlessSrv(RestirGINewReservoirSampleRadianceBTexture.Get(), RestirNewSrvDesc);
+        RestirGINewReservoirSampleRadianceBUavBindlessIndex = Device->CreateBindlessUav(RestirGINewReservoirSampleRadianceBTexture.Get(), nullptr, RestirNewUavDesc);
+
+        RestirNewSrvDesc.Format = DXGI_FORMAT_R32_UINT;
+        RestirNewUavDesc.Format = DXGI_FORMAT_R32_UINT;
+        RestirGINewInitialRayDirectionSrvBindlessIndex = Device->CreateBindlessSrv(RestirGINewInitialRayDirectionTexture.Get(), RestirNewSrvDesc);
+        RestirGINewInitialRayDirectionUavBindlessIndex = Device->CreateBindlessUav(RestirGINewInitialRayDirectionTexture.Get(), nullptr, RestirNewUavDesc);
+        RestirGINewReservoirRayDirectionASrvBindlessIndex = Device->CreateBindlessSrv(RestirGINewReservoirRayDirectionATexture.Get(), RestirNewSrvDesc);
+        RestirGINewReservoirRayDirectionAUavBindlessIndex = Device->CreateBindlessUav(RestirGINewReservoirRayDirectionATexture.Get(), nullptr, RestirNewUavDesc);
+        RestirGINewReservoirRayDirectionBSrvBindlessIndex = Device->CreateBindlessSrv(RestirGINewReservoirRayDirectionBTexture.Get(), RestirNewSrvDesc);
+        RestirGINewReservoirRayDirectionBUavBindlessIndex = Device->CreateBindlessUav(RestirGINewReservoirRayDirectionBTexture.Get(), nullptr, RestirNewUavDesc);
+
+        RestirNewSrvDesc.Format = DXGI_FORMAT_R32G32_UINT;
+        RestirNewUavDesc.Format = DXGI_FORMAT_R32G32_UINT;
+        RestirGINewReservoirDepthNormalASrvBindlessIndex = Device->CreateBindlessSrv(RestirGINewReservoirDepthNormalATexture.Get(), RestirNewSrvDesc);
+        RestirGINewReservoirDepthNormalAUavBindlessIndex = Device->CreateBindlessUav(RestirGINewReservoirDepthNormalATexture.Get(), nullptr, RestirNewUavDesc);
+        RestirGINewReservoirDepthNormalBSrvBindlessIndex = Device->CreateBindlessSrv(RestirGINewReservoirDepthNormalBTexture.Get(), RestirNewSrvDesc);
+        RestirGINewReservoirDepthNormalBUavBindlessIndex = Device->CreateBindlessUav(RestirGINewReservoirDepthNormalBTexture.Get(), nullptr, RestirNewUavDesc);
+
+        RestirNewSrvDesc.Format = DXGI_FORMAT_R32G32_FLOAT;
+        RestirNewUavDesc.Format = DXGI_FORMAT_R32G32_FLOAT;
+        RestirGINewReservoirMWASrvBindlessIndex = Device->CreateBindlessSrv(RestirGINewReservoirMWATexture.Get(), RestirNewSrvDesc);
+        RestirGINewReservoirMWAUavBindlessIndex = Device->CreateBindlessUav(RestirGINewReservoirMWATexture.Get(), nullptr, RestirNewUavDesc);
+        RestirGINewReservoirMWBSrvBindlessIndex = Device->CreateBindlessSrv(RestirGINewReservoirMWBTexture.Get(), RestirNewSrvDesc);
+        RestirGINewReservoirMWBUavBindlessIndex = Device->CreateBindlessUav(RestirGINewReservoirMWBTexture.Get(), nullptr, RestirNewUavDesc);
     }
 
     {

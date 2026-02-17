@@ -518,5 +518,11 @@
     <None Include="Shaders\RestirGIReservoir.hlsli">
       <Filter>Shaders</Filter>
     </None>
+    <None Include="Shaders\RestirGINew.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\RestirGINewReservoir.hlsli">
+      <Filter>Shaders</Filter>
+    </None>
   </ItemGroup>
 </Project>

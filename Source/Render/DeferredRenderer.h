@@ -123,6 +123,8 @@ public:
     float GetSsrIntensity() const { return SsrIntensity; }
     void SetRestirGIEnabled(bool bEnabled) { bRestirGIEnabled = bEnabled; }
     bool IsRestirGIEnabled() const { return bRestirGIEnabled; }
+    void SetRestirGIMode(ERestirGIMode Mode) { RestirGIMode = Mode; }
+    ERestirGIMode GetRestirGIMode() const { return RestirGIMode; }
     void SetRestirGISamplesPerPixel(uint32_t Samples) { RestirGISamplesPerPixel = Samples; }
     uint32_t GetRestirGISamplesPerPixel() const { return RestirGISamplesPerPixel; }
     void SetRestirGIIntensity(float Intensity) { RestirGIIntensity = Intensity; }
@@ -238,6 +240,16 @@ private:
         FRGBufferHandle RestirGITemporalReservoirHandle{};
         FRGBufferHandle RestirGISpatialReservoirHandle{};
         FRGBufferHandle RestirGIReservoirHistoryHandle{};
+        FRGResourceHandle RestirGINewInitialRadianceHandle{};
+        FRGResourceHandle RestirGINewInitialRayDirectionHandle{};
+        FRGResourceHandle RestirGINewReservoirDepthNormalAHandle{};
+        FRGResourceHandle RestirGINewReservoirDepthNormalBHandle{};
+        FRGResourceHandle RestirGINewReservoirSampleRadianceAHandle{};
+        FRGResourceHandle RestirGINewReservoirSampleRadianceBHandle{};
+        FRGResourceHandle RestirGINewReservoirRayDirectionAHandle{};
+        FRGResourceHandle RestirGINewReservoirRayDirectionBHandle{};
+        FRGResourceHandle RestirGINewReservoirMWAHandle{};
+        FRGResourceHandle RestirGINewReservoirMWBHandle{};
         FRGResourceHandle SsrHandle{};
         FRGResourceHandle SsrDenoiseHandle{};
         FRGResourceHandle SsrFallbackHandle{};
@@ -254,6 +266,7 @@ private:
     bool CreateBasePassRootSignature(FDX12Device* Device);
     bool CreateLightingRootSignature(FDX12Device* Device);
     bool CreateRestirGIRootSignature(FDX12Device* Device);
+    bool CreateRestirGINewRootSignature(FDX12Device* Device);
     bool CreateVelocityRootSignature(FDX12Device* Device);
     bool CreateBasePassPipeline(FDX12Device* Device, DXGI_FORMAT LightingFormat);
     bool CreateVelocityPipeline(FDX12Device* Device);
@@ -277,6 +290,7 @@ private:
     bool CreateSsrDispatchCommandSignature(FDX12Device* Device);
     bool CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateRestirGIPipeline(FDX12Device* Device);
+    bool CreateRestirGINewPipeline(FDX12Device* Device);
     bool CreateHZBRootSignature(FDX12Device* Device);
     bool CreateHZBPipeline(FDX12Device* Device);
     bool CreateAutoExposureRootSignature(FDX12Device* Device);
@@ -357,6 +371,7 @@ private:
     void AddLinearDepthPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle LinearDepthHandle);
     void AddGtaoPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle GtaoHandle);
     void AddRestirGIPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle LinearDepthHandle, FRGResourceHandle RestirGIHandle, FRGResourceHandle RestirGIHistoryHandle, FRGResourceHandle RestirGIHistoryGeomAHandle, FRGResourceHandle RestirGIHistoryGeomBHandle, FRGBufferHandle RestirGITemporalReservoirHandle, FRGBufferHandle RestirGISpatialReservoirHandle, FRGBufferHandle RestirGIReservoirHistoryHandle);
+    void AddRestirGINewPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle VelocityHandle, FRGResourceHandle RestirGIHandle, FRGResourceHandle RestirGIHistoryGeomAHandle, FRGResourceHandle RestirGIHistoryGeomBHandle, FRGResourceHandle RestirGINewInitialRadianceHandle, FRGResourceHandle RestirGINewInitialRayDirectionHandle, FRGResourceHandle RestirGINewReservoirDepthNormalAHandle, FRGResourceHandle RestirGINewReservoirDepthNormalBHandle, FRGResourceHandle RestirGINewReservoirSampleRadianceAHandle, FRGResourceHandle RestirGINewReservoirSampleRadianceBHandle, FRGResourceHandle RestirGINewReservoirRayDirectionAHandle, FRGResourceHandle RestirGINewReservoirRayDirectionBHandle, FRGResourceHandle RestirGINewReservoirMWAHandle, FRGResourceHandle RestirGINewReservoirMWBHandle);
     void AddSsrRayCounterClearPass(FRenderGraph& Graph, uint32_t FrameIndex);
     void AddSsrRayGatherPass(FRenderGraph& Graph, uint32_t FrameIndex, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle);
     void AddSsrBuildIndirectArgsPass(FRenderGraph& Graph, uint32_t FrameIndex, bool bHwMiss);
@@ -381,6 +396,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> BasePassRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> LightingRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> RestirGIRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> RestirGINewRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> VelocityRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> HZBRootSignature;
     // Base pass pipelines indexed by permutation key (bit 0: Normal, bit 1: MR, bit 2: BaseColor, bit 3: Emissive, bit 4: AlphaMask, bit 5: SheenModel, bit 6: ClearcoatModel, bit 7: AnisotropyModel)
@@ -413,6 +429,10 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGIPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGISpatialPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGIResolvePipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGINewInitialPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGINewTemporalPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGINewSpatialPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGINewResolvePipeline;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> HZBPipelines;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> AutoExposurePipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> TaaPipeline;
@@ -440,6 +460,16 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGITemporalReservoirBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGISpatialReservoirBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIReservoirHistoryBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGINewInitialRadianceTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGINewInitialRayDirectionTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGINewReservoirDepthNormalATexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGINewReservoirDepthNormalBTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGINewReservoirSampleRadianceATexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGINewReservoirSampleRadianceBTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGINewReservoirRayDirectionATexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGINewReservoirRayDirectionBTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGINewReservoirMWATexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGINewReservoirMWBTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> SsrTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> SsrDenoiseTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> SsrFallbackTexture;
@@ -495,6 +525,26 @@ private:
     uint32_t RestirGISpatialReservoirUavBindlessIndex = UINT32_MAX;
     uint32_t RestirGIReservoirHistorySrvBindlessIndex = UINT32_MAX;
     uint32_t RestirGIReservoirHistoryUavBindlessIndex = UINT32_MAX;
+    uint32_t RestirGINewInitialRadianceSrvBindlessIndex = UINT32_MAX;
+    uint32_t RestirGINewInitialRadianceUavBindlessIndex = UINT32_MAX;
+    uint32_t RestirGINewInitialRayDirectionSrvBindlessIndex = UINT32_MAX;
+    uint32_t RestirGINewInitialRayDirectionUavBindlessIndex = UINT32_MAX;
+    uint32_t RestirGINewReservoirDepthNormalASrvBindlessIndex = UINT32_MAX;
+    uint32_t RestirGINewReservoirDepthNormalAUavBindlessIndex = UINT32_MAX;
+    uint32_t RestirGINewReservoirDepthNormalBSrvBindlessIndex = UINT32_MAX;
+    uint32_t RestirGINewReservoirDepthNormalBUavBindlessIndex = UINT32_MAX;
+    uint32_t RestirGINewReservoirSampleRadianceASrvBindlessIndex = UINT32_MAX;
+    uint32_t RestirGINewReservoirSampleRadianceAUavBindlessIndex = UINT32_MAX;
+    uint32_t RestirGINewReservoirSampleRadianceBSrvBindlessIndex = UINT32_MAX;
+    uint32_t RestirGINewReservoirSampleRadianceBUavBindlessIndex = UINT32_MAX;
+    uint32_t RestirGINewReservoirRayDirectionASrvBindlessIndex = UINT32_MAX;
+    uint32_t RestirGINewReservoirRayDirectionAUavBindlessIndex = UINT32_MAX;
+    uint32_t RestirGINewReservoirRayDirectionBSrvBindlessIndex = UINT32_MAX;
+    uint32_t RestirGINewReservoirRayDirectionBUavBindlessIndex = UINT32_MAX;
+    uint32_t RestirGINewReservoirMWASrvBindlessIndex = UINT32_MAX;
+    uint32_t RestirGINewReservoirMWAUavBindlessIndex = UINT32_MAX;
+    uint32_t RestirGINewReservoirMWBSrvBindlessIndex = UINT32_MAX;
+    uint32_t RestirGINewReservoirMWBUavBindlessIndex = UINT32_MAX;
     uint32_t SsrBindlessIndex = UINT32_MAX;
     uint32_t SsrDenoiseBindlessIndex = UINT32_MAX;
     uint32_t SsrFallbackBindlessIndex = UINT32_MAX;
@@ -535,6 +585,16 @@ private:
     D3D12_RESOURCE_STATES RestirGITemporalReservoirState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES RestirGISpatialReservoirState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES RestirGIReservoirHistoryState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    D3D12_RESOURCE_STATES RestirGINewInitialRadianceState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    D3D12_RESOURCE_STATES RestirGINewInitialRayDirectionState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    D3D12_RESOURCE_STATES RestirGINewReservoirDepthNormalAState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    D3D12_RESOURCE_STATES RestirGINewReservoirDepthNormalBState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    D3D12_RESOURCE_STATES RestirGINewReservoirSampleRadianceAState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    D3D12_RESOURCE_STATES RestirGINewReservoirSampleRadianceBState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    D3D12_RESOURCE_STATES RestirGINewReservoirRayDirectionAState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    D3D12_RESOURCE_STATES RestirGINewReservoirRayDirectionBState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    D3D12_RESOURCE_STATES RestirGINewReservoirMWAState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    D3D12_RESOURCE_STATES RestirGINewReservoirMWBState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES SsrState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES SsrDenoiseState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES SsrFallbackState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -631,6 +691,7 @@ private:
     bool bSsrRefineEnabled = false;
     bool bSsrDenoiseEnabled = false;
     bool bRestirGIEnabled = false;
+    ERestirGIMode RestirGIMode = ERestirGIMode::Legacy;
 	uint32_t SsrMaxSteps = 32;
 	float SsrMaxDistance = 50.0f;
 	float SsrThickness = 1.00f;
