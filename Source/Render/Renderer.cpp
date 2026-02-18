@@ -487,7 +487,8 @@ bool FRenderer::CreateShadowPipeline(
     FDX12Device* Device,
     ID3D12RootSignature* RootSignature,
     const std::vector<std::wstring>& Defines,
-    Microsoft::WRL::ComPtr<ID3D12PipelineState>& OutPipelineState)
+    Microsoft::WRL::ComPtr<ID3D12PipelineState>& OutPipelineState,
+    bool bDoubleSided)
 {
     if (!Device || !RootSignature)
     {
@@ -515,7 +516,7 @@ bool FRenderer::CreateShadowPipeline(
 
     PsoDesc.RasterizerState = {};
     PsoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    PsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_FRONT;
+    PsoDesc.RasterizerState.CullMode = bDoubleSided ? D3D12_CULL_MODE_NONE : D3D12_CULL_MODE_FRONT;
     PsoDesc.RasterizerState.FrontCounterClockwise = TRUE;
     PsoDesc.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
     PsoDesc.RasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
@@ -2699,7 +2700,8 @@ bool FRenderer::PrepareGpuDrivenDrawData(FGpuDrivenPreparedData& OutData)
                 const DirectX::XMVECTOR WorldAxis = DirectX::XMVector3Normalize(DirectX::XMVector3TransformNormal(LocalAxis, NormalMatrix));
                 DirectX::XMFLOAT3 Axis{};
                 DirectX::XMStoreFloat3(&Axis, WorldAxis);
-                OutData.ConeAxisCutoff.emplace_back(Axis.x, Axis.y, Axis.z, BoundsData.ConeCutoff);
+                const float ConeCutoff = Model.bDoubleSided ? -1.0f : BoundsData.ConeCutoff;
+                OutData.ConeAxisCutoff.emplace_back(Axis.x, Axis.y, Axis.z, ConeCutoff);
 
                 const DirectX::XMVECTOR LocalApex = DirectX::XMLoadFloat3(&BoundsData.ConeApex);
                 const DirectX::XMVECTOR WorldApex = DirectX::XMVector3TransformCoord(LocalApex, World);

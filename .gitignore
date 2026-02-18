@@ -49,3 +49,4 @@ x64
 obj
 /packages
 *.log
+/Agents.md

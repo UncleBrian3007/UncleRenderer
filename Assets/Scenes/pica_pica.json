@@ -1,22 +1,38 @@
 {
-  "meta": {"name": "sample_multi_asset_scene", "version": 1},
-  "camera": {"position": [-13.482, 20.457, -42.455], "rotation": [19.199, 16.599, 0.0], "fov_y": 60},
-  "environment": {"background": [0.05, 0.05, 0.07]},
+  "meta": {
+    "name": "sample_multi_asset_scene",
+    "version": 1
+  },
+  "camera": {
+    "position": [ -41.5314484, 8.48685074, -13.0126009 ],
+    "rotation": [ 12.64, -12.64, 0.0 ],
+    "fov_y": 60
+  },
+  "environment": { "background": [ 0.05, 0.05, 0.07 ] },
   "models": [
     {
       "id": "pica_pica",
       "path": "pica_pica/scene.gltf",
       "translate": [ 0.0, 0.0, 0.0 ],
       "rotate_euler": [ 0.0, 0.0, 0.0 ],
-      "scale": [ 1.0, 1.0, 1.0 ]
+      "scale": [ 1.0, 1.0, 1.0 ],
+      "visible": true
+    },
+    {
+      "id": "CornellBox",
+      "path": "Models/CornellBox/CornellBox.gltf",
+      "translate": [ -50.0, 0.0, 0.0 ],
+      "rotate_euler": [ 0.0, 0.0, 0.0 ],
+      "scale": [ 5.0, 5.0, 5.0 ],
+      "visible": true
     }
   ],
   "lights": [
     {
       "type": "directional",
-      "rotation": [-45.000, -135.0000, 0.000],
+      "rotation": [ -45.000, -135.0000, 0.000 ],
       "intensity": 1.0,
-      "color": [1.0, 0.95, 0.9]
+      "color": [ 1.0, 0.95, 0.9 ]
     }
   ]
 }

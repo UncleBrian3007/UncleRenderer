@@ -69,15 +69,26 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
 
     LogInfo("Creating forward renderer shadow pipeline...");
     const std::vector<std::wstring> ShadowDefines;
-    if (!CreateShadowPipeline(Device, RootSignature.Get(), ShadowDefines, ShadowPipeline))
+    if (!CreateShadowPipeline(Device, RootSignature.Get(), ShadowDefines, ShadowPipelines[0], false))
     {
         LogError("Forward renderer initialization failed: shadow pipeline creation failed");
         return false;
     }
     const std::vector<std::wstring> ShadowSkinnedDefines = { L"USE_SKINNING=1" };
-    if (!CreateShadowPipeline(Device, RootSignature.Get(), ShadowSkinnedDefines, ShadowPipelineSkinned))
+    if (!CreateShadowPipeline(Device, RootSignature.Get(), ShadowSkinnedDefines, ShadowPipelinesSkinned[0], false))
     {
-        LogError("Forward renderer initialization failed: shadow pipeline (skinned) creation failed");
+        LogError("Forward renderer initialization failed: shadow pipeline (single-sided skinned) creation failed");
+        return false;
+    }
+
+    if (!CreateShadowPipeline(Device, RootSignature.Get(), ShadowDefines, ShadowPipelines[1], true))
+    {
+        LogError("Forward renderer initialization failed: shadow pipeline (double-sided) creation failed");
+        return false;
+    }
+    if (!CreateShadowPipeline(Device, RootSignature.Get(), ShadowSkinnedDefines, ShadowPipelinesSkinned[1], true))
+    {
+        LogError("Forward renderer initialization failed: shadow pipeline (double-sided skinned) creation failed");
         return false;
     }
 
@@ -272,8 +283,8 @@ void FForwardRenderer::PrepareFrameState(const FCamera& Camera, FForwardFrameSta
 {
     UpdateCullingVisibility(Camera);
     OutState.LightViewProjection = RendererUtils::BuildDirectionalLightViewProjection(SceneCenter, SceneRadius, LightDirection);
-    OutState.bRenderShadows = bShadowsEnabled && ShadowPipeline && ShadowMap;
-    OutState.bDoDepthPrepass = bDepthPrepassEnabled && DepthPrepassPipeline;
+    OutState.bRenderShadows = bShadowsEnabled && ShadowPipelines[0] && ShadowPipelines[1] && ShadowMap;
+    OutState.bDoDepthPrepass = bDepthPrepassEnabled && DepthPrepassPipelines[0] && DepthPrepassPipelines[1];
 }
 
 void FForwardRenderer::ConfigureFrameGraph(FRenderGraph& Graph) const
@@ -580,16 +591,16 @@ void FForwardRenderer::AddShadowPass(FRenderGraph& Graph, const FCamera& Camera,
 
         ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
         ID3D12PipelineState* CurrentShadowPipeline = nullptr;
-        const auto SetShadowPipeline = [&](bool bUseSkinning)
+        const auto SetShadowPipeline = [&](bool bUseSkinning, bool bDoubleSided)
         {
-            ID3D12PipelineState* Pipeline = bUseSkinning ? ShadowPipelineSkinned.Get() : ShadowPipeline.Get();
+            ID3D12PipelineState* Pipeline = bUseSkinning ? ShadowPipelinesSkinned[bDoubleSided ? 1u : 0u].Get() : ShadowPipelines[bDoubleSided ? 1u : 0u].Get();
             if (Pipeline != CurrentShadowPipeline)
             {
                 LocalCommandList->SetPipelineState(Pipeline);
                 CurrentShadowPipeline = Pipeline;
             }
         };
-        SetShadowPipeline(false);
+        SetShadowPipeline(false, false);
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         LocalCommandList->SetGraphicsRootSignature(RootSignature.Get());
         LocalCommandList->RSSetViewports(1, &ShadowViewport);
@@ -637,7 +648,7 @@ void FForwardRenderer::AddShadowPass(FRenderGraph& Graph, const FCamera& Camera,
                 0,
                 ConstantBufferAddress + ConstantBufferOffset);
             const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0;
-            SetShadowPipeline(bUseSkinning);
+            SetShadowPipeline(bUseSkinning, Model.bDoubleSided);
 
             if (AreModelPixEventsEnabled())
             {
@@ -729,7 +740,7 @@ void FForwardRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Camer
             UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset, Data.LightViewProjection);
 
             const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0;
-            ID3D12PipelineState* DesiredPipeline = bUseSkinning ? DepthPrepassPipelineSkinned.Get() : DepthPrepassPipeline.Get();
+            ID3D12PipelineState* DesiredPipeline = bUseSkinning ? DepthPrepassPipelinesSkinned[Model.bDoubleSided ? 1u : 0u].Get() : DepthPrepassPipelines[Model.bDoubleSided ? 1u : 0u].Get();
             if (DesiredPipeline != CurrentPipeline)
             {
                 CurrentPipeline = DesiredPipeline;
@@ -899,7 +910,7 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
             auto SelectPipelineByKey = [&](uint32_t Key)
             {
                 const bool bUseSkinning = (Key & (1u << 8)) != 0;
-                const uint32_t MaterialKey = Key & 0xFFu;
+                const uint32_t MaterialKey = (Key & 0xFFu) | (((Key >> 9) & 1u) << 8);
                 return bUseSkinning ? BasePassPipelinesSkinned[MaterialKey].Get() : BasePassPipelines[MaterialKey].Get();
             };
 
@@ -975,6 +986,7 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                     const bool bUseClearcoatModel = Model.ShadingModelId == 2u;
                     const bool bUseAnisotropyModel = Model.ShadingModelId == 3u;
 
+                    const bool bUseDoubleSided = Model.bDoubleSided;
                     const uint32_t PipelineKey =
                         (bUseNormalMap ? 1u : 0u) |
                         (bUseMetallicRoughnessMap ? 2u : 0u) |
@@ -983,7 +995,8 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                         (bUseAlphaMask ? 16u : 0u) |
                         (bUseSheenModel ? 32u : 0u) |
                         (bUseClearcoatModel ? 64u : 0u) |
-                        (bUseAnisotropyModel ? 128u : 0u);
+                        (bUseAnisotropyModel ? 128u : 0u) |
+                        (bUseDoubleSided ? 256u : 0u);
 
                     LocalCommandList->SetPipelineState(BasePassPipelinesSkinned[PipelineKey].Get());
 
@@ -1048,6 +1061,7 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                 const bool bUseClearcoatModel = Model.ShadingModelId == 2u;
                 const bool bUseAnisotropyModel = Model.ShadingModelId == 3u;
 
+                const bool bUseDoubleSided = Model.bDoubleSided;
                 const uint32_t PipelineKey =
                     (bUseNormalMap ? 1u : 0u) |
                     (bUseMetallicRoughnessMap ? 2u : 0u) |
@@ -1056,7 +1070,8 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                     (bUseAlphaMask ? 16u : 0u) |
                     (bUseSheenModel ? 32u : 0u) |
                     (bUseClearcoatModel ? 64u : 0u) |
-                    (bUseAnisotropyModel ? 128u : 0u);
+                    (bUseAnisotropyModel ? 128u : 0u) |
+                    (bUseDoubleSided ? 256u : 0u);
 
                 LocalCommandList->SetPipelineState(bUseSkinning ? BasePassPipelinesSkinned[PipelineKey].Get() : BasePassPipelines[PipelineKey].Get());
 
@@ -1446,14 +1461,19 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
     PsoDesc.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
     PsoDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
 
-    for (uint32_t Permutation = 0; Permutation < 256; ++Permutation)
+    for (uint32_t DoubleSidedVariant = 0; DoubleSidedVariant < 2; ++DoubleSidedVariant)
     {
-        PsoDesc.VS = { VSByteCode.data(), VSByteCode.size() };
-        PsoDesc.PS = { PSByteCodes[Permutation].data(), PSByteCodes[Permutation].size() };
-        HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipelines[Permutation].GetAddressOf())));
+        PsoDesc.RasterizerState.CullMode = (DoubleSidedVariant == 0) ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_NONE;
+        for (uint32_t Permutation = 0; Permutation < 256; ++Permutation)
+        {
+            const uint32_t PipelineIndex = Permutation | (DoubleSidedVariant << 8);
+            PsoDesc.VS = { VSByteCode.data(), VSByteCode.size() };
+            PsoDesc.PS = { PSByteCodes[Permutation].data(), PSByteCodes[Permutation].size() };
+            HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipelines[PipelineIndex].GetAddressOf())));
 
-        PsoDesc.VS = { VSByteCodeSkinned.data(), VSByteCodeSkinned.size() };
-        HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipelinesSkinned[Permutation].GetAddressOf())));
+            PsoDesc.VS = { VSByteCodeSkinned.data(), VSByteCodeSkinned.size() };
+            HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipelinesSkinned[PipelineIndex].GetAddressOf())));
+        }
     }
 
     if (bDepthPrepassEnabled)
@@ -1464,9 +1484,14 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
         DepthPrepassDesc.NumRenderTargets = 0;
         DepthPrepassDesc.RTVFormats[0] = DXGI_FORMAT_UNKNOWN;
 
-        HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&DepthPrepassDesc, IID_PPV_ARGS(DepthPrepassPipeline.GetAddressOf())));
-        DepthPrepassDesc.VS = { VSByteCodeSkinned.data(), VSByteCodeSkinned.size() };
-        HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&DepthPrepassDesc, IID_PPV_ARGS(DepthPrepassPipelineSkinned.GetAddressOf())));
+        for (uint32_t DoubleSidedVariant = 0; DoubleSidedVariant < 2; ++DoubleSidedVariant)
+        {
+            DepthPrepassDesc.RasterizerState.CullMode = (DoubleSidedVariant == 0) ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_NONE;
+            DepthPrepassDesc.VS = { VSByteCode.data(), VSByteCode.size() };
+            HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&DepthPrepassDesc, IID_PPV_ARGS(DepthPrepassPipelines[DoubleSidedVariant].GetAddressOf())));
+            DepthPrepassDesc.VS = { VSByteCodeSkinned.data(), VSByteCodeSkinned.size() };
+            HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&DepthPrepassDesc, IID_PPV_ARGS(DepthPrepassPipelinesSkinned[DoubleSidedVariant].GetAddressOf())));
+        }
     }
 
     return true;

@@ -150,8 +150,12 @@ void EvaluateMeshletVisibility(
 
     if (visible)
     {
-        coneVisible = IsConeVisible_SphereExpanded(center, radius, index, MeshletConeAxisCutoff);
-        visible = coneVisible;
+        const float coneCutoff = MeshletConeAxisCutoff[index].w;
+        if (coneCutoff >= 0.0f)
+        {
+            coneVisible = IsConeVisible_SphereExpanded(center, radius, index, MeshletConeAxisCutoff);
+            visible = coneVisible;
+        }
     }
 
     occluded = false;

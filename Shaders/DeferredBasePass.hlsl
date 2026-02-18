@@ -49,6 +49,9 @@ struct VSOutput
 #ifndef VELOCITY_PASS
 #define VELOCITY_PASS 0
 #endif
+#ifndef USE_DOUBLE_SIDED
+#define USE_DOUBLE_SIDED 0
+#endif
 
 
 cbuffer BasePassBindlessConstants : register(b1)
@@ -244,7 +247,7 @@ PSOutputVelocity PSMainVelocity(VSOutput Input)
     return Output;
 }
 
-PSOutput PSMain(VSOutput Input)
+PSOutput PSMain(VSOutput Input, bool IsFrontFace : SV_IsFrontFace)
 {
     PSOutput Output;
     Texture2D AlbedoTexture = ResourceDescriptorHeap[AlbedoTextureIndex];
@@ -270,6 +273,12 @@ PSOutput PSMain(VSOutput Input)
     {
         Texture2D ClearcoatNormalTexture = ResourceDescriptorHeap[ClearcoatNormalTextureIndex];
         worldNormal = ComputeWorldNormalFromTexture(Input, ClearcoatNormalTexture, clearcoatNormalUV);
+    }
+#endif
+#if USE_DOUBLE_SIDED
+    if (!IsFrontFace)
+    {
+        worldNormal = -worldNormal;
     }
 #endif
 

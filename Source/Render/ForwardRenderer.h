@@ -72,13 +72,13 @@ private:
 private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> SkyRootSignature;
-    // Base pass pipelines indexed by permutation key (bit 0: Normal, bit 1: MR, bit 2: BaseColor, bit 3: Emissive, bit 4: AlphaMask)
-    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 256> BasePassPipelines;
-    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 256> BasePassPipelinesSkinned;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthPrepassPipelineSkinned;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> ShadowPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> ShadowPipelineSkinned;
+    // Base pass pipelines indexed by permutation key (bit 0: Normal, bit 1: MR, bit 2: BaseColor, bit 3: Emissive, bit 4: AlphaMask, bit 5: SheenModel, bit 6: ClearcoatModel, bit 7: AnisotropyModel, bit 8: DoubleSided)
+    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 512> BasePassPipelines;
+    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 512> BasePassPipelinesSkinned;
+    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2> DepthPrepassPipelines;
+    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2> DepthPrepassPipelinesSkinned;
+    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2> ShadowPipelines;
+    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2> ShadowPipelinesSkinned;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> SkyPipelineState;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ObjectIdPipeline;
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SceneTextures;

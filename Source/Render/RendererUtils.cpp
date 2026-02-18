@@ -2039,6 +2039,7 @@ uint32_t RendererUtils::BuildPipelineKey(const FSceneModelResource& Model)
     const uint32_t UseClearcoatModel = (Model.ShadingModelId == 2u) ? 1u : 0u;
     const uint32_t UseAnisotropyModel = (Model.ShadingModelId == 3u) ? 1u : 0u;
     const uint32_t UseSkinning = (Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0) ? 1u : 0u;
+    const uint32_t UseDoubleSided = Model.bDoubleSided ? 1u : 0u;
     return (UseNormal) | (UseMr << 1) | (UseBase << 2) | (UseEmissive << 3) | (UseAlphaMask << 4)
-        | (UseSheenModel << 5) | (UseClearcoatModel << 6) | (UseAnisotropyModel << 7) | (UseSkinning << 8);
+        | (UseSheenModel << 5) | (UseClearcoatModel << 6) | (UseAnisotropyModel << 7) | (UseSkinning << 8) | (UseDoubleSided << 9);
 }

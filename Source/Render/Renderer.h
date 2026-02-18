@@ -112,7 +112,8 @@ protected:
         FDX12Device* Device,
         ID3D12RootSignature* RootSignature,
         const std::vector<std::wstring>& Defines,
-        Microsoft::WRL::ComPtr<ID3D12PipelineState>& OutPipelineState);
+        Microsoft::WRL::ComPtr<ID3D12PipelineState>& OutPipelineState,
+        bool bDoubleSided = false);
     bool CreateShadowResources(
         FDX12Device* Device,
         uint32_t& InOutWidth,

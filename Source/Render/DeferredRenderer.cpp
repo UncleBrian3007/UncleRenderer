@@ -208,15 +208,25 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
 
     LogInfo("Creating deferred renderer shadow pipeline...");
     const std::vector<std::wstring> ShadowDefines;
-    if (!CreateShadowPipeline(Device, BasePassRootSignature.Get(), ShadowDefines, ShadowPipeline))
+    if (!CreateShadowPipeline(Device, BasePassRootSignature.Get(), ShadowDefines, ShadowPipelines[0], false))
     {
         LogError("Deferred renderer initialization failed: shadow pipeline creation failed");
         return false;
     }
     const std::vector<std::wstring> ShadowSkinnedDefines = { L"USE_SKINNING=1" };
-    if (!CreateShadowPipeline(Device, BasePassRootSignature.Get(), ShadowSkinnedDefines, ShadowPipelineSkinned))
+    if (!CreateShadowPipeline(Device, BasePassRootSignature.Get(), ShadowSkinnedDefines, ShadowPipelinesSkinned[0], false))
     {
         LogError("Deferred renderer initialization failed: shadow pipeline (skinned) creation failed");
+        return false;
+    }
+    if (!CreateShadowPipeline(Device, BasePassRootSignature.Get(), ShadowDefines, ShadowPipelines[1], true))
+    {
+        LogError("Deferred renderer initialization failed: shadow pipeline (double-sided) creation failed");
+        return false;
+    }
+    if (!CreateShadowPipeline(Device, BasePassRootSignature.Get(), ShadowSkinnedDefines, ShadowPipelinesSkinned[1], true))
+    {
+        LogError("Deferred renderer initialization failed: shadow pipeline (double-sided skinned) creation failed");
         return false;
     }
 
@@ -906,8 +916,8 @@ void FDeferredRenderer::PrepareFrameState(const FCamera& Camera, bool bAnySkinni
     const DirectX::XMMATRIX CurrentUnjitteredViewProjection = Camera.GetViewMatrix() * CurrentUnjitteredProjection;
     DirectX::XMStoreFloat4x4(&CurrentUnjitteredViewProjectionMatrix, CurrentUnjitteredViewProjection);
 
-    OutState.bRenderShadows = bShadowsEnabled && ShadowPipeline && ShadowMap;
-    OutState.bDoDepthPrepass = bDepthPrepassEnabled && DepthPrepassPipeline;
+    OutState.bRenderShadows = bShadowsEnabled && ShadowPipelines[0] && ShadowPipelines[1] && ShadowMap;
+    OutState.bDoDepthPrepass = bDepthPrepassEnabled && DepthPrepassPipelines[0] && DepthPrepassPipelines[1];
     if (!bHZBEnabled)
     {
         bHZBReady = false;
@@ -1647,16 +1657,16 @@ void FDeferredRenderer::AddShadowPass(FRenderGraph& Graph, const FCamera& Camera
 
         ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap(), Device->GetSamplerDescriptorHeap() };
         ID3D12PipelineState* CurrentShadowPipeline = nullptr;
-        const auto SetShadowPipeline = [&](bool bUseSkinning)
+        const auto SetShadowPipeline = [&](bool bUseSkinning, bool bDoubleSided)
         {
-            ID3D12PipelineState* Pipeline = bUseSkinning ? ShadowPipelineSkinned.Get() : ShadowPipeline.Get();
+            ID3D12PipelineState* Pipeline = bUseSkinning ? ShadowPipelinesSkinned[bDoubleSided ? 1u : 0u].Get() : ShadowPipelines[bDoubleSided ? 1u : 0u].Get();
             if (Pipeline != CurrentShadowPipeline)
             {
                 LocalCommandList->SetPipelineState(Pipeline);
                 CurrentShadowPipeline = Pipeline;
             }
         };
-        SetShadowPipeline(false);
+        SetShadowPipeline(false, false);
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         LocalCommandList->SetGraphicsRootSignature(BasePassRootSignature.Get());
 
@@ -1701,7 +1711,7 @@ void FDeferredRenderer::AddShadowPass(FRenderGraph& Graph, const FCamera& Camera
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
 
             const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0;
-            SetShadowPipeline(bUseSkinning);
+            SetShadowPipeline(bUseSkinning, Model.bDoubleSided);
 
             const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
             LocalCommandList->SetGraphicsRootConstantBufferView(
@@ -1792,7 +1802,7 @@ void FDeferredRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Came
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
 
             const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0;
-            ID3D12PipelineState* DesiredPipeline = bUseSkinning ? DepthPrepassPipelineSkinned.Get() : DepthPrepassPipeline.Get();
+            ID3D12PipelineState* DesiredPipeline = bUseSkinning ? DepthPrepassPipelinesSkinned[Model.bDoubleSided ? 1u : 0u].Get() : DepthPrepassPipelines[Model.bDoubleSided ? 1u : 0u].Get();
             if (DesiredPipeline != CurrentPipeline)
             {
                 CurrentPipeline = DesiredPipeline;
@@ -1918,7 +1928,7 @@ void FDeferredRenderer::AddBasePass(
             auto SelectPipelineByKey = [&](uint32_t Key)
             {
                 const bool bUseSkinning = (Key & (1u << 8)) != 0;
-                const uint32_t MaterialKey = Key & 0xFFu;
+                const uint32_t MaterialKey = (Key & 0xFFu) | (((Key >> 9) & 1u) << 8);
                 return bUseSkinning ? BasePassPipelinesSkinned[MaterialKey].Get() : BasePassPipelines[MaterialKey].Get();
             };
 
@@ -1997,6 +2007,7 @@ void FDeferredRenderer::AddBasePass(
                     const bool bUseClearcoatModel = Model.ShadingModelId == 2u;
                     const bool bUseAnisotropyModel = Model.ShadingModelId == 3u;
 
+                    const bool bUseDoubleSided = Model.bDoubleSided;
                     const uint32_t PipelineKey = 
                         (bUseNormalMap ? 1u : 0u) |
                         (bUseMetallicRoughnessMap ? 2u : 0u) |
@@ -2005,7 +2016,8 @@ void FDeferredRenderer::AddBasePass(
                         (bUseAlphaMask ? 16u : 0u) |
                         (bUseSheenModel ? 32u : 0u) |
                         (bUseClearcoatModel ? 64u : 0u) |
-                        (bUseAnisotropyModel ? 128u : 0u);
+                        (bUseAnisotropyModel ? 128u : 0u) |
+                        (bUseDoubleSided ? 256u : 0u);
 
                     LocalCommandList->SetPipelineState(BasePassPipelinesSkinned[PipelineKey].Get());
 
@@ -2068,6 +2080,7 @@ void FDeferredRenderer::AddBasePass(
                 const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0;
 
                 // Build pipeline key from material properties (bit 0: Normal, bit 1: MR, bit 2: BaseColor, bit 3: Emissive, bit 4: AlphaMask, bit 5: SheenModel, bit 6: ClearcoatModel, bit 7: AnisotropyModel)
+                const bool bUseDoubleSided = Model.bDoubleSided;
                 const uint32_t PipelineKey = 
                     (bUseNormalMap ? 1u : 0u) |
                     (bUseMetallicRoughnessMap ? 2u : 0u) |
@@ -2076,7 +2089,8 @@ void FDeferredRenderer::AddBasePass(
                     (bUseAlphaMask ? 16u : 0u) |
                     (bUseSheenModel ? 32u : 0u) |
                     (bUseClearcoatModel ? 64u : 0u) |
-                    (bUseAnisotropyModel ? 128u : 0u);
+                    (bUseAnisotropyModel ? 128u : 0u) |
+                    (bUseDoubleSided ? 256u : 0u);
 
                 LocalCommandList->SetPipelineState(bUseSkinning ? BasePassPipelinesSkinned[PipelineKey].Get() : BasePassPipelines[PipelineKey].Get());
 
@@ -2327,7 +2341,7 @@ void FDeferredRenderer::AddVelocityPass(FRenderGraph& Graph, const FDeferredFram
 
             const bool bUseAlphaMask = Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask);
             const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0;
-            const uint32_t PipelineIndex = bUseAlphaMask ? 1u : 0u;
+            const uint32_t PipelineIndex = (bUseAlphaMask ? 1u : 0u) | (Model.bDoubleSided ? 2u : 0u);
             ID3D12PipelineState* Pipeline = bUseSkinning ? VelocityPipelinesSkinned[PipelineIndex].Get() : VelocityPipelines[PipelineIndex].Get();
             if (!Pipeline)
             {
@@ -6181,14 +6195,20 @@ bool FDeferredRenderer::CreateVelocityPipeline(FDX12Device* Device)
         return false;
     }
 
-    std::array<std::vector<uint8_t>, 2> PSByteCodes;
-    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"PSMainVelocity", PSTarget, PSByteCodes[0], { L"USE_ALPHA_MASK=0" }))
+    std::array<std::vector<uint8_t>, 4> PSByteCodes;
+    for (uint32_t DoubleSidedVariant = 0; DoubleSidedVariant < 2; ++DoubleSidedVariant)
     {
-        return false;
-    }
-    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"PSMainVelocity", PSTarget, PSByteCodes[1], { L"USE_ALPHA_MASK=1" }))
-    {
-        return false;
+        for (uint32_t Permutation = 0; Permutation < 2; ++Permutation)
+        {
+            const uint32_t PipelineIndex = Permutation | (DoubleSidedVariant << 1);
+            std::vector<std::wstring> Defines;
+            Defines.push_back(Permutation != 0 ? L"USE_ALPHA_MASK=1" : L"USE_ALPHA_MASK=0");
+            Defines.push_back(DoubleSidedVariant != 0 ? L"USE_DOUBLE_SIDED=1" : L"USE_DOUBLE_SIDED=0");
+            if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"PSMainVelocity", PSTarget, PSByteCodes[PipelineIndex], Defines))
+            {
+                return false;
+            }
+        }
     }
 
     auto InitializeVelocityDesc = [&](D3D12_GRAPHICS_PIPELINE_STATE_DESC& Desc, const std::vector<uint8_t>& VertexShader)
@@ -6219,15 +6239,21 @@ bool FDeferredRenderer::CreateVelocityPipeline(FDX12Device* Device)
     };
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
-    for (uint32_t Permutation = 0; Permutation < 2; ++Permutation)
+    for (uint32_t DoubleSidedVariant = 0; DoubleSidedVariant < 2; ++DoubleSidedVariant)
     {
-        InitializeVelocityDesc(PsoDesc, VSByteCode);
-        PsoDesc.PS = { PSByteCodes[Permutation].data(), PSByteCodes[Permutation].size() };
-        HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(VelocityPipelines[Permutation].GetAddressOf())));
+        for (uint32_t Permutation = 0; Permutation < 2; ++Permutation)
+        {
+            const uint32_t PipelineIndex = Permutation | (DoubleSidedVariant << 1);
+            InitializeVelocityDesc(PsoDesc, VSByteCode);
+            PsoDesc.RasterizerState.CullMode = (DoubleSidedVariant == 0) ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_NONE;
+            PsoDesc.PS = { PSByteCodes[PipelineIndex].data(), PSByteCodes[PipelineIndex].size() };
+            HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(VelocityPipelines[PipelineIndex].GetAddressOf())));
 
-        InitializeVelocityDesc(PsoDesc, VSByteCodeSkinned);
-        PsoDesc.PS = { PSByteCodes[Permutation].data(), PSByteCodes[Permutation].size() };
-        HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(VelocityPipelinesSkinned[Permutation].GetAddressOf())));
+            InitializeVelocityDesc(PsoDesc, VSByteCodeSkinned);
+            PsoDesc.RasterizerState.CullMode = (DoubleSidedVariant == 0) ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_NONE;
+            PsoDesc.PS = { PSByteCodes[PipelineIndex].data(), PSByteCodes[PipelineIndex].size() };
+            HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(VelocityPipelinesSkinned[PipelineIndex].GetAddressOf())));
+        }
     }
 
     return true;
@@ -6254,35 +6280,40 @@ bool FDeferredRenderer::CreateBasePassPipeline(FDX12Device* Device, DXGI_FORMAT 
 
     // Generate shader defines for all permutations programmatically
     // Permutation key bits: 0=Normal, 1=MR, 2=BaseColor, 3=Emissive, 4=AlphaMask, 5=SheenModel, 6=ClearcoatModel, 7=AnisotropyModel
-    std::array<std::vector<uint8_t>, 256> PSByteCodes;
+    std::array<std::vector<uint8_t>, 512> PSByteCodes;
     
-    for (uint32_t Permutation = 0; Permutation < 256; ++Permutation)
+    for (uint32_t DoubleSidedVariant = 0; DoubleSidedVariant < 2; ++DoubleSidedVariant)
     {
-        const bool bUseNormal = (Permutation & 1) != 0;
-        const bool bUseMR = (Permutation & 2) != 0;
-        const bool bUseBaseColor = (Permutation & 4) != 0;
-        const bool bUseEmissive = (Permutation & 8) != 0;
-        const bool bUseAlphaMask = (Permutation & 16) != 0;
-        const bool bUseSheenModel = (Permutation & 32) != 0;
-        const bool bUseClearcoatModel = (Permutation & 64) != 0;
-        const bool bUseAnisotropyModel = (Permutation & 128) != 0;
-
-        std::vector<std::wstring> Defines;
-        Defines.push_back(bUseNormal ? L"USE_NORMAL_MAP=1" : L"USE_NORMAL_MAP=0");
-        Defines.push_back(bUseMR ? L"USE_METALLIC_ROUGHNESS_MAP=1" : L"USE_METALLIC_ROUGHNESS_MAP=0");
-        Defines.push_back(bUseBaseColor ? L"USE_BASE_COLOR_MAP=1" : L"USE_BASE_COLOR_MAP=0");
-        Defines.push_back(bUseEmissive ? L"USE_EMISSIVE_MAP=1" : L"USE_EMISSIVE_MAP=0");
-        Defines.push_back(bUseSheenModel ? L"SHADINGMODEL_SHEEN=1" : L"SHADINGMODEL_SHEEN=0");
-        Defines.push_back(bUseClearcoatModel ? L"SHADINGMODEL_CLEARCOAT=1" : L"SHADINGMODEL_CLEARCOAT=0");
-        Defines.push_back(bUseAnisotropyModel ? L"SHADINGMODEL_ANISOTROPY=1" : L"SHADINGMODEL_ANISOTROPY=0");
-        if (bUseAlphaMask)
+        for (uint32_t Permutation = 0; Permutation < 256; ++Permutation)
         {
-            Defines.push_back(L"USE_ALPHA_MASK=1");
-        }
+            const bool bUseNormal = (Permutation & 1) != 0;
+            const bool bUseMR = (Permutation & 2) != 0;
+            const bool bUseBaseColor = (Permutation & 4) != 0;
+            const bool bUseEmissive = (Permutation & 8) != 0;
+            const bool bUseAlphaMask = (Permutation & 16) != 0;
+            const bool bUseSheenModel = (Permutation & 32) != 0;
+            const bool bUseClearcoatModel = (Permutation & 64) != 0;
+            const bool bUseAnisotropyModel = (Permutation & 128) != 0;
 
-        if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"PSMain", PSTarget, PSByteCodes[Permutation], Defines))
-        {
-            return false;
+            std::vector<std::wstring> Defines;
+            Defines.push_back(bUseNormal ? L"USE_NORMAL_MAP=1" : L"USE_NORMAL_MAP=0");
+            Defines.push_back(bUseMR ? L"USE_METALLIC_ROUGHNESS_MAP=1" : L"USE_METALLIC_ROUGHNESS_MAP=0");
+            Defines.push_back(bUseBaseColor ? L"USE_BASE_COLOR_MAP=1" : L"USE_BASE_COLOR_MAP=0");
+            Defines.push_back(bUseEmissive ? L"USE_EMISSIVE_MAP=1" : L"USE_EMISSIVE_MAP=0");
+            Defines.push_back(bUseSheenModel ? L"SHADINGMODEL_SHEEN=1" : L"SHADINGMODEL_SHEEN=0");
+            Defines.push_back(bUseClearcoatModel ? L"SHADINGMODEL_CLEARCOAT=1" : L"SHADINGMODEL_CLEARCOAT=0");
+            Defines.push_back(bUseAnisotropyModel ? L"SHADINGMODEL_ANISOTROPY=1" : L"SHADINGMODEL_ANISOTROPY=0");
+            Defines.push_back(DoubleSidedVariant != 0 ? L"USE_DOUBLE_SIDED=1" : L"USE_DOUBLE_SIDED=0");
+            if (bUseAlphaMask)
+            {
+                Defines.push_back(L"USE_ALPHA_MASK=1");
+            }
+
+            const uint32_t PipelineIndex = Permutation | (DoubleSidedVariant << 8);
+            if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"PSMain", PSTarget, PSByteCodes[PipelineIndex], Defines))
+            {
+                return false;
+            }
         }
     }
 
@@ -6352,15 +6383,21 @@ bool FDeferredRenderer::CreateBasePassPipeline(FDX12Device* Device, DXGI_FORMAT 
 
     // Create all pipeline state objects programmatically
     D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
-    for (uint32_t Permutation = 0; Permutation < 256; ++Permutation)
+    for (uint32_t DoubleSidedVariant = 0; DoubleSidedVariant < 2; ++DoubleSidedVariant)
     {
-        InitializeBasePassDesc(PsoDesc, VSByteCode);
-        PsoDesc.PS = { PSByteCodes[Permutation].data(), PSByteCodes[Permutation].size() };
-        HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipelines[Permutation].GetAddressOf())));
+        for (uint32_t Permutation = 0; Permutation < 256; ++Permutation)
+        {
+            const uint32_t PipelineIndex = Permutation | (DoubleSidedVariant << 8);
+            InitializeBasePassDesc(PsoDesc, VSByteCode);
+            PsoDesc.RasterizerState.CullMode = (DoubleSidedVariant == 0) ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_NONE;
+            PsoDesc.PS = { PSByteCodes[PipelineIndex].data(), PSByteCodes[PipelineIndex].size() };
+            HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipelines[PipelineIndex].GetAddressOf())));
 
-        InitializeBasePassDesc(PsoDesc, VSByteCodeSkinned);
-        PsoDesc.PS = { PSByteCodes[Permutation].data(), PSByteCodes[Permutation].size() };
-        HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipelinesSkinned[Permutation].GetAddressOf())));
+            InitializeBasePassDesc(PsoDesc, VSByteCodeSkinned);
+            PsoDesc.RasterizerState.CullMode = (DoubleSidedVariant == 0) ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_NONE;
+            PsoDesc.PS = { PSByteCodes[PipelineIndex].data(), PSByteCodes[PipelineIndex].size() };
+            HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipelinesSkinned[PipelineIndex].GetAddressOf())));
+        }
     }
 
     return true;
@@ -6394,7 +6431,7 @@ bool FDeferredRenderer::CreateDepthPrepassPipeline(FDX12Device* Device)
 
     PsoDesc.RasterizerState = {};
     PsoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    // Render back faces into the shadow map using clockwise winding to capture silhouettes
+    // Single-sided and double-sided depth prepass pipelines are created per variant
     PsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
     PsoDesc.RasterizerState.FrontCounterClockwise = TRUE;
     PsoDesc.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
@@ -6427,9 +6464,14 @@ bool FDeferredRenderer::CreateDepthPrepassPipeline(FDX12Device* Device)
     PsoDesc.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
     PsoDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
 
-    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(DepthPrepassPipeline.GetAddressOf())));
-    PsoDesc.VS = { VSByteCodeSkinned.data(), VSByteCodeSkinned.size() };
-    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(DepthPrepassPipelineSkinned.GetAddressOf())));
+    for (uint32_t DoubleSidedVariant = 0; DoubleSidedVariant < 2; ++DoubleSidedVariant)
+    {
+        PsoDesc.RasterizerState.CullMode = (DoubleSidedVariant == 0) ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_NONE;
+        PsoDesc.VS = { VSByteCode.data(), VSByteCode.size() };
+        HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(DepthPrepassPipelines[DoubleSidedVariant].GetAddressOf())));
+        PsoDesc.VS = { VSByteCodeSkinned.data(), VSByteCodeSkinned.size() };
+        HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(DepthPrepassPipelinesSkinned[DoubleSidedVariant].GetAddressOf())));
+    }
     return true;
 }
 
