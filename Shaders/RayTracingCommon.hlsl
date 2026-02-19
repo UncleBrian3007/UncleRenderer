@@ -44,6 +44,10 @@ struct FInstanceData
     uint NormalTextureIndex;
     uint MetallicRoughnessTextureIndex;
     uint Flags;
+    uint EmissiveTextureIndex;
+    uint Padding0;
+    uint Padding1;
+    float4 EmissiveFactor;
     float4 BaseColorFactorAndAlpha;
     float4 MetallicRoughnessAlphaCutoff;
     row_major float4x4 WorldInverseTranspose;
@@ -173,6 +177,22 @@ float3 SampleAlbedo(uint instanceID, float2 uv)
     Texture2D<float4> BaseColorTexture = ResourceDescriptorHeap[instData.BaseColorTextureIndex];
     SamplerState LinearSampler = SamplerDescriptorHeap[LinearClampSamplerIndex];
     return baseColorFactor * BaseColorTexture.SampleLevel(LinearSampler, uv, 0).rgb;
+}
+
+
+float3 SampleEmissive(uint instanceID, float2 uv)
+{
+    FInstanceData instData = GetInstanceData(instanceID);
+    float3 emissiveFactor = max(instData.EmissiveFactor.rgb, 0.0f.xxx);
+
+    if (instData.EmissiveTextureIndex == 0xFFFFFFFF)
+    {
+        return emissiveFactor;
+    }
+
+    Texture2D<float4> EmissiveTexture = ResourceDescriptorHeap[instData.EmissiveTextureIndex];
+    SamplerState LinearSampler = SamplerDescriptorHeap[LinearClampSamplerIndex];
+    return emissiveFactor * EmissiveTexture.SampleLevel(LinearSampler, uv, 0).rgb;
 }
 
 float SampleOpacity(uint instanceID, uint primitiveIndex, float2 barycentrics)

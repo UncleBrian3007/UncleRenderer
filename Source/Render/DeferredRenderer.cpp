@@ -155,6 +155,9 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     RestirGIResolveLowSampleBoostGuard = std::clamp(Config.RestirGIResolveLowSampleBoostGuard, 0.0f, 1.0f);
     bRestirGIResolveUseConfidence = Config.bRestirGIResolveUseConfidence;
     RestirGIMaxHistoryFrames = std::clamp(Config.RestirGIMaxHistoryFrames, 1u, 16u);
+    bRestirGINewUseVisibility = Config.bRestirGINewUseVisibility;
+    bRestirGINewUseBrdf = Config.bRestirGINewUseBrdf;
+    bRestirGINewUseHistoryIndirect = Config.bRestirGINewUseHistoryIndirect;
     SsrMode = Config.SsrMode;
     SsrSamplesPerQuad = Config.SsrSamplesPerQuad;
 
@@ -744,7 +747,9 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
                 Resources.GBufferHandles,
                 Resources.DepthHandle,
                 Resources.VelocityHandle,
+                Resources.LinearDepthHandle,
                 Resources.RestirGIHandle,
+                Resources.RestirGIHistoryHandle,
                 Resources.RestirGIHistoryGeomAHandle,
                 Resources.RestirGIHistoryGeomBHandle,
                 Resources.RestirGINewInitialRadianceHandle,
@@ -3230,14 +3235,14 @@ void FDeferredRenderer::AddRestirGIPass(FRenderGraph& Graph, const FDeferredFram
     });
 }
 
-void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle VelocityHandle, FRGResourceHandle RestirGIHandle, FRGResourceHandle RestirGIHistoryGeomAHandle, FRGResourceHandle RestirGIHistoryGeomBHandle, FRGResourceHandle RestirGINewInitialRadianceHandle, FRGResourceHandle RestirGINewInitialRayDirectionHandle, FRGResourceHandle RestirGINewReservoirDepthNormalAHandle, FRGResourceHandle RestirGINewReservoirDepthNormalBHandle, FRGResourceHandle RestirGINewReservoirSampleRadianceAHandle, FRGResourceHandle RestirGINewReservoirSampleRadianceBHandle, FRGResourceHandle RestirGINewReservoirRayDirectionAHandle, FRGResourceHandle RestirGINewReservoirRayDirectionBHandle, FRGResourceHandle RestirGINewReservoirMWAHandle, FRGResourceHandle RestirGINewReservoirMWBHandle)
+void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle VelocityHandle, FRGResourceHandle LinearDepthHandle, FRGResourceHandle RestirGIHandle, FRGResourceHandle RestirGIHistoryHandle, FRGResourceHandle RestirGIHistoryGeomAHandle, FRGResourceHandle RestirGIHistoryGeomBHandle, FRGResourceHandle RestirGINewInitialRadianceHandle, FRGResourceHandle RestirGINewInitialRayDirectionHandle, FRGResourceHandle RestirGINewReservoirDepthNormalAHandle, FRGResourceHandle RestirGINewReservoirDepthNormalBHandle, FRGResourceHandle RestirGINewReservoirSampleRadianceAHandle, FRGResourceHandle RestirGINewReservoirSampleRadianceBHandle, FRGResourceHandle RestirGINewReservoirRayDirectionAHandle, FRGResourceHandle RestirGINewReservoirRayDirectionBHandle, FRGResourceHandle RestirGINewReservoirMWAHandle, FRGResourceHandle RestirGINewReservoirMWBHandle)
 {
     struct FRestirGINewPassData
     {
         bool bEnabled = false;
     };
 
-    auto DispatchNewPass = [this, &FrameState](FDX12CommandContext& Cmd, ID3D12PipelineState* PipelineState, const wchar_t* EventName, uint32_t SpatialPassIndex, const uint32_t BindlessIndices[26], uint32_t DispatchWidth, uint32_t DispatchHeight, bool bEnabled)
+    auto DispatchNewPass = [this, &FrameState](FDX12CommandContext& Cmd, ID3D12PipelineState* PipelineState, const wchar_t* EventName, uint32_t SpatialPassIndex, const uint32_t BindlessIndices[27], uint32_t DispatchWidth, uint32_t DispatchHeight, bool bEnabled)
     {
         if (!bEnabled || !Device || !Device->GetBindlessDescriptorHeap() || !PipelineState || !RestirGINewRootSignature)
         {
@@ -3287,6 +3292,9 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
             float RayLength = 0.0f;
             float ClampThreshold = 0.0f;
             uint32_t TemporalReuseEnabled = 0;
+            uint32_t UseVisibility = 0;
+            uint32_t UseBrdf = 0;
+            uint32_t UseHistoryIndirect = 0;
         };
 
         const uint32_t FullWidth = static_cast<uint32_t>(Viewport.Width);
@@ -3308,7 +3316,10 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
             (std::max)(0.0f, RestirGIIntensity),
             RestirGIRayLength,
             RestirGIClamp,
-            bRestirGITemporalReuse ? 1u : 0u
+            bRestirGITemporalReuse ? 1u : 0u,
+            bRestirGINewUseVisibility ? 1u : 0u,
+            bRestirGINewUseBrdf ? 1u : 0u,
+            bRestirGINewUseHistoryIndirect ? 1u : 0u
         };
 
         FScopedPixEvent RestirEvent(CommandList4, EventName);
@@ -3319,7 +3330,7 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
         CommandList4->SetComputeRootShaderResourceView(0, TlasResource->GetGPUVirtualAddress());
         CommandList4->SetComputeRootConstantBufferView(1, GetSceneConstantBufferAddress());
         CommandList4->SetComputeRoot32BitConstants(2, sizeof(FRestirGINewConstants) / sizeof(uint32_t), &Constants, 0);
-        CommandList4->SetComputeRoot32BitConstants(3, 26, BindlessIndices, 0);
+        CommandList4->SetComputeRoot32BitConstants(3, 27, BindlessIndices, 0);
 
         const uint32_t GroupSize = 8;
         const uint32_t DispatchX = (DispatchWidth + GroupSize - 1) / GroupSize;
@@ -3327,7 +3338,7 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
         CommandList4->Dispatch(DispatchX, DispatchY, 1);
     };
 
-    Graph.AddPass<FRestirGINewPassData>("ReSTIR GI - initial sampling", [&, DepthHandle, GBufferHandles, RestirGINewInitialRadianceHandle, RestirGINewInitialRayDirectionHandle](FRestirGINewPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FRestirGINewPassData>("ReSTIR GI - initial sampling", [&, DepthHandle, VelocityHandle, LinearDepthHandle, GBufferHandles, RestirGIHistoryHandle, RestirGINewInitialRadianceHandle, RestirGINewInitialRayDirectionHandle](FRestirGINewPassData& Data, FRGPassBuilder& Builder)
     {
         Data.bEnabled = bRestirGIEnabled
             && (RestirGIMode == ERestirGIMode::New)
@@ -3339,6 +3350,9 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
         }
 
         Builder.ReadTexture(DepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(VelocityHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(LinearDepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(RestirGIHistoryHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(GBufferHandles[1], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(GBufferHandles[2], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -3353,6 +3367,7 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
         const uint32_t LinearClampSamplerIndex = Device ? Device->GetLinearClampSamplerIndex() : UINT32_MAX;
 
         const bool bInputsValid = (DepthBindlessIndex != UINT32_MAX)
+            && (VelocityBindlessIndex != UINT32_MAX)
             && (GBufferBindlessIndices[0] != UINT32_MAX)
             && (GBufferBindlessIndices[1] != UINT32_MAX)
             && (GBufferBindlessIndices[2] != UINT32_MAX)
@@ -3360,9 +3375,11 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
             && (EnvironmentCubeBindlessIndex != UINT32_MAX)
             && (LinearClampSamplerIndex != UINT32_MAX)
             && (RestirGINewInitialRadianceUavBindlessIndex != UINT32_MAX)
-            && (RestirGINewInitialRayDirectionUavBindlessIndex != UINT32_MAX);
+            && (RestirGINewInitialRayDirectionUavBindlessIndex != UINT32_MAX)
+            && (RestirGIHistorySrvBindlessIndex != UINT32_MAX)
+            && (LinearDepthBindlessIndex != UINT32_MAX);
 
-        const uint32_t BindlessIndices[26] =
+        const uint32_t BindlessIndices[27] =
         {
             RestirGINewInitialRadianceUavBindlessIndex,
             DepthBindlessIndex,
@@ -3389,7 +3406,8 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
             UINT32_MAX,
             UINT32_MAX,
             UINT32_MAX,
-            0u
+            RestirGIHistorySrvBindlessIndex,
+            LinearDepthBindlessIndex
         };
 
         const uint32_t FullWidth = static_cast<uint32_t>(Viewport.Width);
@@ -3447,7 +3465,7 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
             && (RestirGINewReservoirRayDirectionBUavBindlessIndex != UINT32_MAX)
             && (RestirGINewReservoirMWBUavBindlessIndex != UINT32_MAX);
 
-        const uint32_t BindlessIndices[26] =
+        const uint32_t BindlessIndices[27] =
         {
             UINT32_MAX,
             DepthBindlessIndex,
@@ -3474,7 +3492,8 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
             UINT32_MAX,
             UINT32_MAX,
             UINT32_MAX,
-            0u
+            RestirGIHistorySrvBindlessIndex,
+            LinearDepthBindlessIndex
         };
 
         const uint32_t FullWidth = static_cast<uint32_t>(Viewport.Width);
@@ -3524,7 +3543,7 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
             && (RestirGINewReservoirRayDirectionAUavBindlessIndex != UINT32_MAX)
             && (RestirGINewReservoirMWAUavBindlessIndex != UINT32_MAX);
 
-        const uint32_t BindlessIndices[26] =
+        const uint32_t BindlessIndices[27] =
         {
             UINT32_MAX,
             DepthBindlessIndex,
@@ -3551,7 +3570,8 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
             RestirGINewReservoirMWBSrvBindlessIndex,
             UINT32_MAX,
             UINT32_MAX,
-            0u
+            RestirGIHistorySrvBindlessIndex,
+            LinearDepthBindlessIndex
         };
 
         const uint32_t FullWidth = static_cast<uint32_t>(Viewport.Width);
@@ -3601,7 +3621,7 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
             && (RestirGINewReservoirRayDirectionBUavBindlessIndex != UINT32_MAX)
             && (RestirGINewReservoirMWBUavBindlessIndex != UINT32_MAX);
 
-        const uint32_t BindlessIndices[26] =
+        const uint32_t BindlessIndices[27] =
         {
             UINT32_MAX,
             DepthBindlessIndex,
@@ -3628,7 +3648,8 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
             RestirGINewReservoirMWASrvBindlessIndex,
             UINT32_MAX,
             UINT32_MAX,
-            0u
+            RestirGIHistorySrvBindlessIndex,
+            LinearDepthBindlessIndex
         };
 
         const uint32_t FullWidth = static_cast<uint32_t>(Viewport.Width);
@@ -3680,7 +3701,7 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
             && (RestirGIHistoryGeomAUavBindlessIndex != UINT32_MAX)
             && (RestirGIHistoryGeomBUavBindlessIndex != UINT32_MAX);
 
-        const uint32_t BindlessIndices[26] =
+        const uint32_t BindlessIndices[27] =
         {
             RestirGIUavBindlessIndex,
             DepthBindlessIndex,
@@ -3707,7 +3728,8 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
             RestirGINewReservoirMWBSrvBindlessIndex,
             RestirGIHistoryGeomAUavBindlessIndex,
             RestirGIHistoryGeomBUavBindlessIndex,
-            0u
+            RestirGIHistorySrvBindlessIndex,
+            LinearDepthBindlessIndex
         };
 
         const uint32_t FullWidth = static_cast<uint32_t>(Viewport.Width);
@@ -6083,14 +6105,14 @@ bool FDeferredRenderer::CreateRestirGINewRootSignature(FDX12Device* Device)
     // RootParams[2]: ReSTIR GI New constants (b1)
     RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[2].Constants.Num32BitValues = 12;
+    RootParams[2].Constants.Num32BitValues = 15;
     RootParams[2].Constants.RegisterSpace = 0;
     RootParams[2].Constants.ShaderRegister = 1;
 
     // RootParams[3]: ReSTIR GI New bindless indices (b2)
     RootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[3].Constants.Num32BitValues = 26;
+    RootParams[3].Constants.Num32BitValues = 27;
     RootParams[3].Constants.RegisterSpace = 0;
     RootParams[3].Constants.ShaderRegister = 2;
 

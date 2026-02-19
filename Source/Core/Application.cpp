@@ -201,6 +201,9 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     bRestirGISpatialReuseEnabled = RendererConfig.bEnableRestirGISpatialReuse;
     RestirGITemporalAdditionalScale = RendererConfig.RestirGITemporalAdditionalScale;
     RestirGISpatialAdditionalScale = RendererConfig.RestirGISpatialAdditionalScale;
+    bRestirGINewUseVisibility = RendererConfig.bRestirGINewUseVisibility;
+    bRestirGINewUseBrdf = RendererConfig.bRestirGINewUseBrdf;
+    bRestirGINewUseHistoryIndirect = RendererConfig.bRestirGINewUseHistoryIndirect;
 
     if (bTaskSystemEnabled)
     {
@@ -1732,9 +1735,11 @@ void FApplication::RenderUI()
             }
         }
 
+		ImGui::SameLine();
         int RestirModeIndex = (RestirGIMode == ERestirGIMode::New) ? 1 : 0;
         const char* RestirModeItems[] = { "Legacy", "New" };
-        if (ImGui::Combo("ReSTIR GI Mode", &RestirModeIndex, RestirModeItems, IM_ARRAYSIZE(RestirModeItems)))
+		ImGui::SetNextItemWidth(80.0f);
+        if (ImGui::Combo("Mode", &RestirModeIndex, RestirModeItems, IM_ARRAYSIZE(RestirModeItems)))
         {
             RestirGIMode = (RestirModeIndex == 1) ? ERestirGIMode::New : ERestirGIMode::Legacy;
             RendererConfig.RestirGIMode = RestirGIMode;
@@ -1745,14 +1750,51 @@ void FApplication::RenderUI()
             }
         }
 
-        ImGui::SameLine();
+		ImGui::SameLine();
         bool bRestirGIOnly = bRestirGIShowOnly;
-        if (ImGui::Checkbox("ReSTIR GI Only", &bRestirGIOnly))
+        if (ImGui::Checkbox("GI Only", &bRestirGIOnly))
         {
             bRestirGIShowOnly = bRestirGIOnly;
             if (DeferredRenderer)
             {
                 DeferredRenderer->SetRestirGIShowOnly(bRestirGIShowOnly);
+            }
+        }
+
+        bool bRestirNewUseVisibility = bRestirGINewUseVisibility;
+        if (ImGui::Checkbox("Use Visibility", &bRestirNewUseVisibility))
+        {
+            bRestirGINewUseVisibility = bRestirNewUseVisibility;
+            RendererConfig.bRestirGINewUseVisibility = bRestirGINewUseVisibility;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetRestirGINewUseVisibility(bRestirGINewUseVisibility);
+            }
+        }
+
+		ImGui::SameLine();
+        bool bRestirNewUseBrdf = bRestirGINewUseBrdf;
+        if (ImGui::Checkbox("Use BRDF", &bRestirNewUseBrdf))
+        {
+            bRestirGINewUseBrdf = bRestirNewUseBrdf;
+            RendererConfig.bRestirGINewUseBrdf = bRestirGINewUseBrdf;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetRestirGINewUseBrdf(bRestirGINewUseBrdf);
+            }
+        }
+
+        bool bRestirNewUseHistoryIndirect = bRestirGINewUseHistoryIndirect;
+        if (ImGui::Checkbox("Use History Indirect", &bRestirNewUseHistoryIndirect))
+        {
+            bRestirGINewUseHistoryIndirect = bRestirNewUseHistoryIndirect;
+            RendererConfig.bRestirGINewUseHistoryIndirect = bRestirGINewUseHistoryIndirect;
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetRestirGINewUseHistoryIndirect(bRestirGINewUseHistoryIndirect);
             }
         }
 

@@ -107,6 +107,9 @@ private:
     bool bRestirGISpatialReuseEnabled = false;
     float RestirGITemporalAdditionalScale = 0.2f;
     float RestirGISpatialAdditionalScale = 0.15f;
+    bool bRestirGINewUseVisibility = true;
+    bool bRestirGINewUseBrdf = true;
+    bool bRestirGINewUseHistoryIndirect = true;
     bool bSsrSwEnabled = true;
     bool bSsrHwEnabled = true;
     bool bSsrHzbEnabled = false;

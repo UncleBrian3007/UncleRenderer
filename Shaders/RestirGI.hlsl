@@ -1,5 +1,8 @@
+#include "PBRCommon.hlsl"
 #include "SceneConstants.hlsl"
 #include "RestirGIReservoir.hlsli"
+#include "RestirGISamplingCommon.hlsli"
+#include "PathBrdfCommon.hlsli"
 
 RaytracingAccelerationStructure Scene : register(t0);
 
@@ -43,7 +46,6 @@ cbuffer RestirGIBindless : register(b2)
 #include "RayTracingCommon.hlsl"
 
 static const uint RestirGIRayFlags = RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES;
-static const float kPi = 3.14159265f;
 
 
 static const float kMaxReservoirWeightSum = 1e6f;
@@ -130,19 +132,6 @@ float3 ReconstructWorldPosition(uint2 pixel, float depth, uint2 dispatchDim)
     float4 worldPosition = mul(clip, ViewProjectionInverse);
     worldPosition.xyz /= worldPosition.w;
     return worldPosition.xyz;
-}
-
-float3 SampleHemisphereCosine(float2 Xi, float3 normal)
-{
-    float phi = 6.2831853f * Xi.x;
-    float cosTheta = sqrt(1.0f - Xi.y);
-    float sinTheta = sqrt(Xi.y);
-
-    float3 tangent = normalize(abs(normal.z) < 0.999f ? cross(float3(0.0f, 0.0f, 1.0f), normal) : cross(float3(0.0f, 1.0f, 0.0f), normal));
-    float3 bitangent = cross(normal, tangent);
-
-    float3 sample = tangent * (cos(phi) * sinTheta) + bitangent * (sin(phi) * sinTheta) + normal * cosTheta;
-    return normalize(sample);
 }
 
 float Luminance(float3 color)
@@ -240,16 +229,23 @@ bool IsTemporalHistoryAccepted(
         && isfinite(historyLum) && historyLum >= 0.0f;
 }
 
-float3 EvaluateHitIncomingRadiance(float3 hitNormal, float3 hitAlbedo, float hitMetallic, float3 outgoingDirection)
+float3 EvaluateHitIncomingRadiance(uint instanceID, float2 hitUv, float3 hitNormal, float3 hitAlbedo, float hitMetallic, float hitRoughness, float3 outgoingDirection)
 {
-    float NdotL = saturate(dot(hitNormal, LightDirection));
     float3 diffuse = hitAlbedo * (1.0f - saturate(hitMetallic));
-    float3 direct = diffuse * (LightColor * LightIntensity) * (NdotL / kPi);
-    float3 sky = EvaluateSky(outgoingDirection) * diffuse;
-    return max(direct + sky, 0.0f);
+    float3 specular = lerp(0.04f.xxx, hitAlbedo, saturate(hitMetallic));
+    float roughness = max(hitRoughness, 0.03f);
+
+    float3 wi = normalize(LightDirection);
+    float3 wo = normalize(outgoingDirection);
+    float NdotL = saturate(dot(hitNormal, wi));
+    float3 directBrdf = BRDF(wi, wo, hitNormal, diffuse, specular, roughness);
+    float3 direct = directBrdf * (LightColor * LightIntensity) * NdotL;
+
+    float3 emissive = max(SampleEmissive(instanceID, hitUv), 0.0f.xxx);
+    return max(direct + emissive, 0.0f);
 }
 
-float3 SampleCandidateGI(float3 worldPos, float3 normal, float3 albedo, float metalness, uint2 pixel, uint sampleIndex)
+float3 SampleCandidateGI(float3 worldPos, float3 normal, uint2 pixel, uint sampleIndex)
 {
     float2 Xi = float2(
         Random01(pixel, FrameIndex * 1021u + sampleIndex * 97u + 1u),
@@ -293,15 +289,14 @@ float3 SampleCandidateGI(float3 worldPos, float3 normal, float3 albedo, float me
             hitNormal = -hitNormal;
         }
 
-        incomingRadiance = EvaluateHitIncomingRadiance(hitNormal, hitAlbedo, hitMR.x, -direction);
+        incomingRadiance = EvaluateHitIncomingRadiance(instanceID, uv, hitNormal, hitAlbedo, hitMR.x, hitMR.y, -direction);
     }
     else
     {
         incomingRadiance = EvaluateSky(direction);
     }
 
-    float3 diffuseColor = albedo * (1.0f - saturate(metalness));
-    return diffuseColor * incomingRadiance;
+    return max(incomingRadiance, 0.0f.xxx);
 }
 
 float CandidateWeight(float3 candidate)
@@ -529,9 +524,6 @@ void CSTemporal(uint3 DispatchThreadId : SV_DispatchThreadID)
     }
 
     float3 normal = normalize(gBufferA[pixel].xyz * 2.0f - 1.0f);
-    float4 srmData = gBufferB[pixel];
-    float3 albedo = gBufferC[pixel].rgb;
-    float metalness = saturate(srmData.y);
 
     float3 worldPos = ReconstructWorldPosition(pixel, depth, uint2(OutputWidth, OutputHeight));
 
@@ -541,7 +533,7 @@ void CSTemporal(uint3 DispatchThreadId : SV_DispatchThreadID)
     [loop]
     for (uint sampleIndex = 0; sampleIndex < effectiveSamples; ++sampleIndex)
     {
-        float3 candidate = SampleCandidateGI(worldPos, normal, albedo, metalness, pixel, sampleIndex);
+        float3 candidate = SampleCandidateGI(worldPos, normal, pixel, sampleIndex);
         float weight = CandidateWeight(candidate);
         float randomValue = Random01(pixel, FrameIndex * 1741u + sampleIndex * 313u + 11u);
         ReservoirUpdate(reservoir, candidate, weight, randomValue);

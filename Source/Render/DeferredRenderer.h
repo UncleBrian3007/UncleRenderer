@@ -148,6 +148,13 @@ public:
     void SetRestirGIResolveUseConfidence(bool bEnabled) { bRestirGIResolveUseConfidence = bEnabled; }
     bool IsRestirGIResolveUseConfidence() const { return bRestirGIResolveUseConfidence; }
 
+    void SetRestirGINewUseVisibility(bool bEnabled) { bRestirGINewUseVisibility = bEnabled; }
+    bool IsRestirGINewUseVisibility() const { return bRestirGINewUseVisibility; }
+    void SetRestirGINewUseBrdf(bool bEnabled) { bRestirGINewUseBrdf = bEnabled; }
+    bool IsRestirGINewUseBrdf() const { return bRestirGINewUseBrdf; }
+    void SetRestirGINewUseHistoryIndirect(bool bEnabled) { bRestirGINewUseHistoryIndirect = bEnabled; }
+    bool IsRestirGINewUseHistoryIndirect() const { return bRestirGINewUseHistoryIndirect; }
+
     void SetPathTracingAccumulationEnabled(bool bEnabled)
     {
         bPathTracingAccumulationEnabled = bEnabled;
@@ -371,7 +378,7 @@ private:
     void AddLinearDepthPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle LinearDepthHandle);
     void AddGtaoPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle GtaoHandle);
     void AddRestirGIPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle LinearDepthHandle, FRGResourceHandle RestirGIHandle, FRGResourceHandle RestirGIHistoryHandle, FRGResourceHandle RestirGIHistoryGeomAHandle, FRGResourceHandle RestirGIHistoryGeomBHandle, FRGBufferHandle RestirGITemporalReservoirHandle, FRGBufferHandle RestirGISpatialReservoirHandle, FRGBufferHandle RestirGIReservoirHistoryHandle);
-    void AddRestirGINewPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle VelocityHandle, FRGResourceHandle RestirGIHandle, FRGResourceHandle RestirGIHistoryGeomAHandle, FRGResourceHandle RestirGIHistoryGeomBHandle, FRGResourceHandle RestirGINewInitialRadianceHandle, FRGResourceHandle RestirGINewInitialRayDirectionHandle, FRGResourceHandle RestirGINewReservoirDepthNormalAHandle, FRGResourceHandle RestirGINewReservoirDepthNormalBHandle, FRGResourceHandle RestirGINewReservoirSampleRadianceAHandle, FRGResourceHandle RestirGINewReservoirSampleRadianceBHandle, FRGResourceHandle RestirGINewReservoirRayDirectionAHandle, FRGResourceHandle RestirGINewReservoirRayDirectionBHandle, FRGResourceHandle RestirGINewReservoirMWAHandle, FRGResourceHandle RestirGINewReservoirMWBHandle);
+    void AddRestirGINewPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle VelocityHandle, FRGResourceHandle LinearDepthHandle, FRGResourceHandle RestirGIHandle, FRGResourceHandle RestirGIHistoryHandle, FRGResourceHandle RestirGIHistoryGeomAHandle, FRGResourceHandle RestirGIHistoryGeomBHandle, FRGResourceHandle RestirGINewInitialRadianceHandle, FRGResourceHandle RestirGINewInitialRayDirectionHandle, FRGResourceHandle RestirGINewReservoirDepthNormalAHandle, FRGResourceHandle RestirGINewReservoirDepthNormalBHandle, FRGResourceHandle RestirGINewReservoirSampleRadianceAHandle, FRGResourceHandle RestirGINewReservoirSampleRadianceBHandle, FRGResourceHandle RestirGINewReservoirRayDirectionAHandle, FRGResourceHandle RestirGINewReservoirRayDirectionBHandle, FRGResourceHandle RestirGINewReservoirMWAHandle, FRGResourceHandle RestirGINewReservoirMWBHandle);
     void AddSsrRayCounterClearPass(FRenderGraph& Graph, uint32_t FrameIndex);
     void AddSsrRayGatherPass(FRenderGraph& Graph, uint32_t FrameIndex, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle);
     void AddSsrBuildIndirectArgsPass(FRenderGraph& Graph, uint32_t FrameIndex, bool bHwMiss);
@@ -712,6 +719,9 @@ private:
     float RestirGIResolveLowSampleBoostGuard = 0.6f;
     bool bRestirGIResolveUseConfidence = true;
     uint32_t RestirGIMaxHistoryFrames = 1;
+    bool bRestirGINewUseVisibility = true;
+    bool bRestirGINewUseBrdf = true;
+    bool bRestirGINewUseHistoryIndirect = true;
     uint32_t RestirGIHistoryFrameCount = 0;
     bool bRestirGIHistoryValid = false;
     ESSRMode SsrMode = ESSRMode::PS;

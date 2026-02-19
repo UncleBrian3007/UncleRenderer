@@ -77,6 +77,9 @@ struct FRendererConfig
     float RestirGIResolveLowSampleBoostGuard = 0.6f;
     bool bRestirGIResolveUseConfidence = true;
     uint32_t RestirGIMaxHistoryFrames = 1;
+    bool bRestirGINewUseVisibility = true;
+    bool bRestirGINewUseBrdf = true;
+    bool bRestirGINewUseHistoryIndirect = true;
     bool bEnableIndirectDraw = true;
     bool bEnableSkinningIndirectDraw = false;
     bool bEnablePbrResearch = false;

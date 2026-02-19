@@ -2202,10 +2202,20 @@ void FRenderer::BuildRayTracingTlas(FDX12CommandContext& CmdContext)
         uint32_t NormalTextureIndex;
         uint32_t MetallicRoughnessTextureIndex;
         uint32_t Flags;
+        uint32_t EmissiveTextureIndex;
+        uint32_t Padding0;
+        uint32_t Padding1;
+        DirectX::XMFLOAT4 EmissiveFactor;
         DirectX::XMFLOAT4 BaseColorFactorAndAlpha;
         DirectX::XMFLOAT4 MetallicRoughnessAlphaCutoff;
         DirectX::XMFLOAT4X4 WorldInverseTranspose;
     };
+
+    static_assert((sizeof(FPathTracingInstanceData) % 16u) == 0u, "FPathTracingInstanceData must be 16-byte aligned in size");
+
+    static_assert((offsetof(FPathTracingInstanceData, EmissiveTextureIndex) % 4u) == 0u, "Invalid EmissiveTextureIndex alignment");
+    static_assert((offsetof(FPathTracingInstanceData, EmissiveFactor) % 16u) == 0u, "Invalid EmissiveFactor alignment");
+    static_assert((offsetof(FPathTracingInstanceData, BaseColorFactorAndAlpha) % 16u) == 0u, "Invalid BaseColorFactorAndAlpha alignment");
 
     std::vector<FPathTracingInstanceData> InstanceDataArray;
     InstanceDataArray.reserve(SceneModels.size());
@@ -2259,6 +2269,10 @@ void FRenderer::BuildRayTracingTlas(FDX12CommandContext& CmdContext)
         InstData.NormalTextureIndex = Model.NormalBindlessIndex;
         InstData.MetallicRoughnessTextureIndex = Model.MetallicRoughnessBindlessIndex;
         InstData.Flags = Model.bDoubleSided ? 1u : 0u;
+        InstData.EmissiveTextureIndex = Model.EmissiveBindlessIndex;
+        InstData.Padding0 = 0u;
+        InstData.Padding1 = 0u;
+        InstData.EmissiveFactor = DirectX::XMFLOAT4(Model.EmissiveFactor.x, Model.EmissiveFactor.y, Model.EmissiveFactor.z, 0.0f);
         InstData.BaseColorFactorAndAlpha = DirectX::XMFLOAT4(
             Model.BaseColorFactor.x,
             Model.BaseColorFactor.y,

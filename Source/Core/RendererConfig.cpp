@@ -486,6 +486,18 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     {
         OutConfig.bRestirGIResolveUseConfidence = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
+    if (LowerKey == "restirginewusevisibility")
+    {
+        OutConfig.bRestirGINewUseVisibility = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+    if (LowerKey == "restirginewusebrdf")
+    {
+        OutConfig.bRestirGINewUseBrdf = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+    if (LowerKey == "restirginewusehistoryindirect")
+    {
+        OutConfig.bRestirGINewUseHistoryIndirect = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
     if (LowerKey == "restirgimaxhistoryframes")
     {
         try

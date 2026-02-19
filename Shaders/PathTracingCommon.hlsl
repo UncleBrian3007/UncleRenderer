@@ -1,6 +1,8 @@
 #ifndef PATH_TRACING_COMMON_HLSL
 #define PATH_TRACING_COMMON_HLSL
 
+#include "PathBrdfCommon.hlsli"
+
 float3 ReconstructWorldPosition(uint2 pixel, float depth, uint2 dispatchDim)
 {
     float2 uv = (float2(pixel) + 0.5f) / float2(dispatchDim);
@@ -85,36 +87,6 @@ float3 SampleConeUniform(float2 randVal, float radius, float3 direction)
 float Luminance(float3 color)
 {
     return dot(max(color, 0.0f), float3(0.2126f, 0.7152f, 0.0722f));
-}
-
-float3 DiffuseBRDF(float3 diffuse)
-{
-    return diffuse / 3.14159265f;
-}
-
-float3 SpecularBRDF(float3 N, float3 V, float3 L, float3 specular, float roughness, out float3 F)
-{
-    float3 H = normalize(V + L);
-
-    float NdotV = saturate(dot(N, V));
-    float NdotL = saturate(dot(N, L));
-    float NdotH = saturate(dot(N, H));
-    float VdotH = saturate(dot(V, H));
-
-    float alpha = roughness * roughness;
-    float D = D_GGX(NdotH, alpha);
-    float V_G = V_SmithGGX(NdotV, NdotL, alpha);
-    F = FresnelSchlick(VdotH, specular);
-
-    return D * V_G * F;
-}
-
-float3 BRDF(float3 wi, float3 wo, float3 N, float3 diffuse, float3 specular, float roughness)
-{
-    float3 F;
-    float3 specularBrdf = SpecularBRDF(N, wo, wi, specular, roughness, F);
-    float3 diffuseBrdf = DiffuseBRDF(diffuse);
-    return diffuseBrdf + specularBrdf;
 }
 
 // Sample GGX distribution for importance sampling

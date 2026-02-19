@@ -1,5 +1,8 @@
+#include "PBRCommon.hlsl"
 #include "SceneConstants.hlsl"
 #include "RestirGINewReservoir.hlsli"
+#include "RestirGISamplingCommon.hlsli"
+#include "PathBrdfCommon.hlsli"
 
 RaytracingAccelerationStructure Scene : register(t0);
 
@@ -17,6 +20,9 @@ cbuffer RestirGINewConstants : register(b1)
     float RayLength;
     float ClampThreshold;
     uint TemporalReuseEnabled;
+    uint UseVisibility;
+    uint UseBrdf;
+    uint UseHistoryIndirect;
 };
 
 cbuffer RestirGINewBindless : register(b2)
@@ -46,14 +52,13 @@ cbuffer RestirGINewBindless : register(b2)
     uint InputMWSrvIndex;
     uint OutputHistoryGeomAUavIndex;
     uint OutputHistoryGeomBUavIndex;
-    uint Padding0;
+    uint HistoryIrradianceIndex;
+    uint PrevLinearDepthIndex;
 };
 
 #include "RayTracingCommon.hlsl"
 
 static const uint RestirGINewRayFlags = RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES;
-static const float kPi = 3.14159265f;
-
 uint RestirGINewHash32(uint Value)
 {
     Value ^= Value >> 17;
@@ -105,28 +110,97 @@ float3 RestirGINewReconstructWorldPosition(uint2 FullPos, float Depth)
     return WorldPos.xyz;
 }
 
-float3 RestirGINewSampleHemisphere(float2 Xi, float3 Normal)
+
+bool RestirGINewTraceVisibility(float3 Origin, float3 Direction, float MaxDistance)
 {
-    const float Phi = 6.2831853f * Xi.x;
-    const float CosTheta = 1.0f - Xi.y;
-    const float SinTheta = sqrt(max(0.0f, 1.0f - CosTheta * CosTheta));
-    const float3 Local = float3(cos(Phi) * SinTheta, sin(Phi) * SinTheta, CosTheta);
-    return normalize(TangentToWorld(Local, Normal));
+    RayDesc ShadowRay;
+    ShadowRay.Origin = Origin;
+    ShadowRay.Direction = Direction;
+    ShadowRay.TMin = 1e-3f;
+    ShadowRay.TMax = max(1e-3f, MaxDistance);
+
+    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> ShadowQuery;
+    ShadowQuery.TraceRayInline(Scene, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES, 0xFF, ShadowRay);
+
+    while (ShadowQuery.Proceed())
+    {
+        const uint InstanceID = ShadowQuery.CandidateInstanceID();
+        const uint PrimitiveIndex = ShadowQuery.CandidatePrimitiveIndex();
+        const float2 Barycentrics = ShadowQuery.CandidateTriangleBarycentrics();
+        if (AlphaTest(InstanceID, PrimitiveIndex, Barycentrics))
+        {
+            ShadowQuery.CommitNonOpaqueTriangleHit();
+        }
+    }
+
+    return ShadowQuery.CommittedStatus() == COMMITTED_NOTHING;
 }
 
-float3 RestirGINewEvaluateHitRadiance(float3 HitNormal, float3 HitAlbedo, float HitMetalness, float3 OutDirection)
+float3 RestirGINewSampleHistoryIndirect(uint2 FullPos, float3 HitWorldPos)
 {
-    const float NdotL = saturate(dot(HitNormal, LightDirection));
+    if (UseHistoryIndirect == 0u || HistoryIrradianceIndex == 0xFFFFFFFFu || PrevLinearDepthIndex == 0xFFFFFFFFu)
+    {
+        return 0.0f.xxx;
+    }
+
+    Texture2D<float2> VelocityTexture = ResourceDescriptorHeap[VelocityIndex];
+    Texture2D<float4> HistoryIrradianceTexture = ResourceDescriptorHeap[HistoryIrradianceIndex];
+    Texture2D<float> PrevLinearDepthTexture = ResourceDescriptorHeap[PrevLinearDepthIndex];
+
+    const float2 Uv = (float2(FullPos) + 0.5f) / float2(FullWidth, FullHeight);
+    const float2 VelocityNdc = VelocityTexture[FullPos];
+    const float2 PrevUv = float2(Uv.x - VelocityNdc.x * 0.5f, Uv.y + VelocityNdc.y * 0.5f);
+    if (any(PrevUv <= 0.0f.xx) || any(PrevUv >= 1.0f.xx))
+    {
+        return 0.0f.xxx;
+    }
+
+    const uint2 PrevPixel = min(uint2(PrevUv * float2(FullWidth, FullHeight)), uint2(FullWidth - 1u, FullHeight - 1u));
+    const float PrevLinearDepth = PrevLinearDepthTexture[PrevPixel];
+    const float CurrentLinearDepth = length(HitWorldPos - CameraPosition);
+    if (!isfinite(PrevLinearDepth) || abs(CurrentLinearDepth - PrevLinearDepth) > 0.5f)
+    {
+        return 0.0f.xxx;
+    }
+
+    return max(HistoryIrradianceTexture[PrevPixel].rgb, 0.0f.xxx);
+}
+
+float3 RestirGINewEvaluateHitRadiance(uint InstanceID, float2 UV, float3 HitNormal, float3 HitAlbedo, float HitMetalness, float HitRoughness, float3 OutDirection, float3 HitWorldPos, uint2 FullPos)
+{
     const float3 Diffuse = HitAlbedo * (1.0f - saturate(HitMetalness));
-    const float3 Direct = Diffuse * (LightColor * LightIntensity) * (NdotL / kPi);
-    const float3 Sky = EvaluateSky(OutDirection) * Diffuse;
-    return max(Direct + Sky, 0.0f);
+    const float3 Specular = lerp(0.04f.xxx, HitAlbedo, saturate(HitMetalness));
+    const float Roughness = max(HitRoughness, 0.03f);
+
+    const float3 Wi = normalize(LightDirection);
+    const float3 Wo = normalize(OutDirection);
+    const float NdotL = saturate(dot(HitNormal, Wi));
+
+    float Visibility = 1.0f;
+    if (UseVisibility > 0u && NdotL > 0.0f)
+    {
+        Visibility = RestirGINewTraceVisibility(HitWorldPos + HitNormal * 0.01f, Wi, max(0.1f, RayLength)) ? 1.0f : 0.0f;
+    }
+
+    float3 Direct = 0.0f.xxx;
+    if (UseBrdf > 0u)
+    {
+        Direct = BRDF(Wi, Wo, HitNormal, Diffuse, Specular, Roughness) * (LightColor * LightIntensity) * NdotL * Visibility;
+    }
+    else
+    {
+        Direct = Diffuse * (LightColor * LightIntensity) * (NdotL / PI) * Visibility;
+    }
+
+    const float3 HistoryIndirect = RestirGINewSampleHistoryIndirect(FullPos, HitWorldPos);
+    const float3 Emissive = max(SampleEmissive(InstanceID, UV), 0.0f.xxx);
+    return max(Direct + HistoryIndirect + Emissive, 0.0f.xxx);
 }
 
-float3 RestirGINewSampleCandidate(float3 WorldPos, float3 Normal, float3 Albedo, float Metalness, uint2 HalfPos)
+float3 RestirGINewSampleCandidate(float3 WorldPos, float3 Normal, uint2 FullPos, uint2 HalfPos)
 {
     const float2 Xi = RestirGINewRandom02(HalfPos, FrameIndex * 1999u + 17u);
-    const float3 Direction = RestirGINewSampleHemisphere(Xi, Normal);
+    const float3 Direction = SampleHemisphereCosine(Xi, Normal);
 
     RayDesc Ray;
     Ray.Origin = WorldPos + Normal * 0.01f;
@@ -164,15 +238,18 @@ float3 RestirGINewSampleCandidate(float3 WorldPos, float3 Normal, float3 Albedo,
             HitNormal = -HitNormal;
         }
 
-        Incoming = RestirGINewEvaluateHitRadiance(HitNormal, HitAlbedo, HitMR.x, -Direction);
+        const float HitT = Query.CommittedRayT();
+        const float3 HitWorldPos = WorldPos + Direction * HitT;
+        Incoming = RestirGINewEvaluateHitRadiance(InstanceID, UV, HitNormal, HitAlbedo, HitMR.x, HitMR.y, -Direction, HitWorldPos, FullPos);
     }
     else
     {
         Incoming = EvaluateSky(Direction);
     }
 
-    const float3 Diffuse = Albedo * (1.0f - saturate(Metalness));
-    return max(Diffuse * Incoming, 0.0f.xxx);
+    // NOTE: Keep any RestirGINewRandom01 test hook behavior unchanged in this pass;
+    // restore to production path when running strict Legacy/New comparisons.
+    return max(Incoming, 0.0f.xxx);
 }
 
 uint RestirGINewEncodeNormal16x2(float3 N)
@@ -257,8 +334,6 @@ void CSInitialSampling(uint3 DispatchThreadId : SV_DispatchThreadID)
 
     Texture2D<float> DepthTexture = ResourceDescriptorHeap[DepthIndex];
     Texture2D<float4> GBufferA = ResourceDescriptorHeap[GBufferAIndex];
-    Texture2D<float4> GBufferB = ResourceDescriptorHeap[GBufferBIndex];
-    Texture2D<float4> GBufferC = ResourceDescriptorHeap[GBufferCIndex];
 
     const uint2 FullPos = RestirGINewHalfToFull(HalfPos);
     const float Depth = DepthTexture[FullPos];
@@ -270,10 +345,8 @@ void CSInitialSampling(uint3 DispatchThreadId : SV_DispatchThreadID)
     }
 
     const float3 Normal = normalize(GBufferA[FullPos].xyz * 2.0f - 1.0f);
-    const float3 Albedo = saturate(GBufferC[FullPos].rgb);
-    const float Metalness = saturate(GBufferB[FullPos].y);
     const float3 WorldPos = RestirGINewReconstructWorldPosition(FullPos, Depth);
-    const float3 Candidate = RestirGINewSampleCandidate(WorldPos, Normal, Albedo, Metalness, HalfPos);
+    const float3 Candidate = RestirGINewSampleCandidate(WorldPos, Normal, FullPos, HalfPos);
 
     InitialRadianceOut[HalfPos] = float4(Candidate, 0.0f);
     InitialRayDirOut[HalfPos] = 0u;
