@@ -3,638 +3,571 @@
 #include "RestirGIReservoir.hlsli"
 #include "RestirGISamplingCommon.hlsli"
 #include "PathBrdfCommon.hlsli"
+#include "GpuDebugLineCommon.hlsl"
 
 RaytracingAccelerationStructure Scene : register(t0);
 
 cbuffer RestirGIConstants : register(b1)
 {
-    uint OutputWidth;
-    uint OutputHeight;
+    uint FullWidth;
+    uint FullHeight;
+    uint HalfWidth;
+    uint HalfHeight;
     uint FrameIndex;
-    uint SamplesPerPixel;
+    uint Enabled;
+    uint HistoryValid;
+    uint SpatialPassIndex;
     float Intensity;
     float RayLength;
     float ClampThreshold;
-    uint Enabled;
-    uint HistoryValid;
     uint TemporalReuseEnabled;
-    float TemporalAdditionalScale;
-    float SpatialAdditionalScale;
-    float ResolveMinDenominator;
-    float ResolveMaxNormalization;
-    float ResolveLowSampleBoostGuard;
-    uint ResolveUseConfidence;
+    uint UseVisibility;
+    uint UseBrdf;
+    uint UseHistoryIndirect;
+    uint SequenceFrame;
+    uint DebugRayEnabled;
+    uint DebugPixelX;
+    uint DebugPixelY;
 };
 
 cbuffer RestirGIBindless : register(b2)
 {
-    uint OutputOrReservoirUavIndex;
-    uint ReservoirSrvIndex;
+    uint OutputTextureUavIndex;
     uint DepthIndex;
+    uint VelocityIndex;
     uint GBufferAIndex;
     uint GBufferBIndex;
     uint GBufferCIndex;
     uint InstanceDataBufferIndex;
     uint EnvironmentCubeBindlessIndex;
     uint LinearClampSamplerIndex;
-    uint VelocityIndex;
-    uint HistoryTextureIndex;
-    uint HistoryGeomAIndex;
-    uint HistoryGeomBIndex;
+    uint InputInitialRadianceSrvIndex;
+    uint InputInitialRayDirectionSrvIndex;
+    uint HistoryDepthNormalSrvIndex;
+    uint HistorySampleRadianceSrvIndex;
+    uint HistoryRayDirectionSrvIndex;
+    uint HistoryMWSrvIndex;
+    uint OutputDepthNormalUavIndex;
+    uint OutputSampleRadianceUavIndex;
+    uint OutputRayDirectionUavIndex;
+    uint OutputMWUavIndex;
+    uint InputDepthNormalSrvIndex;
+    uint InputSampleRadianceSrvIndex;
+    uint InputRayDirectionSrvIndex;
+    uint InputMWSrvIndex;
+    uint UnusedResolveUavIndex0;
+    uint UnusedResolveUavIndex1;
+    uint HistoryIrradianceIndex;
+    uint PrevLinearDepthIndex;
+    uint DebugLineBufferUavIndex;
 };
 
 #include "RayTracingCommon.hlsl"
 
 static const uint RestirGIRayFlags = RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES;
-
-
-static const float kMaxReservoirWeightSum = 1e6f;
-static const float kAcceptanceDepthThreshold = 0.01f;
-static const float kAcceptanceNormalSimilarityThreshold = 0.85f;
-static const float kAcceptanceAlbedoDeltaThreshold = 0.35f;
-static const float kAcceptanceMaterialDeltaThreshold = 0.2f;
-
-static const uint kMaxReservoirSampleCount = 65535u;
-
-uint ClampSampleCount(uint value)
+uint RestirGIHash32(uint Value)
 {
-    return min(value, kMaxReservoirSampleCount);
+    Value ^= Value >> 17;
+    Value *= 0xed5ad4bbu;
+    Value ^= Value >> 11;
+    Value *= 0xac4c1b51u;
+    Value ^= Value >> 15;
+    Value *= 0x31848babu;
+    Value ^= Value >> 14;
+    return Value;
 }
 
-bool IsFiniteFloat3(float3 value)
+float RestirGIRandom01(uint2 Pixel, uint Salt)
 {
-    return all(isfinite(value));
+    uint Seed = RestirGIHash32(Pixel.x + 0x9e3779b9u);
+    Seed = RestirGIHash32(Seed + Pixel.y);
+    Seed = RestirGIHash32(Seed + Salt * 1664525u);
+    return (Seed & 0x00ffffffu) / 16777216.0f;
 }
 
-bool IsReservoirStateValid(FRestirGIReservoir reservoir)
+float2 RestirGIRandom02(uint2 Pixel, uint Salt)
 {
-    return reservoir.SampleCount > 0u
-        && isfinite(reservoir.WeightSum) && reservoir.WeightSum > 0.0f
-        && isfinite(reservoir.SelectedWeight) && reservoir.SelectedWeight > 0.0f
-        && IsFiniteFloat3(reservoir.SampleRadiance);
+    return float2(
+        RestirGIRandom01(Pixel, Salt + 11u),
+        RestirGIRandom01(Pixel, Salt + 73u));
 }
 
-float ClampReservoirWeightSum(float value)
+uint RestirGIPackDebugColor(float3 Radiance)
 {
-    if (!isfinite(value) || value < 0.0f)
+    float3 Color = max(Radiance, 0.0f.xxx);
+    Color = Color / (1.0f.xxx + Color);
+    Color = saturate(pow(Color, 1.0f / 2.2f) * 1.35f);
+    const uint3 PackedRgb = (uint3)round(Color * 255.0f);
+    return (0xFFu << 24u) | (PackedRgb.b << 16u) | (PackedRgb.g << 8u) | PackedRgb.r;
+}
+
+uint2 RestirGIHalfToFull(uint2 HalfPos)
+{
+    static const uint2 Offsets[4] =
     {
-        return 0.0f;
-    }
+        uint2(1, 1),
+        uint2(1, 0),
+        uint2(0, 0),
+        uint2(0, 1),
+    };
 
-    return min(value, kMaxReservoirWeightSum);
+    const uint2 FullPos = HalfPos * 2u + Offsets[SequenceFrame % 4u];
+    return min(FullPos, uint2(FullWidth - 1u, FullHeight - 1u));
 }
 
-bool IsReservoirNearSaturation(FRestirGIReservoir reservoir)
+float3 RestirGIReconstructWorldPosition(uint2 FullPos, float Depth)
 {
-    return (reservoir.WeightSum >= kMaxReservoirWeightSum * 0.95f)
-        || (reservoir.SampleCount >= (kMaxReservoirSampleCount - 16u));
+    float2 Uv = (float2(FullPos) + 0.5f) / float2(FullWidth, FullHeight);
+    float2 Ndc = float2(Uv.x * 2.0f - 1.0f, 1.0f - Uv.y * 2.0f);
+    float4 Clip = float4(Ndc, Depth, 1.0f);
+    float4 WorldPos = mul(Clip, ViewProjectionInverse);
+    WorldPos.xyz /= max(WorldPos.w, 1e-6f);
+    return WorldPos.xyz;
 }
 
-float ComputeSafeNormalization(FRestirGIReservoir reservoir)
+
+bool RestirGITraceVisibility(float3 Origin, float3 Direction, float MaxDistance)
 {
-    float safeMinDenominator = max(ResolveMinDenominator, 1e-6f);
-    float safeMaxNormalization = max(ResolveMaxNormalization, 1.0f);
-    float denom = max(reservoir.SelectedWeight * float(max(1u, reservoir.SampleCount)), safeMinDenominator);
-    float normRaw = ClampReservoirWeightSum(reservoir.WeightSum) / denom;
-    if (!isfinite(normRaw) || normRaw < 0.0f)
+    RayDesc ShadowRay;
+    ShadowRay.Origin = Origin;
+    ShadowRay.Direction = Direction;
+    ShadowRay.TMin = 1e-3f;
+    ShadowRay.TMax = max(1e-3f, MaxDistance);
+
+    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> ShadowQuery;
+    ShadowQuery.TraceRayInline(Scene, RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES, 0xFF, ShadowRay);
+
+    while (ShadowQuery.Proceed())
     {
-        normRaw = 0.0f;
-    }
-
-    return min(normRaw, safeMaxNormalization);
-}
-
-uint Hash32(uint value)
-{
-    value ^= value >> 17;
-    value *= 0xed5ad4bbu;
-    value ^= value >> 11;
-    value *= 0xac4c1b51u;
-    value ^= value >> 15;
-    value *= 0x31848babu;
-    value ^= value >> 14;
-    return value;
-}
-
-float Random01(uint2 pixel, uint salt)
-{
-    uint seed = Hash32(pixel.x + 0x9e3779b9u);
-    seed = Hash32(seed + pixel.y);
-    seed = Hash32(seed + salt * 1664525u);
-    return (seed & 0x00ffffffu) / 16777216.0f;
-}
-
-float3 ReconstructWorldPosition(uint2 pixel, float depth, uint2 dispatchDim)
-{
-    float2 uv = (float2(pixel) + 0.5f) / float2(dispatchDim);
-    float2 ndc = float2(uv.x * 2.0f - 1.0f, 1.0f - uv.y * 2.0f);
-    float4 clip = float4(ndc, depth, 1.0f);
-    float4 worldPosition = mul(clip, ViewProjectionInverse);
-    worldPosition.xyz /= worldPosition.w;
-    return worldPosition.xyz;
-}
-
-float Luminance(float3 color)
-{
-    return dot(max(color, 0.0f), float3(0.2126f, 0.7152f, 0.0722f));
-}
-
-
-bool TryGetReprojectedHistoryPixel(uint2 pixel, uint2 resolution, Texture2D<float2> velocityTexture, out uint2 historyPixel)
-{
-    float2 uv = (float2(pixel) + 0.5f) / float2(resolution);
-    float2 velocityNdc = velocityTexture[pixel];
-    float2 previousUv = float2(
-        uv.x - velocityNdc.x * 0.5f,
-        uv.y + velocityNdc.y * 0.5f);
-    if (previousUv.x <= 0.0f || previousUv.y <= 0.0f || previousUv.x >= 1.0f || previousUv.y >= 1.0f)
-    {
-        historyPixel = 0u.xx;
-        return false;
-    }
-
-    historyPixel = uint2(previousUv * float2(resolution));
-    historyPixel = min(historyPixel, resolution - 1u);
-    return true;
-}
-
-bool IsTemporalHistoryAccepted(
-    uint2 centerPixel,
-    uint2 historyPixel,
-    Texture2D<float> depthTexture,
-    Texture2D<float4> gBufferA,
-    Texture2D<float4> gBufferB,
-    Texture2D<float4> gBufferC,
-    Texture2D<float4> historyTexture,
-    Texture2D<float4> historyGeomA,
-    Texture2D<float4> historyGeomB,
-    FRestirGIReservoir historyReservoir)
-{
-    float centerDepth = depthTexture[centerPixel];
-    float historyDepth = historyTexture[historyPixel].a;
-    if (centerDepth <= 0.0f || centerDepth >= 1.0f || historyDepth <= 0.0f || historyDepth >= 1.0f)
-    {
-        return false;
-    }
-
-    float depthDelta = abs(centerDepth - historyDepth);
-    if (depthDelta > kAcceptanceDepthThreshold)
-    {
-        return false;
-    }
-
-    float3 centerNormal = normalize(gBufferA[centerPixel].xyz * 2.0f - 1.0f);
-    float4 historyGeomAValue = historyGeomA[historyPixel];
-    float3 historyNormal = normalize(historyGeomAValue.xyz * 2.0f - 1.0f);
-    float normalSimilarity = dot(centerNormal, historyNormal);
-    if (!isfinite(normalSimilarity) || normalSimilarity < kAcceptanceNormalSimilarityThreshold)
-    {
-        return false;
-    }
-
-    float3 centerAlbedo = gBufferC[centerPixel].rgb;
-    float4 historyGeomBValue = historyGeomB[historyPixel];
-    float3 historyAlbedo = historyGeomBValue.rgb;
-    float albedoDelta = length(centerAlbedo - historyAlbedo);
-    if (!isfinite(albedoDelta) || albedoDelta > kAcceptanceAlbedoDeltaThreshold)
-    {
-        return false;
-    }
-
-    float centerRoughness = saturate(gBufferB[centerPixel].z);
-    float centerMetalness = saturate(gBufferB[centerPixel].y);
-    float historyRoughness = saturate(historyGeomAValue.w);
-    float historyMetalness = saturate(historyGeomBValue.w);
-    float2 centerMaterial = float2(centerRoughness, centerMetalness);
-    float2 historyMaterial = float2(historyRoughness, historyMetalness);
-    float materialDelta = length(centerMaterial - historyMaterial);
-    if (!isfinite(materialDelta) || materialDelta > kAcceptanceMaterialDeltaThreshold)
-    {
-        return false;
-    }
-
-    bool centerValid = all(isfinite(centerNormal)) && all(isfinite(centerAlbedo)) && all(isfinite(centerMaterial));
-    bool historyValid = all(isfinite(historyNormal)) && all(isfinite(historyAlbedo)) && all(isfinite(historyMaterial));
-    if (!centerValid || !historyValid)
-    {
-        return false;
-    }
-
-    float historyWeightSum = historyReservoir.WeightSum;
-    float historySelectedWeight = historyReservoir.SelectedWeight;
-    float historyLum = Luminance(historyReservoir.SampleRadiance);
-    return historyReservoir.SampleCount > 0u
-        && isfinite(historyWeightSum) && historyWeightSum > 0.0f
-        && isfinite(historySelectedWeight) && historySelectedWeight > 0.0f
-        && isfinite(historyLum) && historyLum >= 0.0f;
-}
-
-float3 EvaluateHitIncomingRadiance(uint instanceID, float2 hitUv, float3 hitNormal, float3 hitAlbedo, float hitMetallic, float hitRoughness, float3 outgoingDirection)
-{
-    float3 diffuse = hitAlbedo * (1.0f - saturate(hitMetallic));
-    float3 specular = lerp(0.04f.xxx, hitAlbedo, saturate(hitMetallic));
-    float roughness = max(hitRoughness, 0.03f);
-
-    float3 wi = normalize(LightDirection);
-    float3 wo = normalize(outgoingDirection);
-    float NdotL = saturate(dot(hitNormal, wi));
-    float3 directBrdf = BRDF(wi, wo, hitNormal, diffuse, specular, roughness);
-    float3 direct = directBrdf * (LightColor * LightIntensity) * NdotL;
-
-    float3 emissive = max(SampleEmissive(instanceID, hitUv), 0.0f.xxx);
-    return max(direct + emissive, 0.0f);
-}
-
-float3 SampleCandidateGI(float3 worldPos, float3 normal, uint2 pixel, uint sampleIndex)
-{
-    float2 Xi = float2(
-        Random01(pixel, FrameIndex * 1021u + sampleIndex * 97u + 1u),
-        Random01(pixel, FrameIndex * 1303u + sampleIndex * 131u + 7u));
-
-    float3 direction = SampleHemisphereCosine(Xi, normal);
-
-    RayDesc ray;
-    ray.Origin = worldPos + normal * 0.01f;
-    ray.Direction = direction;
-    ray.TMin = 1e-3f;
-    ray.TMax = max(0.1f, RayLength);
-
-    RayQuery<RestirGIRayFlags> query;
-    query.TraceRayInline(Scene, RestirGIRayFlags, 0xFF, ray);
-
-    while (query.Proceed())
-    {
-        uint instanceID = query.CandidateInstanceID();
-        uint primitiveIndex = query.CandidatePrimitiveIndex();
-        float2 barycentrics = query.CandidateTriangleBarycentrics();
-        if (AlphaTest(instanceID, primitiveIndex, barycentrics))
+        const uint InstanceID = ShadowQuery.CandidateInstanceID();
+        const uint PrimitiveIndex = ShadowQuery.CandidatePrimitiveIndex();
+        const float2 Barycentrics = ShadowQuery.CandidateTriangleBarycentrics();
+        if (AlphaTest(InstanceID, PrimitiveIndex, Barycentrics))
         {
-            query.CommitNonOpaqueTriangleHit();
+            ShadowQuery.CommitNonOpaqueTriangleHit();
         }
     }
 
-    float3 incomingRadiance = 0.0f.xxx;
-    if (query.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
+    return ShadowQuery.CommittedStatus() == COMMITTED_NOTHING;
+}
+
+float3 RestirGISampleHistoryIndirect(uint2 FullPos, float3 HitWorldPos)
+{
+    if (UseHistoryIndirect == 0u || HistoryIrradianceIndex == 0xFFFFFFFFu || PrevLinearDepthIndex == 0xFFFFFFFFu)
     {
-        uint instanceID = query.CommittedInstanceID();
-        uint primitiveIndex = query.CommittedPrimitiveIndex();
-        float2 barycentrics = query.CommittedTriangleBarycentrics();
+        return 0.0f.xxx;
+    }
 
-        float2 uv = GetInterpolatedUV(instanceID, primitiveIndex, barycentrics);
-        float3 hitAlbedo = SampleAlbedo(instanceID, uv);
-        float2 hitMR = SampleMetallicRoughness(instanceID, uv);
-        float3 hitNormal = GetInterpolatedNormal(instanceID, primitiveIndex, barycentrics);
-        if (dot(hitNormal, -direction) < 0.0f)
-        {
-            hitNormal = -hitNormal;
-        }
+    Texture2D<float2> VelocityTexture = ResourceDescriptorHeap[VelocityIndex];
+    Texture2D<float4> HistoryIrradianceTexture = ResourceDescriptorHeap[HistoryIrradianceIndex];
+    Texture2D<float> PrevLinearDepthTexture = ResourceDescriptorHeap[PrevLinearDepthIndex];
 
-        incomingRadiance = EvaluateHitIncomingRadiance(instanceID, uv, hitNormal, hitAlbedo, hitMR.x, hitMR.y, -direction);
+    const float2 Uv = (float2(FullPos) + 0.5f) / float2(FullWidth, FullHeight);
+    const float2 VelocityNdc = VelocityTexture[FullPos];
+    const float2 PrevUv = float2(Uv.x - VelocityNdc.x * 0.5f, Uv.y + VelocityNdc.y * 0.5f);
+    if (any(PrevUv <= 0.0f.xx) || any(PrevUv >= 1.0f.xx))
+    {
+        return 0.0f.xxx;
+    }
+
+    const uint2 PrevPixel = min(uint2(PrevUv * float2(FullWidth, FullHeight)), uint2(FullWidth - 1u, FullHeight - 1u));
+    const float PrevLinearDepth = PrevLinearDepthTexture[PrevPixel];
+    const float CurrentLinearDepth = length(HitWorldPos - CameraPosition);
+    if (!isfinite(PrevLinearDepth) || abs(CurrentLinearDepth - PrevLinearDepth) > 0.5f)
+    {
+        return 0.0f.xxx;
+    }
+
+    return max(HistoryIrradianceTexture[PrevPixel].rgb, 0.0f.xxx);
+}
+
+float3 RestirGIEvaluateHitRadiance(uint InstanceID, float2 UV, float3 HitNormal, float3 HitAlbedo, float HitMetalness, float HitRoughness, float3 OutDirection, float3 HitWorldPos, uint2 FullPos)
+{
+    const float3 Diffuse = HitAlbedo * (1.0f - saturate(HitMetalness));
+    const float3 Specular = lerp(0.04f.xxx, HitAlbedo, saturate(HitMetalness));
+    const float Roughness = max(HitRoughness, 0.03f);
+
+    const float3 Wi = normalize(LightDirection);
+    const float3 Wo = normalize(OutDirection);
+    const float NdotL = saturate(dot(HitNormal, Wi));
+
+    float Visibility = 1.0f;
+    if (UseVisibility > 0u && NdotL > 0.0f)
+    {
+        Visibility = RestirGITraceVisibility(HitWorldPos + HitNormal * 0.01f, Wi, max(0.1f, RayLength)) ? 1.0f : 0.0f;
+    }
+
+    float3 Direct = 0.0f.xxx;
+    if (UseBrdf > 0u)
+    {
+        Direct = BRDF(Wi, Wo, HitNormal, Diffuse, Specular, Roughness) * (LightColor * LightIntensity) * NdotL * Visibility;
     }
     else
     {
-        incomingRadiance = EvaluateSky(direction);
+        Direct = Diffuse * (LightColor * LightIntensity) * (NdotL / PI) * Visibility;
     }
 
-    return max(incomingRadiance, 0.0f.xxx);
+    const float3 HistoryIndirect = RestirGISampleHistoryIndirect(FullPos, HitWorldPos);
+    const float3 Emissive = max(SampleEmissive(InstanceID, UV), 0.0f.xxx);
+    return max(Direct + HistoryIndirect + Emissive, 0.0f.xxx);
 }
 
-float CandidateWeight(float3 candidate)
+float3 RestirGISampleCandidate(float3 WorldPos, float3 Normal, uint2 FullPos, uint2 HalfPos, out float3 OutDirection, out float OutHitDistance, out bool bOutHit)
 {
-    return min(max(1e-5f, Luminance(candidate)), 4.0f);
+    const float2 Xi = RestirGIRandom02(HalfPos, SequenceFrame * 1999u + 17u);
+    const float3 Direction = SampleHemisphereCosine(Xi, Normal);
+    OutDirection = Direction;
+    OutHitDistance = max(0.1f, RayLength);
+    bOutHit = false;
+
+    RayDesc Ray;
+    Ray.Origin = WorldPos + Normal * 0.01f;
+    Ray.Direction = Direction;
+    Ray.TMin = 1e-3f;
+    Ray.TMax = max(0.1f, RayLength);
+
+    RayQuery<RestirGIRayFlags> Query;
+    Query.TraceRayInline(Scene, RestirGIRayFlags, 0xFF, Ray);
+
+    while (Query.Proceed())
+    {
+        const uint InstanceID = Query.CandidateInstanceID();
+        const uint PrimitiveIndex = Query.CandidatePrimitiveIndex();
+        const float2 Barycentrics = Query.CandidateTriangleBarycentrics();
+        if (AlphaTest(InstanceID, PrimitiveIndex, Barycentrics))
+        {
+            Query.CommitNonOpaqueTriangleHit();
+        }
+    }
+
+    float3 Incoming = 0.0f.xxx;
+    if (Query.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
+    {
+        const uint InstanceID = Query.CommittedInstanceID();
+        const uint PrimitiveIndex = Query.CommittedPrimitiveIndex();
+        const float2 Barycentrics = Query.CommittedTriangleBarycentrics();
+
+        const float2 UV = GetInterpolatedUV(InstanceID, PrimitiveIndex, Barycentrics);
+        const float3 HitAlbedo = SampleAlbedo(InstanceID, UV);
+        const float2 HitMR = SampleMetallicRoughness(InstanceID, UV);
+        float3 HitNormal = GetInterpolatedNormal(InstanceID, PrimitiveIndex, Barycentrics);
+        if (dot(HitNormal, -Direction) < 0.0f)
+        {
+            HitNormal = -HitNormal;
+        }
+
+        const float HitT = Query.CommittedRayT();
+        OutHitDistance = HitT;
+        bOutHit = true;
+        const float3 HitWorldPos = WorldPos + Direction * HitT;
+        Incoming = RestirGIEvaluateHitRadiance(InstanceID, UV, HitNormal, HitAlbedo, HitMR.x, HitMR.y, -Direction, HitWorldPos, FullPos);
+    }
+    else
+    {
+        Incoming = EvaluateSky(Direction);
+    }
+
+    // NOTE: Keep any RestirGIRandom01 test hook behavior unchanged in this pass;
+    // restore to production path when running strict Legacy/New comparisons.
+    return max(Incoming, 0.0f.xxx);
 }
 
-void ReservoirUpdate(inout FRestirGIReservoir reservoir, float3 candidate, float weight, float randomValue)
+uint RestirGIEncodeNormal16x2(float3 N)
 {
-    bool bReservoirFinite = isfinite(reservoir.WeightSum)
-        && isfinite(reservoir.SelectedWeight)
-        && IsFiniteFloat3(reservoir.SampleRadiance);
-    if (!bReservoirFinite)
+    N /= (abs(N.x) + abs(N.y) + abs(N.z) + 1e-6f);
+    float2 Enc = N.xy;
+    if (N.z < 0.0f)
     {
-        reservoir = CreateEmptyReservoir();
+        const float2 SignVec = lerp(-1.0f.xx, 1.0f.xx, step(0.0f.xx, Enc));
+        Enc = (1.0f - abs(Enc.yx)) * SignVec;
     }
 
-    if (!isfinite(weight) || weight <= 0.0f || !IsFiniteFloat3(candidate))
-    {
-        return;
-    }
-
-    if (!isfinite(randomValue))
-    {
-        return;
-    }
-
-    randomValue = saturate(randomValue);
-
-    reservoir.SampleCount = ClampSampleCount(reservoir.SampleCount + 1u);
-    reservoir.WeightSum = ClampReservoirWeightSum(reservoir.WeightSum + weight);
-
-    float probability = saturate(weight / max(reservoir.WeightSum, 1e-6f));
-    if (randomValue < probability)
-    {
-        reservoir.SampleRadiance = candidate;
-        reservoir.SelectedWeight = weight;
-    }
+    Enc = Enc * 0.5f + 0.5f;
+    uint2 Packed = (uint2)round(saturate(Enc) * 65535.0f);
+    return (Packed.x & 0xFFFFu) | ((Packed.y & 0xFFFFu) << 16u);
 }
 
-float3 ResolveReservoir(FRestirGIReservoir reservoir)
+float3 RestirGIDecodeNormal16x2(uint Packed)
 {
-    if (!isfinite(reservoir.WeightSum) || reservoir.WeightSum <= 0.0f
-        || !isfinite(reservoir.SelectedWeight) || reservoir.SelectedWeight <= 0.0f
-        || reservoir.SampleCount == 0u
-        || !IsFiniteFloat3(reservoir.SampleRadiance))
-    {
-        return 0.0f.xxx;
-    }
+    float2 Enc = float2(Packed & 0xFFFFu, Packed >> 16u) / 65535.0f;
+    Enc = Enc * 2.0f - 1.0f;
 
-    float normalization = ComputeSafeNormalization(reservoir);
-    if (!isfinite(normalization) || normalization < 0.0f)
-    {
-        return 0.0f.xxx;
-    }
-
-    float3 resolved = reservoir.SampleRadiance * normalization;
-    if (!IsFiniteFloat3(resolved))
-    {
-        return 0.0f.xxx;
-    }
-
-    if (ResolveUseConfidence > 0u)
-    {
-        static const float kConfidenceSampleCountTarget = 12.0f;
-        float sampleFactor = saturate(float(reservoir.SampleCount) / kConfidenceSampleCountTarget);
-        float weightFactor = saturate(reservoir.SelectedWeight / max(reservoir.WeightSum, 1e-6f));
-        float confidence = saturate(lerp(sampleFactor, sampleFactor * weightFactor, saturate(ResolveLowSampleBoostGuard)));
-        if (!isfinite(confidence))
-        {
-            return 0.0f.xxx;
-        }
-
-        resolved *= confidence;
-    }
-
-    if (!IsFiniteFloat3(resolved))
-    {
-        return 0.0f.xxx;
-    }
-
-    resolved = max(resolved, 0.0f);
-    return min(resolved, ClampThreshold.xxx);
+    float3 N = float3(Enc.xy, 1.0f - abs(Enc.x) - abs(Enc.y));
+    float2 T = saturate(-N.zz);
+    N.xy += lerp(T, -T, step(0.0f.xx, N.xy));
+    return normalize(N);
 }
 
-
-void SpatialReuse(
-    inout FRestirGIReservoir reservoir,
-    uint2 pixel,
-    uint2 resolution,
-    StructuredBuffer<FRestirGIReservoir> reservoirBuffer,
-    Texture2D<float> depthTexture,
-    Texture2D<float4> gBufferA,
-    Texture2D<float4> gBufferB,
-    Texture2D<float4> gBufferC)
+FRestirGISample RestirGILoadSample(Texture2D<float4> RadianceTexture, Texture2D<uint> RayDirTexture, uint2 Pos)
 {
-    float centerDepth = depthTexture[pixel];
-    if (!isfinite(centerDepth) || centerDepth <= 0.0f || centerDepth >= 1.0f)
-    {
-        return;
-    }
+    FRestirGISample S;
+    S.Radiance = RadianceTexture[Pos].xyz;
+    S.RayDirection = RayDirTexture[Pos];
+    return S;
+}
 
-    float3 centerNormal = normalize(gBufferA[pixel].xyz * 2.0f - 1.0f);
-    float2 centerMaterial = saturate(float2(gBufferB[pixel].z, gBufferB[pixel].y));
-    float3 centerAlbedo = saturate(gBufferC[pixel].rgb);
-    if (!IsFiniteFloat3(centerNormal) || any(!isfinite(centerMaterial)) || !IsFiniteFloat3(centerAlbedo))
-    {
-        return;
-    }
-    static const int2 Offsets[4] =
-    {
-        int2(-1, 0),
-        int2(1, 0),
-        int2(0, -1),
-        int2(0, 1)
-    };
+FRestirGIReservoir RestirGILoadReservoir(Texture2D<float4> SampleRadianceTexture, Texture2D<uint> RayDirectionTexture, Texture2D<float2> MWTexture, uint2 Pos)
+{
+    FRestirGIReservoir R;
+    R.Sample.Radiance = SampleRadianceTexture[Pos].xyz;
+    R.Sample.RayDirection = RayDirectionTexture[Pos];
+    R.M = MWTexture[Pos].x;
+    R.W = MWTexture[Pos].y;
+    R.SumWeight = R.W * R.M * RestirGITarget(R.Sample.Radiance);
+    return R;
+}
 
-    [unroll]
-    for (uint i = 0; i < 4; ++i)
-    {
-        int2 samplePixel = int2(pixel) + Offsets[i];
-        if (samplePixel.x < 0 || samplePixel.y < 0 || samplePixel.x >= int(resolution.x) || samplePixel.y >= int(resolution.y))
-        {
-            continue;
-        }
-
-        uint2 neighborPixel = uint2(samplePixel);
-        float neighborDepth = depthTexture[neighborPixel];
-        if (!isfinite(neighborDepth) || neighborDepth <= 0.0f || neighborDepth >= 1.0f)
-        {
-            continue;
-        }
-
-        float depthDelta = abs(centerDepth - neighborDepth);
-        if (!isfinite(depthDelta) || depthDelta > kAcceptanceDepthThreshold)
-        {
-            continue;
-        }
-
-        float3 neighborNormal = normalize(gBufferA[neighborPixel].xyz * 2.0f - 1.0f);
-        if (!IsFiniteFloat3(neighborNormal))
-        {
-            continue;
-        }
-
-        float normalSimilarity = dot(centerNormal, neighborNormal);
-        if (!isfinite(normalSimilarity) || normalSimilarity < kAcceptanceNormalSimilarityThreshold)
-        {
-            continue;
-        }
-
-        float3 neighborAlbedo = saturate(gBufferC[neighborPixel].rgb);
-        if (!IsFiniteFloat3(neighborAlbedo))
-        {
-            continue;
-        }
-
-        float albedoDelta = length(centerAlbedo - neighborAlbedo);
-        if (!isfinite(albedoDelta) || albedoDelta > kAcceptanceAlbedoDeltaThreshold)
-        {
-            continue;
-        }
-
-        float2 neighborMaterial = saturate(float2(gBufferB[neighborPixel].z, gBufferB[neighborPixel].y));
-        if (any(!isfinite(neighborMaterial)))
-        {
-            continue;
-        }
-
-        float materialDelta = length(centerMaterial - neighborMaterial);
-        if (!isfinite(materialDelta) || materialDelta > kAcceptanceMaterialDeltaThreshold)
-        {
-            continue;
-        }
-
-        uint neighborIndex = neighborPixel.y * resolution.x + neighborPixel.x;
-        FRestirGIReservoir neighbor = reservoirBuffer[neighborIndex];
-        if (!IsReservoirStateValid(neighbor) || IsReservoirNearSaturation(neighbor))
-        {
-            continue;
-        }
-
-        float neighborWeight = max(1e-5f, neighbor.SelectedWeight);
-        float randomValue = Random01(pixel, FrameIndex * 3253u + i * 173u + 19u);
-        ReservoirUpdate(reservoir, neighbor.SampleRadiance, neighborWeight, randomValue);
-
-        float additionalWeight = ClampReservoirWeightSum((neighbor.WeightSum - neighborWeight) * SpatialAdditionalScale);
-        reservoir.WeightSum = ClampReservoirWeightSum(reservoir.WeightSum + additionalWeight);
-        reservoir.SampleCount = ClampSampleCount(reservoir.SampleCount + min(max(0u, neighbor.SampleCount - 1u), 4u));
-    }
+void RestirGIStoreReservoir(
+    uint2 Pos,
+    FRestirGIReservoir Reservoir,
+    float Depth,
+    float3 Normal,
+    RWTexture2D<uint2> OutDepthNormal,
+    RWTexture2D<float4> OutSampleRadiance,
+    RWTexture2D<uint> OutRayDirection,
+    RWTexture2D<float2> OutMW)
+{
+    OutDepthNormal[Pos] = uint2(asuint(Depth), RestirGIEncodeNormal16x2(Normal));
+    OutSampleRadiance[Pos] = float4(max(Reservoir.Sample.Radiance, 0.0f.xxx), 0.0f);
+    OutRayDirection[Pos] = Reservoir.Sample.RayDirection;
+    OutMW[Pos] = float2(Reservoir.M, Reservoir.W);
 }
 
 [numthreads(8, 8, 1)]
-void CSTemporal(uint3 DispatchThreadId : SV_DispatchThreadID)
+void CSInitialSampling(uint3 DispatchThreadId : SV_DispatchThreadID)
 {
-    if (DispatchThreadId.x >= OutputWidth || DispatchThreadId.y >= OutputHeight)
+    const uint2 HalfPos = DispatchThreadId.xy;
+    if (HalfPos.x >= HalfWidth || HalfPos.y >= HalfHeight)
     {
         return;
     }
 
-    RWStructuredBuffer<FRestirGIReservoir> reservoirOut = ResourceDescriptorHeap[OutputOrReservoirUavIndex];
-    StructuredBuffer<FRestirGIReservoir> reservoirHistory = ResourceDescriptorHeap[ReservoirSrvIndex];
+    RWTexture2D<float4> InitialRadianceOut = ResourceDescriptorHeap[OutputSampleRadianceUavIndex];
+    RWTexture2D<uint> InitialRayDirOut = ResourceDescriptorHeap[OutputRayDirectionUavIndex];
 
     if (Enabled == 0u)
     {
-        reservoirOut[DispatchThreadId.y * OutputWidth + DispatchThreadId.x] = CreateEmptyReservoir();
+        InitialRadianceOut[HalfPos] = 0.0f.xxxx;
+        InitialRayDirOut[HalfPos] = 0u;
         return;
     }
 
-    Texture2D<float> depthTexture = ResourceDescriptorHeap[DepthIndex];
-    Texture2D<float4> gBufferA = ResourceDescriptorHeap[GBufferAIndex];
-    Texture2D<float4> gBufferB = ResourceDescriptorHeap[GBufferBIndex];
-    Texture2D<float4> gBufferC = ResourceDescriptorHeap[GBufferCIndex];
-    Texture2D<float2> velocityTexture = ResourceDescriptorHeap[VelocityIndex];
-    Texture2D<float4> historyTexture = ResourceDescriptorHeap[HistoryTextureIndex];
-    Texture2D<float4> historyGeomA = ResourceDescriptorHeap[HistoryGeomAIndex];
-    Texture2D<float4> historyGeomB = ResourceDescriptorHeap[HistoryGeomBIndex];
+    Texture2D<float> DepthTexture = ResourceDescriptorHeap[DepthIndex];
+    Texture2D<float4> GBufferA = ResourceDescriptorHeap[GBufferAIndex];
 
-    const uint2 pixel = DispatchThreadId.xy;
-    float depth = depthTexture[pixel];
-    if (depth <= 0.0f || depth >= 1.0f)
+    const uint2 FullPos = RestirGIHalfToFull(HalfPos);
+    const float Depth = DepthTexture[FullPos];
+    if (Depth <= 0.0f || Depth >= 1.0f)
     {
-        reservoirOut[pixel.y * OutputWidth + pixel.x] = CreateEmptyReservoir();
+        InitialRadianceOut[HalfPos] = 0.0f.xxxx;
+        InitialRayDirOut[HalfPos] = 0u;
         return;
     }
 
-    float3 normal = normalize(gBufferA[pixel].xyz * 2.0f - 1.0f);
+    const float3 Normal = normalize(GBufferA[FullPos].xyz * 2.0f - 1.0f);
+    const float3 WorldPos = RestirGIReconstructWorldPosition(FullPos, Depth);
+    float3 SampleDirection = 0.0f.xxx;
+    float DebugHitDistance = max(0.1f, RayLength);
+    bool bDebugHit = false;
+    const float3 Candidate = RestirGISampleCandidate(WorldPos, Normal, FullPos, HalfPos, SampleDirection, DebugHitDistance, bDebugHit);
 
-    float3 worldPos = ReconstructWorldPosition(pixel, depth, uint2(OutputWidth, OutputHeight));
-
-    FRestirGIReservoir reservoir = CreateEmptyReservoir();
-
-    const uint effectiveSamples = clamp(SamplesPerPixel, 1u, 32u);
-    [loop]
-    for (uint sampleIndex = 0; sampleIndex < effectiveSamples; ++sampleIndex)
+    if (DebugRayEnabled != 0u && DebugLineBufferUavIndex != 0xFFFFFFFFu && all(HalfPos == uint2(DebugPixelX, DebugPixelY)))
     {
-        float3 candidate = SampleCandidateGI(worldPos, normal, pixel, sampleIndex);
-        float weight = CandidateWeight(candidate);
-        float randomValue = Random01(pixel, FrameIndex * 1741u + sampleIndex * 313u + 11u);
-        ReservoirUpdate(reservoir, candidate, weight, randomValue);
+        const float TraceDistance = bDebugHit ? max(1e-3f, DebugHitDistance) : max(0.1f, RayLength);
+        const uint DebugColor = RestirGIPackDebugColor(Candidate);
+        DebugDrawLine(DebugLineBufferUavIndex, WorldPos, WorldPos + SampleDirection * TraceDistance, DebugColor);
     }
 
-    const uint reservoirIndex = pixel.y * OutputWidth + pixel.x;
+    InitialRadianceOut[HalfPos] = float4(Candidate, 0.0f);
+    InitialRayDirOut[HalfPos] = 0u;
+}
+
+[numthreads(8, 8, 1)]
+void CSTemporalResampling(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+    const uint2 HalfPos = DispatchThreadId.xy;
+    if (HalfPos.x >= HalfWidth || HalfPos.y >= HalfHeight)
+    {
+        return;
+    }
+
+    Texture2D<float> DepthTexture = ResourceDescriptorHeap[DepthIndex];
+    Texture2D<float2> VelocityTexture = ResourceDescriptorHeap[VelocityIndex];
+    Texture2D<float4> GBufferA = ResourceDescriptorHeap[GBufferAIndex];
+
+    Texture2D<float4> InitialRadiance = ResourceDescriptorHeap[InputInitialRadianceSrvIndex];
+    Texture2D<uint> InitialRayDir = ResourceDescriptorHeap[InputInitialRayDirectionSrvIndex];
+
+    Texture2D<uint2> HistoryDepthNormal = ResourceDescriptorHeap[HistoryDepthNormalSrvIndex];
+    Texture2D<float4> HistorySampleRadiance = ResourceDescriptorHeap[HistorySampleRadianceSrvIndex];
+    Texture2D<uint> HistoryRayDirection = ResourceDescriptorHeap[HistoryRayDirectionSrvIndex];
+    Texture2D<float2> HistoryMW = ResourceDescriptorHeap[HistoryMWSrvIndex];
+
+    RWTexture2D<uint2> OutDepthNormal = ResourceDescriptorHeap[OutputDepthNormalUavIndex];
+    RWTexture2D<float4> OutSampleRadiance = ResourceDescriptorHeap[OutputSampleRadianceUavIndex];
+    RWTexture2D<uint> OutRayDirection = ResourceDescriptorHeap[OutputRayDirectionUavIndex];
+    RWTexture2D<float2> OutMW = ResourceDescriptorHeap[OutputMWUavIndex];
+
+    const uint2 FullPos = RestirGIHalfToFull(HalfPos);
+    const float Depth = DepthTexture[FullPos];
+    const float3 Normal = normalize(GBufferA[FullPos].xyz * 2.0f - 1.0f);
+
+    if (Enabled == 0u || Depth <= 0.0f || Depth >= 1.0f)
+    {
+        FRestirGIReservoir Empty = (FRestirGIReservoir)0;
+        RestirGIStoreReservoir(HalfPos, Empty, Depth, Normal, OutDepthNormal, OutSampleRadiance, OutRayDirection, OutMW);
+        return;
+    }
+
+    FRestirGISample Current = RestirGILoadSample(InitialRadiance, InitialRayDir, HalfPos);
+
+    FRestirGIReservoir Reservoir = (FRestirGIReservoir)0;
+    Reservoir.Sample = Current;
+    Reservoir.SumWeight = 0.0f;
+    Reservoir.M = 0.0f;
+    Reservoir.W = 0.0f;
+
     if (TemporalReuseEnabled > 0u && HistoryValid > 0u)
     {
-        uint2 historyPixel = 0u.xx;
-        if (TryGetReprojectedHistoryPixel(pixel, uint2(OutputWidth, OutputHeight), velocityTexture, historyPixel))
-        {
-            const uint historyIndex = historyPixel.y * OutputWidth + historyPixel.x;
-            FRestirGIReservoir historyReservoir = reservoirHistory[historyIndex];
-            if (IsReservoirStateValid(historyReservoir)
-                && !IsReservoirNearSaturation(historyReservoir)
-                && IsTemporalHistoryAccepted(pixel, historyPixel, depthTexture, gBufferA, gBufferB, gBufferC, historyTexture, historyGeomA, historyGeomB, historyReservoir))
-            {
-                float historySelectedWeight = max(1e-5f, historyReservoir.SelectedWeight);
-                ReservoirUpdate(
-                    reservoir,
-                    historyReservoir.SampleRadiance,
-                    historySelectedWeight,
-                    Random01(pixel, FrameIndex * 2143u + 23u));
+        const float2 Uv = (float2(FullPos) + 0.5f) / float2(FullWidth, FullHeight);
+        const float2 VelocityNdc = VelocityTexture[FullPos];
+        const float2 PrevUv = float2(Uv.x - VelocityNdc.x * 0.5f, Uv.y + VelocityNdc.y * 0.5f);
 
-                float additionalHistoryWeight = ClampReservoirWeightSum((historyReservoir.WeightSum - historySelectedWeight) * TemporalAdditionalScale);
-                reservoir.WeightSum = ClampReservoirWeightSum(reservoir.WeightSum + additionalHistoryWeight);
-                reservoir.SampleCount = ClampSampleCount(reservoir.SampleCount + min(max(0u, historyReservoir.SampleCount - 1u), 8u));
+        if (all(PrevUv > 0.0f.xx) && all(PrevUv < 1.0f.xx))
+        {
+            const uint2 PrevHalfPos = min(uint2(PrevUv * float2(HalfWidth, HalfHeight)), uint2(HalfWidth - 1u, HalfHeight - 1u));
+            const uint2 PackedHistory = HistoryDepthNormal[PrevHalfPos];
+            const float PrevDepth = asfloat(PackedHistory.x);
+            const float3 PrevNormal = RestirGIDecodeNormal16x2(PackedHistory.y);
+
+            const float DepthDelta = abs(Depth - PrevDepth);
+            const float NormalSimilarity = dot(Normal, PrevNormal);
+
+            if (PrevDepth > 0.0f && PrevDepth < 1.0f && DepthDelta < 0.01f && NormalSimilarity > 0.8f)
+            {
+                FRestirGIReservoir History = RestirGILoadReservoir(HistorySampleRadiance, HistoryRayDirection, HistoryMW, PrevHalfPos);
+                const float Target = RestirGITarget(History.Sample.Radiance);
+                if (History.M > 0.0f && History.W > 0.0f && Target > 0.0f)
+                {
+                    RestirGIMerge(Reservoir, History, Target, RestirGIRandom01(HalfPos, SequenceFrame * 1543u + 3u));
+                }
             }
         }
     }
 
-    reservoirOut[reservoirIndex] = reservoir;
+    const float CurrentWeight = max(1e-5f, RestirGITarget(Current.Radiance));
+    RestirGIUpdate(Reservoir, Current, CurrentWeight, RestirGIRandom01(HalfPos, SequenceFrame * 1531u + 41u));
+
+    const float SelectedTarget = max(1e-5f, RestirGITarget(Reservoir.Sample.Radiance));
+    // Normalization factor W used in resolve: SampleRadiance * W.
+    // Compensates for the selection bias of reservoir sampling (brighter samples are picked more often),
+    Reservoir.W = Reservoir.SumWeight / max(1e-5f, Reservoir.M * SelectedTarget);
+    Reservoir.M = min(Reservoir.M, 30.0f);
+
+    RestirGIStoreReservoir(HalfPos, Reservoir, Depth, Normal, OutDepthNormal, OutSampleRadiance, OutRayDirection, OutMW);
 }
 
 [numthreads(8, 8, 1)]
-void CSSpatial(uint3 DispatchThreadId : SV_DispatchThreadID)
+void CSSpatialResampling(uint3 DispatchThreadId : SV_DispatchThreadID)
 {
-    if (DispatchThreadId.x >= OutputWidth || DispatchThreadId.y >= OutputHeight)
+    const uint2 HalfPos = DispatchThreadId.xy;
+    if (HalfPos.x >= HalfWidth || HalfPos.y >= HalfHeight)
     {
         return;
     }
 
-    RWStructuredBuffer<FRestirGIReservoir> reservoirOut = ResourceDescriptorHeap[OutputOrReservoirUavIndex];
-    StructuredBuffer<FRestirGIReservoir> reservoirIn = ResourceDescriptorHeap[ReservoirSrvIndex];
-    Texture2D<float> depthTexture = ResourceDescriptorHeap[DepthIndex];
-    Texture2D<float4> gBufferA = ResourceDescriptorHeap[GBufferAIndex];
-    Texture2D<float4> gBufferB = ResourceDescriptorHeap[GBufferBIndex];
-    Texture2D<float4> gBufferC = ResourceDescriptorHeap[GBufferCIndex];
+    Texture2D<uint2> InDepthNormal = ResourceDescriptorHeap[InputDepthNormalSrvIndex];
+    Texture2D<float4> InSampleRadiance = ResourceDescriptorHeap[InputSampleRadianceSrvIndex];
+    Texture2D<uint> InRayDirection = ResourceDescriptorHeap[InputRayDirectionSrvIndex];
+    Texture2D<float2> InMW = ResourceDescriptorHeap[InputMWSrvIndex];
 
-    const uint2 pixel = DispatchThreadId.xy;
-    float depth = depthTexture[pixel];
-    if (Enabled == 0u || depth <= 0.0f || depth >= 1.0f)
+    RWTexture2D<uint2> OutDepthNormal = ResourceDescriptorHeap[OutputDepthNormalUavIndex];
+    RWTexture2D<float4> OutSampleRadiance = ResourceDescriptorHeap[OutputSampleRadianceUavIndex];
+    RWTexture2D<uint> OutRayDirection = ResourceDescriptorHeap[OutputRayDirectionUavIndex];
+    RWTexture2D<float2> OutMW = ResourceDescriptorHeap[OutputMWUavIndex];
+
+    FRestirGIReservoir Reservoir = RestirGILoadReservoir(InSampleRadiance, InRayDirection, InMW, HalfPos);
+    const uint2 PackedCenter = InDepthNormal[HalfPos];
+    const float CenterDepth = asfloat(PackedCenter.x);
+    const float3 CenterNormal = RestirGIDecodeNormal16x2(PackedCenter.y);
+
+    if (Enabled == 0u || CenterDepth <= 0.0f || CenterDepth >= 1.0f)
     {
-        reservoirOut[pixel.y * OutputWidth + pixel.x] = CreateEmptyReservoir();
+        FRestirGIReservoir Empty = (FRestirGIReservoir)0;
+        RestirGIStoreReservoir(HalfPos, Empty, CenterDepth, CenterNormal, OutDepthNormal, OutSampleRadiance, OutRayDirection, OutMW);
         return;
     }
 
-    const uint reservoirIndex = pixel.y * OutputWidth + pixel.x;
-    FRestirGIReservoir reservoir = reservoirIn[reservoirIndex];
-    if (!IsReservoirStateValid(reservoir) || IsReservoirNearSaturation(reservoir))
+    const uint MaxIterations = (SpatialPassIndex == 0u) ? 8u : 5u;
+    const float SearchRadius = (SpatialPassIndex == 0u) ? 16.0f : 8.0f;
+
+    [loop]
+    for (uint Iteration = 0u; Iteration < MaxIterations; ++Iteration)
     {
-        reservoir = CreateEmptyReservoir();
+        const float2 Jitter = RestirGIRandom02(HalfPos, SequenceFrame * 2467u + Iteration * 17u) * 2.0f - 1.0f;
+        const int2 CandidatePos = int2(HalfPos) + int2(round(Jitter * SearchRadius));
+        if (CandidatePos.x < 0 || CandidatePos.y < 0 || CandidatePos.x >= int(HalfWidth) || CandidatePos.y >= int(HalfHeight))
+        {
+            continue;
+        }
+
+        const uint2 NeighborPos = uint2(CandidatePos);
+        const uint2 PackedNeighbor = InDepthNormal[NeighborPos];
+        const float NeighborDepth = asfloat(PackedNeighbor.x);
+        const float3 NeighborNormal = RestirGIDecodeNormal16x2(PackedNeighbor.y);
+        if (NeighborDepth <= 0.0f || NeighborDepth >= 1.0f)
+        {
+            continue;
+        }
+
+        if (abs(CenterDepth - NeighborDepth) > 0.01f || dot(CenterNormal, NeighborNormal) < 0.9f)
+        {
+            continue;
+        }
+
+        FRestirGIReservoir Neighbor = RestirGILoadReservoir(InSampleRadiance, InRayDirection, InMW, NeighborPos);
+        const float Target = RestirGITarget(Neighbor.Sample.Radiance);
+        if (Target <= 0.0f || Neighbor.M <= 0.0f || Neighbor.W <= 0.0f)
+        {
+            continue;
+        }
+
+        RestirGIMerge(Reservoir, Neighbor, Target, RestirGIRandom01(HalfPos, SequenceFrame * 4513u + Iteration * 53u));
     }
 
-    SpatialReuse(reservoir, pixel, uint2(OutputWidth, OutputHeight), reservoirIn, depthTexture, gBufferA, gBufferB, gBufferC);
-    reservoirOut[reservoirIndex] = reservoir;
+    const float SelectedTarget = max(1e-5f, RestirGITarget(Reservoir.Sample.Radiance));
+    Reservoir.W = Reservoir.SumWeight / max(1e-5f, Reservoir.M * SelectedTarget);
+    Reservoir.M = min(Reservoir.M, 30.0f);
+
+	RestirGIStoreReservoir(HalfPos, Reservoir, CenterDepth, CenterNormal, OutDepthNormal, OutSampleRadiance, OutRayDirection, OutMW);
 }
 
 [numthreads(8, 8, 1)]
 void CSResolve(uint3 DispatchThreadId : SV_DispatchThreadID)
 {
-    if (DispatchThreadId.x >= OutputWidth || DispatchThreadId.y >= OutputHeight)
+    const uint2 Pixel = DispatchThreadId.xy;
+    if (Pixel.x >= FullWidth || Pixel.y >= FullHeight)
     {
         return;
     }
 
-    RWTexture2D<float4> outputTexture = ResourceDescriptorHeap[OutputOrReservoirUavIndex];
-    StructuredBuffer<FRestirGIReservoir> reservoirBuffer = ResourceDescriptorHeap[ReservoirSrvIndex];
-    Texture2D<float> depthTexture = ResourceDescriptorHeap[DepthIndex];
-    Texture2D<float4> gBufferA = ResourceDescriptorHeap[GBufferAIndex];
-    Texture2D<float4> gBufferB = ResourceDescriptorHeap[GBufferBIndex];
-    Texture2D<float4> gBufferC = ResourceDescriptorHeap[GBufferCIndex];
-    RWTexture2D<float4> historyGeomAOut = ResourceDescriptorHeap[HistoryGeomAIndex];
-    RWTexture2D<float4> historyGeomBOut = ResourceDescriptorHeap[HistoryGeomBIndex];
+    Texture2D<float> DepthTexture = ResourceDescriptorHeap[DepthIndex];
+    Texture2D<float4> ReservoirSampleRadiance = ResourceDescriptorHeap[InputSampleRadianceSrvIndex];
+    Texture2D<float2> ReservoirMW = ResourceDescriptorHeap[InputMWSrvIndex];
 
-    const uint2 pixel = DispatchThreadId.xy;
-    float3 packedNormal = normalize(gBufferA[pixel].xyz * 2.0f - 1.0f) * 0.5f + 0.5f;
-    float roughness = saturate(gBufferB[pixel].z);
-    float metalness = saturate(gBufferB[pixel].y);
-    historyGeomAOut[pixel] = float4(packedNormal, roughness);
-    historyGeomBOut[pixel] = float4(saturate(gBufferC[pixel].rgb), metalness);
+    RWTexture2D<float4> OutputTexture = ResourceDescriptorHeap[OutputTextureUavIndex];
+    const float Depth = DepthTexture[Pixel];
 
-    if (Enabled == 0u)
+    if (Enabled == 0u || Depth <= 0.0f || Depth >= 1.0f)
     {
-        outputTexture[pixel] = float4(0.0f, 0.0f, 0.0f, 1.0f);
+        OutputTexture[Pixel] = float4(0.0f, 0.0f, 0.0f, saturate(Depth));
         return;
     }
 
-    const uint reservoirIndex = pixel.y * OutputWidth + pixel.x;
-    FRestirGIReservoir reservoir = reservoirBuffer[reservoirIndex];
-    float3 finalSample = ResolveReservoir(reservoir) * max(0.0f, Intensity);
-    float depth = depthTexture[pixel];
-    outputTexture[pixel] = float4(finalSample, saturate(depth));
+    const uint2 HalfPos = min(Pixel / 2u, uint2(HalfWidth - 1u, HalfHeight - 1u));
+    const float3 SampleRadiance = ReservoirSampleRadiance[HalfPos].xyz;
+    const float2 MW = ReservoirMW[HalfPos];
+    const float W = max(0.0f, MW.y);
+    const float3 Resolved = min(max(SampleRadiance * W * max(0.0f, Intensity), 0.0f.xxx), ClampThreshold.xxx);
+    OutputTexture[Pixel] = float4(Resolved, saturate(Depth));
 }

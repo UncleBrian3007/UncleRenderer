@@ -16,11 +16,6 @@ enum class ESSRMode
     CS
 };
 
-enum class ERestirGIMode
-{
-    Legacy,
-    New
-};
 
 struct FRendererConfig
 {
@@ -63,7 +58,6 @@ struct FRendererConfig
     bool bEnableSsrRefine = false;
     bool bEnableSsrDenoise = true;
     bool bEnableRestirGI = false;
-    ERestirGIMode RestirGIMode = ERestirGIMode::Legacy;
     uint32_t RestirGISamplesPerPixel = 2;
     float RestirGIIntensity = 1.0f;
     float RestirGIRayLength = 100.0f;
@@ -77,9 +71,9 @@ struct FRendererConfig
     float RestirGIResolveLowSampleBoostGuard = 0.6f;
     bool bRestirGIResolveUseConfidence = true;
     uint32_t RestirGIMaxHistoryFrames = 1;
-    bool bRestirGINewUseVisibility = true;
-    bool bRestirGINewUseBrdf = true;
-    bool bRestirGINewUseHistoryIndirect = true;
+    bool bRestirGIUseVisibility = true;
+    bool bRestirGIUseBrdf = true;
+    bool bRestirGIUseHistoryIndirect = true;
     bool bEnableIndirectDraw = true;
     bool bEnableSkinningIndirectDraw = false;
     bool bEnablePbrResearch = false;

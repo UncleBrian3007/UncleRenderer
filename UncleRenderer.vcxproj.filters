@@ -512,16 +512,10 @@
     <None Include="Shaders\SsrRayFallback.hlsl">
       <Filter>Shaders</Filter>
     </None>
-    <None Include="Shaders\RestirGI.hlsl">
-      <Filter>Shaders</Filter>
-    </None>
     <None Include="Shaders\RestirGIReservoir.hlsli">
       <Filter>Shaders</Filter>
     </None>
-    <None Include="Shaders\RestirGINew.hlsl">
-      <Filter>Shaders</Filter>
-    </None>
-    <None Include="Shaders\RestirGINewReservoir.hlsli">
+    <None Include="Shaders\RestirGI.hlsl">
       <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\GpuDebugLine.hlsl">

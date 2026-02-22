@@ -156,6 +156,7 @@ private:
         std::vector<FRGResourceUsage> ResourceUsages;
         std::vector<FRGResourceUsage> BufferUsages;
         bool bCulled = false;
+        std::string PixGroupName;
         bool bForceExecute = false;
         double ElapsedMs = 0.0;
         double GpuElapsedMs = 0.0;
@@ -250,6 +251,7 @@ public:
     FRGBufferHandle ReadBuffer(const FRGBufferHandle& Handle, D3D12_RESOURCE_STATES RequiredState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     FRGBufferHandle WriteBuffer(const FRGBufferHandle& Handle, D3D12_RESOURCE_STATES RequiredState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     void KeepAlive();
+    void SetPixGroup(const char* GroupName);
 
 private:
     FRenderGraph* Graph = nullptr;

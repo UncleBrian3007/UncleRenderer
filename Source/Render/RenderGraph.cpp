@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <sstream>
 #include "../Core/Logger.h"
+#include "../Core/GpuDebugMarkers.h"
 #include <filesystem>
 
 std::vector<FRenderGraph::FPooledTexture> FRenderGraph::TexturePool;
@@ -149,6 +150,16 @@ void FRGPassBuilder::KeepAlive()
     {
         Entry->bForceExecute = true;
     }
+}
+
+void FRGPassBuilder::SetPixGroup(const char* GroupName)
+{
+    if (!Entry)
+    {
+        return;
+    }
+
+    Entry->PixGroupName = GroupName ? GroupName : "";
 }
 
 FRGResourceHandle FRenderGraph::ImportTexture(
@@ -546,6 +557,9 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
         }
     }
 
+    std::string ActivePixGroup;
+    bool bPixGroupOpen = false;
+
     for (int32_t PassIndex = 0; PassIndex < static_cast<int32_t>(Passes.size()); ++PassIndex)
     {
         PassEntry& Entry = Passes[PassIndex];
@@ -554,6 +568,24 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
         if (Entry.bCulled)
         {
             continue;
+        }
+
+        if (GPixEventsEnabled)
+        {
+            if (bPixGroupOpen && Entry.PixGroupName != ActivePixGroup)
+            {
+                PIXEndEvent(CmdContext.GetCommandList());
+                bPixGroupOpen = false;
+                ActivePixGroup.clear();
+            }
+
+            if (!Entry.PixGroupName.empty() && (!bPixGroupOpen || Entry.PixGroupName != ActivePixGroup))
+            {
+                std::wstring GroupNameWide(Entry.PixGroupName.begin(), Entry.PixGroupName.end());
+                PIXBeginEvent(CmdContext.GetCommandList(), PIX_COLOR_DEFAULT, GroupNameWide.c_str());
+                ActivePixGroup = Entry.PixGroupName;
+                bPixGroupOpen = true;
+            }
         }
 
         if (QueryHeap && QueryReadback)
@@ -686,6 +718,11 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
                 ReleaseTransientTexture(*Resource);
             }
         }
+    }
+
+    if (bPixGroupOpen && GPixEventsEnabled)
+    {
+        PIXEndEvent(CmdContext.GetCommandList());
     }
 
     if (QueryHeap && QueryReadback && QueryIndex > 0)

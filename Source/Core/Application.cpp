@@ -196,14 +196,13 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     SsrSamplesPerQuad = RendererConfig.SsrSamplesPerQuad;
     bRestirGIEnabled = RendererConfig.bEnableRestirGI;
     bRestirGIShowOnly = false;
-    RestirGIMode = RendererConfig.RestirGIMode;
     bRestirGITemporalReuseEnabled = RendererConfig.bEnableRestirGITemporalReuse;
     bRestirGISpatialReuseEnabled = RendererConfig.bEnableRestirGISpatialReuse;
     RestirGITemporalAdditionalScale = RendererConfig.RestirGITemporalAdditionalScale;
     RestirGISpatialAdditionalScale = RendererConfig.RestirGISpatialAdditionalScale;
-    bRestirGINewUseVisibility = RendererConfig.bRestirGINewUseVisibility;
-    bRestirGINewUseBrdf = RendererConfig.bRestirGINewUseBrdf;
-    bRestirGINewUseHistoryIndirect = RendererConfig.bRestirGINewUseHistoryIndirect;
+    bRestirGIUseVisibility = RendererConfig.bRestirGIUseVisibility;
+    bRestirGIUseBrdf = RendererConfig.bRestirGIUseBrdf;
+    bRestirGIUseHistoryIndirect = RendererConfig.bRestirGIUseHistoryIndirect;
 
     if (bTaskSystemEnabled)
     {
@@ -761,11 +760,11 @@ void FApplication::UpdateSelectionFromMouseClick()
     PendingObjectIdY = static_cast<uint32_t>(CursorPos.y);
     bPendingObjectIdReadback = true;
 
-    RestirGINewDebugPixelX = (CursorPos.x > 0) ? static_cast<int>(CursorPos.x / 2) : 0;
-    RestirGINewDebugPixelY = (CursorPos.y > 0) ? static_cast<int>(CursorPos.y / 2) : 0;
+    RestirGIDebugPixelX = (CursorPos.x > 0) ? static_cast<int>(CursorPos.x / 2) : 0;
+    RestirGIDebugPixelY = (CursorPos.y > 0) ? static_cast<int>(CursorPos.y / 2) : 0;
     if (DeferredRenderer)
     {
-        DeferredRenderer->SetRestirGINewDebugPixel(static_cast<uint32_t>(RestirGINewDebugPixelX), static_cast<uint32_t>(RestirGINewDebugPixelY));
+        DeferredRenderer->SetRestirGIDebugPixel(static_cast<uint32_t>(RestirGIDebugPixelX), static_cast<uint32_t>(RestirGIDebugPixelY));
     }
 }
 
@@ -1743,21 +1742,6 @@ void FApplication::RenderUI()
         }
 
 		ImGui::SameLine();
-        int RestirModeIndex = (RestirGIMode == ERestirGIMode::New) ? 1 : 0;
-        const char* RestirModeItems[] = { "Legacy", "New" };
-		ImGui::SetNextItemWidth(80.0f);
-        if (ImGui::Combo("Mode", &RestirModeIndex, RestirModeItems, IM_ARRAYSIZE(RestirModeItems)))
-        {
-            RestirGIMode = (RestirModeIndex == 1) ? ERestirGIMode::New : ERestirGIMode::Legacy;
-            RendererConfig.RestirGIMode = RestirGIMode;
-
-            if (DeferredRenderer)
-            {
-                DeferredRenderer->SetRestirGIMode(RestirGIMode);
-            }
-        }
-
-		ImGui::SameLine();
         bool bRestirGIOnly = bRestirGIShowOnly;
         if (ImGui::Checkbox("GI Only", &bRestirGIOnly))
         {
@@ -1768,81 +1752,81 @@ void FApplication::RenderUI()
             }
         }
 
-        bool bRestirNewUseVisibility = bRestirGINewUseVisibility;
-        if (ImGui::Checkbox("Use Visibility", &bRestirNewUseVisibility))
+        bool bRestirGIUseVisibilityUI = bRestirGIUseVisibility;
+        if (ImGui::Checkbox("Use Visibility", &bRestirGIUseVisibilityUI))
         {
-            bRestirGINewUseVisibility = bRestirNewUseVisibility;
-            RendererConfig.bRestirGINewUseVisibility = bRestirGINewUseVisibility;
+            bRestirGIUseVisibility = bRestirGIUseVisibilityUI;
+            RendererConfig.bRestirGIUseVisibility = bRestirGIUseVisibilityUI;
 
             if (DeferredRenderer)
             {
-                DeferredRenderer->SetRestirGINewUseVisibility(bRestirGINewUseVisibility);
+                DeferredRenderer->SetRestirGIUseVisibility(bRestirGIUseVisibilityUI);
             }
         }
 
 		ImGui::SameLine();
-        bool bRestirNewUseBrdf = bRestirGINewUseBrdf;
-        if (ImGui::Checkbox("Use BRDF", &bRestirNewUseBrdf))
+        bool bRestirGIUseBrdfUI = bRestirGIUseBrdf;
+        if (ImGui::Checkbox("Use BRDF", &bRestirGIUseBrdfUI))
         {
-            bRestirGINewUseBrdf = bRestirNewUseBrdf;
-            RendererConfig.bRestirGINewUseBrdf = bRestirGINewUseBrdf;
+            bRestirGIUseBrdf = bRestirGIUseBrdfUI;
+            RendererConfig.bRestirGIUseBrdf = bRestirGIUseBrdfUI;
 
             if (DeferredRenderer)
             {
-                DeferredRenderer->SetRestirGINewUseBrdf(bRestirGINewUseBrdf);
+                DeferredRenderer->SetRestirGIUseBrdf(bRestirGIUseBrdfUI);
             }
         }
 
-        bool bRestirNewUseHistoryIndirect = bRestirGINewUseHistoryIndirect;
-        if (ImGui::Checkbox("Use History Indirect", &bRestirNewUseHistoryIndirect))
+        bool bRestirGIUseHistoryIndirectUI = bRestirGIUseHistoryIndirect;
+        if (ImGui::Checkbox("Use History Indirect", &bRestirGIUseHistoryIndirectUI))
         {
-            bRestirGINewUseHistoryIndirect = bRestirNewUseHistoryIndirect;
-            RendererConfig.bRestirGINewUseHistoryIndirect = bRestirGINewUseHistoryIndirect;
+            bRestirGIUseHistoryIndirect = bRestirGIUseHistoryIndirectUI;
+            RendererConfig.bRestirGIUseHistoryIndirect = bRestirGIUseHistoryIndirectUI;
 
             if (DeferredRenderer)
             {
-                DeferredRenderer->SetRestirGINewUseHistoryIndirect(bRestirGINewUseHistoryIndirect);
+                DeferredRenderer->SetRestirGIUseHistoryIndirect(bRestirGIUseHistoryIndirectUI);
             }
         }
 
 
-        bool bRestirNewFreezeFrame = bRestirGINewFreezeFrame;
-        if (ImGui::Checkbox("Freeze ReSTIR New", &bRestirNewFreezeFrame))
+        bool bRestirGIFreezeFrameUI = bRestirGIFreezeFrame;
+        if (ImGui::Checkbox("Freeze ReSTIR GI", &bRestirGIFreezeFrameUI))
         {
-            bRestirGINewFreezeFrame = bRestirNewFreezeFrame;
+            bRestirGIFreezeFrame = bRestirGIFreezeFrameUI;
             if (DeferredRenderer)
             {
-                DeferredRenderer->SetRestirGINewFreezeFrame(bRestirGINewFreezeFrame);
+                DeferredRenderer->SetRestirGIFreezeFrame(bRestirGIFreezeFrameUI);
             }
         }
 
         ImGui::SameLine();
-        if (ImGui::Button("Step ReSTIR New"))
+        if (ImGui::Button("Step ReSTIR GI"))
         {
             if (DeferredRenderer)
             {
-                DeferredRenderer->StepRestirGINewFreezeFrame();
+                DeferredRenderer->StepRestirGIFreezeFrame();
             }
         }
 
-        bool bRestirNewDebugRay = bRestirGINewDebugRayEnabled;
-        if (ImGui::Checkbox("Debug ReSTIR New Ray", &bRestirNewDebugRay))
+        bool bRestirGIDebugRay = bRestirGIDebugRayEnabled;
+        if (ImGui::Checkbox("Debug ReSTIR GI Ray", &bRestirGIDebugRay))
         {
-            bRestirGINewDebugRayEnabled = bRestirNewDebugRay;
+            bRestirGIDebugRayEnabled = bRestirGIDebugRay;
             if (DeferredRenderer)
             {
-                DeferredRenderer->SetRestirGINewDebugRayEnabled(bRestirGINewDebugRayEnabled);
+                DeferredRenderer->SetRestirGIDebugRayEnabled(bRestirGIDebugRayEnabled);
             }
         }
 
-        int RestirDebugPixel[2] = { RestirGINewDebugPixelX, RestirGINewDebugPixelY };
+        int RestirDebugPixel[2] = { RestirGIDebugPixelX, RestirGIDebugPixelY };
         if (ImGui::InputInt2("Debug Pixel", RestirDebugPixel))
         {
-            RestirGINewDebugPixelX = (std::max)(0, RestirDebugPixel[0]);
-            RestirGINewDebugPixelY = (std::max)(0, RestirDebugPixel[1]);
+            RestirGIDebugPixelX = (std::max)(0, RestirDebugPixel[0]);
+            RestirGIDebugPixelY = (std::max)(0, RestirDebugPixel[1]);
             if (DeferredRenderer)
             {
-                DeferredRenderer->SetRestirGINewDebugPixel(static_cast<uint32_t>(RestirGINewDebugPixelX), static_cast<uint32_t>(RestirGINewDebugPixelY));
+                DeferredRenderer->SetRestirGIDebugPixel(static_cast<uint32_t>(RestirGIDebugPixelX), static_cast<uint32_t>(RestirGIDebugPixelY));
             }
         }
         bool bRestirTemporal = bRestirGITemporalReuseEnabled;

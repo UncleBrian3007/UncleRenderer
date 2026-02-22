@@ -354,17 +354,6 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     {
         OutConfig.bEnableRestirGI = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
-    if (LowerKey == "restirgimode")
-    {
-        if (LowerValue == "new")
-        {
-            OutConfig.RestirGIMode = ERestirGIMode::New;
-        }
-        else
-        {
-            OutConfig.RestirGIMode = ERestirGIMode::Legacy;
-        }
-    }
     if (LowerKey == "restirgisamplesperpixel")
     {
         try
@@ -486,17 +475,17 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     {
         OutConfig.bRestirGIResolveUseConfidence = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
-    if (LowerKey == "restirginewusevisibility")
+    if (LowerKey == "restirgiusevisibility")
     {
-        OutConfig.bRestirGINewUseVisibility = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+        OutConfig.bRestirGIUseVisibility = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
-    if (LowerKey == "restirginewusebrdf")
+    if (LowerKey == "restirgiusebrdf")
     {
-        OutConfig.bRestirGINewUseBrdf = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+        OutConfig.bRestirGIUseBrdf = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
-    if (LowerKey == "restirginewusehistoryindirect")
+    if (LowerKey == "restirgiusehistoryindirect")
     {
-        OutConfig.bRestirGINewUseHistoryIndirect = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+        OutConfig.bRestirGIUseHistoryIndirect = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
     if (LowerKey == "restirgimaxhistoryframes")
     {
