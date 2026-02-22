@@ -2,6 +2,7 @@
 
 #include <array>
 #include <algorithm>
+#include <mutex>
 #include <memory>
 #include <vector>
 #include <wrl.h>
@@ -154,6 +155,19 @@ public:
     bool IsRestirGINewUseBrdf() const { return bRestirGINewUseBrdf; }
     void SetRestirGINewUseHistoryIndirect(bool bEnabled) { bRestirGINewUseHistoryIndirect = bEnabled; }
     bool IsRestirGINewUseHistoryIndirect() const { return bRestirGINewUseHistoryIndirect; }
+    void SetRestirGINewDebugRayEnabled(bool bEnabled) { bRestirGINewDebugRayEnabled = bEnabled; }
+    bool IsRestirGINewDebugRayEnabled() const { return bRestirGINewDebugRayEnabled; }
+    void SetRestirGINewDebugPixel(uint32_t X, uint32_t Y) { RestirGINewDebugPixelX = X; RestirGINewDebugPixelY = Y; }
+    void SetRestirGINewFreezeFrame(bool bEnabled)
+    {
+        if (bEnabled && !bRestirGINewFreezeFrame)
+        {
+            RestirGINewFrozenSequenceFrame = GetFrameIndex();
+        }
+        bRestirGINewFreezeFrame = bEnabled;
+    }
+    bool IsRestirGINewFreezeFrame() const { return bRestirGINewFreezeFrame; }
+    void StepRestirGINewFreezeFrame() { ++RestirGINewFrozenSequenceFrame; }
 
     void SetPathTracingAccumulationEnabled(bool bEnabled)
     {
@@ -276,6 +290,10 @@ private:
     bool CreateRestirGINewRootSignature(FDX12Device* Device);
     bool CreateVelocityRootSignature(FDX12Device* Device);
     bool CreateBasePassPipeline(FDX12Device* Device, DXGI_FORMAT LightingFormat);
+    bool EnsureBasePassPipeline(uint32_t PipelineKey, bool bUseSkinning);
+    bool EnsureBasePassPipelineOrFail(uint32_t PipelineKey, bool bUseSkinning, const char* PassContext);
+    bool CompileDeferredBasePassPs(uint32_t PipelineKey, std::vector<uint8_t>& OutPs);
+    bool BuildDeferredBasePassPsoDesc(uint32_t PipelineKey, bool bUseSkinning, D3D12_GRAPHICS_PIPELINE_STATE_DESC& OutDesc) const;
     bool CreateVelocityPipeline(FDX12Device* Device);
     bool CreateDepthPrepassPipeline(FDX12Device* Device);
     bool CreateLinearDepthRootSignature(FDX12Device* Device);
@@ -284,12 +302,19 @@ private:
     bool CreateGtaoPipeline(FDX12Device* Device);
     bool CreateSsrRootSignature(FDX12Device* Device);
     bool CreateSsrPipeline(FDX12Device* Device);
+    bool EnsureSsrGraphicsPipeline(uint32_t PipelineIndex);
+    bool EnsureSsrGraphicsPipelineOrFail(uint32_t PipelineIndex, const char* PassContext);
+    bool CompileSsrGraphicsPs(uint32_t PipelineIndex, std::vector<uint8_t>& OutPs);
+    bool BuildSsrGraphicsPsoDesc(uint32_t PipelineIndex, D3D12_GRAPHICS_PIPELINE_STATE_DESC& OutDesc) const;
     bool CreateSsrDenoiseRootSignature(FDX12Device* Device);
     bool CreateSsrDenoisePipeline(FDX12Device* Device);
     bool CreateSsrRayGatherRootSignature(FDX12Device* Device);
     bool CreateSsrRayGatherPipeline(FDX12Device* Device);
     bool CreateSsrSwTraceRootSignature(FDX12Device* Device);
     bool CreateSsrSwTracePipeline(FDX12Device* Device);
+    bool EnsureSsrSwTracePipeline(uint32_t PipelineIndex);
+    bool EnsureSsrSwTracePipelineOrFail(uint32_t PipelineIndex, const char* PassContext);
+    bool CompileSsrSwTraceCs(uint32_t PipelineIndex, std::vector<uint8_t>& OutCs);
     bool CreateSsrBuildIndirectArgsRootSignature(FDX12Device* Device);
     bool CreateSsrBuildIndirectArgsPipeline(FDX12Device* Device);
     bool CreateSsrResolveRootSignature(FDX12Device* Device);
@@ -409,6 +434,12 @@ private:
     // Base pass pipelines indexed by permutation key (bit 0: Normal, bit 1: MR, bit 2: BaseColor, bit 3: Emissive, bit 4: AlphaMask, bit 5: SheenModel, bit 6: ClearcoatModel, bit 7: AnisotropyModel, bit 8: DoubleSided)
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 512> BasePassPipelines;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 512> BasePassPipelinesSkinned;
+    std::array<std::vector<uint8_t>, 2> DeferredBasePassVsBytecodes;
+    std::array<std::vector<uint8_t>, 512> DeferredBasePassPsBytecodes;
+    std::array<bool, 512> DeferredBasePassPsCompiled{};
+    std::array<bool, 512> DeferredBasePassFailureLogged{};
+    std::mutex DeferredBasePassPipelineMutex;
+    DXGI_FORMAT DeferredBasePassLightingFormat = DXGI_FORMAT_UNKNOWN;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2> DepthPrepassPipelines;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2> DepthPrepassPipelinesSkinned;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2> ShadowPipelines;
@@ -420,11 +451,20 @@ private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> SsrRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> SsrDenoiseRootSignature;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 8> SsrPipelines;
+    std::vector<uint8_t> SsrGraphicsVsBytecode;
+    std::array<std::vector<uint8_t>, 8> SsrGraphicsPsBytecodes;
+    std::array<bool, 8> SsrGraphicsPsCompiled{};
+    std::array<bool, 8> SsrGraphicsFailureLogged{};
+    std::mutex SsrGraphicsPipelineMutex;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> SsrDenoisePipeline;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> SsrRayGatherRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> SsrRayGatherPipeline;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> SsrSwTraceRootSignature;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 8> SsrSwTracePipelines;
+    std::array<std::vector<uint8_t>, 8> SsrSwTraceCsBytecodes;
+    std::array<bool, 8> SsrSwTraceCsCompiled{};
+    std::array<bool, 8> SsrSwTraceFailureLogged{};
+    std::mutex SsrSwTracePipelineMutex;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> SsrBuildIndirectArgsRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> SsrBuildIndirectArgsPipeline;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> SsrResolveRootSignature;
@@ -722,6 +762,11 @@ private:
     bool bRestirGINewUseVisibility = true;
     bool bRestirGINewUseBrdf = true;
     bool bRestirGINewUseHistoryIndirect = true;
+    bool bRestirGINewDebugRayEnabled = false;
+    uint32_t RestirGINewDebugPixelX = 0;
+    uint32_t RestirGINewDebugPixelY = 0;
+    bool bRestirGINewFreezeFrame = false;
+    uint32_t RestirGINewFrozenSequenceFrame = 0;
     uint32_t RestirGIHistoryFrameCount = 0;
     bool bRestirGIHistoryValid = false;
     ESSRMode SsrMode = ESSRMode::PS;

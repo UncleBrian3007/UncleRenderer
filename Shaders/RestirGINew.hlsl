@@ -3,6 +3,7 @@
 #include "RestirGINewReservoir.hlsli"
 #include "RestirGISamplingCommon.hlsli"
 #include "PathBrdfCommon.hlsli"
+#include "GpuDebugLineCommon.hlsl"
 
 RaytracingAccelerationStructure Scene : register(t0);
 
@@ -23,6 +24,10 @@ cbuffer RestirGINewConstants : register(b1)
     uint UseVisibility;
     uint UseBrdf;
     uint UseHistoryIndirect;
+    uint SequenceFrame;
+    uint DebugRayEnabled;
+    uint DebugPixelX;
+    uint DebugPixelY;
 };
 
 cbuffer RestirGINewBindless : register(b2)
@@ -54,6 +59,7 @@ cbuffer RestirGINewBindless : register(b2)
     uint OutputHistoryGeomBUavIndex;
     uint HistoryIrradianceIndex;
     uint PrevLinearDepthIndex;
+    uint DebugLineBufferUavIndex;
 };
 
 #include "RayTracingCommon.hlsl"
@@ -86,6 +92,15 @@ float2 RestirGINewRandom02(uint2 Pixel, uint Salt)
         RestirGINewRandom01(Pixel, Salt + 73u));
 }
 
+uint RestirGINewPackDebugColor(float3 Radiance)
+{
+    float3 Color = max(Radiance, 0.0f.xxx);
+    Color = Color / (1.0f.xxx + Color);
+    Color = saturate(pow(Color, 1.0f / 2.2f) * 1.35f);
+    const uint3 PackedRgb = (uint3)round(Color * 255.0f);
+    return (0xFFu << 24u) | (PackedRgb.b << 16u) | (PackedRgb.g << 8u) | PackedRgb.r;
+}
+
 uint2 RestirGINewHalfToFull(uint2 HalfPos)
 {
     static const uint2 Offsets[4] =
@@ -96,7 +111,7 @@ uint2 RestirGINewHalfToFull(uint2 HalfPos)
         uint2(0, 1),
     };
 
-    const uint2 FullPos = HalfPos * 2u + Offsets[FrameIndex % 4u];
+    const uint2 FullPos = HalfPos * 2u + Offsets[SequenceFrame % 4u];
     return min(FullPos, uint2(FullWidth - 1u, FullHeight - 1u));
 }
 
@@ -197,10 +212,13 @@ float3 RestirGINewEvaluateHitRadiance(uint InstanceID, float2 UV, float3 HitNorm
     return max(Direct + HistoryIndirect + Emissive, 0.0f.xxx);
 }
 
-float3 RestirGINewSampleCandidate(float3 WorldPos, float3 Normal, uint2 FullPos, uint2 HalfPos)
+float3 RestirGINewSampleCandidate(float3 WorldPos, float3 Normal, uint2 FullPos, uint2 HalfPos, out float3 OutDirection, out float OutHitDistance, out bool bOutHit)
 {
-    const float2 Xi = RestirGINewRandom02(HalfPos, FrameIndex * 1999u + 17u);
+    const float2 Xi = RestirGINewRandom02(HalfPos, SequenceFrame * 1999u + 17u);
     const float3 Direction = SampleHemisphereCosine(Xi, Normal);
+    OutDirection = Direction;
+    OutHitDistance = max(0.1f, RayLength);
+    bOutHit = false;
 
     RayDesc Ray;
     Ray.Origin = WorldPos + Normal * 0.01f;
@@ -239,6 +257,8 @@ float3 RestirGINewSampleCandidate(float3 WorldPos, float3 Normal, uint2 FullPos,
         }
 
         const float HitT = Query.CommittedRayT();
+        OutHitDistance = HitT;
+        bOutHit = true;
         const float3 HitWorldPos = WorldPos + Direction * HitT;
         Incoming = RestirGINewEvaluateHitRadiance(InstanceID, UV, HitNormal, HitAlbedo, HitMR.x, HitMR.y, -Direction, HitWorldPos, FullPos);
     }
@@ -346,7 +366,17 @@ void CSInitialSampling(uint3 DispatchThreadId : SV_DispatchThreadID)
 
     const float3 Normal = normalize(GBufferA[FullPos].xyz * 2.0f - 1.0f);
     const float3 WorldPos = RestirGINewReconstructWorldPosition(FullPos, Depth);
-    const float3 Candidate = RestirGINewSampleCandidate(WorldPos, Normal, FullPos, HalfPos);
+    float3 SampleDirection = 0.0f.xxx;
+    float DebugHitDistance = max(0.1f, RayLength);
+    bool bDebugHit = false;
+    const float3 Candidate = RestirGINewSampleCandidate(WorldPos, Normal, FullPos, HalfPos, SampleDirection, DebugHitDistance, bDebugHit);
+
+    if (DebugRayEnabled != 0u && DebugLineBufferUavIndex != 0xFFFFFFFFu && all(HalfPos == uint2(DebugPixelX, DebugPixelY)))
+    {
+        const float TraceDistance = bDebugHit ? max(1e-3f, DebugHitDistance) : max(0.1f, RayLength);
+        const uint DebugColor = RestirGINewPackDebugColor(Candidate);
+        DebugDrawLine(DebugLineBufferUavIndex, WorldPos, WorldPos + SampleDirection * TraceDistance, DebugColor);
+    }
 
     InitialRadianceOut[HalfPos] = float4(Candidate, 0.0f);
     InitialRayDirOut[HalfPos] = 0u;
@@ -419,14 +449,14 @@ void CSTemporalResampling(uint3 DispatchThreadId : SV_DispatchThreadID)
                 const float Target = RestirGINewTarget(History.Sample.Radiance);
                 if (History.M > 0.0f && History.W > 0.0f && Target > 0.0f)
                 {
-                    RestirGINewMerge(Reservoir, History, Target, RestirGINewRandom01(HalfPos, FrameIndex * 1543u + 3u));
+                    RestirGINewMerge(Reservoir, History, Target, RestirGINewRandom01(HalfPos, SequenceFrame * 1543u + 3u));
                 }
             }
         }
     }
 
     const float CurrentWeight = max(1e-5f, RestirGINewTarget(Current.Radiance));
-    RestirGINewUpdate(Reservoir, Current, CurrentWeight, RestirGINewRandom01(HalfPos, FrameIndex * 1531u + 41u));
+    RestirGINewUpdate(Reservoir, Current, CurrentWeight, RestirGINewRandom01(HalfPos, SequenceFrame * 1531u + 41u));
 
     const float SelectedTarget = max(1e-5f, RestirGINewTarget(Reservoir.Sample.Radiance));
     Reservoir.W = Reservoir.SumWeight / max(1e-5f, Reservoir.M * SelectedTarget);
@@ -472,7 +502,7 @@ void CSSpatialResampling(uint3 DispatchThreadId : SV_DispatchThreadID)
     [loop]
     for (uint Iteration = 0u; Iteration < MaxIterations; ++Iteration)
     {
-        const float2 Jitter = RestirGINewRandom02(HalfPos, FrameIndex * 2467u + Iteration * 17u) * 2.0f - 1.0f;
+        const float2 Jitter = RestirGINewRandom02(HalfPos, SequenceFrame * 2467u + Iteration * 17u) * 2.0f - 1.0f;
         const int2 CandidatePos = int2(HalfPos) + int2(round(Jitter * SearchRadius));
         if (CandidatePos.x < 0 || CandidatePos.y < 0 || CandidatePos.x >= int(HalfWidth) || CandidatePos.y >= int(HalfHeight))
         {
@@ -500,10 +530,13 @@ void CSSpatialResampling(uint3 DispatchThreadId : SV_DispatchThreadID)
             continue;
         }
 
-        RestirGINewMerge(Reservoir, Neighbor, Target, RestirGINewRandom01(HalfPos, FrameIndex * 4513u + Iteration * 53u));
+        RestirGINewMerge(Reservoir, Neighbor, Target, RestirGINewRandom01(HalfPos, SequenceFrame * 4513u + Iteration * 53u));
     }
 
     const float SelectedTarget = max(1e-5f, RestirGINewTarget(Reservoir.Sample.Radiance));
+    // Normalization factor W used in resolve: SampleRadiance * W.
+    // Compensates for the selection bias of reservoir sampling (brighter samples are picked more often),
+    // so that a single selected sample reproduces the average contribution of all candidates (¥ÒTarget / M).
     Reservoir.W = Reservoir.SumWeight / max(1e-5f, Reservoir.M * SelectedTarget);
     Reservoir.M = min(Reservoir.M, 30.0f);
 

@@ -1,9 +1,11 @@
 #include "GpuDebugPrintCommon.hlsl"
+#include "GpuDebugLineCommon.hlsl"
 
 cbuffer DebugPrintStatsBindlessConstants : register(b0)
 {
     uint StatsBufferIndex;
     uint DebugPrintBufferIndex;
+    uint DebugLineBufferIndex;
 };
 
 uint DebugPrintPackChars(uint c0, uint c1, uint c2, uint c3)
@@ -107,4 +109,19 @@ void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     pos = uint2(8, 84);
     PrintLabel(pos, textColor, 'L', 'A', 'T', 'E', 'V', 'I', 'S', ' ');
     PrintUInt(uint2(8 + 8 * 8, 84), lateVisible, textColor);
+
+    if (DebugLineBufferIndex != 0xffffffffu)
+    {
+        ByteAddressBuffer DebugLineBuffer = ResourceDescriptorHeap[DebugLineBufferIndex];
+        const uint lineCount = DebugLineBuffer.Load(kDebugLineHeaderLineCountOffset);
+        const uint droppedCount = DebugLineBuffer.Load(kDebugLineHeaderDroppedCountOffset);
+
+        pos = uint2(8, 100);
+        PrintLabel(pos, textColor, 'L', 'I', 'N', 'E', 'S', ' ', ' ', ' ');
+        PrintUInt(uint2(8 + 8 * 8, 100), lineCount, textColor);
+
+        pos = uint2(8, 116);
+        PrintLabel(pos, textColor, 'D', 'R', 'O', 'P', 'P', 'E', 'D', ' ');
+        PrintUInt(uint2(8 + 8 * 8, 116), droppedCount, textColor);
+    }
 }

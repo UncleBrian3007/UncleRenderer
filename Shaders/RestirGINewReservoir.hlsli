@@ -35,6 +35,7 @@ bool RestirGINewUpdate(inout FRestirGINewReservoir Reservoir, FRestirGINewSample
     Reservoir.SumWeight += CandidateWeight;
     Reservoir.M += 1.0f;
 
+    // Samples with larger weights are more likely to be selected.
     const float Probability = CandidateWeight / max(Reservoir.SumWeight, 1e-5f);
     if (RandomValue < Probability)
     {

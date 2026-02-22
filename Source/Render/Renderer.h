@@ -42,6 +42,20 @@ public:
     static constexpr uint64_t GpuDebugPrintBufferSize = GpuDebugPrintHeaderSize + static_cast<uint64_t>(GpuDebugPrintMaxEntries) * GpuDebugPrintEntryStride;
     static constexpr uint32_t GpuDebugPrintStatsCount = 5;
 
+    struct FGpuDebugLineEntry
+    {
+        DirectX::XMFLOAT3 P0{ 0.0f, 0.0f, 0.0f };
+        float Padding0 = 0.0f;
+        DirectX::XMFLOAT3 P1{ 0.0f, 0.0f, 0.0f };
+        uint32_t PackedColor = 0;
+    };
+
+    static constexpr uint32_t GpuDebugLineMaxEntries = 8192;
+    static constexpr uint32_t GpuDebugLineHeaderCount = 2;
+    static constexpr uint32_t GpuDebugLineHeaderSize = sizeof(uint32_t) * GpuDebugLineHeaderCount;
+    static constexpr uint32_t GpuDebugLineEntryStride = sizeof(FGpuDebugLineEntry);
+    static constexpr uint64_t GpuDebugLineBufferSize = GpuDebugLineHeaderSize + static_cast<uint64_t>(GpuDebugLineMaxEntries) * GpuDebugLineEntryStride;
+
     virtual ~FRenderer();
 
     virtual bool Initialize(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT BackBufferFormat, const FRendererConfig& Config) = 0;
@@ -106,6 +120,9 @@ public:
     virtual void RequestObjectIdReadback(uint32_t X, uint32_t Y);
     virtual bool ConsumeObjectIdReadback(uint32_t& OutObjectId);
 
+    void SetRenderFatalError(const std::string& Reason);
+    bool HasRenderFatalError() const;
+
 protected:
     void InitializeCommonSettings(uint32_t Width, uint32_t Height, const FRendererConfig& Config);
     bool CreateShadowPipeline(
@@ -159,6 +176,7 @@ protected:
         uint32_t FrameIndex);
     void ConfigureHZBOcclusion(bool bEnabled, uint32_t HZBBindlessIndex, uint32_t Width, uint32_t Height, uint32_t MipCount);
     void PrepareGpuDebugPrint(FDX12CommandContext& CmdContext);
+    void PrepareGpuDebugLine(FDX12CommandContext& CmdContext);
     void DispatchGpuDebugPrintStats(FDX12CommandContext& CmdContext);
     void DispatchSkinning(FDX12CommandContext& CmdContext, const DirectX::XMMATRIX& LightViewProjection);
     bool CreateSkinnedPositionBuffers();
@@ -172,9 +190,12 @@ protected:
     void WriteBindlessSrv(uint32_t Index, ID3D12Resource* Resource, const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc) const;
     void WriteBindlessUav(uint32_t Index, ID3D12Resource* Resource, ID3D12Resource* Counter, const D3D12_UNORDERED_ACCESS_VIEW_DESC& Desc) const;
     bool CreateGpuDebugPrintResources(FDX12Device* Device);
+    bool CreateGpuDebugLineResources(FDX12Device* Device);
     bool CreateGpuDebugPrintPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
+    bool CreateGpuDebugLinePipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateGpuDebugPrintStatsPipeline(FDX12Device* Device);
     void RenderGpuDebugPrint(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& OutputHandle);
+    void RenderGpuDebugLine(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& OutputHandle);
     bool CreateDepthResourcesPerFrame(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT Format);
     bool CreateSceneConstantBuffersPerFrame(FDX12Device* Device, uint64_t BufferSize);
     bool CreateCullingConstantBuffersPerFrame(FDX12Device* Device);
@@ -183,8 +204,8 @@ protected:
     // GPU-driven rendering helper methods
 
     // Number of shared buffers transitioned during GPU-driven resource upload
-    // (DrawData, RangeOffset, Bounds, ConeAxis, ConeApex, Debug, Stats)
-    static constexpr uint32_t GpuDrivenSharedBufferCount = 7;
+    // (DrawData, RangeOffset, Bounds, ConeAxis, ConeApex, DebugPrint, DebugPrintStats, DebugLine)
+    static constexpr uint32_t GpuDrivenSharedBufferCount = 8;
 
     // Container for GPU-driven rendering data prepared for upload to GPU.
     // Holds indirect draw commands, meshlet data, bounds, and culling cone information.
@@ -268,6 +289,8 @@ protected:
     Microsoft::WRL::ComPtr<ID3D12Resource> GpuDebugPrintUpload;
     Microsoft::WRL::ComPtr<ID3D12Resource> GpuDebugPrintStatsBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> GpuDebugPrintStatsUpload;
+    Microsoft::WRL::ComPtr<ID3D12Resource> GpuDebugLineBuffer;
+    Microsoft::WRL::ComPtr<ID3D12Resource> GpuDebugLineUpload;
     Microsoft::WRL::ComPtr<ID3D12Resource> ObjectIdTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> ObjectIdReadback;
     Microsoft::WRL::ComPtr<ID3D12Resource> NullTexture;
@@ -295,6 +318,8 @@ protected:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> GpuDebugPrintPipeline;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> GpuDebugPrintStatsRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> GpuDebugPrintStatsPipeline;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> GpuDebugLineRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> GpuDebugLinePipeline;
     Microsoft::WRL::ComPtr<ID3D12Resource> GpuDebugPrintFontTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> GpuDebugPrintGlyphBuffer;
     uint32_t GpuDebugPrintGlyphBindlessIndex = UINT32_MAX;
@@ -303,6 +328,8 @@ protected:
     uint32_t GpuDebugPrintStatsBindlessIndex = UINT32_MAX;
     uint32_t GpuDebugPrintBufferUavBindlessIndex = UINT32_MAX;
     uint32_t GpuDebugPrintStatsUavBindlessIndex = UINT32_MAX;
+    uint32_t GpuDebugLineBufferBindlessIndex = UINT32_MAX;
+    uint32_t GpuDebugLineBufferUavBindlessIndex = UINT32_MAX;
     uint32_t ModelBoundsBindlessIndex = UINT32_MAX;
     uint32_t MeshletDrawDataBindlessIndex = UINT32_MAX;
     uint32_t MeshletRangeOffsetBindlessIndex = UINT32_MAX;
@@ -395,6 +422,7 @@ protected:
     std::vector<uint32_t> PathTracingInstanceDataBindlessIndices;
     D3D12_RESOURCE_STATES GpuDebugPrintState = D3D12_RESOURCE_STATE_COMMON;
     D3D12_RESOURCE_STATES GpuDebugPrintStatsState = D3D12_RESOURCE_STATE_COMMON;
+    D3D12_RESOURCE_STATES GpuDebugLineState = D3D12_RESOURCE_STATE_COMMON;
 
     uint8_t* SkyConstantBufferMapped = nullptr;
     uint64_t SceneConstantBufferStride = 0;
@@ -433,6 +461,9 @@ protected:
     uint32_t HZBCullingHeight = 0;
     uint32_t HZBCullingMipCount = 0;
     bool bHZBOcclusionEnabled = false;
+
+    bool bRenderFatalError = false;
+    std::string RenderFatalReason;
 
     FDX12Device* Device = nullptr;
     uint32_t FramesInFlight = 1;

@@ -524,5 +524,17 @@
     <None Include="Shaders\RestirGINewReservoir.hlsli">
       <Filter>Shaders</Filter>
     </None>
+    <None Include="Shaders\GpuDebugLine.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\GpuDebugLineCommon.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\PathBrdfCommon.hlsli">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\RestirGISamplingCommon.hlsli">
+      <Filter>Shaders</Filter>
+    </None>
   </ItemGroup>
 </Project>

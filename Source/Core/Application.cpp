@@ -760,6 +760,13 @@ void FApplication::UpdateSelectionFromMouseClick()
     PendingObjectIdX = static_cast<uint32_t>(CursorPos.x);
     PendingObjectIdY = static_cast<uint32_t>(CursorPos.y);
     bPendingObjectIdReadback = true;
+
+    RestirGINewDebugPixelX = (CursorPos.x > 0) ? static_cast<int>(CursorPos.x / 2) : 0;
+    RestirGINewDebugPixelY = (CursorPos.y > 0) ? static_cast<int>(CursorPos.y / 2) : 0;
+    if (DeferredRenderer)
+    {
+        DeferredRenderer->SetRestirGINewDebugPixel(static_cast<uint32_t>(RestirGINewDebugPixelX), static_cast<uint32_t>(RestirGINewDebugPixelY));
+    }
 }
 
 void FApplication::DrawSelectionBounds(float DisplayWidth, float DisplayHeight)
@@ -1798,6 +1805,46 @@ void FApplication::RenderUI()
             }
         }
 
+
+        bool bRestirNewFreezeFrame = bRestirGINewFreezeFrame;
+        if (ImGui::Checkbox("Freeze ReSTIR New", &bRestirNewFreezeFrame))
+        {
+            bRestirGINewFreezeFrame = bRestirNewFreezeFrame;
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetRestirGINewFreezeFrame(bRestirGINewFreezeFrame);
+            }
+        }
+
+        ImGui::SameLine();
+        if (ImGui::Button("Step ReSTIR New"))
+        {
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->StepRestirGINewFreezeFrame();
+            }
+        }
+
+        bool bRestirNewDebugRay = bRestirGINewDebugRayEnabled;
+        if (ImGui::Checkbox("Debug ReSTIR New Ray", &bRestirNewDebugRay))
+        {
+            bRestirGINewDebugRayEnabled = bRestirNewDebugRay;
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetRestirGINewDebugRayEnabled(bRestirGINewDebugRayEnabled);
+            }
+        }
+
+        int RestirDebugPixel[2] = { RestirGINewDebugPixelX, RestirGINewDebugPixelY };
+        if (ImGui::InputInt2("Debug Pixel", RestirDebugPixel))
+        {
+            RestirGINewDebugPixelX = (std::max)(0, RestirDebugPixel[0]);
+            RestirGINewDebugPixelY = (std::max)(0, RestirDebugPixel[1]);
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetRestirGINewDebugPixel(static_cast<uint32_t>(RestirGINewDebugPixelX), static_cast<uint32_t>(RestirGINewDebugPixelY));
+            }
+        }
         bool bRestirTemporal = bRestirGITemporalReuseEnabled;
         if (ImGui::Checkbox("Temporal Reuse", &bRestirTemporal))
         {

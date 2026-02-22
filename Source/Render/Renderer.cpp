@@ -171,6 +171,24 @@ bool FRenderer::ConsumeObjectIdReadback(uint32_t& OutObjectId)
         OutObjectId);
 }
 
+
+void FRenderer::SetRenderFatalError(const std::string& Reason)
+{
+    if (bRenderFatalError)
+    {
+        return;
+    }
+
+    bRenderFatalError = true;
+    RenderFatalReason = Reason;
+    LogError("Renderer fatal error: " + Reason);
+}
+
+bool FRenderer::HasRenderFatalError() const
+{
+    return bRenderFatalError;
+}
+
 void FRenderer::InitializeCommonSettings(uint32_t Width, uint32_t Height, const FRendererConfig& Config)
 {
     bDepthPrepassEnabled = Config.bUseDepthPrepass;
@@ -189,6 +207,8 @@ void FRenderer::InitializeCommonSettings(uint32_t Width, uint32_t Height, const 
     bGtaoJitterEnabled = Config.bEnableGtaoJitter;
     FramesInFlight = (std::max)(1u, Config.FramesInFlight);
     CurrentFrameIndex = 0;
+    bRenderFatalError = false;
+    RenderFatalReason.clear();
 
     GtaoRadius = Config.GtaoRadius;
     GtaoIntensity = Config.GtaoIntensity;
@@ -713,7 +733,7 @@ void FRenderer::DispatchGpuCulling(
         || MeshletVisibilityLateSrvBindlessIndices.empty() || MeshletVisibilityLateUavBindlessIndices.empty()
         || MeshletRunCountUavBindlessIndices.empty()
         || IndirectCommandUavBindlessIndices.empty() || IndirectCommandTemplateBindlessIndices.empty() || MeshletConeAxisBindlessIndex == UINT32_MAX
-        || MeshletConeApexBindlessIndex == UINT32_MAX || GpuDebugPrintBufferUavBindlessIndex == UINT32_MAX || GpuDebugPrintStatsUavBindlessIndex == UINT32_MAX
+        || MeshletConeApexBindlessIndex == UINT32_MAX || GpuDebugPrintBufferUavBindlessIndex == UINT32_MAX || GpuDebugPrintStatsUavBindlessIndex == UINT32_MAX || GpuDebugLineBufferUavBindlessIndex == UINT32_MAX
         || (bHZBOcclusionEnabled && HZBCullingBindlessIndex == UINT32_MAX))
     {
         return;
@@ -1300,6 +1320,159 @@ void FRenderer::PrepareGpuDebugPrint(FDX12CommandContext& CmdContext)
     StatsBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     CommandList->ResourceBarrier(1, &StatsBarrier);
     GpuDebugPrintStatsState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    GpuDebugLineState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+
+    PrepareGpuDebugLine(CmdContext);
+}
+
+void FRenderer::PrepareGpuDebugLine(FDX12CommandContext& CmdContext)
+{
+    if (!bEnableGpuDebugPrint || !GpuDebugLineBuffer || !GpuDebugLineUpload)
+    {
+        return;
+    }
+
+    ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
+    FScopedPixEvent DebugLineEvent(CommandList, L"PrepareGpuDebugLine");
+
+    if (GpuDebugLineState != D3D12_RESOURCE_STATE_COPY_DEST)
+    {
+        D3D12_RESOURCE_BARRIER Barrier = {};
+        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        Barrier.Transition.pResource = GpuDebugLineBuffer.Get();
+        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        Barrier.Transition.StateBefore = GpuDebugLineState;
+        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+        CommandList->ResourceBarrier(1, &Barrier);
+        GpuDebugLineState = D3D12_RESOURCE_STATE_COPY_DEST;
+    }
+
+    CommandList->CopyBufferRegion(GpuDebugLineBuffer.Get(), 0, GpuDebugLineUpload.Get(), 0, GpuDebugLineHeaderSize);
+
+    D3D12_RESOURCE_BARRIER Barrier = {};
+    Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    Barrier.Transition.pResource = GpuDebugLineBuffer.Get();
+    Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    Barrier.Transition.StateBefore = GpuDebugLineState;
+    Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    CommandList->ResourceBarrier(1, &Barrier);
+    GpuDebugLineState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+}
+
+bool FRenderer::CreateGpuDebugLineResources(FDX12Device* Device)
+{
+    if (!Device || !GpuDebugLineBuffer)
+    {
+        LogError("GPU debug line buffer is missing.");
+        return false;
+    }
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC BufferSrvDesc = {};
+    BufferSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    BufferSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    BufferSrvDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+    BufferSrvDesc.Buffer.FirstElement = 0;
+    BufferSrvDesc.Buffer.NumElements = static_cast<UINT>(GpuDebugLineBufferSize / 4);
+    BufferSrvDesc.Buffer.StructureByteStride = 0;
+    BufferSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+    GpuDebugLineBufferBindlessIndex = Device->CreateBindlessSrv(GpuDebugLineBuffer.Get(), BufferSrvDesc);
+
+    D3D12_UNORDERED_ACCESS_VIEW_DESC BufferUavDesc = {};
+    BufferUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    BufferUavDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+    BufferUavDesc.Buffer.FirstElement = 0;
+    BufferUavDesc.Buffer.NumElements = static_cast<UINT>(GpuDebugLineBufferSize / 4);
+    BufferUavDesc.Buffer.StructureByteStride = 0;
+    BufferUavDesc.Buffer.CounterOffsetInBytes = 0;
+    BufferUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+    GpuDebugLineBufferUavBindlessIndex = Device->CreateBindlessUav(GpuDebugLineBuffer.Get(), nullptr, BufferUavDesc);
+
+    return true;
+}
+
+bool FRenderer::CreateGpuDebugLinePipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat)
+{
+    if (!Device)
+    {
+        return false;
+    }
+
+    D3D12_ROOT_PARAMETER1 Params[2] = {};
+    Params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    Params[0].Descriptor.ShaderRegister = 0;
+    Params[0].Descriptor.RegisterSpace = 0;
+    Params[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+    Params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+
+    Params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    Params[1].Constants.ShaderRegister = 1;
+    Params[1].Constants.RegisterSpace = 0;
+    Params[1].Constants.Num32BitValues = 1;
+    Params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+
+    D3D12_ROOT_SIGNATURE_DESC1 RootDesc = {};
+    RootDesc.NumParameters = _countof(Params);
+    RootDesc.pParameters = Params;
+    RootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+        | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC VersionedRootDesc = {};
+    VersionedRootDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    VersionedRootDesc.Desc_1_1 = RootDesc;
+
+    ComPtr<ID3DBlob> SerializedSig;
+    ComPtr<ID3DBlob> ErrorBlob;
+    HR_CHECK(D3D12SerializeVersionedRootSignature(&VersionedRootDesc, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
+    HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(GpuDebugLineRootSignature.GetAddressOf())));
+
+    FShaderCompiler Compiler;
+    std::vector<uint8_t> VSByteCode;
+    std::vector<uint8_t> PSByteCode;
+
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
+    const std::wstring PSTarget = RendererUtils::BuildShaderTarget(L"ps", ShaderModel);
+
+    if (!Compiler.CompileFromFile(L"Shaders/GpuDebugLine.hlsl", L"VSMain", VSTarget, VSByteCode))
+    {
+        return false;
+    }
+    if (!Compiler.CompileFromFile(L"Shaders/GpuDebugLine.hlsl", L"PSMain", PSTarget, PSByteCode))
+    {
+        return false;
+    }
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
+    PsoDesc.pRootSignature = GpuDebugLineRootSignature.Get();
+    PsoDesc.VS = { VSByteCode.data(), VSByteCode.size() };
+    PsoDesc.PS = { PSByteCode.data(), PSByteCode.size() };
+    PsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
+    PsoDesc.SampleDesc.Count = 1;
+    PsoDesc.SampleMask = UINT_MAX;
+    PsoDesc.NumRenderTargets = 1;
+    PsoDesc.RTVFormats[0] = BackBufferFormat;
+
+    PsoDesc.BlendState = {};
+    PsoDesc.BlendState.RenderTarget[0].BlendEnable = TRUE;
+    PsoDesc.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
+    PsoDesc.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+    PsoDesc.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+    PsoDesc.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+    PsoDesc.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ZERO;
+    PsoDesc.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    PsoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    PsoDesc.RasterizerState = {};
+    PsoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    PsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    PsoDesc.RasterizerState.DepthClipEnable = TRUE;
+
+    PsoDesc.DepthStencilState = {};
+    PsoDesc.DepthStencilState.DepthEnable = FALSE;
+    PsoDesc.DepthStencilState.StencilEnable = FALSE;
+
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(GpuDebugLinePipeline.GetAddressOf())));
+    return true;
 }
 
 bool FRenderer::CreateGpuDebugPrintResources(FDX12Device* Device)
@@ -1392,6 +1565,11 @@ bool FRenderer::CreateGpuDebugPrintResources(FDX12Device* Device)
     StatsUavDesc.Buffer.CounterOffsetInBytes = 0;
     StatsUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
     GpuDebugPrintStatsUavBindlessIndex = Device->CreateBindlessUav(GpuDebugPrintStatsBuffer.Get(), nullptr, StatsUavDesc);
+
+    if (!CreateGpuDebugLineResources(Device))
+    {
+        return false;
+    }
 
     return true;
 }
@@ -1507,7 +1685,7 @@ bool FRenderer::CreateGpuDebugPrintStatsPipeline(FDX12Device* Device)
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[0].Constants.ShaderRegister = 0;
     RootParams[0].Constants.RegisterSpace = 0;
-    RootParams[0].Constants.Num32BitValues = 2;
+    RootParams[0].Constants.Num32BitValues = 3;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
     D3D12_ROOT_SIGNATURE_DESC1 RootDesc = {};
@@ -1576,7 +1754,19 @@ void FRenderer::DispatchGpuDebugPrintStats(FDX12CommandContext& CmdContext)
         GpuDebugPrintState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     }
 
-    if (GpuDebugPrintStatsBindlessIndex == UINT32_MAX || GpuDebugPrintBufferUavBindlessIndex == UINT32_MAX)
+    if (GpuDebugLineState != D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
+    {
+        D3D12_RESOURCE_BARRIER Barrier = {};
+        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        Barrier.Transition.pResource = GpuDebugLineBuffer.Get();
+        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        Barrier.Transition.StateBefore = GpuDebugLineState;
+        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        CommandList->ResourceBarrier(1, &Barrier);
+        GpuDebugLineState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    }
+
+    if (GpuDebugPrintStatsBindlessIndex == UINT32_MAX || GpuDebugPrintBufferUavBindlessIndex == UINT32_MAX || GpuDebugLineBufferBindlessIndex == UINT32_MAX)
     {
         return;
     }
@@ -1585,7 +1775,7 @@ void FRenderer::DispatchGpuDebugPrintStats(FDX12CommandContext& CmdContext)
     CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
     CommandList->SetPipelineState(GpuDebugPrintStatsPipeline.Get());
     CommandList->SetComputeRootSignature(GpuDebugPrintStatsRootSignature.Get());
-    const uint32_t BindlessIndices[] = { GpuDebugPrintStatsBindlessIndex, GpuDebugPrintBufferUavBindlessIndex };
+    const uint32_t BindlessIndices[] = { GpuDebugPrintStatsBindlessIndex, GpuDebugPrintBufferUavBindlessIndex, GpuDebugLineBufferBindlessIndex };
     CommandList->SetComputeRoot32BitConstants(0, _countof(BindlessIndices), BindlessIndices, 0);
     CommandList->Dispatch(1, 1, 1);
 }
@@ -2555,6 +2745,59 @@ void FRenderer::RenderGpuDebugPrint(FDX12CommandContext& CmdContext, const D3D12
     }
 }
 
+void FRenderer::RenderGpuDebugLine(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& OutputHandle)
+{
+    if (!bEnableGpuDebugPrint || !GpuDebugLinePipeline || !GpuDebugLineRootSignature || !Device || !Device->GetBindlessDescriptorHeap())
+    {
+        return;
+    }
+
+    if (GpuDebugLineBufferBindlessIndex == UINT32_MAX)
+    {
+        return;
+    }
+
+    ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
+    FScopedPixEvent DebugLineEvent(CommandList, L"GpuDebugLine");
+
+    if (GpuDebugLineState != D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
+    {
+        D3D12_RESOURCE_BARRIER Barrier = {};
+        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        Barrier.Transition.pResource = GpuDebugLineBuffer.Get();
+        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        Barrier.Transition.StateBefore = GpuDebugLineState;
+        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        CommandList->ResourceBarrier(1, &Barrier);
+        GpuDebugLineState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    }
+
+    CmdContext.SetRenderTarget(OutputHandle, nullptr);
+
+    ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
+    CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+    CommandList->SetPipelineState(GpuDebugLinePipeline.Get());
+    CommandList->SetGraphicsRootSignature(GpuDebugLineRootSignature.Get());
+    CommandList->RSSetViewports(1, &Viewport);
+    CommandList->RSSetScissorRects(1, &ScissorRect);
+    CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
+    CommandList->SetGraphicsRootConstantBufferView(0, GetSceneConstantBufferAddress());
+    CommandList->SetGraphicsRoot32BitConstant(1, GpuDebugLineBufferBindlessIndex, 0);
+    CommandList->DrawInstanced(2 * GpuDebugLineMaxEntries, 1, 0, 0);
+
+    if (GpuDebugLineState != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+    {
+        D3D12_RESOURCE_BARRIER Barrier = {};
+        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        Barrier.Transition.pResource = GpuDebugLineBuffer.Get();
+        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        Barrier.Transition.StateBefore = GpuDebugLineState;
+        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        CommandList->ResourceBarrier(1, &Barrier);
+        GpuDebugLineState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    }
+}
+
 bool FRenderer::PrepareGpuDrivenDrawData(FGpuDrivenPreparedData& OutData)
 {
     if (SceneModels.empty() || !GetSceneConstantBuffer())
@@ -3253,7 +3496,43 @@ bool FRenderer::CreateSharedGpuDrivenBuffers(FDX12Device* Device, const FGpuDriv
         GpuDebugPrintStatsUpload->Unmap(0, nullptr);
     }
 
-    if (!GpuDebugPrintBuffer || !GpuDebugPrintUpload || !GpuDebugPrintStatsBuffer || !GpuDebugPrintStatsUpload)
+    CD3DX12_RESOURCE_DESC DebugLineDesc = CD3DX12_RESOURCE_DESC::Buffer(GpuDebugLineBufferSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &DefaultHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &DebugLineDesc,
+        D3D12_RESOURCE_STATE_COMMON,
+        nullptr,
+        IID_PPV_ARGS(GpuDebugLineBuffer.GetAddressOf())));
+    if (GpuDebugLineBuffer)
+    {
+        GpuDebugLineBuffer->SetName(L"GpuDebugLineBuffer");
+    }
+
+    D3D12_RESOURCE_DESC DebugLineUploadDesc = BufferDesc;
+    DebugLineUploadDesc.Width = GpuDebugLineHeaderSize;
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &UploadHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &DebugLineUploadDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(GpuDebugLineUpload.GetAddressOf())));
+    if (GpuDebugLineUpload)
+    {
+        GpuDebugLineUpload->SetName(L"GpuDebugLineUpload");
+        void* LineUploadData = nullptr;
+        HR_CHECK(GpuDebugLineUpload->Map(0, &EmptyRange, &LineUploadData));
+        if (LineUploadData)
+        {
+            std::memset(LineUploadData, 0, GpuDebugLineHeaderSize);
+        }
+        GpuDebugLineUpload->Unmap(0, nullptr);
+    }
+
+    if (!GpuDebugPrintBuffer || !GpuDebugPrintUpload || !GpuDebugPrintStatsBuffer || !GpuDebugPrintStatsUpload || !GpuDebugLineBuffer || !GpuDebugLineUpload)
     {
         LogError("Failed to create GPU debug print resources");
         return false;
@@ -3448,6 +3727,14 @@ bool FRenderer::UploadGpuDrivenBuffers(FDX12Device* Device, const FGpuDrivenPrep
     StatsBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
     PreCopyBarriers.push_back(StatsBarrier);
 
+    D3D12_RESOURCE_BARRIER DebugLineBarrier = {};
+    DebugLineBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    DebugLineBarrier.Transition.pResource = GpuDebugLineBuffer.Get();
+    DebugLineBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    DebugLineBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+    DebugLineBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    PreCopyBarriers.push_back(DebugLineBarrier);
+
     UploadList->ResourceBarrier(static_cast<UINT>(PreCopyBarriers.size()), PreCopyBarriers.data());
 
     // Copy operations
@@ -3472,6 +3759,10 @@ bool FRenderer::UploadGpuDrivenBuffers(FDX12Device* Device, const FGpuDrivenPrep
     if (GpuDebugPrintStatsBuffer && GpuDebugPrintStatsUpload)
     {
         UploadList->CopyBufferRegion(GpuDebugPrintStatsBuffer.Get(), 0, GpuDebugPrintStatsUpload.Get(), 0, sizeof(uint32_t) * GpuDebugPrintStatsCount);
+    }
+    if (GpuDebugLineBuffer && GpuDebugLineUpload)
+    {
+        UploadList->CopyBufferRegion(GpuDebugLineBuffer.Get(), 0, GpuDebugLineUpload.Get(), 0, GpuDebugLineHeaderSize);
     }
 
     // Post-copy barriers
@@ -3545,6 +3836,14 @@ bool FRenderer::UploadGpuDrivenBuffers(FDX12Device* Device, const FGpuDrivenPrep
     PostStatsBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     PostCopyBarriers.push_back(PostStatsBarrier);
 
+    D3D12_RESOURCE_BARRIER PostDebugLineBarrier = {};
+    PostDebugLineBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    PostDebugLineBarrier.Transition.pResource = GpuDebugLineBuffer.Get();
+    PostDebugLineBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    PostDebugLineBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    PostDebugLineBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    PostCopyBarriers.push_back(PostDebugLineBarrier);
+
     UploadList->ResourceBarrier(static_cast<UINT>(PostCopyBarriers.size()), PostCopyBarriers.data());
 
     HR_CHECK(UploadList->Close());
@@ -3567,6 +3866,7 @@ bool FRenderer::UploadGpuDrivenBuffers(FDX12Device* Device, const FGpuDrivenPrep
     MeshletRunCountStates.assign(GetFramesInFlight(), D3D12_RESOURCE_STATE_COMMON);
     GpuDebugPrintState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     GpuDebugPrintStatsState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    GpuDebugLineState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 
     return true;
 }

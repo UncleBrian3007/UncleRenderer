@@ -110,6 +110,10 @@ private:
     bool bRestirGINewUseVisibility = true;
     bool bRestirGINewUseBrdf = true;
     bool bRestirGINewUseHistoryIndirect = true;
+    bool bRestirGINewFreezeFrame = false;
+    bool bRestirGINewDebugRayEnabled = false;
+    int RestirGINewDebugPixelX = 0;
+    int RestirGINewDebugPixelY = 0;
     bool bSsrSwEnabled = true;
     bool bSsrHwEnabled = true;
     bool bSsrHzbEnabled = false;

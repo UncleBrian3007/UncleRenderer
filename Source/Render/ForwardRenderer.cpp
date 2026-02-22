@@ -232,7 +232,7 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
 
     if (bEnableGpuDebugPrint)
     {
-        if (!CreateGpuDebugPrintResources(Device) || !CreateGpuDebugPrintPipeline(Device, BackBufferFormat) || !CreateGpuDebugPrintStatsPipeline(Device))
+        if (!CreateGpuDebugPrintResources(Device) || !CreateGpuDebugPrintPipeline(Device, BackBufferFormat) || !CreateGpuDebugLinePipeline(Device, BackBufferFormat) || !CreateGpuDebugPrintStatsPipeline(Device))
         {
             LogError("Forward renderer initialization failed: GPU debug print setup failed");
             return false;
@@ -246,6 +246,13 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
 void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle, const FCamera& Camera, float DeltaTime)
 {
     FScopedPixEvent RenderEvent(CmdContext.GetCommandList(), L"ForwardRenderer");
+
+    if (HasRenderFatalError())
+    {
+        const float FatalClearColor[4] = { 0.05f, 0.0f, 0.1f, 1.0f };
+        CmdContext.ClearRenderTarget(RtvHandle, FatalClearColor);
+        return;
+    }
 
     RendererUtils::UpdateGltfSceneAnimation(SceneModels, GltfScenes, GltfScenePoses, GltfSceneTimes, DeltaTime);
 
@@ -907,10 +914,14 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
         ID3D12Resource* RunCountBuffer = GetMeshletRunCountBuffer();
         if (bEnableIndirectDraw && IndirectCommandSignature && IndirectBuffer && RunCountBuffer && !IndirectDrawRanges.empty())
         {
-            auto SelectPipelineByKey = [&](uint32_t Key)
+            auto SelectPipelineByKey = [&](uint32_t Key) -> ID3D12PipelineState*
             {
                 const bool bUseSkinning = (Key & (1u << 8)) != 0;
                 const uint32_t MaterialKey = (Key & 0xFFu) | (((Key >> 9) & 1u) << 8);
+                if (!EnsureBasePassPipelineOrFail(MaterialKey, bUseSkinning, "ForwardBasePass/Indirect"))
+                {
+                    return nullptr;
+                }
                 return bUseSkinning ? BasePassPipelinesSkinned[MaterialKey].Get() : BasePassPipelines[MaterialKey].Get();
             };
 
@@ -923,6 +934,10 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                     continue;
                 }
                 ID3D12PipelineState* Pipeline = SelectPipelineByKey(Range.PipelineKey);
+                if (!Pipeline)
+                {
+                    return;
+                }
                 LocalCommandList->SetPipelineState(Pipeline);
                 const uint32_t ShadowMaskEnabled = (bRayTracedShadowsEnabled && ShadowMaskBindlessIndex != UINT32_MAX) ? 1u : 0u;
                 const uint32_t ResolvedShadowMaskIndex = ShadowMaskEnabled ? ShadowMaskBindlessIndex : ShadowMapBindlessIndex;
@@ -976,28 +991,12 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                     }
 
                     const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
-
-                    const bool bUseBaseColorMap = !Model.BaseColorTexturePath.empty();
-                    const bool bUseMetallicRoughnessMap = !Model.MetallicRoughnessTexturePath.empty();
-                    const bool bUseEmissiveMap = !Model.EmissiveTexturePath.empty();
-                    const bool bUseNormalMap = Model.bHasNormalMap;
-                    const bool bUseAlphaMask = Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask);
-                    const bool bUseSheenModel = Model.ShadingModelId == 1u;
-                    const bool bUseClearcoatModel = Model.ShadingModelId == 2u;
-                    const bool bUseAnisotropyModel = Model.ShadingModelId == 3u;
-
-                    const bool bUseDoubleSided = Model.bDoubleSided;
-                    const uint32_t PipelineKey =
-                        (bUseNormalMap ? 1u : 0u) |
-                        (bUseMetallicRoughnessMap ? 2u : 0u) |
-                        (bUseBaseColorMap ? 4u : 0u) |
-                        (bUseEmissiveMap ? 8u : 0u) |
-                        (bUseAlphaMask ? 16u : 0u) |
-                        (bUseSheenModel ? 32u : 0u) |
-                        (bUseClearcoatModel ? 64u : 0u) |
-                        (bUseAnisotropyModel ? 128u : 0u) |
-                        (bUseDoubleSided ? 256u : 0u);
-
+                    const uint32_t ModelPipelineKey = RendererUtils::BuildPipelineKey(Model);
+                    const uint32_t PipelineKey = (ModelPipelineKey & 0xFFu) | (((ModelPipelineKey >> 9) & 1u) << 8);
+                    if (!EnsureBasePassPipelineOrFail(PipelineKey, true, "ForwardBasePass/SkinningFallback"))
+                    {
+                        return;
+                    }
                     LocalCommandList->SetPipelineState(BasePassPipelinesSkinned[PipelineKey].Get());
 
                     const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
@@ -1051,28 +1050,13 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                 }
                 const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
 
-                const bool bUseBaseColorMap = !Model.BaseColorTexturePath.empty();
-                const bool bUseMetallicRoughnessMap = !Model.MetallicRoughnessTexturePath.empty();
-                const bool bUseEmissiveMap = !Model.EmissiveTexturePath.empty();
-                const bool bUseNormalMap = Model.bHasNormalMap;
-                const bool bUseAlphaMask = Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask);
-                const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0;
-                const bool bUseSheenModel = Model.ShadingModelId == 1u;
-                const bool bUseClearcoatModel = Model.ShadingModelId == 2u;
-                const bool bUseAnisotropyModel = Model.ShadingModelId == 3u;
-
-                const bool bUseDoubleSided = Model.bDoubleSided;
-                const uint32_t PipelineKey =
-                    (bUseNormalMap ? 1u : 0u) |
-                    (bUseMetallicRoughnessMap ? 2u : 0u) |
-                    (bUseBaseColorMap ? 4u : 0u) |
-                    (bUseEmissiveMap ? 8u : 0u) |
-                    (bUseAlphaMask ? 16u : 0u) |
-                    (bUseSheenModel ? 32u : 0u) |
-                    (bUseClearcoatModel ? 64u : 0u) |
-                    (bUseAnisotropyModel ? 128u : 0u) |
-                    (bUseDoubleSided ? 256u : 0u);
-
+                const uint32_t ModelPipelineKey = RendererUtils::BuildPipelineKey(Model);
+                const bool bUseSkinning = (ModelPipelineKey & (1u << 8)) != 0;
+                const uint32_t PipelineKey = (ModelPipelineKey & 0xFFu) | (((ModelPipelineKey >> 9) & 1u) << 8);
+                if (!EnsureBasePassPipelineOrFail(PipelineKey, bUseSkinning, "ForwardBasePass/Direct"))
+                {
+                    return;
+                }
                 LocalCommandList->SetPipelineState(bUseSkinning ? BasePassPipelinesSkinned[PipelineKey].Get() : BasePassPipelines[PipelineKey].Get());
 
                 const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
@@ -1247,6 +1231,7 @@ void FForwardRenderer::AddDebugPrintPass(FRenderGraph& Graph, const D3D12_CPU_DE
     Graph.AddPass<FDebugPrintPassData>("GpuDebugPrint", [this, RtvHandle](FDebugPrintPassData& Data, FRGPassBuilder& Builder)
     {
         Data.bEnabled = bEnableGpuDebugPrint && GpuDebugPrintPipeline && GpuDebugPrintRootSignature
+            && GpuDebugLinePipeline && GpuDebugLineRootSignature
             && Device && Device->GetBindlessDescriptorHeap();
         Data.OutputHandle = RtvHandle;
         if (Data.bEnabled)
@@ -1262,6 +1247,7 @@ void FForwardRenderer::AddDebugPrintPass(FRenderGraph& Graph, const D3D12_CPU_DE
 
         DispatchGpuDebugPrintStats(Cmd);
         RenderGpuDebugPrint(Cmd, Data.OutputHandle);
+        RenderGpuDebugLine(Cmd, Data.OutputHandle);
     });
 }
 
@@ -1359,121 +1345,36 @@ bool FForwardRenderer::CreateRootSignature(FDX12Device* Device)
 bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT BackBufferFormat)
 {
     FShaderCompiler Compiler;
-    std::vector<uint8_t> VSByteCode;
-    std::vector<uint8_t> VSByteCodeSkinned;
-    std::array<std::vector<uint8_t>, 256> PSByteCodes;
 
     const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
     const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
-    const std::wstring PSTarget = RendererUtils::BuildShaderTarget(L"ps", ShaderModel);
 
-    if (!Compiler.CompileFromFile(L"Shaders/ForwardVS.hlsl", L"VSMain", VSTarget, VSByteCode))
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardVS.hlsl", L"VSMain", VSTarget, ForwardBasePassVsBytecodes[0]))
     {
         return false;
     }
-    if (!Compiler.CompileFromFile(L"Shaders/ForwardVS.hlsl", L"VSMain", VSTarget, VSByteCodeSkinned, { L"USE_SKINNING=1" }))
+    if (!Compiler.CompileFromFile(L"Shaders/ForwardVS.hlsl", L"VSMain", VSTarget, ForwardBasePassVsBytecodes[1], { L"USE_SKINNING=1" }))
     {
         return false;
     }
 
+    ForwardBasePassBackBufferFormat = BackBufferFormat;
+    for (uint32_t PipelineKey = 0; PipelineKey < 512; ++PipelineKey)
+    {
+        BasePassPipelines[PipelineKey].Reset();
+        BasePassPipelinesSkinned[PipelineKey].Reset();
+        ForwardBasePassFailureLogged[PipelineKey] = false;
+    }
     for (uint32_t Permutation = 0; Permutation < 256; ++Permutation)
     {
-        const bool bUseNormal = (Permutation & 1u) != 0;
-        const bool bUseMr = (Permutation & 2u) != 0;
-        const bool bUseBaseColor = (Permutation & 4u) != 0;
-        const bool bUseEmissive = (Permutation & 8u) != 0;
-        const bool bUseAlphaMask = (Permutation & 16u) != 0;
-        const bool bUseSheenModel = (Permutation & 32u) != 0;
-        const bool bUseClearcoatModel = (Permutation & 64u) != 0;
-        const bool bUseAnisotropyModel = (Permutation & 128u) != 0;
-
-        std::vector<std::wstring> Defines;
-        Defines.push_back(bUseNormal ? L"USE_NORMAL_MAP=1" : L"USE_NORMAL_MAP=0");
-        Defines.push_back(bUseMr ? L"USE_METALLIC_ROUGHNESS_MAP=1" : L"USE_METALLIC_ROUGHNESS_MAP=0");
-        Defines.push_back(bUseBaseColor ? L"USE_BASE_COLOR_MAP=1" : L"USE_BASE_COLOR_MAP=0");
-        Defines.push_back(bUseEmissive ? L"USE_EMISSIVE_MAP=1" : L"USE_EMISSIVE_MAP=0");
-        Defines.push_back(bUseSheenModel ? L"SHADINGMODEL_SHEEN=1" : L"SHADINGMODEL_SHEEN=0");
-        Defines.push_back(bUseClearcoatModel ? L"SHADINGMODEL_CLEARCOAT=1" : L"SHADINGMODEL_CLEARCOAT=0");
-        Defines.push_back(bUseAnisotropyModel ? L"SHADINGMODEL_ANISOTROPY=1" : L"SHADINGMODEL_ANISOTROPY=0");
-        if (bUseAlphaMask)
-        {
-            Defines.push_back(L"USE_ALPHA_MASK=1");
-        }
-
-        if (!Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, PSByteCodes[Permutation], Defines))
-        {
-            return false;
-        }
+        ForwardBasePassPsBytecodes[Permutation].clear();
+        ForwardBasePassPsCompiled[Permutation] = false;
     }
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
-    PsoDesc.pRootSignature = RootSignature.Get();
-    PsoDesc.InputLayout = { nullptr, 0 };
-    PsoDesc.VS = { VSByteCode.data(), VSByteCode.size() };
-    PsoDesc.PS = { nullptr, 0 };
-    PsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    PsoDesc.SampleDesc.Count = 1;
-    PsoDesc.SampleMask = UINT_MAX;
-
-    PsoDesc.RasterizerState = {};
-    PsoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    PsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
-    PsoDesc.RasterizerState.FrontCounterClockwise = TRUE;
-    PsoDesc.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
-    PsoDesc.RasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
-    PsoDesc.RasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
-    PsoDesc.RasterizerState.DepthClipEnable = TRUE;
-    PsoDesc.RasterizerState.MultisampleEnable = FALSE;
-    PsoDesc.RasterizerState.AntialiasedLineEnable = FALSE;
-    PsoDesc.RasterizerState.ForcedSampleCount = 0;
-    PsoDesc.RasterizerState.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
-
-    PsoDesc.BlendState = {};
-    PsoDesc.BlendState.AlphaToCoverageEnable = FALSE;
-    PsoDesc.BlendState.IndependentBlendEnable = FALSE;
-    D3D12_RENDER_TARGET_BLEND_DESC RtBlend = {};
-    RtBlend.BlendEnable = FALSE;
-    RtBlend.LogicOpEnable = FALSE;
-    RtBlend.SrcBlend = D3D12_BLEND_ONE;
-    RtBlend.DestBlend = D3D12_BLEND_ZERO;
-    RtBlend.BlendOp = D3D12_BLEND_OP_ADD;
-    RtBlend.SrcBlendAlpha = D3D12_BLEND_ONE;
-    RtBlend.DestBlendAlpha = D3D12_BLEND_ZERO;
-    RtBlend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
-    RtBlend.LogicOp = D3D12_LOGIC_OP_NOOP;
-    RtBlend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-    PsoDesc.BlendState.RenderTarget[0] = RtBlend;
-
-    PsoDesc.DepthStencilState = {};
-    PsoDesc.DepthStencilState.DepthEnable = TRUE;
-    PsoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-    PsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
-    PsoDesc.DepthStencilState.StencilEnable = FALSE;
-    PsoDesc.DepthStencilState.StencilReadMask = D3D12_DEFAULT_STENCIL_READ_MASK;
-    PsoDesc.DepthStencilState.StencilWriteMask = D3D12_DEFAULT_STENCIL_WRITE_MASK;
-    PsoDesc.DepthStencilState.FrontFace.StencilFailOp = D3D12_STENCIL_OP_KEEP;
-    PsoDesc.DepthStencilState.FrontFace.StencilDepthFailOp = D3D12_STENCIL_OP_KEEP;
-    PsoDesc.DepthStencilState.FrontFace.StencilPassOp = D3D12_STENCIL_OP_KEEP;
-    PsoDesc.DepthStencilState.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS;
-    PsoDesc.DepthStencilState.BackFace = PsoDesc.DepthStencilState.FrontFace;
-    PsoDesc.NumRenderTargets = 1;
-    PsoDesc.RTVFormats[0] = BackBufferFormat;
-    PsoDesc.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
-    PsoDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
-
-    for (uint32_t DoubleSidedVariant = 0; DoubleSidedVariant < 2; ++DoubleSidedVariant)
+    if (!BuildForwardBasePassPsoDesc(0, false, PsoDesc))
     {
-        PsoDesc.RasterizerState.CullMode = (DoubleSidedVariant == 0) ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_NONE;
-        for (uint32_t Permutation = 0; Permutation < 256; ++Permutation)
-        {
-            const uint32_t PipelineIndex = Permutation | (DoubleSidedVariant << 8);
-            PsoDesc.VS = { VSByteCode.data(), VSByteCode.size() };
-            PsoDesc.PS = { PSByteCodes[Permutation].data(), PSByteCodes[Permutation].size() };
-            HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipelines[PipelineIndex].GetAddressOf())));
-
-            PsoDesc.VS = { VSByteCodeSkinned.data(), VSByteCodeSkinned.size() };
-            HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipelinesSkinned[PipelineIndex].GetAddressOf())));
-        }
+        return false;
     }
 
     if (bDepthPrepassEnabled)
@@ -1487,14 +1388,174 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
         for (uint32_t DoubleSidedVariant = 0; DoubleSidedVariant < 2; ++DoubleSidedVariant)
         {
             DepthPrepassDesc.RasterizerState.CullMode = (DoubleSidedVariant == 0) ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_NONE;
-            DepthPrepassDesc.VS = { VSByteCode.data(), VSByteCode.size() };
+            DepthPrepassDesc.VS = { ForwardBasePassVsBytecodes[0].data(), ForwardBasePassVsBytecodes[0].size() };
             HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&DepthPrepassDesc, IID_PPV_ARGS(DepthPrepassPipelines[DoubleSidedVariant].GetAddressOf())));
-            DepthPrepassDesc.VS = { VSByteCodeSkinned.data(), VSByteCodeSkinned.size() };
+            DepthPrepassDesc.VS = { ForwardBasePassVsBytecodes[1].data(), ForwardBasePassVsBytecodes[1].size() };
             HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&DepthPrepassDesc, IID_PPV_ARGS(DepthPrepassPipelinesSkinned[DoubleSidedVariant].GetAddressOf())));
         }
     }
 
     return true;
+}
+
+
+bool FForwardRenderer::CompileForwardBasePassPs(uint32_t PipelineKey, std::vector<uint8_t>& OutPs)
+{
+    FShaderCompiler Compiler;
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring PSTarget = RendererUtils::BuildShaderTarget(L"ps", ShaderModel);
+
+    const bool bUseNormal = (PipelineKey & 1u) != 0;
+    const bool bUseMr = (PipelineKey & 2u) != 0;
+    const bool bUseBaseColor = (PipelineKey & 4u) != 0;
+    const bool bUseEmissive = (PipelineKey & 8u) != 0;
+    const bool bUseAlphaMask = (PipelineKey & 16u) != 0;
+    const bool bUseSheenModel = (PipelineKey & 32u) != 0;
+    const bool bUseClearcoatModel = (PipelineKey & 64u) != 0;
+    const bool bUseAnisotropyModel = (PipelineKey & 128u) != 0;
+
+    std::vector<std::wstring> Defines;
+    Defines.push_back(bUseNormal ? L"USE_NORMAL_MAP=1" : L"USE_NORMAL_MAP=0");
+    Defines.push_back(bUseMr ? L"USE_METALLIC_ROUGHNESS_MAP=1" : L"USE_METALLIC_ROUGHNESS_MAP=0");
+    Defines.push_back(bUseBaseColor ? L"USE_BASE_COLOR_MAP=1" : L"USE_BASE_COLOR_MAP=0");
+    Defines.push_back(bUseEmissive ? L"USE_EMISSIVE_MAP=1" : L"USE_EMISSIVE_MAP=0");
+    Defines.push_back(bUseSheenModel ? L"SHADINGMODEL_SHEEN=1" : L"SHADINGMODEL_SHEEN=0");
+    Defines.push_back(bUseClearcoatModel ? L"SHADINGMODEL_CLEARCOAT=1" : L"SHADINGMODEL_CLEARCOAT=0");
+    Defines.push_back(bUseAnisotropyModel ? L"SHADINGMODEL_ANISOTROPY=1" : L"SHADINGMODEL_ANISOTROPY=0");
+    if (bUseAlphaMask)
+    {
+        Defines.push_back(L"USE_ALPHA_MASK=1");
+    }
+
+    return Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, OutPs, Defines);
+}
+
+bool FForwardRenderer::BuildForwardBasePassPsoDesc(uint32_t PipelineKey, bool bUseSkinning, D3D12_GRAPHICS_PIPELINE_STATE_DESC& OutDesc) const
+{
+    if (ForwardBasePassBackBufferFormat == DXGI_FORMAT_UNKNOWN)
+    {
+        return false;
+    }
+
+    OutDesc = {};
+    OutDesc.pRootSignature = RootSignature.Get();
+    OutDesc.InputLayout = { nullptr, 0 };
+    const std::vector<uint8_t>& VsByteCode = ForwardBasePassVsBytecodes[bUseSkinning ? 1u : 0u];
+    OutDesc.VS = { VsByteCode.data(), VsByteCode.size() };
+    OutDesc.PS = { ForwardBasePassPsBytecodes[PipelineKey & 0xFFu].data(), ForwardBasePassPsBytecodes[PipelineKey & 0xFFu].size() };
+    OutDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    OutDesc.SampleDesc.Count = 1;
+    OutDesc.SampleMask = UINT_MAX;
+
+    OutDesc.RasterizerState = {};
+    OutDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    OutDesc.RasterizerState.CullMode = (PipelineKey & 256u) != 0 ? D3D12_CULL_MODE_NONE : D3D12_CULL_MODE_BACK;
+    OutDesc.RasterizerState.FrontCounterClockwise = TRUE;
+    OutDesc.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
+    OutDesc.RasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
+    OutDesc.RasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
+    OutDesc.RasterizerState.DepthClipEnable = TRUE;
+    OutDesc.RasterizerState.MultisampleEnable = FALSE;
+    OutDesc.RasterizerState.AntialiasedLineEnable = FALSE;
+    OutDesc.RasterizerState.ForcedSampleCount = 0;
+    OutDesc.RasterizerState.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+
+    OutDesc.BlendState = {};
+    OutDesc.BlendState.AlphaToCoverageEnable = FALSE;
+    OutDesc.BlendState.IndependentBlendEnable = FALSE;
+    D3D12_RENDER_TARGET_BLEND_DESC RtBlend = {};
+    RtBlend.BlendEnable = FALSE;
+    RtBlend.LogicOpEnable = FALSE;
+    RtBlend.SrcBlend = D3D12_BLEND_ONE;
+    RtBlend.DestBlend = D3D12_BLEND_ZERO;
+    RtBlend.BlendOp = D3D12_BLEND_OP_ADD;
+    RtBlend.SrcBlendAlpha = D3D12_BLEND_ONE;
+    RtBlend.DestBlendAlpha = D3D12_BLEND_ZERO;
+    RtBlend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    RtBlend.LogicOp = D3D12_LOGIC_OP_NOOP;
+    RtBlend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    OutDesc.BlendState.RenderTarget[0] = RtBlend;
+
+    OutDesc.DepthStencilState = {};
+    OutDesc.DepthStencilState.DepthEnable = TRUE;
+    OutDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    OutDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+    OutDesc.DepthStencilState.StencilEnable = FALSE;
+    OutDesc.DepthStencilState.StencilReadMask = D3D12_DEFAULT_STENCIL_READ_MASK;
+    OutDesc.DepthStencilState.StencilWriteMask = D3D12_DEFAULT_STENCIL_WRITE_MASK;
+    OutDesc.DepthStencilState.FrontFace.StencilFailOp = D3D12_STENCIL_OP_KEEP;
+    OutDesc.DepthStencilState.FrontFace.StencilDepthFailOp = D3D12_STENCIL_OP_KEEP;
+    OutDesc.DepthStencilState.FrontFace.StencilPassOp = D3D12_STENCIL_OP_KEEP;
+    OutDesc.DepthStencilState.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    OutDesc.DepthStencilState.BackFace = OutDesc.DepthStencilState.FrontFace;
+    OutDesc.NumRenderTargets = 1;
+    OutDesc.RTVFormats[0] = ForwardBasePassBackBufferFormat;
+    OutDesc.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
+    OutDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
+    return true;
+}
+
+bool FForwardRenderer::EnsureBasePassPipeline(uint32_t PipelineKey, bool bUseSkinning)
+{
+    auto& TargetPipeline = bUseSkinning ? BasePassPipelinesSkinned[PipelineKey] : BasePassPipelines[PipelineKey];
+    if (TargetPipeline)
+    {
+        return true;
+    }
+
+    std::lock_guard<std::mutex> Lock(ForwardBasePassPipelineMutex);
+    if (TargetPipeline)
+    {
+        return true;
+    }
+
+    const uint32_t PsKey = PipelineKey & 0xFFu;
+    if (!ForwardBasePassPsCompiled[PsKey])
+    {
+        if (!CompileForwardBasePassPs(PsKey, ForwardBasePassPsBytecodes[PsKey]))
+        {
+            return false;
+        }
+        ForwardBasePassPsCompiled[PsKey] = true;
+    }
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC Desc = {};
+    if (!BuildForwardBasePassPsoDesc(PipelineKey, bUseSkinning, Desc))
+    {
+        return false;
+    }
+
+    HRESULT Hr = Device->GetDevice()->CreateGraphicsPipelineState(&Desc, IID_PPV_ARGS(TargetPipeline.GetAddressOf()));
+    if (FAILED(Hr))
+    {
+        return false;
+    }
+
+    LogInfo(std::string("Forward BasePass pipeline created. key=") + std::to_string(PipelineKey) + ", skinned=" + (bUseSkinning ? "1" : "0"));
+    return true;
+}
+
+bool FForwardRenderer::EnsureBasePassPipelineOrFail(uint32_t PipelineKey, bool bUseSkinning, const char* PassContext)
+{
+    if (EnsureBasePassPipeline(PipelineKey, bUseSkinning))
+    {
+        return true;
+    }
+
+    if (!ForwardBasePassFailureLogged[PipelineKey])
+    {
+        ForwardBasePassFailureLogged[PipelineKey] = true;
+        LogError(std::string("Forward BasePass pipeline creation failed. context=")
+            + (PassContext ? PassContext : "Unknown")
+            + ", key=" + std::to_string(PipelineKey)
+            + ", skinned=" + (bUseSkinning ? "1" : "0"));
+    }
+
+    SetRenderFatalError(std::string("Forward BasePass fatal failure. context=")
+        + (PassContext ? PassContext : "Unknown")
+        + ", key=" + std::to_string(PipelineKey)
+        + ", skinned=" + (bUseSkinning ? "1" : "0"));
+    return false;
 }
 
 bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vector<FSceneModelResource>& Models)

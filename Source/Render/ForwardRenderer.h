@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <mutex>
 #include <memory>
 #include <vector>
 #include <wrl.h>
@@ -50,6 +51,10 @@ private:
 
     bool CreateRootSignature(FDX12Device* Device);
     bool CreatePipelineState(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
+    bool EnsureBasePassPipeline(uint32_t PipelineKey, bool bUseSkinning);
+    bool EnsureBasePassPipelineOrFail(uint32_t PipelineKey, bool bUseSkinning, const char* PassContext);
+    bool CompileForwardBasePassPs(uint32_t PipelineKey, std::vector<uint8_t>& OutPs);
+    bool BuildForwardBasePassPsoDesc(uint32_t PipelineKey, bool bUseSkinning, D3D12_GRAPHICS_PIPELINE_STATE_DESC& OutDesc) const;
     bool CreateObjectIdResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateObjectIdPipeline(FDX12Device* Device);
     bool CreateSceneTextures(FDX12Device* Device, const std::vector<FSceneModelResource>& Models);
@@ -75,6 +80,12 @@ private:
     // Base pass pipelines indexed by permutation key (bit 0: Normal, bit 1: MR, bit 2: BaseColor, bit 3: Emissive, bit 4: AlphaMask, bit 5: SheenModel, bit 6: ClearcoatModel, bit 7: AnisotropyModel, bit 8: DoubleSided)
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 512> BasePassPipelines;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 512> BasePassPipelinesSkinned;
+    std::array<std::vector<uint8_t>, 2> ForwardBasePassVsBytecodes;
+    std::array<std::vector<uint8_t>, 256> ForwardBasePassPsBytecodes;
+    std::array<bool, 256> ForwardBasePassPsCompiled{};
+    std::array<bool, 512> ForwardBasePassFailureLogged{};
+    std::mutex ForwardBasePassPipelineMutex;
+    DXGI_FORMAT ForwardBasePassBackBufferFormat = DXGI_FORMAT_UNKNOWN;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2> DepthPrepassPipelines;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2> DepthPrepassPipelinesSkinned;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2> ShadowPipelines;

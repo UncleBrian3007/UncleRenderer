@@ -569,7 +569,7 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
 
     if (bEnableGpuDebugPrint)
     {
-        if (!CreateGpuDebugPrintResources(Device) || !CreateGpuDebugPrintPipeline(Device, BackBufferFormat) || !CreateGpuDebugPrintStatsPipeline(Device))
+        if (!CreateGpuDebugPrintResources(Device) || !CreateGpuDebugPrintPipeline(Device, BackBufferFormat) || !CreateGpuDebugLinePipeline(Device, BackBufferFormat) || !CreateGpuDebugPrintStatsPipeline(Device))
         {
             LogError("Deferred renderer initialization failed: GPU debug print setup failed");
             return false;
@@ -582,6 +582,13 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
 
 void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle, const FCamera& Camera, float DeltaTime)
 {
+    if (HasRenderFatalError())
+    {
+        const float FatalClearColor[4] = { 0.05f, 0.0f, 0.1f, 1.0f };
+        CmdContext.ClearRenderTarget(RtvHandle, FatalClearColor);
+        return;
+    }
+
     const bool bAnySkinningUpdated = RendererUtils::UpdateGltfSceneAnimation(SceneModels, GltfScenes, GltfScenePoses, GltfSceneTimes, DeltaTime);
 
     PrepareGpuDebugPrint(CmdContext);
@@ -1930,10 +1937,14 @@ void FDeferredRenderer::AddBasePass(
         ID3D12Resource* RunCountBuffer = GetMeshletRunCountBuffer();
         if (bEnableIndirectDraw && IndirectCommandSignature && IndirectBuffer && RunCountBuffer && !IndirectDrawRanges.empty())
         {
-            auto SelectPipelineByKey = [&](uint32_t Key)
+            auto SelectPipelineByKey = [&](uint32_t Key) -> ID3D12PipelineState*
             {
                 const bool bUseSkinning = (Key & (1u << 8)) != 0;
                 const uint32_t MaterialKey = (Key & 0xFFu) | (((Key >> 9) & 1u) << 8);
+                if (!EnsureBasePassPipelineOrFail(MaterialKey, bUseSkinning, "DeferredBasePass/Indirect"))
+                {
+                    return nullptr;
+                }
                 return bUseSkinning ? BasePassPipelinesSkinned[MaterialKey].Get() : BasePassPipelines[MaterialKey].Get();
             };
 
@@ -1946,6 +1957,10 @@ void FDeferredRenderer::AddBasePass(
                     continue;
                 }
                 ID3D12PipelineState* Pipeline = SelectPipelineByKey(Range.PipelineKey);
+                if (!Pipeline)
+                {
+                    return;
+                }
                 LocalCommandList->SetPipelineState(Pipeline);
                 LocalCommandList->SetGraphicsRoot32BitConstants(1, static_cast<UINT>(Range.MaterialBindlessIndices.size()), Range.MaterialBindlessIndices.data(), 0);
 
@@ -2003,27 +2018,12 @@ void FDeferredRenderer::AddBasePass(
                     };
                     LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
 
-                    const bool bUseNormalMap = Model.bHasNormalMap;
-                    const bool bUseMetallicRoughnessMap = !Model.MetallicRoughnessTexturePath.empty();
-                    const bool bUseBaseColorMap = !Model.BaseColorTexturePath.empty();
-                    const bool bUseEmissiveMap = !Model.EmissiveTexturePath.empty();
-                    const bool bUseAlphaMask = Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask);
-                    const bool bUseSheenModel = Model.ShadingModelId == 1u;
-                    const bool bUseClearcoatModel = Model.ShadingModelId == 2u;
-                    const bool bUseAnisotropyModel = Model.ShadingModelId == 3u;
-
-                    const bool bUseDoubleSided = Model.bDoubleSided;
-                    const uint32_t PipelineKey = 
-                        (bUseNormalMap ? 1u : 0u) |
-                        (bUseMetallicRoughnessMap ? 2u : 0u) |
-                        (bUseBaseColorMap ? 4u : 0u) |
-                        (bUseEmissiveMap ? 8u : 0u) |
-                        (bUseAlphaMask ? 16u : 0u) |
-                        (bUseSheenModel ? 32u : 0u) |
-                        (bUseClearcoatModel ? 64u : 0u) |
-                        (bUseAnisotropyModel ? 128u : 0u) |
-                        (bUseDoubleSided ? 256u : 0u);
-
+                    const uint32_t ModelPipelineKey = RendererUtils::BuildPipelineKey(Model);
+                    const uint32_t PipelineKey = (ModelPipelineKey & 0xFFu) | (((ModelPipelineKey >> 9) & 1u) << 8);
+                    if (!EnsureBasePassPipelineOrFail(PipelineKey, true, "DeferredBasePass/SkinningFallback"))
+                    {
+                        return;
+                    }
                     LocalCommandList->SetPipelineState(BasePassPipelinesSkinned[PipelineKey].Get());
 
                     if (AreModelPixEventsEnabled())
@@ -2074,29 +2074,13 @@ void FDeferredRenderer::AddBasePass(
                 };
                 LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
 
-                const bool bUseNormalMap = Model.bHasNormalMap;
-                const bool bUseMetallicRoughnessMap = !Model.MetallicRoughnessTexturePath.empty();
-                const bool bUseBaseColorMap = !Model.BaseColorTexturePath.empty();
-                const bool bUseEmissiveMap = !Model.EmissiveTexturePath.empty();
-                const bool bUseAlphaMask = Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask);
-                const bool bUseSheenModel = Model.ShadingModelId == 1u;
-                const bool bUseClearcoatModel = Model.ShadingModelId == 2u;
-                const bool bUseAnisotropyModel = Model.ShadingModelId == 3u;
-                const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0;
-
-                // Build pipeline key from material properties (bit 0: Normal, bit 1: MR, bit 2: BaseColor, bit 3: Emissive, bit 4: AlphaMask, bit 5: SheenModel, bit 6: ClearcoatModel, bit 7: AnisotropyModel)
-                const bool bUseDoubleSided = Model.bDoubleSided;
-                const uint32_t PipelineKey = 
-                    (bUseNormalMap ? 1u : 0u) |
-                    (bUseMetallicRoughnessMap ? 2u : 0u) |
-                    (bUseBaseColorMap ? 4u : 0u) |
-                    (bUseEmissiveMap ? 8u : 0u) |
-                    (bUseAlphaMask ? 16u : 0u) |
-                    (bUseSheenModel ? 32u : 0u) |
-                    (bUseClearcoatModel ? 64u : 0u) |
-                    (bUseAnisotropyModel ? 128u : 0u) |
-                    (bUseDoubleSided ? 256u : 0u);
-
+                const uint32_t ModelPipelineKey = RendererUtils::BuildPipelineKey(Model);
+                const bool bUseSkinning = (ModelPipelineKey & (1u << 8)) != 0;
+                const uint32_t PipelineKey = (ModelPipelineKey & 0xFFu) | (((ModelPipelineKey >> 9) & 1u) << 8);
+                if (!EnsureBasePassPipelineOrFail(PipelineKey, bUseSkinning, "DeferredBasePass/Direct"))
+                {
+                    return;
+                }
                 LocalCommandList->SetPipelineState(bUseSkinning ? BasePassPipelinesSkinned[PipelineKey].Get() : BasePassPipelines[PipelineKey].Get());
 
                 if (AreModelPixEventsEnabled())
@@ -3242,7 +3226,7 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
         bool bEnabled = false;
     };
 
-    auto DispatchNewPass = [this, &FrameState](FDX12CommandContext& Cmd, ID3D12PipelineState* PipelineState, const wchar_t* EventName, uint32_t SpatialPassIndex, const uint32_t BindlessIndices[27], uint32_t DispatchWidth, uint32_t DispatchHeight, bool bEnabled)
+    auto DispatchNewPass = [this, &FrameState](FDX12CommandContext& Cmd, ID3D12PipelineState* PipelineState, const wchar_t* EventName, uint32_t SpatialPassIndex, const uint32_t BindlessIndices[28], uint32_t DispatchWidth, uint32_t DispatchHeight, bool bEnabled)
     {
         if (!bEnabled || !Device || !Device->GetBindlessDescriptorHeap() || !PipelineState || !RestirGINewRootSignature)
         {
@@ -3295,6 +3279,10 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
             uint32_t UseVisibility = 0;
             uint32_t UseBrdf = 0;
             uint32_t UseHistoryIndirect = 0;
+            uint32_t SequenceFrame = 0;
+            uint32_t DebugRayEnabled = 0;
+            uint32_t DebugPixelX = 0;
+            uint32_t DebugPixelY = 0;
         };
 
         const uint32_t FullWidth = static_cast<uint32_t>(Viewport.Width);
@@ -3302,6 +3290,7 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
         const uint32_t HalfWidth = (FullWidth + 1u) / 2u;
         const uint32_t HalfHeight = (FullHeight + 1u) / 2u;
         const uint32_t MaxHistoryFrames = (std::max)(1u, RestirGIMaxHistoryFrames);
+        const uint32_t SequenceFrame = bRestirGINewFreezeFrame ? RestirGINewFrozenSequenceFrame : (FrameState.bTaaActive ? FrameState.TaaFrameIndex : GetFrameIndex());
 
         const FRestirGINewConstants Constants =
         {
@@ -3319,7 +3308,11 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
             bRestirGITemporalReuse ? 1u : 0u,
             bRestirGINewUseVisibility ? 1u : 0u,
             bRestirGINewUseBrdf ? 1u : 0u,
-            bRestirGINewUseHistoryIndirect ? 1u : 0u
+            bRestirGINewUseHistoryIndirect ? 1u : 0u,
+            SequenceFrame,
+            bRestirGINewDebugRayEnabled ? 1u : 0u,
+            RestirGINewDebugPixelX,
+            RestirGINewDebugPixelY
         };
 
         FScopedPixEvent RestirEvent(CommandList4, EventName);
@@ -3330,7 +3323,7 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
         CommandList4->SetComputeRootShaderResourceView(0, TlasResource->GetGPUVirtualAddress());
         CommandList4->SetComputeRootConstantBufferView(1, GetSceneConstantBufferAddress());
         CommandList4->SetComputeRoot32BitConstants(2, sizeof(FRestirGINewConstants) / sizeof(uint32_t), &Constants, 0);
-        CommandList4->SetComputeRoot32BitConstants(3, 27, BindlessIndices, 0);
+        CommandList4->SetComputeRoot32BitConstants(3, 28, BindlessIndices, 0);
 
         const uint32_t GroupSize = 8;
         const uint32_t DispatchX = (DispatchWidth + GroupSize - 1) / GroupSize;
@@ -3338,7 +3331,7 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
         CommandList4->Dispatch(DispatchX, DispatchY, 1);
     };
 
-    Graph.AddPass<FRestirGINewPassData>("ReSTIR GI - initial sampling", [&, DepthHandle, VelocityHandle, LinearDepthHandle, GBufferHandles, RestirGIHistoryHandle, RestirGINewInitialRadianceHandle, RestirGINewInitialRayDirectionHandle](FRestirGINewPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FRestirGINewPassData>("InitialSampling", [&, DepthHandle, VelocityHandle, LinearDepthHandle, GBufferHandles, RestirGIHistoryHandle, RestirGINewInitialRadianceHandle, RestirGINewInitialRayDirectionHandle](FRestirGINewPassData& Data, FRGPassBuilder& Builder)
     {
         Data.bEnabled = bRestirGIEnabled
             && (RestirGIMode == ERestirGIMode::New)
@@ -3379,7 +3372,7 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
             && (RestirGIHistorySrvBindlessIndex != UINT32_MAX)
             && (LinearDepthBindlessIndex != UINT32_MAX);
 
-        const uint32_t BindlessIndices[27] =
+        const uint32_t BindlessIndices[28] =
         {
             RestirGINewInitialRadianceUavBindlessIndex,
             DepthBindlessIndex,
@@ -3407,15 +3400,16 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
             UINT32_MAX,
             UINT32_MAX,
             RestirGIHistorySrvBindlessIndex,
-            LinearDepthBindlessIndex
+            LinearDepthBindlessIndex,
+            GpuDebugLineBufferUavBindlessIndex
         };
 
         const uint32_t FullWidth = static_cast<uint32_t>(Viewport.Width);
         const uint32_t FullHeight = static_cast<uint32_t>(Viewport.Height);
-        DispatchNewPass(Cmd, RestirGINewInitialPipeline.Get(), L"ReSTIR GI - initial sampling", 0u, BindlessIndices, (FullWidth + 1u) / 2u, (FullHeight + 1u) / 2u, Data.bEnabled && bInputsValid);
+        DispatchNewPass(Cmd, RestirGINewInitialPipeline.Get(), L"InitialSampling", 0u, BindlessIndices, (FullWidth + 1u) / 2u, (FullHeight + 1u) / 2u, Data.bEnabled && bInputsValid);
     });
 
-    Graph.AddPass<FRestirGINewPassData>("ReSTIR GI - temporal resampling", [&, DepthHandle, VelocityHandle, RestirGINewInitialRadianceHandle, RestirGINewInitialRayDirectionHandle, RestirGINewReservoirDepthNormalAHandle, RestirGINewReservoirDepthNormalBHandle, RestirGINewReservoirSampleRadianceAHandle, RestirGINewReservoirSampleRadianceBHandle, RestirGINewReservoirRayDirectionAHandle, RestirGINewReservoirRayDirectionBHandle, RestirGINewReservoirMWAHandle, RestirGINewReservoirMWBHandle](FRestirGINewPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FRestirGINewPassData>("TemporalResampling", [&, DepthHandle, VelocityHandle, RestirGINewInitialRadianceHandle, RestirGINewInitialRayDirectionHandle, RestirGINewReservoirDepthNormalAHandle, RestirGINewReservoirDepthNormalBHandle, RestirGINewReservoirSampleRadianceAHandle, RestirGINewReservoirSampleRadianceBHandle, RestirGINewReservoirRayDirectionAHandle, RestirGINewReservoirRayDirectionBHandle, RestirGINewReservoirMWAHandle, RestirGINewReservoirMWBHandle](FRestirGINewPassData& Data, FRGPassBuilder& Builder)
     {
         Data.bEnabled = bRestirGIEnabled
             && (RestirGIMode == ERestirGIMode::New)
@@ -3465,7 +3459,7 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
             && (RestirGINewReservoirRayDirectionBUavBindlessIndex != UINT32_MAX)
             && (RestirGINewReservoirMWBUavBindlessIndex != UINT32_MAX);
 
-        const uint32_t BindlessIndices[27] =
+        const uint32_t BindlessIndices[28] =
         {
             UINT32_MAX,
             DepthBindlessIndex,
@@ -3493,15 +3487,16 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
             UINT32_MAX,
             UINT32_MAX,
             RestirGIHistorySrvBindlessIndex,
-            LinearDepthBindlessIndex
+            LinearDepthBindlessIndex,
+            GpuDebugLineBufferUavBindlessIndex
         };
 
         const uint32_t FullWidth = static_cast<uint32_t>(Viewport.Width);
         const uint32_t FullHeight = static_cast<uint32_t>(Viewport.Height);
-        DispatchNewPass(Cmd, RestirGINewTemporalPipeline.Get(), L"ReSTIR GI - temporal resampling", 0u, BindlessIndices, (FullWidth + 1u) / 2u, (FullHeight + 1u) / 2u, Data.bEnabled && bInputsValid);
+        DispatchNewPass(Cmd, RestirGINewTemporalPipeline.Get(), L"TemporalResampling", 0u, BindlessIndices, (FullWidth + 1u) / 2u, (FullHeight + 1u) / 2u, Data.bEnabled && bInputsValid);
     });
 
-    Graph.AddPass<FRestirGINewPassData>("ReSTIR GI - spatial resampling 0", [&, RestirGINewReservoirDepthNormalAHandle, RestirGINewReservoirDepthNormalBHandle, RestirGINewReservoirSampleRadianceAHandle, RestirGINewReservoirSampleRadianceBHandle, RestirGINewReservoirRayDirectionAHandle, RestirGINewReservoirRayDirectionBHandle, RestirGINewReservoirMWAHandle, RestirGINewReservoirMWBHandle](FRestirGINewPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FRestirGINewPassData>("SpatialResampling0", [&, RestirGINewReservoirDepthNormalAHandle, RestirGINewReservoirDepthNormalBHandle, RestirGINewReservoirSampleRadianceAHandle, RestirGINewReservoirSampleRadianceBHandle, RestirGINewReservoirRayDirectionAHandle, RestirGINewReservoirRayDirectionBHandle, RestirGINewReservoirMWAHandle, RestirGINewReservoirMWBHandle](FRestirGINewPassData& Data, FRGPassBuilder& Builder)
     {
         Data.bEnabled = bRestirGIEnabled
             && (RestirGIMode == ERestirGIMode::New)
@@ -3543,7 +3538,7 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
             && (RestirGINewReservoirRayDirectionAUavBindlessIndex != UINT32_MAX)
             && (RestirGINewReservoirMWAUavBindlessIndex != UINT32_MAX);
 
-        const uint32_t BindlessIndices[27] =
+        const uint32_t BindlessIndices[28] =
         {
             UINT32_MAX,
             DepthBindlessIndex,
@@ -3571,15 +3566,16 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
             UINT32_MAX,
             UINT32_MAX,
             RestirGIHistorySrvBindlessIndex,
-            LinearDepthBindlessIndex
+            LinearDepthBindlessIndex,
+            GpuDebugLineBufferUavBindlessIndex
         };
 
         const uint32_t FullWidth = static_cast<uint32_t>(Viewport.Width);
         const uint32_t FullHeight = static_cast<uint32_t>(Viewport.Height);
-        DispatchNewPass(Cmd, RestirGINewSpatialPipeline.Get(), L"ReSTIR GI - spatial resampling 0", 0u, BindlessIndices, (FullWidth + 1u) / 2u, (FullHeight + 1u) / 2u, Data.bEnabled && bInputsValid);
+        DispatchNewPass(Cmd, RestirGINewSpatialPipeline.Get(), L"SpatialResampling0", 0u, BindlessIndices, (FullWidth + 1u) / 2u, (FullHeight + 1u) / 2u, Data.bEnabled && bInputsValid);
     });
 
-    Graph.AddPass<FRestirGINewPassData>("ReSTIR GI - spatial resampling 1", [&, RestirGINewReservoirDepthNormalAHandle, RestirGINewReservoirDepthNormalBHandle, RestirGINewReservoirSampleRadianceAHandle, RestirGINewReservoirSampleRadianceBHandle, RestirGINewReservoirRayDirectionAHandle, RestirGINewReservoirRayDirectionBHandle, RestirGINewReservoirMWAHandle, RestirGINewReservoirMWBHandle](FRestirGINewPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FRestirGINewPassData>("SpatialResampling1", [&, RestirGINewReservoirDepthNormalAHandle, RestirGINewReservoirDepthNormalBHandle, RestirGINewReservoirSampleRadianceAHandle, RestirGINewReservoirSampleRadianceBHandle, RestirGINewReservoirRayDirectionAHandle, RestirGINewReservoirRayDirectionBHandle, RestirGINewReservoirMWAHandle, RestirGINewReservoirMWBHandle](FRestirGINewPassData& Data, FRGPassBuilder& Builder)
     {
         Data.bEnabled = bRestirGIEnabled
             && (RestirGIMode == ERestirGIMode::New)
@@ -3621,7 +3617,7 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
             && (RestirGINewReservoirRayDirectionBUavBindlessIndex != UINT32_MAX)
             && (RestirGINewReservoirMWBUavBindlessIndex != UINT32_MAX);
 
-        const uint32_t BindlessIndices[27] =
+        const uint32_t BindlessIndices[28] =
         {
             UINT32_MAX,
             DepthBindlessIndex,
@@ -3649,15 +3645,16 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
             UINT32_MAX,
             UINT32_MAX,
             RestirGIHistorySrvBindlessIndex,
-            LinearDepthBindlessIndex
+            LinearDepthBindlessIndex,
+            GpuDebugLineBufferUavBindlessIndex
         };
 
         const uint32_t FullWidth = static_cast<uint32_t>(Viewport.Width);
         const uint32_t FullHeight = static_cast<uint32_t>(Viewport.Height);
-        DispatchNewPass(Cmd, RestirGINewSpatialPipeline.Get(), L"ReSTIR GI - spatial resampling 1", 1u, BindlessIndices, (FullWidth + 1u) / 2u, (FullHeight + 1u) / 2u, Data.bEnabled && bInputsValid);
-    });
+		DispatchNewPass(Cmd, RestirGINewSpatialPipeline.Get(), L"SpatialResampling1", 1u, BindlessIndices, (FullWidth + 1u) / 2u, (FullHeight + 1u) / 2u, Data.bEnabled&& bInputsValid);
+		});
 
-    Graph.AddPass<FRestirGINewPassData>("ReSTIR GI - resolve", [&, DepthHandle, GBufferHandles, RestirGIHandle, RestirGIHistoryGeomAHandle, RestirGIHistoryGeomBHandle, RestirGINewReservoirDepthNormalBHandle, RestirGINewReservoirSampleRadianceBHandle, RestirGINewReservoirRayDirectionBHandle, RestirGINewReservoirMWBHandle](FRestirGINewPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FRestirGINewPassData>("RestirGIResolve", [&, DepthHandle, GBufferHandles, RestirGIHandle, RestirGIHistoryGeomAHandle, RestirGIHistoryGeomBHandle, RestirGINewReservoirDepthNormalBHandle, RestirGINewReservoirSampleRadianceBHandle, RestirGINewReservoirRayDirectionBHandle, RestirGINewReservoirMWBHandle](FRestirGINewPassData& Data, FRGPassBuilder& Builder)
     {
         Data.bEnabled = bRestirGIEnabled
             && (RestirGIMode == ERestirGIMode::New)
@@ -3701,7 +3698,7 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
             && (RestirGIHistoryGeomAUavBindlessIndex != UINT32_MAX)
             && (RestirGIHistoryGeomBUavBindlessIndex != UINT32_MAX);
 
-        const uint32_t BindlessIndices[27] =
+        const uint32_t BindlessIndices[28] =
         {
             RestirGIUavBindlessIndex,
             DepthBindlessIndex,
@@ -3729,12 +3726,13 @@ void FDeferredRenderer::AddRestirGINewPass(FRenderGraph& Graph, const FDeferredF
             RestirGIHistoryGeomAUavBindlessIndex,
             RestirGIHistoryGeomBUavBindlessIndex,
             RestirGIHistorySrvBindlessIndex,
-            LinearDepthBindlessIndex
+            LinearDepthBindlessIndex,
+            GpuDebugLineBufferUavBindlessIndex
         };
 
         const uint32_t FullWidth = static_cast<uint32_t>(Viewport.Width);
         const uint32_t FullHeight = static_cast<uint32_t>(Viewport.Height);
-        DispatchNewPass(Cmd, RestirGINewResolvePipeline.Get(), L"ReSTIR GI - resolve", 0u, BindlessIndices, FullWidth, FullHeight, Data.bEnabled && bInputsValid);
+        DispatchNewPass(Cmd, RestirGINewResolvePipeline.Get(), L"RestirGIResolve", 0u, BindlessIndices, FullWidth, FullHeight, Data.bEnabled && bInputsValid);
     });
 }
 
@@ -4051,7 +4049,7 @@ void FDeferredRenderer::AddSsrSwTracePass(FRenderGraph& Graph, uint32_t FrameInd
         Data.bUseHistory = FrameState.bTaaHistoryReady && Data.HistoryIndex < TaaHandles.size();
         Data.bUseHzb = Data.bUseHzb && static_cast<bool>(HZBHandle);
         Data.PipelineIndex = (Data.bUseHzb ? 2u : 0u) + (bSsrRefineEnabled ? 1u : 0u) + (bSsrSwEnabled ? 0u : 4u);
-        Data.bEnabled = (bSsrSwEnabled || bSsrHwEnabled) && SsrSwTraceRootSignature && SsrSwTracePipelines[Data.PipelineIndex];
+        Data.bEnabled = (bSsrSwEnabled || bSsrHwEnabled) && SsrSwTraceRootSignature;
 
         if (!Data.bEnabled)
         {
@@ -4181,6 +4179,11 @@ void FDeferredRenderer::AddSsrSwTracePass(FRenderGraph& Graph, uint32_t FrameInd
         const D3D12_CPU_DESCRIPTOR_HANDLE OutputCpuHandle = GetBindlessCpuClearHandle(SsrUavBindlessIndex);
         const float ClearValues[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
         LocalCommandList->ClearUnorderedAccessViewFloat(OutputGpuHandle, OutputCpuHandle, SsrOutput, ClearValues, 0, nullptr);
+
+        if (!EnsureSsrSwTracePipelineOrFail(Data.PipelineIndex, "SSR SW Trace"))
+        {
+            return;
+        }
 
         LocalCommandList->SetPipelineState(SsrSwTracePipelines[Data.PipelineIndex].Get());
         LocalCommandList->SetComputeRootSignature(SsrSwTraceRootSignature.Get());
@@ -4531,7 +4534,7 @@ void FDeferredRenderer::AddSsrPass(FRenderGraph& Graph, uint32_t FrameIndex, con
         Data.bUseHistory = FrameState.bTaaHistoryReady && Data.HistoryIndex < TaaHandles.size();
         Data.bUseHzb = Data.bUseHzb && static_cast<bool>(HZBHandle);
         Data.PipelineIndex = (Data.bUseHzb ? 2u : 0u) + (bSsrRefineEnabled ? 1u : 0u) + (bSsrSwEnabled ? 0u : 4u);
-        Data.bEnabled = (bSsrSwEnabled || bSsrHwEnabled) && SsrRootSignature && SsrPipelines[Data.PipelineIndex];
+        Data.bEnabled = (bSsrSwEnabled || bSsrHwEnabled) && SsrRootSignature;
 
         Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(GBufferHandles[1], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -4602,6 +4605,11 @@ void FDeferredRenderer::AddSsrPass(FRenderGraph& Graph, uint32_t FrameIndex, con
             ? TaaSrvBindlessIndices[Data.HistoryIndex]
             : GBufferBindlessIndices[2];
         if (HistoryIndex == UINT32_MAX)
+        {
+            return;
+        }
+
+        if (!EnsureSsrGraphicsPipelineOrFail(Data.PipelineIndex, "SSR"))
         {
             return;
         }
@@ -5768,6 +5776,7 @@ void FDeferredRenderer::AddDebugPrintPass(FRenderGraph& Graph, const D3D12_CPU_D
     Graph.AddPass<FDebugPrintPassData>("GpuDebugPrint", [this, RtvHandle](FDebugPrintPassData& Data, FRGPassBuilder& Builder)
     {
         Data.bEnabled = bEnableGpuDebugPrint && GpuDebugPrintPipeline && GpuDebugPrintRootSignature
+            && GpuDebugLinePipeline && GpuDebugLineRootSignature
             && Device && Device->GetBindlessDescriptorHeap();
         Data.OutputHandle = RtvHandle;
         if (Data.bEnabled)
@@ -5783,6 +5792,7 @@ void FDeferredRenderer::AddDebugPrintPass(FRenderGraph& Graph, const D3D12_CPU_D
 
         DispatchGpuDebugPrintStats(Cmd);
         RenderGpuDebugPrint(Cmd, Data.OutputHandle);
+        RenderGpuDebugLine(Cmd, Data.OutputHandle);
     });
 }
 
@@ -6105,14 +6115,14 @@ bool FDeferredRenderer::CreateRestirGINewRootSignature(FDX12Device* Device)
     // RootParams[2]: ReSTIR GI New constants (b1)
     RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[2].Constants.Num32BitValues = 15;
+    RootParams[2].Constants.Num32BitValues = 19;
     RootParams[2].Constants.RegisterSpace = 0;
     RootParams[2].Constants.ShaderRegister = 1;
 
     // RootParams[3]: ReSTIR GI New bindless indices (b2)
     RootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[3].Constants.Num32BitValues = 27;
+    RootParams[3].Constants.Num32BitValues = 28;
     RootParams[3].Constants.RegisterSpace = 0;
     RootParams[3].Constants.ShaderRegister = 2;
 
@@ -6284,145 +6294,198 @@ bool FDeferredRenderer::CreateVelocityPipeline(FDX12Device* Device)
 bool FDeferredRenderer::CreateBasePassPipeline(FDX12Device* Device, DXGI_FORMAT LightingFormat)
 {
     FShaderCompiler Compiler;
-    std::vector<uint8_t> VSByteCode;
-    std::vector<uint8_t> VSByteCodeSkinned;
 
     const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
     const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
-    const std::wstring PSTarget = RendererUtils::BuildShaderTarget(L"ps", ShaderModel);
 
-    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"VSMain", VSTarget, VSByteCode))
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"VSMain", VSTarget, DeferredBasePassVsBytecodes[0]))
     {
         return false;
     }
-    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"VSMain", VSTarget, VSByteCodeSkinned, { L"USE_SKINNING=1" }))
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"VSMain", VSTarget, DeferredBasePassVsBytecodes[1], { L"USE_SKINNING=1" }))
     {
         return false;
     }
 
-    // Generate shader defines for all permutations programmatically
-    // Permutation key bits: 0=Normal, 1=MR, 2=BaseColor, 3=Emissive, 4=AlphaMask, 5=SheenModel, 6=ClearcoatModel, 7=AnisotropyModel
-    std::array<std::vector<uint8_t>, 512> PSByteCodes;
-    
-    for (uint32_t DoubleSidedVariant = 0; DoubleSidedVariant < 2; ++DoubleSidedVariant)
+    DeferredBasePassLightingFormat = LightingFormat;
+    for (uint32_t PipelineKey = 0; PipelineKey < 512; ++PipelineKey)
     {
-        for (uint32_t Permutation = 0; Permutation < 256; ++Permutation)
-        {
-            const bool bUseNormal = (Permutation & 1) != 0;
-            const bool bUseMR = (Permutation & 2) != 0;
-            const bool bUseBaseColor = (Permutation & 4) != 0;
-            const bool bUseEmissive = (Permutation & 8) != 0;
-            const bool bUseAlphaMask = (Permutation & 16) != 0;
-            const bool bUseSheenModel = (Permutation & 32) != 0;
-            const bool bUseClearcoatModel = (Permutation & 64) != 0;
-            const bool bUseAnisotropyModel = (Permutation & 128) != 0;
-
-            std::vector<std::wstring> Defines;
-            Defines.push_back(bUseNormal ? L"USE_NORMAL_MAP=1" : L"USE_NORMAL_MAP=0");
-            Defines.push_back(bUseMR ? L"USE_METALLIC_ROUGHNESS_MAP=1" : L"USE_METALLIC_ROUGHNESS_MAP=0");
-            Defines.push_back(bUseBaseColor ? L"USE_BASE_COLOR_MAP=1" : L"USE_BASE_COLOR_MAP=0");
-            Defines.push_back(bUseEmissive ? L"USE_EMISSIVE_MAP=1" : L"USE_EMISSIVE_MAP=0");
-            Defines.push_back(bUseSheenModel ? L"SHADINGMODEL_SHEEN=1" : L"SHADINGMODEL_SHEEN=0");
-            Defines.push_back(bUseClearcoatModel ? L"SHADINGMODEL_CLEARCOAT=1" : L"SHADINGMODEL_CLEARCOAT=0");
-            Defines.push_back(bUseAnisotropyModel ? L"SHADINGMODEL_ANISOTROPY=1" : L"SHADINGMODEL_ANISOTROPY=0");
-            Defines.push_back(DoubleSidedVariant != 0 ? L"USE_DOUBLE_SIDED=1" : L"USE_DOUBLE_SIDED=0");
-            if (bUseAlphaMask)
-            {
-                Defines.push_back(L"USE_ALPHA_MASK=1");
-            }
-
-            const uint32_t PipelineIndex = Permutation | (DoubleSidedVariant << 8);
-            if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"PSMain", PSTarget, PSByteCodes[PipelineIndex], Defines))
-            {
-                return false;
-            }
-        }
-    }
-
-    auto InitializeBasePassDesc = [&](D3D12_GRAPHICS_PIPELINE_STATE_DESC& Desc, const std::vector<uint8_t>& VertexShader)
-    {
-        Desc = {};
-        Desc.pRootSignature = BasePassRootSignature.Get();
-        Desc.InputLayout = { nullptr, 0 };
-        Desc.VS = { VertexShader.data(), VertexShader.size() };
-        Desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-        Desc.SampleDesc.Count = 1;
-        Desc.SampleMask = UINT_MAX;
-
-        Desc.RasterizerState = {};
-        Desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-        Desc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
-        Desc.RasterizerState.FrontCounterClockwise = TRUE;
-        Desc.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
-        Desc.RasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
-        Desc.RasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
-        Desc.RasterizerState.DepthClipEnable = TRUE;
-        Desc.RasterizerState.MultisampleEnable = FALSE;
-        Desc.RasterizerState.AntialiasedLineEnable = FALSE;
-        Desc.RasterizerState.ForcedSampleCount = 0;
-        Desc.RasterizerState.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
-
-        Desc.BlendState = {};
-        Desc.BlendState.AlphaToCoverageEnable = FALSE;
-        Desc.BlendState.IndependentBlendEnable = TRUE;
-        for (int i = 0; i < 5; ++i)
-        {
-            D3D12_RENDER_TARGET_BLEND_DESC RtBlend = {};
-            RtBlend.BlendEnable = FALSE;
-            RtBlend.LogicOpEnable = FALSE;
-            RtBlend.SrcBlend = D3D12_BLEND_ONE;
-            RtBlend.DestBlend = D3D12_BLEND_ZERO;
-            RtBlend.BlendOp = D3D12_BLEND_OP_ADD;
-            RtBlend.SrcBlendAlpha = D3D12_BLEND_ONE;
-            RtBlend.DestBlendAlpha = D3D12_BLEND_ZERO;
-            RtBlend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
-            RtBlend.LogicOp = D3D12_LOGIC_OP_NOOP;
-            RtBlend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-            Desc.BlendState.RenderTarget[i] = RtBlend;
-        }
-
-        Desc.DepthStencilState = {};
-        Desc.DepthStencilState.DepthEnable = TRUE;
-        Desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-        Desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
-        Desc.DepthStencilState.StencilEnable = FALSE;
-        Desc.DepthStencilState.StencilReadMask = D3D12_DEFAULT_STENCIL_READ_MASK;
-        Desc.DepthStencilState.StencilWriteMask = D3D12_DEFAULT_STENCIL_WRITE_MASK;
-        Desc.DepthStencilState.FrontFace.StencilFailOp = D3D12_STENCIL_OP_KEEP;
-        Desc.DepthStencilState.FrontFace.StencilDepthFailOp = D3D12_STENCIL_OP_KEEP;
-        Desc.DepthStencilState.FrontFace.StencilPassOp = D3D12_STENCIL_OP_KEEP;
-        Desc.DepthStencilState.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS;
-        Desc.DepthStencilState.BackFace = Desc.DepthStencilState.FrontFace;
-        Desc.NumRenderTargets = 5;
-        Desc.RTVFormats[0] = GBufferFormats[0];
-        Desc.RTVFormats[1] = GBufferFormats[1];
-        Desc.RTVFormats[2] = GBufferFormats[2];
-        Desc.RTVFormats[3] = GBufferFormats[3];
-        Desc.RTVFormats[4] = LightingFormat;
-        Desc.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
-        Desc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
-    };
-
-    // Create all pipeline state objects programmatically
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
-    for (uint32_t DoubleSidedVariant = 0; DoubleSidedVariant < 2; ++DoubleSidedVariant)
-    {
-        for (uint32_t Permutation = 0; Permutation < 256; ++Permutation)
-        {
-            const uint32_t PipelineIndex = Permutation | (DoubleSidedVariant << 8);
-            InitializeBasePassDesc(PsoDesc, VSByteCode);
-            PsoDesc.RasterizerState.CullMode = (DoubleSidedVariant == 0) ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_NONE;
-            PsoDesc.PS = { PSByteCodes[PipelineIndex].data(), PSByteCodes[PipelineIndex].size() };
-            HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipelines[PipelineIndex].GetAddressOf())));
-
-            InitializeBasePassDesc(PsoDesc, VSByteCodeSkinned);
-            PsoDesc.RasterizerState.CullMode = (DoubleSidedVariant == 0) ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_NONE;
-            PsoDesc.PS = { PSByteCodes[PipelineIndex].data(), PSByteCodes[PipelineIndex].size() };
-            HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(BasePassPipelinesSkinned[PipelineIndex].GetAddressOf())));
-        }
+        BasePassPipelines[PipelineKey].Reset();
+        BasePassPipelinesSkinned[PipelineKey].Reset();
+        DeferredBasePassPsBytecodes[PipelineKey].clear();
+        DeferredBasePassPsCompiled[PipelineKey] = false;
+        DeferredBasePassFailureLogged[PipelineKey] = false;
     }
 
     return true;
+}
+
+
+bool FDeferredRenderer::CompileDeferredBasePassPs(uint32_t PipelineKey, std::vector<uint8_t>& OutPs)
+{
+    FShaderCompiler Compiler;
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring PSTarget = RendererUtils::BuildShaderTarget(L"ps", ShaderModel);
+
+    const bool bUseNormal = (PipelineKey & 1u) != 0;
+    const bool bUseMR = (PipelineKey & 2u) != 0;
+    const bool bUseBaseColor = (PipelineKey & 4u) != 0;
+    const bool bUseEmissive = (PipelineKey & 8u) != 0;
+    const bool bUseAlphaMask = (PipelineKey & 16u) != 0;
+    const bool bUseSheenModel = (PipelineKey & 32u) != 0;
+    const bool bUseClearcoatModel = (PipelineKey & 64u) != 0;
+    const bool bUseAnisotropyModel = (PipelineKey & 128u) != 0;
+    const bool bUseDoubleSided = (PipelineKey & 256u) != 0;
+
+    std::vector<std::wstring> Defines;
+    Defines.push_back(bUseNormal ? L"USE_NORMAL_MAP=1" : L"USE_NORMAL_MAP=0");
+    Defines.push_back(bUseMR ? L"USE_METALLIC_ROUGHNESS_MAP=1" : L"USE_METALLIC_ROUGHNESS_MAP=0");
+    Defines.push_back(bUseBaseColor ? L"USE_BASE_COLOR_MAP=1" : L"USE_BASE_COLOR_MAP=0");
+    Defines.push_back(bUseEmissive ? L"USE_EMISSIVE_MAP=1" : L"USE_EMISSIVE_MAP=0");
+    Defines.push_back(bUseSheenModel ? L"SHADINGMODEL_SHEEN=1" : L"SHADINGMODEL_SHEEN=0");
+    Defines.push_back(bUseClearcoatModel ? L"SHADINGMODEL_CLEARCOAT=1" : L"SHADINGMODEL_CLEARCOAT=0");
+    Defines.push_back(bUseAnisotropyModel ? L"SHADINGMODEL_ANISOTROPY=1" : L"SHADINGMODEL_ANISOTROPY=0");
+    Defines.push_back(bUseDoubleSided ? L"USE_DOUBLE_SIDED=1" : L"USE_DOUBLE_SIDED=0");
+    if (bUseAlphaMask)
+    {
+        Defines.push_back(L"USE_ALPHA_MASK=1");
+    }
+
+    return Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"PSMain", PSTarget, OutPs, Defines);
+}
+
+bool FDeferredRenderer::BuildDeferredBasePassPsoDesc(uint32_t PipelineKey, bool bUseSkinning, D3D12_GRAPHICS_PIPELINE_STATE_DESC& OutDesc) const
+{
+    if (DeferredBasePassLightingFormat == DXGI_FORMAT_UNKNOWN)
+    {
+        return false;
+    }
+
+    OutDesc = {};
+    OutDesc.pRootSignature = BasePassRootSignature.Get();
+    OutDesc.InputLayout = { nullptr, 0 };
+    const std::vector<uint8_t>& VsBytecode = DeferredBasePassVsBytecodes[bUseSkinning ? 1u : 0u];
+    OutDesc.VS = { VsBytecode.data(), VsBytecode.size() };
+    OutDesc.PS = { DeferredBasePassPsBytecodes[PipelineKey].data(), DeferredBasePassPsBytecodes[PipelineKey].size() };
+    OutDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    OutDesc.SampleDesc.Count = 1;
+    OutDesc.SampleMask = UINT_MAX;
+
+    OutDesc.RasterizerState = {};
+    OutDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    OutDesc.RasterizerState.CullMode = (PipelineKey & 256u) != 0 ? D3D12_CULL_MODE_NONE : D3D12_CULL_MODE_BACK;
+    OutDesc.RasterizerState.FrontCounterClockwise = TRUE;
+    OutDesc.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
+    OutDesc.RasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
+    OutDesc.RasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
+    OutDesc.RasterizerState.DepthClipEnable = TRUE;
+    OutDesc.RasterizerState.MultisampleEnable = FALSE;
+    OutDesc.RasterizerState.AntialiasedLineEnable = FALSE;
+    OutDesc.RasterizerState.ForcedSampleCount = 0;
+    OutDesc.RasterizerState.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+
+    OutDesc.BlendState = {};
+    OutDesc.BlendState.AlphaToCoverageEnable = FALSE;
+    OutDesc.BlendState.IndependentBlendEnable = TRUE;
+    for (int i = 0; i < 5; ++i)
+    {
+        D3D12_RENDER_TARGET_BLEND_DESC RtBlend = {};
+        RtBlend.BlendEnable = FALSE;
+        RtBlend.LogicOpEnable = FALSE;
+        RtBlend.SrcBlend = D3D12_BLEND_ONE;
+        RtBlend.DestBlend = D3D12_BLEND_ZERO;
+        RtBlend.BlendOp = D3D12_BLEND_OP_ADD;
+        RtBlend.SrcBlendAlpha = D3D12_BLEND_ONE;
+        RtBlend.DestBlendAlpha = D3D12_BLEND_ZERO;
+        RtBlend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        RtBlend.LogicOp = D3D12_LOGIC_OP_NOOP;
+        RtBlend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        OutDesc.BlendState.RenderTarget[i] = RtBlend;
+    }
+
+    OutDesc.DepthStencilState = {};
+    OutDesc.DepthStencilState.DepthEnable = TRUE;
+    OutDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    OutDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+    OutDesc.DepthStencilState.StencilEnable = FALSE;
+    OutDesc.DepthStencilState.StencilReadMask = D3D12_DEFAULT_STENCIL_READ_MASK;
+    OutDesc.DepthStencilState.StencilWriteMask = D3D12_DEFAULT_STENCIL_WRITE_MASK;
+    OutDesc.DepthStencilState.FrontFace.StencilFailOp = D3D12_STENCIL_OP_KEEP;
+    OutDesc.DepthStencilState.FrontFace.StencilDepthFailOp = D3D12_STENCIL_OP_KEEP;
+    OutDesc.DepthStencilState.FrontFace.StencilPassOp = D3D12_STENCIL_OP_KEEP;
+    OutDesc.DepthStencilState.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    OutDesc.DepthStencilState.BackFace = OutDesc.DepthStencilState.FrontFace;
+    OutDesc.NumRenderTargets = 5;
+    OutDesc.RTVFormats[0] = GBufferFormats[0];
+    OutDesc.RTVFormats[1] = GBufferFormats[1];
+    OutDesc.RTVFormats[2] = GBufferFormats[2];
+    OutDesc.RTVFormats[3] = GBufferFormats[3];
+    OutDesc.RTVFormats[4] = DeferredBasePassLightingFormat;
+    OutDesc.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
+    OutDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
+    return true;
+}
+
+bool FDeferredRenderer::EnsureBasePassPipeline(uint32_t PipelineKey, bool bUseSkinning)
+{
+    auto& TargetPipeline = bUseSkinning ? BasePassPipelinesSkinned[PipelineKey] : BasePassPipelines[PipelineKey];
+    if (TargetPipeline)
+    {
+        return true;
+    }
+
+    std::lock_guard<std::mutex> Lock(DeferredBasePassPipelineMutex);
+    if (TargetPipeline)
+    {
+        return true;
+    }
+
+    if (!DeferredBasePassPsCompiled[PipelineKey])
+    {
+        if (!CompileDeferredBasePassPs(PipelineKey, DeferredBasePassPsBytecodes[PipelineKey]))
+        {
+            return false;
+        }
+        DeferredBasePassPsCompiled[PipelineKey] = true;
+    }
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC Desc = {};
+    if (!BuildDeferredBasePassPsoDesc(PipelineKey, bUseSkinning, Desc))
+    {
+        return false;
+    }
+
+    HRESULT Hr = Device->GetDevice()->CreateGraphicsPipelineState(&Desc, IID_PPV_ARGS(TargetPipeline.GetAddressOf()));
+    if (FAILED(Hr))
+    {
+        return false;
+    }
+
+    LogInfo(std::string("Deferred BasePass pipeline created. key=") + std::to_string(PipelineKey) + ", skinned=" + (bUseSkinning ? "1" : "0"));
+    return true;
+}
+
+bool FDeferredRenderer::EnsureBasePassPipelineOrFail(uint32_t PipelineKey, bool bUseSkinning, const char* PassContext)
+{
+    if (EnsureBasePassPipeline(PipelineKey, bUseSkinning))
+    {
+        return true;
+    }
+
+    if (!DeferredBasePassFailureLogged[PipelineKey])
+    {
+        DeferredBasePassFailureLogged[PipelineKey] = true;
+        LogError(std::string("Deferred BasePass pipeline creation failed. context=")
+            + (PassContext ? PassContext : "Unknown")
+            + ", key=" + std::to_string(PipelineKey)
+            + ", skinned=" + (bUseSkinning ? "1" : "0"));
+    }
+
+    SetRenderFatalError(std::string("Deferred BasePass fatal failure. context=")
+        + (PassContext ? PassContext : "Unknown")
+        + ", key=" + std::to_string(PipelineKey)
+        + ", skinned=" + (bUseSkinning ? "1" : "0"));
+    return false;
 }
 
 bool FDeferredRenderer::CreateDepthPrepassPipeline(FDX12Device* Device)
@@ -7002,89 +7065,137 @@ bool FDeferredRenderer::CreateSsrRootSignature(FDX12Device* Device)
 bool FDeferredRenderer::CreateSsrPipeline(FDX12Device* Device)
 {
     FShaderCompiler Compiler;
-    std::vector<uint8_t> VSByteCode;
-    std::array<std::vector<uint8_t>, 8> PSByteCodes;
 
     const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
     const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
-    const std::wstring PSTarget = RendererUtils::BuildShaderTarget(L"ps", ShaderModel);
 
-    if (!Compiler.CompileFromFile(L"Shaders/SsrSWTracePS.hlsl", L"VSMain", VSTarget, VSByteCode))
+    if (!Compiler.CompileFromFile(L"Shaders/SsrSWTracePS.hlsl", L"VSMain", VSTarget, SsrGraphicsVsBytecode))
     {
         return false;
     }
-
-    const std::vector<std::wstring> HzbOffRefineOffDefines = { L"HZB_ENABLED=0", L"SSR_REFINE_ENABLED=0", L"SW_SSR_ENABLED=1" };
-    const std::vector<std::wstring> HzbOffRefineOnDefines = { L"HZB_ENABLED=0", L"SSR_REFINE_ENABLED=1", L"SW_SSR_ENABLED=1" };
-    const std::vector<std::wstring> HzbOnRefineOffDefines = { L"HZB_ENABLED=1", L"SSR_REFINE_ENABLED=0", L"SW_SSR_ENABLED=1" };
-    const std::vector<std::wstring> HzbOnRefineOnDefines = { L"HZB_ENABLED=1", L"SSR_REFINE_ENABLED=1", L"SW_SSR_ENABLED=1" };
-    const std::vector<std::wstring> HzbOffRefineOffHwDefines = { L"HZB_ENABLED=0", L"SSR_REFINE_ENABLED=0", L"SW_SSR_ENABLED=0" };
-    const std::vector<std::wstring> HzbOffRefineOnHwDefines = { L"HZB_ENABLED=0", L"SSR_REFINE_ENABLED=1", L"SW_SSR_ENABLED=0" };
-    const std::vector<std::wstring> HzbOnRefineOffHwDefines = { L"HZB_ENABLED=1", L"SSR_REFINE_ENABLED=0", L"SW_SSR_ENABLED=0" };
-    const std::vector<std::wstring> HzbOnRefineOnHwDefines = { L"HZB_ENABLED=1", L"SSR_REFINE_ENABLED=1", L"SW_SSR_ENABLED=0" };
-    if (!Compiler.CompileFromFile(L"Shaders/SsrSWTracePS.hlsl", L"PSMain", PSTarget, PSByteCodes[0], HzbOffRefineOffDefines))
-    {
-        return false;
-    }
-    if (!Compiler.CompileFromFile(L"Shaders/SsrSWTracePS.hlsl", L"PSMain", PSTarget, PSByteCodes[1], HzbOffRefineOnDefines))
-    {
-        return false;
-    }
-    if (!Compiler.CompileFromFile(L"Shaders/SsrSWTracePS.hlsl", L"PSMain", PSTarget, PSByteCodes[2], HzbOnRefineOffDefines))
-    {
-        return false;
-    }
-    if (!Compiler.CompileFromFile(L"Shaders/SsrSWTracePS.hlsl", L"PSMain", PSTarget, PSByteCodes[3], HzbOnRefineOnDefines))
-    {
-        return false;
-    }
-    if (!Compiler.CompileFromFile(L"Shaders/SsrSWTracePS.hlsl", L"PSMain", PSTarget, PSByteCodes[4], HzbOffRefineOffHwDefines))
-    {
-        return false;
-    }
-    if (!Compiler.CompileFromFile(L"Shaders/SsrSWTracePS.hlsl", L"PSMain", PSTarget, PSByteCodes[5], HzbOffRefineOnHwDefines))
-    {
-        return false;
-    }
-    if (!Compiler.CompileFromFile(L"Shaders/SsrSWTracePS.hlsl", L"PSMain", PSTarget, PSByteCodes[6], HzbOnRefineOffHwDefines))
-    {
-        return false;
-    }
-    if (!Compiler.CompileFromFile(L"Shaders/SsrSWTracePS.hlsl", L"PSMain", PSTarget, PSByteCodes[7], HzbOnRefineOnHwDefines))
-    {
-        return false;
-    }
-
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
-    PsoDesc.pRootSignature = SsrRootSignature.Get();
-    PsoDesc.VS = { VSByteCode.data(), VSByteCode.size() };
-    PsoDesc.PS = { PSByteCodes[0].data(), PSByteCodes[0].size() };
-    PsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    PsoDesc.SampleDesc.Count = 1;
-    PsoDesc.SampleMask = UINT_MAX;
-
-    PsoDesc.RasterizerState = {};
-    PsoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    PsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-    PsoDesc.RasterizerState.FrontCounterClockwise = TRUE;
-    PsoDesc.RasterizerState.DepthClipEnable = TRUE;
-
-    PsoDesc.BlendState = {};
-    PsoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-
-    PsoDesc.DepthStencilState = {};
-    PsoDesc.DepthStencilState.DepthEnable = FALSE;
-    PsoDesc.DepthStencilState.StencilEnable = FALSE;
-    PsoDesc.NumRenderTargets = 1;
-    PsoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
-    PsoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
 
     for (size_t PipelineIndex = 0; PipelineIndex < SsrPipelines.size(); ++PipelineIndex)
     {
-        PsoDesc.PS = { PSByteCodes[PipelineIndex].data(), PSByteCodes[PipelineIndex].size() };
-        HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(SsrPipelines[PipelineIndex].GetAddressOf())));
+        SsrPipelines[PipelineIndex].Reset();
+        SsrGraphicsPsBytecodes[PipelineIndex].clear();
+        SsrGraphicsPsCompiled[PipelineIndex] = false;
+        SsrGraphicsFailureLogged[PipelineIndex] = false;
     }
+
     return true;
+}
+
+
+bool FDeferredRenderer::CompileSsrGraphicsPs(uint32_t PipelineIndex, std::vector<uint8_t>& OutPs)
+{
+    FShaderCompiler Compiler;
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring PSTarget = RendererUtils::BuildShaderTarget(L"ps", ShaderModel);
+
+    const bool bUseHzb = (PipelineIndex & 2u) != 0;
+    const bool bUseRefine = (PipelineIndex & 1u) != 0;
+    const bool bUseSwSsr = (PipelineIndex & 4u) == 0;
+
+    const std::vector<std::wstring> Defines =
+    {
+        bUseHzb ? L"HZB_ENABLED=1" : L"HZB_ENABLED=0",
+        bUseRefine ? L"SSR_REFINE_ENABLED=1" : L"SSR_REFINE_ENABLED=0",
+        bUseSwSsr ? L"SW_SSR_ENABLED=1" : L"SW_SSR_ENABLED=0"
+    };
+
+    return Compiler.CompileFromFile(L"Shaders/SsrSWTracePS.hlsl", L"PSMain", PSTarget, OutPs, Defines);
+}
+
+bool FDeferredRenderer::BuildSsrGraphicsPsoDesc(uint32_t PipelineIndex, D3D12_GRAPHICS_PIPELINE_STATE_DESC& OutDesc) const
+{
+    OutDesc = {};
+    OutDesc.pRootSignature = SsrRootSignature.Get();
+    OutDesc.VS = { SsrGraphicsVsBytecode.data(), SsrGraphicsVsBytecode.size() };
+    OutDesc.PS = { SsrGraphicsPsBytecodes[PipelineIndex].data(), SsrGraphicsPsBytecodes[PipelineIndex].size() };
+    OutDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    OutDesc.SampleDesc.Count = 1;
+    OutDesc.SampleMask = UINT_MAX;
+
+    OutDesc.RasterizerState = {};
+    OutDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    OutDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    OutDesc.RasterizerState.FrontCounterClockwise = TRUE;
+    OutDesc.RasterizerState.DepthClipEnable = TRUE;
+
+    OutDesc.BlendState = {};
+    OutDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    OutDesc.DepthStencilState = {};
+    OutDesc.DepthStencilState.DepthEnable = FALSE;
+    OutDesc.DepthStencilState.StencilEnable = FALSE;
+    OutDesc.NumRenderTargets = 1;
+    OutDesc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    OutDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
+    return true;
+}
+
+bool FDeferredRenderer::EnsureSsrGraphicsPipeline(uint32_t PipelineIndex)
+{
+    if (PipelineIndex >= SsrPipelines.size())
+    {
+        return false;
+    }
+
+    if (SsrPipelines[PipelineIndex])
+    {
+        return true;
+    }
+
+    std::lock_guard<std::mutex> Lock(SsrGraphicsPipelineMutex);
+    if (SsrPipelines[PipelineIndex])
+    {
+        return true;
+    }
+
+    if (!SsrGraphicsPsCompiled[PipelineIndex])
+    {
+        if (!CompileSsrGraphicsPs(PipelineIndex, SsrGraphicsPsBytecodes[PipelineIndex]))
+        {
+            return false;
+        }
+        SsrGraphicsPsCompiled[PipelineIndex] = true;
+    }
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC Desc = {};
+    if (!BuildSsrGraphicsPsoDesc(PipelineIndex, Desc))
+    {
+        return false;
+    }
+
+    HRESULT Hr = Device->GetDevice()->CreateGraphicsPipelineState(&Desc, IID_PPV_ARGS(SsrPipelines[PipelineIndex].GetAddressOf()));
+    if (FAILED(Hr))
+    {
+        return false;
+    }
+
+    LogInfo("SSR graphics pipeline created. index=" + std::to_string(PipelineIndex));
+    return true;
+}
+
+bool FDeferredRenderer::EnsureSsrGraphicsPipelineOrFail(uint32_t PipelineIndex, const char* PassContext)
+{
+    if (EnsureSsrGraphicsPipeline(PipelineIndex))
+    {
+        return true;
+    }
+
+    if (PipelineIndex < SsrGraphicsFailureLogged.size() && !SsrGraphicsFailureLogged[PipelineIndex])
+    {
+        SsrGraphicsFailureLogged[PipelineIndex] = true;
+        LogError(std::string("SSR graphics pipeline creation failed. context=")
+            + (PassContext ? PassContext : "Unknown")
+            + ", index=" + std::to_string(PipelineIndex));
+    }
+
+    SetRenderFatalError(std::string("SSR graphics fatal failure. context=")
+        + (PassContext ? PassContext : "Unknown")
+        + ", index=" + std::to_string(PipelineIndex));
+    return false;
 }
 
 bool FDeferredRenderer::CreateSsrDenoiseRootSignature(FDX12Device* Device)
@@ -7283,44 +7394,99 @@ bool FDeferredRenderer::CreateSsrSwTraceRootSignature(FDX12Device* Device)
 
 bool FDeferredRenderer::CreateSsrSwTracePipeline(FDX12Device* Device)
 {
+    (void)Device;
+
+    for (size_t PipelineIndex = 0; PipelineIndex < SsrSwTracePipelines.size(); ++PipelineIndex)
+    {
+        SsrSwTracePipelines[PipelineIndex].Reset();
+        SsrSwTraceCsBytecodes[PipelineIndex].clear();
+        SsrSwTraceCsCompiled[PipelineIndex] = false;
+        SsrSwTraceFailureLogged[PipelineIndex] = false;
+    }
+
+    return true;
+}
+
+
+bool FDeferredRenderer::CompileSsrSwTraceCs(uint32_t PipelineIndex, std::vector<uint8_t>& OutCs)
+{
     FShaderCompiler Compiler;
     const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
     const std::wstring CSTarget = RendererUtils::BuildShaderTarget(L"cs", ShaderModel);
 
-    const std::vector<std::wstring> HzbOffRefineOffSwOnDefines = { L"HZB_ENABLED=0", L"SSR_REFINE_ENABLED=0", L"SW_SSR_ENABLED=1" };
-    const std::vector<std::wstring> HzbOffRefineOnSwOnDefines = { L"HZB_ENABLED=0", L"SSR_REFINE_ENABLED=1", L"SW_SSR_ENABLED=1" };
-    const std::vector<std::wstring> HzbOnRefineOffSwOnDefines = { L"HZB_ENABLED=1", L"SSR_REFINE_ENABLED=0", L"SW_SSR_ENABLED=1" };
-    const std::vector<std::wstring> HzbOnRefineOnSwOnDefines = { L"HZB_ENABLED=1", L"SSR_REFINE_ENABLED=1", L"SW_SSR_ENABLED=1" };
-    const std::vector<std::wstring> HzbOffRefineOffSwOffDefines = { L"HZB_ENABLED=0", L"SSR_REFINE_ENABLED=0", L"SW_SSR_ENABLED=0" };
-    const std::vector<std::wstring> HzbOffRefineOnSwOffDefines = { L"HZB_ENABLED=0", L"SSR_REFINE_ENABLED=1", L"SW_SSR_ENABLED=0" };
-    const std::vector<std::wstring> HzbOnRefineOffSwOffDefines = { L"HZB_ENABLED=1", L"SSR_REFINE_ENABLED=0", L"SW_SSR_ENABLED=0" };
-    const std::vector<std::wstring> HzbOnRefineOnSwOffDefines = { L"HZB_ENABLED=1", L"SSR_REFINE_ENABLED=1", L"SW_SSR_ENABLED=0" };
-    const std::array<std::vector<std::wstring>, 8> Defines =
+    const bool bUseHzb = (PipelineIndex & 2u) != 0;
+    const bool bUseRefine = (PipelineIndex & 1u) != 0;
+    const bool bUseSwSsr = (PipelineIndex & 4u) == 0;
+
+    const std::vector<std::wstring> Defines =
     {
-        HzbOffRefineOffSwOnDefines,
-        HzbOffRefineOnSwOnDefines,
-        HzbOnRefineOffSwOnDefines,
-        HzbOnRefineOnSwOnDefines,
-        HzbOffRefineOffSwOffDefines,
-        HzbOffRefineOnSwOffDefines,
-        HzbOnRefineOffSwOffDefines,
-        HzbOnRefineOnSwOffDefines
+        bUseHzb ? L"HZB_ENABLED=1" : L"HZB_ENABLED=0",
+        bUseRefine ? L"SSR_REFINE_ENABLED=1" : L"SSR_REFINE_ENABLED=0",
+        bUseSwSsr ? L"SW_SSR_ENABLED=1" : L"SW_SSR_ENABLED=0"
     };
 
-    for (size_t PipelineIndex = 0; PipelineIndex < SsrSwTracePipelines.size(); ++PipelineIndex)
+    return Compiler.CompileFromFile(L"Shaders/SsrSWTraceCS.hlsl", L"CSMain", CSTarget, OutCs, Defines);
+}
+
+bool FDeferredRenderer::EnsureSsrSwTracePipeline(uint32_t PipelineIndex)
+{
+    if (PipelineIndex >= SsrSwTracePipelines.size())
     {
-        std::vector<uint8_t> CSByteCode;
-        if (!Compiler.CompileFromFile(L"Shaders/SsrSWTraceCS.hlsl", L"CSMain", CSTarget, CSByteCode, Defines[PipelineIndex]))
+        return false;
+    }
+
+    if (SsrSwTracePipelines[PipelineIndex])
+    {
+        return true;
+    }
+
+    std::lock_guard<std::mutex> Lock(SsrSwTracePipelineMutex);
+    if (SsrSwTracePipelines[PipelineIndex])
+    {
+        return true;
+    }
+
+    if (!SsrSwTraceCsCompiled[PipelineIndex])
+    {
+        if (!CompileSsrSwTraceCs(PipelineIndex, SsrSwTraceCsBytecodes[PipelineIndex]))
         {
             return false;
         }
-
-        D3D12_COMPUTE_PIPELINE_STATE_DESC PsoDesc = {};
-        PsoDesc.pRootSignature = SsrSwTraceRootSignature.Get();
-        PsoDesc.CS = { CSByteCode.data(), CSByteCode.size() };
-        HR_CHECK(Device->GetDevice()->CreateComputePipelineState(&PsoDesc, IID_PPV_ARGS(SsrSwTracePipelines[PipelineIndex].GetAddressOf())));
+        SsrSwTraceCsCompiled[PipelineIndex] = true;
     }
+
+    D3D12_COMPUTE_PIPELINE_STATE_DESC Desc = {};
+    Desc.pRootSignature = SsrSwTraceRootSignature.Get();
+    Desc.CS = { SsrSwTraceCsBytecodes[PipelineIndex].data(), SsrSwTraceCsBytecodes[PipelineIndex].size() };
+    HRESULT Hr = Device->GetDevice()->CreateComputePipelineState(&Desc, IID_PPV_ARGS(SsrSwTracePipelines[PipelineIndex].GetAddressOf()));
+    if (FAILED(Hr))
+    {
+        return false;
+    }
+
+    LogInfo("SSR SW trace pipeline created. index=" + std::to_string(PipelineIndex));
     return true;
+}
+
+bool FDeferredRenderer::EnsureSsrSwTracePipelineOrFail(uint32_t PipelineIndex, const char* PassContext)
+{
+    if (EnsureSsrSwTracePipeline(PipelineIndex))
+    {
+        return true;
+    }
+
+    if (PipelineIndex < SsrSwTraceFailureLogged.size() && !SsrSwTraceFailureLogged[PipelineIndex])
+    {
+        SsrSwTraceFailureLogged[PipelineIndex] = true;
+        LogError(std::string("SSR SW trace pipeline creation failed. context=")
+            + (PassContext ? PassContext : "Unknown")
+            + ", index=" + std::to_string(PipelineIndex));
+    }
+
+    SetRenderFatalError(std::string("SSR SW trace fatal failure. context=")
+        + (PassContext ? PassContext : "Unknown")
+        + ", index=" + std::to_string(PipelineIndex));
+    return false;
 }
 
 bool FDeferredRenderer::CreateSsrBuildIndirectArgsRootSignature(FDX12Device* Device)
