@@ -20,6 +20,13 @@
 class FDX12Device;
 class FDX12CommandContext;
 class FCamera;
+class FDeferredFrameOrchestrator;
+class FDeferredVisibilityPasses;
+class FDeferredGeometryPasses;
+class FDeferredLightingPasses;
+class FDeferredRayTracingPasses;
+class FDeferredPostProcessPasses;
+class FDeferredResourceImporter;
 struct FModelTextureSet
 {
     Microsoft::WRL::ComPtr<ID3D12Resource> BaseColor;
@@ -218,7 +225,7 @@ public:
 
     void OnFrameFenceSignaled(uint32_t FrameIndex, uint64_t FenceValue) override;
 
-private:
+public:
     struct FDeferredFrameState
     {
         bool bTaaActive = false;
@@ -290,6 +297,8 @@ private:
         FRGResourceHandle PathTracingTempHandle{};
         std::vector<FRGResourceHandle> PathTracingAccumulationHandles{};
     };
+
+private:
 
     bool CreateBasePassRootSignature(FDX12Device* Device);
     bool CreateLightingRootSignature(FDX12Device* Device);
@@ -364,55 +373,10 @@ private:
     void PrepareFrameState(const FCamera& Camera, bool bAnySkinningUpdated, FDeferredFrameState& OutState);
     void ConfigureFrameGraph(FRenderGraph& Graph) const;
     void ImportFrameResources(FRenderGraph& Graph, FDeferredFrameResources& OutResources);
-    void AddGpuCullingPass(
-        FRenderGraph& Graph,
-        const FCamera& Camera,
-        const FDeferredFrameState& FrameState,
-        FRGResourceHandle HZBHandle,
-        FRenderer::ECullingMode Mode,
-        uint32_t VisibilityInputIndex,
-        uint32_t VisibilityInputFrameIndex,
-        uint32_t CullingListIndex,
-        uint32_t CullingListCountIndex,
-        const char* PassName);
-    void AddVisibilityListPass(
-        FRenderGraph& Graph,
-        const FDeferredFrameState& FrameState,
-        uint32_t VisibilityIndex,
-        uint32_t VisibilityFrameIndex,
-        uint32_t FrameIndex);
-    void AddEarlyRejectListPass(
-        FRenderGraph& Graph,
-        const FDeferredFrameState& FrameState,
-        uint32_t VisibilityIndex,
-        uint32_t FrameIndex);
-    void AddLateListMergePass(
-        FRenderGraph& Graph,
-        const FDeferredFrameState& FrameState,
-        uint32_t FrameIndex);
-    void AddShadowPass(FRenderGraph& Graph, const FCamera& Camera, const FDeferredFrameState& FrameState, FRGResourceHandle ShadowHandle);
     void AddRayTracingShadowPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle DepthHandle, FRGResourceHandle GBufferHandle, FRGResourceHandle& ShadowMaskHandle);
-    void AddDepthPrepass(FRenderGraph& Graph, const FCamera& Camera, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle);
-    void AddBasePass(
-        FRenderGraph& Graph,
-        const FCamera& Camera,
-        const FDeferredFrameState& FrameState,
-        const std::array<FRGResourceHandle, 4>& GBufferHandles,
-        FRGResourceHandle DepthHandle,
-        FRGResourceHandle LightingHandle,
-        bool bClearTargets,
-        bool bClearDepth,
-        const char* PassName,
-        bool bAllowSkinningFallback);
-    void AddObjectIdPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle ObjectIdHandle, FRGResourceHandle DepthHandle);
-    void AddVelocityPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const FCamera& Camera, FRGResourceHandle VelocityHandle, FRGResourceHandle DepthHandle);
     void AddHZBPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle HZBHandle);
-    void AddLinearDepthPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle LinearDepthHandle);
-    void AddGtaoPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle GtaoHandle);
     void AddRestirGIPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle VelocityHandle, FRGResourceHandle LinearDepthHandle, FRGResourceHandle RestirGIHandle, FRGResourceHandle RestirGIHistoryHandle, FRGResourceHandle RestirGIInitialRadianceHandle, FRGResourceHandle RestirGIInitialRayDirectionHandle, FRGResourceHandle RestirGIReservoirDepthNormalAHandle, FRGResourceHandle RestirGIReservoirDepthNormalBHandle, FRGResourceHandle RestirGIReservoirSampleRadianceAHandle, FRGResourceHandle RestirGIReservoirSampleRadianceBHandle, FRGResourceHandle RestirGIReservoirRayDirectionAHandle, FRGResourceHandle RestirGIReservoirRayDirectionBHandle, FRGResourceHandle RestirGIReservoirMWAHandle, FRGResourceHandle RestirGIReservoirMWBHandle, FRGResourceHandle RestirGiInputSHHandle, FRGResourceHandle RestirGiVarianceHandle);
     void AddRestirGiDenoiserPasses(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle VelocityHandle, FRGResourceHandle LinearDepthHandle, FRGResourceHandle InputSHHandle, FRGResourceHandle VarianceHandle, FRGResourceHandle TemporalSHHandle, FRGResourceHandle HistorySHHandle, FRGResourceHandle HistoryIrradianceHandle, FRGResourceHandle HistoryCountAHandle, FRGResourceHandle HistoryCountBHandle, FRGResourceHandle PrevLinearDepthHandle, FRGResourceHandle PrevNormalHandle, const std::array<FRGResourceHandle, 4>& ShMipHandles, const std::array<FRGResourceHandle, 4>& LinearDepthMipHandles);
-    void AddSsrRayCounterClearPass(FRenderGraph& Graph, uint32_t FrameIndex);
-    void AddSsrRayGatherPass(FRenderGraph& Graph, uint32_t FrameIndex, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle);
     void AddSsrBuildIndirectArgsPass(FRenderGraph& Graph, uint32_t FrameIndex, bool bHwMiss);
     void AddSsrSwTracePass(FRenderGraph& Graph, uint32_t FrameIndex, const FDeferredFrameState& FrameState, const std::vector<FRGResourceHandle>& TaaHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle HZBHandle, FRGResourceHandle SsrHandle);
     void AddSsrHwTracePass(FRenderGraph& Graph, uint32_t FrameIndex, const FDeferredFrameState& FrameState, const FCamera& Camera, const std::vector<FRGResourceHandle>& TaaHandles, FRGResourceHandle SsrHandle);
@@ -423,12 +387,6 @@ private:
     void AddLightingPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle GtaoHandle, FRGResourceHandle RestirGIHandle, FRGResourceHandle SsrHandle, FRGResourceHandle SsrFallbackHandle, FRGResourceHandle ShadowHandle, FRGResourceHandle LightingHandle);
     void AddPathTracingPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle DepthHandle, FRGResourceHandle GBufferAHandle, FRGResourceHandle GBufferBHandle, FRGResourceHandle GBufferCHandle, FRGResourceHandle OutputHandle);
     void AddPathTracingAccumulationPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle PathTracingTempHandle, FRGResourceHandle LightingHandle, const std::vector<FRGResourceHandle>& AccumulationHandles);
-    void AddSkyPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle DepthHandle, FRGResourceHandle LightingHandle);
-    void AddTemporalAAPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle LightingHandle, const std::vector<FRGResourceHandle>& TaaHandles);
-    void AddAutoExposurePass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle LightingHandle, const std::array<FRGResourceHandle, 2>& LuminanceHandles, float DeltaTime);
-    void AddTonemapPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LightingHandle, FRGResourceHandle TonemapOutputResource, const std::array<FRGResourceHandle, 2>& LuminanceHandles, const std::vector<FRGResourceHandle>& TaaHandles, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle);
-    void AddCasPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle TonemapOutputResource, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle);
-    void AddDebugPrintPass(FRenderGraph& Graph, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle);
     void FinalizeFrameState(const FDeferredFrameState& FrameState);
     void InvalidateRestirGiDenoiserHistory();
 
@@ -439,6 +397,22 @@ private:
     void AddRestirGiFinalBlurPass(FRenderGraph& Graph, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle TemporalSHHandle, FRGResourceHandle HistoryIrradianceHandle, FRGResourceHandle HistorySHHandle, FRGResourceHandle HistoryCountHandle);
 
 private:
+    friend class FDeferredFrameOrchestrator;
+    friend class FDeferredVisibilityPasses;
+    friend class FDeferredGeometryPasses;
+    friend class FDeferredLightingPasses;
+    friend class FDeferredRayTracingPasses;
+    friend class FDeferredPostProcessPasses;
+    friend class FDeferredResourceImporter;
+
+    std::unique_ptr<FDeferredFrameOrchestrator> FrameOrchestrator;
+    std::unique_ptr<FDeferredVisibilityPasses> VisibilityPasses;
+    std::unique_ptr<FDeferredGeometryPasses> GeometryPasses;
+    std::unique_ptr<FDeferredLightingPasses> LightingPasses;
+    std::unique_ptr<FDeferredRayTracingPasses> RayTracingPasses;
+    std::unique_ptr<FDeferredPostProcessPasses> PostProcessPasses;
+    std::unique_ptr<FDeferredResourceImporter> ResourceImporter;
+
     Microsoft::WRL::ComPtr<ID3D12RootSignature> BasePassRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> LightingRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> RestirGIRootSignature;

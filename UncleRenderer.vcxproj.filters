@@ -104,6 +104,27 @@
     <ClCompile Include="Source\Render\DeferredRenderer.cpp">
       <Filter>Source Files\Render</Filter>
     </ClCompile>
+    <ClCompile Include="Source\Render\Deferred\DeferredFrameOrchestrator.cpp">
+      <Filter>Source Files\Render</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Render\Deferred\DeferredGeometryPasses.cpp">
+      <Filter>Source Files\Render</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Render\Deferred\DeferredLightingPasses.cpp">
+      <Filter>Source Files\Render</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Render\Deferred\DeferredPostProcessPasses.cpp">
+      <Filter>Source Files\Render</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Render\Deferred\DeferredRayTracingPasses.cpp">
+      <Filter>Source Files\Render</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Render\Deferred\DeferredResourceImporter.cpp">
+      <Filter>Source Files\Render</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Render\Deferred\DeferredVisibilityPasses.cpp">
+      <Filter>Source Files\Render</Filter>
+    </ClCompile>
     <ClCompile Include="Source\Render\DebugPrintFont.cpp">
       <Filter>Source Files\Render</Filter>
     </ClCompile>
@@ -269,6 +290,30 @@
       <Filter>Header Files\RHI</Filter>
     </ClInclude>
     <ClInclude Include="Source\Render\DeferredRenderer.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Render\Deferred\DeferredFrameOrchestrator.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Render\Deferred\DeferredGeometryPasses.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Render\Deferred\DeferredLightingPasses.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Render\Deferred\DeferredPostProcessPasses.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Render\Deferred\DeferredPassContext.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Render\Deferred\DeferredRayTracingPasses.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Render\Deferred\DeferredResourceImporter.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Render\Deferred\DeferredVisibilityPasses.h">
       <Filter>Header Files\Render</Filter>
     </ClInclude>
     <ClInclude Include="Source\Render\DebugPrintFont.h">
