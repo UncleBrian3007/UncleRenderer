@@ -84,6 +84,7 @@ bool FDX12Device::Initialize()
     if (!PickAdapter())   { LogError("No suitable adapter found"); return false; }
     if (!CreateDevice())  { LogError("Failed to create D3D12 device"); return false; }
     if (!QueryRayTracingSupport()) { LogError("Failed to query DXR support"); return false; }
+    if (!QueryEnhancedBarrierSupport()) { LogError("Failed to query enhanced barrier support"); return false; }
     if (!CreateBindlessDescriptorHeap()) { LogError("Failed to create bindless descriptor heap"); return false; }
     if (!CreateSamplerDescriptorHeap()) { LogError("Failed to create sampler descriptor heap"); return false; }
     if (!DetermineShaderModel()) { LogError("Failed to determine shader model"); return false; }
@@ -222,6 +223,23 @@ bool FDX12Device::CreateBindlessDescriptorHeap()
     BindlessDescriptorStride = Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     BindlessDescriptorNextIndex.store(0);
 
+    return true;
+}
+
+
+bool FDX12Device::QueryEnhancedBarrierSupport()
+{
+    bSupportsEnhancedBarriers = false;
+
+    D3D12_FEATURE_DATA_D3D12_OPTIONS12 Options12 = {};
+    if (FAILED(Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS12, &Options12, sizeof(Options12))))
+    {
+        LogWarning("D3D12 OPTIONS12 query failed; enhanced barriers disabled and legacy barriers will be used.");
+        return true;
+    }
+
+    bSupportsEnhancedBarriers = Options12.EnhancedBarriersSupported == TRUE;
+    LogInfo(std::string("Enhanced Barriers: ") + (bSupportsEnhancedBarriers ? "Enabled" : "Disabled"));
     return true;
 }
 

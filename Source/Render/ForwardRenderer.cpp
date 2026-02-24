@@ -45,6 +45,11 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
         LogError("Forward renderer initialization failed: skinning pipeline creation failed");
         return false;
     }
+    if (!CreateEnvironmentBuildPipelines(Device))
+    {
+        LogError("Forward renderer initialization failed: environment build pipeline creation failed");
+        return false;
+    }
 
     LogInfo("Creating forward renderer root signature...");
     if (!CreateRootSignature(Device))
@@ -105,9 +110,9 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
         NullTexture->SetName(L"NullTexture");
     }
 
-    if (!TextureLoader->LoadOrDefault(L"Assets/Textures/output_pmrem.dds", EnvironmentCubeTexture))
+    if (!BuildEnvironmentFromEquirect(Config))
     {
-        LogError("Forward renderer initialization failed: environment cube texture loading failed");
+        LogError("Forward renderer initialization failed: environment build requires R11G11B10 typed UAV support");
         return false;
     }
     if (EnvironmentCubeTexture)

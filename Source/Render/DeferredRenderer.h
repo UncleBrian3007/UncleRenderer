@@ -267,6 +267,17 @@ private:
         FRGResourceHandle RestirGIReservoirRayDirectionBHandle{};
         FRGResourceHandle RestirGIReservoirMWAHandle{};
         FRGResourceHandle RestirGIReservoirMWBHandle{};
+        FRGResourceHandle RestirGiInputSHHandle{};
+        FRGResourceHandle RestirGiVarianceHandle{};
+        FRGResourceHandle RestirGiTemporalSHHandle{};
+        FRGResourceHandle RestirGiHistorySHHandle{};
+        FRGResourceHandle RestirGiHistoryIrradianceHandle{};
+        FRGResourceHandle RestirGiHistoryCountAHandle{};
+        FRGResourceHandle RestirGiHistoryCountBHandle{};
+        FRGResourceHandle RestirGiPrevLinearDepthHandle{};
+        FRGResourceHandle RestirGiPrevNormalHandle{};
+        std::array<FRGResourceHandle, 4> RestirGiShMipHandles{};
+        std::array<FRGResourceHandle, 4> RestirGiLinearDepthMipHandles{};
         FRGResourceHandle SsrHandle{};
         FRGResourceHandle SsrDenoiseHandle{};
         FRGResourceHandle SsrFallbackHandle{};
@@ -317,6 +328,8 @@ private:
     bool CreateSsrDispatchCommandSignature(FDX12Device* Device);
     bool CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateRestirGIPipeline(FDX12Device* Device);
+    bool CreateRestirGiDenoiserResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
+    bool CreateRestirGiDenoiserPipelines(FDX12Device* Device);
     bool CreateHZBRootSignature(FDX12Device* Device);
     bool CreateHZBPipeline(FDX12Device* Device);
     bool CreateAutoExposureRootSignature(FDX12Device* Device);
@@ -396,7 +409,8 @@ private:
     void AddHZBPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle HZBHandle);
     void AddLinearDepthPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle LinearDepthHandle);
     void AddGtaoPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle GtaoHandle);
-    void AddRestirGIPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle VelocityHandle, FRGResourceHandle LinearDepthHandle, FRGResourceHandle RestirGIHandle, FRGResourceHandle RestirGIHistoryHandle, FRGResourceHandle RestirGIInitialRadianceHandle, FRGResourceHandle RestirGIInitialRayDirectionHandle, FRGResourceHandle RestirGIReservoirDepthNormalAHandle, FRGResourceHandle RestirGIReservoirDepthNormalBHandle, FRGResourceHandle RestirGIReservoirSampleRadianceAHandle, FRGResourceHandle RestirGIReservoirSampleRadianceBHandle, FRGResourceHandle RestirGIReservoirRayDirectionAHandle, FRGResourceHandle RestirGIReservoirRayDirectionBHandle, FRGResourceHandle RestirGIReservoirMWAHandle, FRGResourceHandle RestirGIReservoirMWBHandle);
+    void AddRestirGIPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle VelocityHandle, FRGResourceHandle LinearDepthHandle, FRGResourceHandle RestirGIHandle, FRGResourceHandle RestirGIHistoryHandle, FRGResourceHandle RestirGIInitialRadianceHandle, FRGResourceHandle RestirGIInitialRayDirectionHandle, FRGResourceHandle RestirGIReservoirDepthNormalAHandle, FRGResourceHandle RestirGIReservoirDepthNormalBHandle, FRGResourceHandle RestirGIReservoirSampleRadianceAHandle, FRGResourceHandle RestirGIReservoirSampleRadianceBHandle, FRGResourceHandle RestirGIReservoirRayDirectionAHandle, FRGResourceHandle RestirGIReservoirRayDirectionBHandle, FRGResourceHandle RestirGIReservoirMWAHandle, FRGResourceHandle RestirGIReservoirMWBHandle, FRGResourceHandle RestirGiInputSHHandle, FRGResourceHandle RestirGiVarianceHandle);
+    void AddRestirGiDenoiserPasses(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle VelocityHandle, FRGResourceHandle LinearDepthHandle, FRGResourceHandle InputSHHandle, FRGResourceHandle VarianceHandle, FRGResourceHandle TemporalSHHandle, FRGResourceHandle HistorySHHandle, FRGResourceHandle HistoryIrradianceHandle, FRGResourceHandle HistoryCountAHandle, FRGResourceHandle HistoryCountBHandle, FRGResourceHandle PrevLinearDepthHandle, FRGResourceHandle PrevNormalHandle, const std::array<FRGResourceHandle, 4>& ShMipHandles, const std::array<FRGResourceHandle, 4>& LinearDepthMipHandles);
     void AddSsrRayCounterClearPass(FRenderGraph& Graph, uint32_t FrameIndex);
     void AddSsrRayGatherPass(FRenderGraph& Graph, uint32_t FrameIndex, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle);
     void AddSsrBuildIndirectArgsPass(FRenderGraph& Graph, uint32_t FrameIndex, bool bHwMiss);
@@ -416,6 +430,13 @@ private:
     void AddCasPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, FRGResourceHandle TonemapOutputResource, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle);
     void AddDebugPrintPass(FRenderGraph& Graph, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle);
     void FinalizeFrameState(const FDeferredFrameState& FrameState);
+    void InvalidateRestirGiDenoiserHistory();
+
+    void AddRestirGiDenoiserPreTemporalPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle VelocityHandle, FRGResourceHandle LinearDepthHandle, FRGResourceHandle InputSHHandle, FRGResourceHandle VarianceHandle, FRGResourceHandle TemporalSHHandle, FRGResourceHandle HistorySHHandle, FRGResourceHandle HistoryIrradianceHandle,FRGResourceHandle HistoryCountAHandle, FRGResourceHandle HistoryCountBHandle, FRGResourceHandle PrevLinearDepthHandle, FRGResourceHandle PrevNormalHandle);
+    void AddRestirGiShMipGenPass(FRenderGraph& Graph, uint32_t MipLevel, FRGResourceHandle SourceHandle, FRGResourceHandle DestinationHandle);
+    void AddRestirGiLinearDepthMipGenPass(FRenderGraph& Graph, uint32_t MipLevel, FRGResourceHandle SourceHandle, FRGResourceHandle DestinationHandle);
+    void AddRestirGiHistoryReconstructionPass(FRenderGraph& Graph, uint32_t DispatchMip, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle HistorySHHandle, FRGResourceHandle HistoryCountHandle, FRGResourceHandle TemporalSHHandle, FRGResourceHandle ShMipHandle, FRGResourceHandle DepthMipHandle);
+    void AddRestirGiFinalBlurPass(FRenderGraph& Graph, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle TemporalSHHandle, FRGResourceHandle HistoryIrradianceHandle, FRGResourceHandle HistorySHHandle, FRGResourceHandle HistoryCountHandle);
 
 private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> BasePassRootSignature;
@@ -469,6 +490,13 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGITemporalPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGISpatialPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGIResolvePipeline;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> RestirGiDenoiserRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGiPreBlurPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGiTemporalAccumulationPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGiGenerateShMipsPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGiGenerateLinearDepthMipsPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGiHistoryReconstructionPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGiFinalBlurPipeline;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> HZBPipelines;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> AutoExposurePipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> TaaPipeline;
@@ -504,6 +532,17 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIReservoirRayDirectionBTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIReservoirMWATexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIReservoirMWBTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiInputSHTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiVarianceTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiTemporalSHTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiHistorySHTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiHistoryIrradianceTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiHistoryCountATexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiHistoryCountBTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiPrevLinearDepthTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiPrevNormalTexture;
+    std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 4> RestirGiShMipTextures;
+    std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 4> RestirGiLinearDepthMipTextures;
     Microsoft::WRL::ComPtr<ID3D12Resource> SsrTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> SsrDenoiseTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> SsrFallbackTexture;
@@ -575,6 +614,28 @@ private:
     uint32_t RestirGIReservoirMWAUavBindlessIndex = UINT32_MAX;
     uint32_t RestirGIReservoirMWBSrvBindlessIndex = UINT32_MAX;
     uint32_t RestirGIReservoirMWBUavBindlessIndex = UINT32_MAX;
+    uint32_t RestirGiInputSHSrvBindlessIndex = UINT32_MAX;
+    uint32_t RestirGiInputSHUavBindlessIndex = UINT32_MAX;
+    uint32_t RestirGiVarianceSrvBindlessIndex = UINT32_MAX;
+    uint32_t RestirGiVarianceUavBindlessIndex = UINT32_MAX;
+    uint32_t RestirGiHistoryIrradianceSrvBindlessIndex = UINT32_MAX;
+    uint32_t RestirGiHistoryIrradianceUavBindlessIndex = UINT32_MAX;
+    uint32_t RestirGiTemporalSHSrvBindlessIndex = UINT32_MAX;
+    uint32_t RestirGiTemporalSHUavBindlessIndex = UINT32_MAX;
+    uint32_t RestirGiHistorySHSrvBindlessIndex = UINT32_MAX;
+    uint32_t RestirGiHistorySHUavBindlessIndex = UINT32_MAX;
+    uint32_t RestirGiHistoryCountASrvBindlessIndex = UINT32_MAX;
+    uint32_t RestirGiHistoryCountAUavBindlessIndex = UINT32_MAX;
+    uint32_t RestirGiHistoryCountBSrvBindlessIndex = UINT32_MAX;
+    uint32_t RestirGiHistoryCountBUavBindlessIndex = UINT32_MAX;
+    uint32_t RestirGiPrevLinearDepthSrvBindlessIndex = UINT32_MAX;
+    uint32_t RestirGiPrevLinearDepthUavBindlessIndex = UINT32_MAX;
+    uint32_t RestirGiPrevNormalSrvBindlessIndex = UINT32_MAX;
+    uint32_t RestirGiPrevNormalUavBindlessIndex = UINT32_MAX;
+    std::array<uint32_t, 4> RestirGiShMipSrvBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX } };
+    std::array<uint32_t, 4> RestirGiShMipUavBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX } };
+    std::array<uint32_t, 4> RestirGiLinearDepthMipSrvBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX } };
+    std::array<uint32_t, 4> RestirGiLinearDepthMipUavBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX } };
     uint32_t SsrBindlessIndex = UINT32_MAX;
     uint32_t SsrDenoiseBindlessIndex = UINT32_MAX;
     uint32_t SsrFallbackBindlessIndex = UINT32_MAX;
@@ -623,6 +684,29 @@ private:
     D3D12_RESOURCE_STATES RestirGIReservoirRayDirectionBState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES RestirGIReservoirMWAState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES RestirGIReservoirMWBState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    D3D12_RESOURCE_STATES RestirGiInputSHState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    D3D12_RESOURCE_STATES RestirGiVarianceState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    D3D12_RESOURCE_STATES RestirGiHistoryIrradianceState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    D3D12_RESOURCE_STATES RestirGiTemporalSHState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    D3D12_RESOURCE_STATES RestirGiHistorySHState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    D3D12_RESOURCE_STATES RestirGiHistoryCountAState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    D3D12_RESOURCE_STATES RestirGiHistoryCountBState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    D3D12_RESOURCE_STATES RestirGiPrevLinearDepthState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    D3D12_RESOURCE_STATES RestirGiPrevNormalState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    std::array<D3D12_RESOURCE_STATES, 4> RestirGiShMipStates
+    {
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS
+    };
+    std::array<D3D12_RESOURCE_STATES, 4> RestirGiLinearDepthMipStates
+    {
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS
+    };
     D3D12_RESOURCE_STATES SsrState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES SsrDenoiseState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES SsrFallbackState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;

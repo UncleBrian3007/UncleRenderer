@@ -2,6 +2,7 @@
 #include "SceneConstants.hlsl"
 #include "RestirGIReservoir.hlsli"
 #include "RestirGISamplingCommon.hlsli"
+#include "RestirGISh.hlsli"
 #include "PathBrdfCommon.hlsli"
 #include "GpuDebugLineCommon.hlsl"
 
@@ -379,7 +380,7 @@ void CSInitialSampling(uint3 DispatchThreadId : SV_DispatchThreadID)
     }
 
     InitialRadianceOut[HalfPos] = float4(Candidate, 0.0f);
-    InitialRayDirOut[HalfPos] = 0u;
+    InitialRayDirOut[HalfPos] = RestirGiEncodeDirection16x2(SampleDirection);
 }
 
 [numthreads(8, 8, 1)]
@@ -553,21 +554,30 @@ void CSResolve(uint3 DispatchThreadId : SV_DispatchThreadID)
 
     Texture2D<float> DepthTexture = ResourceDescriptorHeap[DepthIndex];
     Texture2D<float4> ReservoirSampleRadiance = ResourceDescriptorHeap[InputSampleRadianceSrvIndex];
+    Texture2D<uint> ReservoirRayDirection = ResourceDescriptorHeap[InputRayDirectionSrvIndex];
     Texture2D<float2> ReservoirMW = ResourceDescriptorHeap[InputMWSrvIndex];
 
     RWTexture2D<float4> OutputTexture = ResourceDescriptorHeap[OutputTextureUavIndex];
+    RWTexture2D<uint4> InputSHOut = ResourceDescriptorHeap[UnusedResolveUavIndex0];
+    RWTexture2D<float> VarianceOut = ResourceDescriptorHeap[UnusedResolveUavIndex1];
     const float Depth = DepthTexture[Pixel];
 
     if (Enabled == 0u || Depth <= 0.0f || Depth >= 1.0f)
     {
         OutputTexture[Pixel] = float4(0.0f, 0.0f, 0.0f, saturate(Depth));
+        InputSHOut[Pixel] = uint4(0u, 0u, 0u, 0u);
+        VarianceOut[Pixel] = 0.0f;
         return;
     }
 
     const uint2 HalfPos = min(Pixel / 2u, uint2(HalfWidth - 1u, HalfHeight - 1u));
     const float3 SampleRadiance = ReservoirSampleRadiance[HalfPos].xyz;
+    const float3 SampleDirection = RestirGiDecodeDirection16x2(ReservoirRayDirection[HalfPos]);
     const float2 MW = ReservoirMW[HalfPos];
     const float W = max(0.0f, MW.y);
     const float3 Resolved = min(max(SampleRadiance * W * max(0.0f, Intensity), 0.0f.xxx), ClampThreshold.xxx);
+    const FRestirGiPackedSh Sh = RestirGiProjectSh(Resolved, SampleDirection);
     OutputTexture[Pixel] = float4(Resolved, saturate(Depth));
+    InputSHOut[Pixel] = RestirGiPackSh(Sh);
+    VarianceOut[Pixel] = RestirGiShVariance(Sh);
 }

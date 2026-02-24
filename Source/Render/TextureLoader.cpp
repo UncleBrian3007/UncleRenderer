@@ -133,6 +133,154 @@ bool FTextureLoader::LoadOrSolidColor(const std::wstring& TexturePath, uint32_t 
     return true;
 }
 
+
+
+bool FTextureLoader::LoadHdrTexture(const std::wstring& TexturePath, ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload)
+{
+    if (Device == nullptr || TexturePath.empty())
+    {
+        return false;
+    }
+
+    int Width = 0;
+    int Height = 0;
+    int Channels = 0;
+    const std::string NarrowPath = std::filesystem::path(TexturePath).string();
+    float* Pixels = stbi_loadf(NarrowPath.c_str(), &Width, &Height, &Channels, 3);
+    if (!Pixels || Width <= 0 || Height <= 0)
+    {
+        if (Pixels)
+        {
+            stbi_image_free(Pixels);
+        }
+        return false;
+    }
+
+    const size_t PixelCount = static_cast<size_t>(Width) * static_cast<size_t>(Height);
+    std::vector<float> TextureData(PixelCount * 4u, 1.0f);
+    for (size_t Index = 0; Index < PixelCount; ++Index)
+    {
+        TextureData[Index * 4u + 0u] = Pixels[Index * 3u + 0u];
+        TextureData[Index * 4u + 1u] = Pixels[Index * 3u + 1u];
+        TextureData[Index * 4u + 2u] = Pixels[Index * 3u + 2u];
+    }
+    stbi_image_free(Pixels);
+
+    D3D12_RESOURCE_DESC TextureDesc = {};
+    TextureDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    TextureDesc.Width = static_cast<UINT>(Width);
+    TextureDesc.Height = static_cast<UINT>(Height);
+    TextureDesc.DepthOrArraySize = 1;
+    TextureDesc.MipLevels = 1;
+    TextureDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    TextureDesc.SampleDesc.Count = 1;
+    TextureDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+
+    D3D12_HEAP_PROPERTIES DefaultHeap = {};
+    DefaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    DefaultHeap.CreationNodeMask = 1;
+    DefaultHeap.VisibleNodeMask = 1;
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &DefaultHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &TextureDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        nullptr,
+        IID_PPV_ARGS(OutTexture.GetAddressOf())));
+
+    if (OutTexture)
+    {
+        const std::filesystem::path ResourcePath(TexturePath);
+        OutTexture->SetName(ResourcePath.filename().c_str());
+    }
+
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT Layout = {};
+    UINT NumRows = 0;
+    UINT64 RowSizeInBytes = 0;
+    UINT64 UploadBufferSize = 0;
+    Device->GetDevice()->GetCopyableFootprints(&TextureDesc, 0, 1, 0, &Layout, &NumRows, &RowSizeInBytes, &UploadBufferSize);
+
+    D3D12_HEAP_PROPERTIES UploadHeap = {};
+    UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
+    UploadHeap.CreationNodeMask = 1;
+    UploadHeap.VisibleNodeMask = 1;
+
+    D3D12_RESOURCE_DESC UploadDesc = {};
+    UploadDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    UploadDesc.Width = UploadBufferSize;
+    UploadDesc.Height = 1;
+    UploadDesc.DepthOrArraySize = 1;
+    UploadDesc.MipLevels = 1;
+    UploadDesc.Format = DXGI_FORMAT_UNKNOWN;
+    UploadDesc.SampleDesc.Count = 1;
+    UploadDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    ComPtr<ID3D12Resource> UploadResource;
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &UploadHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &UploadDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(UploadResource.GetAddressOf())));
+
+    uint8_t* MappedData = nullptr;
+    D3D12_RANGE EmptyRange = { 0, 0 };
+    HR_CHECK(UploadResource->Map(0, &EmptyRange, reinterpret_cast<void**>(&MappedData)));
+
+    const size_t SrcRowPitch = static_cast<size_t>(Width) * sizeof(float) * 4u;
+    for (UINT Row = 0; Row < NumRows; ++Row)
+    {
+        const uint8_t* SrcRow = reinterpret_cast<const uint8_t*>(TextureData.data()) + static_cast<size_t>(Row) * SrcRowPitch;
+        memcpy(MappedData + Layout.Offset + static_cast<size_t>(Row) * Layout.Footprint.RowPitch, SrcRow, SrcRowPitch);
+    }
+
+    UploadResource->Unmap(0, nullptr);
+
+    ComPtr<ID3D12CommandAllocator> UploadAllocator;
+    ComPtr<ID3D12GraphicsCommandList> UploadList;
+    HR_CHECK(Device->GetDevice()->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(UploadAllocator.GetAddressOf())));
+    HR_CHECK(Device->GetDevice()->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, UploadAllocator.Get(), nullptr, IID_PPV_ARGS(UploadList.GetAddressOf())));
+    UploadList->SetName(L"TextureLoader_HDRUpload_CL");
+
+    D3D12_TEXTURE_COPY_LOCATION DstLocation = {};
+    DstLocation.pResource = OutTexture.Get();
+    DstLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    DstLocation.SubresourceIndex = 0;
+
+    D3D12_TEXTURE_COPY_LOCATION SrcLocation = {};
+    SrcLocation.pResource = UploadResource.Get();
+    SrcLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    SrcLocation.PlacedFootprint = Layout;
+
+    UploadList->CopyTextureRegion(&DstLocation, 0, 0, 0, &SrcLocation, nullptr);
+
+    D3D12_RESOURCE_BARRIER Barrier = {};
+    Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    Barrier.Transition.pResource = OutTexture.Get();
+    Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    UploadList->ResourceBarrier(1, &Barrier);
+
+    HR_CHECK(UploadList->Close());
+
+    if (RecordedUpload)
+    {
+        RecordedUpload->UploadResource = UploadResource;
+        RecordedUpload->CommandAllocator = UploadAllocator;
+        RecordedUpload->CommandList = UploadList;
+    }
+    else
+    {
+        ID3D12CommandList* Lists[] = { UploadList.Get() };
+        Device->GetGraphicsQueue()->ExecuteCommandLists(1, Lists);
+        Device->GetGraphicsQueue()->Flush();
+    }
+
+    return true;
+}
 void FTextureLoader::ClearCache()
 {
     std::lock_guard<std::mutex> Lock(GTextureCacheMutex);

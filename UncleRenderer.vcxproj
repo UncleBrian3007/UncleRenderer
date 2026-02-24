@@ -385,6 +385,18 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <None Include="Shaders\PathBrdfCommon.hlsli">
       <FileType>Document</FileType>
     </None>
+    <None Include="Shaders\EnvCubemapBasis.hlsli">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\EnvEquirectToCubeCS.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\EnvCubeMipGenCS.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\EnvSpecularPrefilterCS.hlsl">
+      <FileType>Document</FileType>
+    </None>
     <None Include="Shaders\RestirGISamplingCommon.hlsli">
       <FileType>Document</FileType>
     </None>

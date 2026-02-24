@@ -49,6 +49,7 @@ struct FRendererConfig
     bool bLogResourceBarriers = false;
     bool bEnableGraphDump = false;
     bool bEnableGpuTiming = false;
+    bool bForceLegacyBarriers = true;
     bool bEnableHZB = true;
     bool bEnableGtao = true;
     bool bEnableGtaoJitter = true;
@@ -78,6 +79,9 @@ struct FRendererConfig
     bool bEnableSkinningIndirectDraw = false;
     bool bEnablePbrResearch = false;
     bool bEnableGpuDebugPrint = true;
+    std::wstring EnvironmentEquirectPath = L"Assets/Textures/hdri/rural_landscape_1k.hdr";
+    uint32_t EnvironmentCubeResolution = 128;
+    uint32_t EnvironmentSpecularSampleCount = 64;
     float GtaoRadius = 0.75f;
     float GtaoIntensity = 1.0f;
     float GtaoPower = 1.5f;

@@ -594,6 +594,7 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
             GpuTimedPassNames.push_back(Entry.Name);
         }
 
+        const bool bUseEnhancedBarriers = Device && Device->SupportsEnhancedBarriers();
         std::vector<D3D12_RESOURCE_BARRIER> PendingBarriers;
         PendingBarriers.reserve(Entry.ResourceUsages.size() + Entry.BufferUsages.size());
 
@@ -629,7 +630,7 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
                 if (bEnableBarrierLogs)
                 {
                     std::ostringstream Stream;
-                    Stream << "[RG] Pass '" << Entry.Name << "' transitioning '"
+                    Stream << (bUseEnhancedBarriers ? "[RG][Enhanced] Pass '" : "[RG] Pass '") << Entry.Name << "' transitioning '"
                         << (Resource->Name.empty() ? "<Unnamed>" : Resource->Name) << "': "
                         << RendererUtils::ResourceStateToString(StateRef) << " -> "
                         << RendererUtils::ResourceStateToString(Usage.RequiredState);
@@ -668,7 +669,7 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
                 if (bEnableBarrierLogs)
                 {
                     std::ostringstream Stream;
-                    Stream << "[RG] Pass '" << Entry.Name << "' transitioning buffer '"
+                    Stream << (bUseEnhancedBarriers ? "[RG][Enhanced] Pass '" : "[RG] Pass '") << Entry.Name << "' transitioning buffer '"
                         << (Resource.Name.empty() ? "<Unnamed>" : Resource.Name) << "': "
                         << RendererUtils::ResourceStateToString(StateRef) << " -> "
                         << RendererUtils::ResourceStateToString(Usage.RequiredState);
@@ -680,7 +681,28 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
             }
         }
 
-        CmdContext.TransitionResources(PendingBarriers);
+        if (bUseEnhancedBarriers)
+        {
+            for (const D3D12_RESOURCE_BARRIER& Barrier : PendingBarriers)
+            {
+                if (Barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION)
+                {
+                    CmdContext.TransitionResourceEx(
+                        Barrier.Transition.pResource,
+                        Barrier.Transition.StateBefore,
+                        Barrier.Transition.StateAfter,
+                        Barrier.Transition.Subresource);
+                }
+                else if (Barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_UAV)
+                {
+                    CmdContext.UavBarrierEx(Barrier.UAV.pResource);
+                }
+            }
+        }
+        else
+        {
+            CmdContext.TransitionResources(PendingBarriers);
+        }
 
         std::chrono::high_resolution_clock::time_point PassBegin, PassEnd;
         if (bEnableDebugRecording)

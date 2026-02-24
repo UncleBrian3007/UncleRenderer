@@ -143,6 +143,39 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
         OutConfig.bEnablePathTracingVndf = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
 
+    if (LowerKey == "envequirect" || LowerKey == "environmentequirect" || LowerKey == "environmentmap")
+    {
+        OutConfig.EnvironmentEquirectPath = ToWide(Value);
+    }
+
+    if (LowerKey == "envcubesize" || LowerKey == "environmentcuberesolution")
+    {
+        try
+        {
+            const int32_t ParsedValue = std::stoi(Value);
+            const int32_t ClampedValue = std::clamp(ParsedValue, 16, 2048);
+            OutConfig.EnvironmentCubeResolution = static_cast<uint32_t>(ClampedValue);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid environment cube resolution value in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "envspecsamples" || LowerKey == "environmentspecularsamples")
+    {
+        try
+        {
+            const int32_t ParsedValue = std::stoi(Value);
+            const int32_t ClampedValue = std::clamp(ParsedValue, 1, 4096);
+            OutConfig.EnvironmentSpecularSampleCount = static_cast<uint32_t>(ClampedValue);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid environment specular sample count value in renderer config: " + Value);
+        }
+    }
+
     if (LowerKey == "shadowbias")
     {
         try
@@ -313,6 +346,11 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     if (LowerKey == "gputiming" || LowerKey == "enablegputiming" || LowerKey == "recordgputiming")
     {
         OutConfig.bEnableGpuTiming = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+
+    if (LowerKey == "forcelegacybarriers" || LowerKey == "legacybarriers")
+    {
+        OutConfig.bForceLegacyBarriers = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
 
     if (LowerKey == "hzb" || LowerKey == "enablehzb")

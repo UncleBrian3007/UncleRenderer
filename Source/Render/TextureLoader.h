@@ -33,6 +33,7 @@ public:
 
     bool LoadOrDefault(const std::wstring& TexturePath, Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload = nullptr, bool bUseSRGB = false);
     bool LoadOrSolidColor(const std::wstring& TexturePath, uint32_t Color, Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload = nullptr, bool bUseSRGB = false);
+    bool LoadHdrTexture(const std::wstring& TexturePath, Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload = nullptr);
     void ClearCache();
 
     /**

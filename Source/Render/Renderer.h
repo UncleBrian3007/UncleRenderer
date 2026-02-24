@@ -200,6 +200,9 @@ protected:
     bool CreateSceneConstantBuffersPerFrame(FDX12Device* Device, uint64_t BufferSize);
     bool CreateCullingConstantBuffersPerFrame(FDX12Device* Device);
     bool CreateVisibilityListPipelines(FDX12Device* Device);
+    bool CreateEnvironmentBuildPipelines(FDX12Device* Device);
+    DXGI_FORMAT ResolveEnvironmentBuildFormat() const;
+    bool BuildEnvironmentFromEquirect(const FRendererConfig& Config);
 
     // GPU-driven rendering helper methods
 
@@ -313,7 +316,11 @@ protected:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> MeshletRunAppendPipeline;
     Microsoft::WRL::ComPtr<ID3D12CommandSignature> IndirectCommandSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> SkinningRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> EnvironmentBuildRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> SkinningPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> EnvEquirectToCubePipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> EnvCubeMipGenPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> EnvSpecularPrefilterPipeline;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> GpuDebugPrintRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> GpuDebugPrintPipeline;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> GpuDebugPrintStatsRootSignature;

@@ -527,6 +527,18 @@
     <None Include="Shaders\PathBrdfCommon.hlsli">
       <Filter>Shaders</Filter>
     </None>
+    <None Include="Shaders\EnvCubemapBasis.hlsli">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\EnvEquirectToCubeCS.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\EnvCubeMipGenCS.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\EnvSpecularPrefilterCS.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
     <None Include="Shaders\RestirGISamplingCommon.hlsli">
       <Filter>Shaders</Filter>
     </None>
