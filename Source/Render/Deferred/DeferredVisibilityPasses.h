@@ -2,9 +2,13 @@
 
 #include "DeferredPassContext.h"
 
+class FDX12Device;
+
 class FDeferredVisibilityPasses
 {
 public:
+    bool InitializeResources(FDeferredRenderer& Owner, FDX12Device* Device) const;
+
     void AddVisibilityListPass(FDeferredPassContext& Context, uint32_t VisibilityIndex, uint32_t VisibilityFrameIndex) const;
     void AddGpuCullingPass(
         FDeferredPassContext& Context,

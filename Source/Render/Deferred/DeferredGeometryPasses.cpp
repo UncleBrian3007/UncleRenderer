@@ -1,11 +1,290 @@
 #include "DeferredGeometryPasses.h"
 
 #include "../DeferredRenderer.h"
+#include "../RendererUtils.h"
+#include "../ShaderCompiler.h"
 #include "../../Core/GpuDebugMarkers.h"
 #include "../../RHI/DX12Device.h"
 
+#include <array>
 #include <cmath>
 #include <cstring>
+#include <vector>
+
+bool FDeferredGeometryPasses::InitializePipelines(FDeferredRenderer& Owner, FDX12Device* Device, DXGI_FORMAT LightingBufferFormat) const
+{
+    if (!Owner.CreateBasePassRootSignature(Device)
+        || !Owner.CreateBasePassPipeline(Device, LightingBufferFormat)
+        || !Owner.CreateObjectIdPipeline(Device)
+        || !Owner.CreateDepthPrepassPipeline(Device)
+        || !Owner.CreateVelocityRootSignature(Device)
+        || !Owner.CreateVelocityPipeline(Device))
+    {
+        return false;
+    }
+
+    const std::vector<std::wstring> ShadowDefines;
+    const std::vector<std::wstring> ShadowSkinnedDefines = { L"USE_SKINNING=1" };
+    return Owner.CreateShadowPipeline(Device, Owner.BasePassRootSignature.Get(), ShadowDefines, Owner.ShadowPipelines[0], false)
+        && Owner.CreateShadowPipeline(Device, Owner.BasePassRootSignature.Get(), ShadowSkinnedDefines, Owner.ShadowPipelinesSkinned[0], false)
+        && Owner.CreateShadowPipeline(Device, Owner.BasePassRootSignature.Get(), ShadowDefines, Owner.ShadowPipelines[1], true)
+        && Owner.CreateShadowPipeline(Device, Owner.BasePassRootSignature.Get(), ShadowSkinnedDefines, Owner.ShadowPipelinesSkinned[1], true);
+}
+
+bool FDeferredGeometryPasses::InitializeResources(FDeferredRenderer& Owner, FDX12Device* Device, uint32_t Width, uint32_t Height) const
+{
+    if (!Owner.CreateDepthResourcesPerFrame(Device, Width, Height, DXGI_FORMAT_D24_UNORM_S8_UINT)
+        || !Owner.CreateObjectIdResources(Device, Width, Height)
+        || !Owner.CreateShadowResources(Device, Owner.ShadowMapWidth, Owner.ShadowMapHeight, Owner.ShadowMap, Owner.ShadowDSVHeap, Owner.ShadowDSVHandle, Owner.ShadowMapState)
+        || !Owner.CreateGBufferResources(Device, Width, Height)
+        || !Owner.CreateVelocityResources(Device, Width, Height))
+    {
+        return false;
+    }
+
+    if (Owner.ObjectIdTexture)
+    {
+        Owner.ObjectIdTexture->SetName(L"ObjectIdTexture");
+    }
+    if (Owner.ObjectIdRtvHeap)
+    {
+        Owner.ObjectIdRtvHeap->SetName(L"ObjectIdRtvHeap");
+    }
+    if (Owner.ObjectIdReadback)
+    {
+        Owner.ObjectIdReadback->SetName(L"ObjectIdReadback");
+    }
+
+    return true;
+}
+
+bool FDeferredRenderer::CreateObjectIdResources(FDX12Device* Device, uint32_t Width, uint32_t Height)
+{
+    const bool bCreated = RendererUtils::CreateObjectIdResources(
+        Device,
+        Width,
+        Height,
+        ObjectIdTexture,
+        ObjectIdRtvHeap,
+        ObjectIdRtvHandle,
+        ObjectIdReadback,
+        ObjectIdFootprint,
+        ObjectIdRowPitch);
+    if (bCreated)
+    {
+        ObjectIdState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    }
+    return bCreated;
+}
+
+bool FDeferredRenderer::CreateObjectIdPipeline(FDX12Device* Device)
+{
+    return RendererUtils::CreateObjectIdPipeline(Device, BasePassRootSignature.Get(), ObjectIdPipeline);
+}
+
+bool FDeferredRenderer::CreateVelocityRootSignature(FDX12Device* Device)
+{
+    D3D12_ROOT_PARAMETER1 RootParams[3] = {};
+    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[0].Descriptor.ShaderRegister = 0;
+    RootParams[0].Descriptor.RegisterSpace = 0;
+    RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+
+    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    RootParams[1].Constants.ShaderRegister = 1;
+    RootParams[1].Constants.RegisterSpace = 0;
+    RootParams[1].Constants.Num32BitValues = 10;
+
+    RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    RootParams[2].Constants.ShaderRegister = 2;
+    RootParams[2].Constants.RegisterSpace = 0;
+    RootParams[2].Constants.Num32BitValues = 33;
+
+
+    D3D12_STATIC_SAMPLER_DESC SamplerDesc = {};
+    SamplerDesc.Filter = D3D12_FILTER_ANISOTROPIC;
+    SamplerDesc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    SamplerDesc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    SamplerDesc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    SamplerDesc.MipLODBias = 0.0f;
+    SamplerDesc.MaxAnisotropy = 4;
+    SamplerDesc.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    SamplerDesc.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+    SamplerDesc.MinLOD = 0.0f;
+    SamplerDesc.MaxLOD = D3D12_FLOAT32_MAX;
+    SamplerDesc.ShaderRegister = 0;
+    SamplerDesc.RegisterSpace = 0;
+    SamplerDesc.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
+    RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    RootSigDesc.Desc_1_1.NumParameters = _countof(RootParams);
+    RootSigDesc.Desc_1_1.pParameters = RootParams;
+    RootSigDesc.Desc_1_1.NumStaticSamplers = 1;
+    RootSigDesc.Desc_1_1.pStaticSamplers = &SamplerDesc;
+    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+        | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
+        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
+
+    ComPtr<ID3DBlob> SerializedSig;
+    ComPtr<ID3DBlob> ErrorBlob;
+    HR_CHECK(D3D12SerializeVersionedRootSignature(&RootSigDesc, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
+
+    if (ErrorBlob)
+    {
+        OutputDebugStringA(static_cast<const char*>(ErrorBlob->GetBufferPointer()));
+    }
+
+    HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(VelocityRootSignature.GetAddressOf())));
+    return true;
+}
+
+bool FDeferredRenderer::CreateVelocityPipeline(FDX12Device* Device)
+{
+    FShaderCompiler Compiler;
+    std::vector<uint8_t> VSByteCode;
+    std::vector<uint8_t> VSByteCodeSkinned;
+
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
+    const std::wstring PSTarget = RendererUtils::BuildShaderTarget(L"ps", ShaderModel);
+
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"VSMain", VSTarget, VSByteCode))
+    {
+        return false;
+    }
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"VSMain", VSTarget, VSByteCodeSkinned, { L"USE_SKINNING=1" }))
+    {
+        return false;
+    }
+
+    std::array<std::vector<uint8_t>, 4> PSByteCodes;
+    for (uint32_t DoubleSidedVariant = 0; DoubleSidedVariant < 2; ++DoubleSidedVariant)
+    {
+        for (uint32_t Permutation = 0; Permutation < 2; ++Permutation)
+        {
+            const uint32_t PipelineIndex = Permutation | (DoubleSidedVariant << 1);
+            std::vector<std::wstring> Defines;
+            Defines.push_back(Permutation != 0 ? L"USE_ALPHA_MASK=1" : L"USE_ALPHA_MASK=0");
+            Defines.push_back(DoubleSidedVariant != 0 ? L"USE_DOUBLE_SIDED=1" : L"USE_DOUBLE_SIDED=0");
+            if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"PSMainVelocity", PSTarget, PSByteCodes[PipelineIndex], Defines))
+            {
+                return false;
+            }
+        }
+    }
+
+    auto InitializeVelocityDesc = [&](D3D12_GRAPHICS_PIPELINE_STATE_DESC& Desc, const std::vector<uint8_t>& VertexShader)
+    {
+        Desc = {};
+        Desc.pRootSignature = VelocityRootSignature.Get();
+        Desc.InputLayout = { nullptr, 0 };
+        Desc.VS = { VertexShader.data(), VertexShader.size() };
+        Desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        Desc.SampleDesc.Count = 1;
+        Desc.SampleMask = UINT_MAX;
+
+        Desc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+        Desc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+        Desc.RasterizerState.FrontCounterClockwise = TRUE;
+
+        Desc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+        Desc.BlendState.IndependentBlendEnable = FALSE;
+
+        Desc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+        Desc.DepthStencilState.DepthEnable = TRUE;
+        Desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+        Desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+
+        Desc.NumRenderTargets = 1;
+        Desc.RTVFormats[0] = DXGI_FORMAT_R16G16_FLOAT;
+        Desc.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
+    for (uint32_t DoubleSidedVariant = 0; DoubleSidedVariant < 2; ++DoubleSidedVariant)
+    {
+        for (uint32_t Permutation = 0; Permutation < 2; ++Permutation)
+        {
+            const uint32_t PipelineIndex = Permutation | (DoubleSidedVariant << 1);
+            InitializeVelocityDesc(PsoDesc, VSByteCode);
+            PsoDesc.RasterizerState.CullMode = (DoubleSidedVariant == 0) ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_NONE;
+            PsoDesc.PS = { PSByteCodes[PipelineIndex].data(), PSByteCodes[PipelineIndex].size() };
+            HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(VelocityPipelines[PipelineIndex].GetAddressOf())));
+
+            InitializeVelocityDesc(PsoDesc, VSByteCodeSkinned);
+            PsoDesc.RasterizerState.CullMode = (DoubleSidedVariant == 0) ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_NONE;
+            PsoDesc.PS = { PSByteCodes[PipelineIndex].data(), PSByteCodes[PipelineIndex].size() };
+            HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(VelocityPipelinesSkinned[PipelineIndex].GetAddressOf())));
+        }
+    }
+
+    return true;
+}
+
+bool FDeferredRenderer::CreateVelocityResources(FDX12Device* Device, uint32_t Width, uint32_t Height)
+{
+    if (Device == nullptr)
+    {
+        return false;
+    }
+
+    CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
+    CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
+        DXGI_FORMAT_R16G16_FLOAT,
+        Width,
+        Height,
+        1,
+        1,
+        1,
+        0,
+        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+
+    D3D12_CLEAR_VALUE ClearValue = {};
+    ClearValue.Format = DXGI_FORMAT_R16G16_FLOAT;
+    ClearValue.Color[0] = 0.0f;
+    ClearValue.Color[1] = 0.0f;
+    ClearValue.Color[2] = 0.0f;
+    ClearValue.Color[3] = 0.0f;
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &HeapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &Desc,
+        D3D12_RESOURCE_STATE_RENDER_TARGET,
+        &ClearValue,
+        IID_PPV_ARGS(VelocityTexture.GetAddressOf())));
+
+    if (VelocityTexture)
+    {
+        VelocityTexture->SetName(L"Velocity");
+    }
+
+    D3D12_DESCRIPTOR_HEAP_DESC RtvHeapDesc = {};
+    RtvHeapDesc.NumDescriptors = 1;
+    RtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    RtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&RtvHeapDesc, IID_PPV_ARGS(VelocityRtvHeap.GetAddressOf())));
+
+    if (VelocityRtvHeap)
+    {
+        VelocityRtvHeap->SetName(L"VelocityRtvHeap");
+    }
+
+    VelocityRtvHandle = VelocityRtvHeap->GetCPUDescriptorHandleForHeapStart();
+    D3D12_RENDER_TARGET_VIEW_DESC RtvDesc = {};
+    RtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+    RtvDesc.Format = DXGI_FORMAT_R16G16_FLOAT;
+    Device->GetDevice()->CreateRenderTargetView(VelocityTexture.Get(), &RtvDesc, VelocityRtvHandle);
+
+    VelocityState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    bHasPreviousViewProjection = false;
+    bHasPreviousUnjitteredViewProjection = false;
+    return true;
+}
 
 void FDeferredGeometryPasses::AddShadowPass(FDeferredPassContext& Context) const
 {

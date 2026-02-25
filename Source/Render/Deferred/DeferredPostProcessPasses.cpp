@@ -3,6 +3,121 @@
 #include "../DeferredRenderer.h"
 #include "../../Core/GpuDebugMarkers.h"
 #include "../../RHI/DX12Device.h"
+#include <algorithm>
+#include <string>
+
+bool FDeferredPostProcessPasses::InitializePipelines(FDeferredRenderer& Owner, FDX12Device* Device, DXGI_FORMAT BackBufferFormat) const
+{
+    return Owner.CreateAutoExposureRootSignature(Device)
+        && Owner.CreateAutoExposurePipeline(Device)
+        && Owner.CreateTaaRootSignature(Device)
+        && Owner.CreateTaaPipeline(Device)
+        && Owner.CreateTonemapRootSignature(Device)
+        && Owner.CreateTonemapPipeline(Device, BackBufferFormat)
+        && Owner.CreateCasRootSignature(Device)
+        && Owner.CreateCasPipeline(Device, BackBufferFormat);
+}
+
+bool FDeferredPostProcessPasses::InitializeResources(FDeferredRenderer& Owner, FDX12Device* Device, uint32_t Width, uint32_t Height, uint32_t FrameCount) const
+{
+    return Owner.CreateLuminanceResources(Device)
+        && Owner.CreateTaaResources(Device, Width, Height, FrameCount);
+}
+
+bool FDeferredRenderer::CreateLuminanceResources(FDX12Device* Device)
+{
+    if (Device == nullptr)
+    {
+        return false;
+    }
+
+    D3D12_HEAP_PROPERTIES HeapProps = {};
+    HeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    D3D12_RESOURCE_DESC Desc = {};
+    Desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    Desc.Width = 1;
+    Desc.Height = 1;
+    Desc.DepthOrArraySize = 1;
+    Desc.MipLevels = 1;
+    Desc.Format = DXGI_FORMAT_R32_FLOAT;
+    Desc.SampleDesc.Count = 1;
+    Desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &HeapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &Desc,
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        nullptr,
+        IID_PPV_ARGS(LuminanceTextures[0].GetAddressOf())));
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &HeapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &Desc,
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        nullptr,
+        IID_PPV_ARGS(LuminanceTextures[1].GetAddressOf())));
+
+    if (LuminanceTextures[0])
+    {
+        LuminanceTextures[0]->SetName(L"LogAverageLuminanceA");
+    }
+    if (LuminanceTextures[1])
+    {
+        LuminanceTextures[1]->SetName(L"LogAverageLuminanceB");
+    }
+    LuminanceStates = { D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
+    return true;
+}
+
+bool FDeferredRenderer::CreateTaaResources(FDX12Device* Device, uint32_t Width, uint32_t Height, uint32_t FrameCount)
+{
+    if (Device == nullptr)
+    {
+        return false;
+    }
+
+    const uint32_t EffectiveFrameCount = (std::max)(1u, FrameCount);
+
+    D3D12_HEAP_PROPERTIES HeapProps = {};
+    HeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    D3D12_RESOURCE_DESC Desc = {};
+    Desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    Desc.Width = Width;
+    Desc.Height = Height;
+    Desc.DepthOrArraySize = 1;
+    Desc.MipLevels = 1;
+    Desc.Format = FDeferredRenderer::LightingBufferFormat;
+    Desc.SampleDesc.Count = 1;
+    Desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+    TaaHistoryTextures.clear();
+    TaaHistoryTextures.resize(EffectiveFrameCount);
+    for (uint32_t Index = 0; Index < EffectiveFrameCount; ++Index)
+    {
+        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+            &HeapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &Desc,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            nullptr,
+            IID_PPV_ARGS(TaaHistoryTextures[Index].GetAddressOf())));
+
+        if (TaaHistoryTextures[Index])
+        {
+            const std::wstring ResourceName = L"TaaHistory_" + std::to_wstring(Index);
+            TaaHistoryTextures[Index]->SetName(ResourceName.c_str());
+        }
+    }
+
+    TaaFrameCount = EffectiveFrameCount;
+    TaaStates.assign(EffectiveFrameCount, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    TaaHistoryValid.assign(EffectiveFrameCount, false);
+    return true;
+}
 
 void FDeferredPostProcessPasses::AddTemporalAAPass(FDeferredPassContext& Context) const
 {
