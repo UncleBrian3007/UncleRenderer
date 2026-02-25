@@ -737,12 +737,18 @@ void FRenderer::DispatchGpuCulling(
     const std::wstring EventLabel(EventName, EventName + std::strlen(EventName));
     FScopedPixEvent CullingEvent(CommandList, EventLabel.c_str());
 
+	const bool bDebugBindlessIndicesValid = 
+        GpuDebugPrintBufferUavBindlessIndex != UINT32_MAX 
+        && GpuDebugPrintStatsUavBindlessIndex != UINT32_MAX 
+        && GpuDebugLineBufferUavBindlessIndex != UINT32_MAX;
+
     if (ModelBoundsBindlessIndex == UINT32_MAX || MeshletDrawDataBindlessIndex == UINT32_MAX || MeshletRangeOffsetBindlessIndex == UINT32_MAX
         || MeshletVisibilitySrvBindlessIndices.empty() || MeshletVisibilityUavBindlessIndices.empty()
         || MeshletVisibilityLateSrvBindlessIndices.empty() || MeshletVisibilityLateUavBindlessIndices.empty()
         || MeshletRunCountUavBindlessIndices.empty()
         || IndirectCommandUavBindlessIndices.empty() || IndirectCommandTemplateBindlessIndices.empty() || MeshletConeAxisBindlessIndex == UINT32_MAX
-        || MeshletConeApexBindlessIndex == UINT32_MAX || GpuDebugPrintBufferUavBindlessIndex == UINT32_MAX || GpuDebugPrintStatsUavBindlessIndex == UINT32_MAX || GpuDebugLineBufferUavBindlessIndex == UINT32_MAX
+        || MeshletConeApexBindlessIndex == UINT32_MAX
+        || (bEnableGpuDebugPrint && !bDebugBindlessIndicesValid)
         || (bHZBOcclusionEnabled && HZBCullingBindlessIndex == UINT32_MAX))
     {
         return;
@@ -1700,8 +1706,7 @@ bool FRenderer::CreateGpuDebugPrintStatsPipeline(FDX12Device* Device)
     D3D12_ROOT_SIGNATURE_DESC1 RootDesc = {};
     RootDesc.NumParameters = _countof(RootParams);
     RootDesc.pParameters = RootParams;
-    RootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
-        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
+    RootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
 
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC VersionedRootDesc = {};
     VersionedRootDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
@@ -1781,7 +1786,7 @@ void FRenderer::DispatchGpuDebugPrintStats(FDX12CommandContext& CmdContext)
         return;
     }
 
-    ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap(), Device->GetSamplerDescriptorHeap() };
+    ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
     CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
     CommandList->SetPipelineState(GpuDebugPrintStatsPipeline.Get());
     CommandList->SetComputeRootSignature(GpuDebugPrintStatsRootSignature.Get());

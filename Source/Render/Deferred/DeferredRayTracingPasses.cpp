@@ -35,6 +35,7 @@ void FDeferredRayTracingPasses::AddRestirGIPass(FDeferredPassContext& Context) c
         Context.Resources.DepthHandle,
         Context.Resources.VelocityHandle,
         Context.Resources.LinearDepthHandle,
+        Context.Resources.RestirGiPrevLinearDepthHandle,
         Context.Resources.RestirGIHandle,
         Context.Resources.RestirGIHistoryHandle,
         Context.Resources.RestirGIInitialRadianceHandle,
@@ -628,7 +629,7 @@ void FDeferredRenderer::AddPathTracingAccumulationPass(FRenderGraph& Graph, cons
     });
 }
 
-void FDeferredRenderer::AddRestirGIPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle VelocityHandle, FRGResourceHandle LinearDepthHandle, FRGResourceHandle RestirGIHandle, FRGResourceHandle RestirGIHistoryHandle, FRGResourceHandle RestirGIInitialRadianceHandle, FRGResourceHandle RestirGIInitialRayDirectionHandle, FRGResourceHandle RestirGIReservoirDepthNormalAHandle, FRGResourceHandle RestirGIReservoirDepthNormalBHandle, FRGResourceHandle RestirGIReservoirSampleRadianceAHandle, FRGResourceHandle RestirGIReservoirSampleRadianceBHandle, FRGResourceHandle RestirGIReservoirRayDirectionAHandle, FRGResourceHandle RestirGIReservoirRayDirectionBHandle, FRGResourceHandle RestirGIReservoirMWAHandle, FRGResourceHandle RestirGIReservoirMWBHandle, FRGResourceHandle RestirGiInputSHHandle, FRGResourceHandle RestirGiVarianceHandle)
+void FDeferredRenderer::AddRestirGIPass(FRenderGraph& Graph, const FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle VelocityHandle, FRGResourceHandle LinearDepthHandle, FRGResourceHandle PrevLinearDepthHandle, FRGResourceHandle RestirGIHandle, FRGResourceHandle RestirGIHistoryHandle, FRGResourceHandle RestirGIInitialRadianceHandle, FRGResourceHandle RestirGIInitialRayDirectionHandle, FRGResourceHandle RestirGIReservoirDepthNormalAHandle, FRGResourceHandle RestirGIReservoirDepthNormalBHandle, FRGResourceHandle RestirGIReservoirSampleRadianceAHandle, FRGResourceHandle RestirGIReservoirSampleRadianceBHandle, FRGResourceHandle RestirGIReservoirRayDirectionAHandle, FRGResourceHandle RestirGIReservoirRayDirectionBHandle, FRGResourceHandle RestirGIReservoirMWAHandle, FRGResourceHandle RestirGIReservoirMWBHandle, FRGResourceHandle RestirGiInputSHHandle, FRGResourceHandle RestirGiVarianceHandle)
 {
     struct FRestirGIPassData
     {
@@ -740,7 +741,7 @@ void FDeferredRenderer::AddRestirGIPass(FRenderGraph& Graph, const FDeferredFram
         CommandList4->Dispatch(DispatchX, DispatchY, 1);
     };
 
-    Graph.AddPass<FRestirGIPassData>("InitialSampling", [&, DepthHandle, VelocityHandle, LinearDepthHandle, GBufferHandles, RestirGIHistoryHandle, RestirGIInitialRadianceHandle, RestirGIInitialRayDirectionHandle](FRestirGIPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FRestirGIPassData>("InitialSampling", [&, DepthHandle, VelocityHandle, LinearDepthHandle, PrevLinearDepthHandle, GBufferHandles, RestirGIHistoryHandle, RestirGIInitialRadianceHandle, RestirGIInitialRayDirectionHandle](FRestirGIPassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("RestirGI");
         Data.bEnabled = bRestirGIEnabled
@@ -754,6 +755,7 @@ void FDeferredRenderer::AddRestirGIPass(FRenderGraph& Graph, const FDeferredFram
         Builder.ReadTexture(DepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(VelocityHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(LinearDepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(PrevLinearDepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(RestirGIHistoryHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(GBufferHandles[1], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -779,7 +781,8 @@ void FDeferredRenderer::AddRestirGIPass(FRenderGraph& Graph, const FDeferredFram
             && (RestirGIInitialRadianceUavBindlessIndex != UINT32_MAX)
             && (RestirGIInitialRayDirectionUavBindlessIndex != UINT32_MAX)
             && (RestirGIHistorySrvBindlessIndex != UINT32_MAX)
-            && (LinearDepthBindlessIndex != UINT32_MAX);
+            && (LinearDepthBindlessIndex != UINT32_MAX)
+            && (RestirGiPrevLinearDepthSrvBindlessIndex != UINT32_MAX);
 
         const uint32_t BindlessIndices[28] =
         {
@@ -809,7 +812,7 @@ void FDeferredRenderer::AddRestirGIPass(FRenderGraph& Graph, const FDeferredFram
             UINT32_MAX,
             UINT32_MAX,
             RestirGIHistorySrvBindlessIndex,
-            LinearDepthBindlessIndex,
+            RestirGiPrevLinearDepthSrvBindlessIndex,
             GpuDebugLineBufferUavBindlessIndex
         };
 
@@ -818,7 +821,7 @@ void FDeferredRenderer::AddRestirGIPass(FRenderGraph& Graph, const FDeferredFram
         DispatchNewPass(Cmd, RestirGIInitialPipeline.Get(), L"InitialSampling", 0u, BindlessIndices, (FullWidth + 1u) / 2u, (FullHeight + 1u) / 2u, Data.bEnabled && bInputsValid);
     });
 
-    Graph.AddPass<FRestirGIPassData>("TemporalResampling", [&, DepthHandle, VelocityHandle, RestirGIInitialRadianceHandle, RestirGIInitialRayDirectionHandle, RestirGIReservoirDepthNormalAHandle, RestirGIReservoirDepthNormalBHandle, RestirGIReservoirSampleRadianceAHandle, RestirGIReservoirSampleRadianceBHandle, RestirGIReservoirRayDirectionAHandle, RestirGIReservoirRayDirectionBHandle, RestirGIReservoirMWAHandle, RestirGIReservoirMWBHandle](FRestirGIPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FRestirGIPassData>("TemporalResampling", [&, DepthHandle, VelocityHandle, PrevLinearDepthHandle, RestirGIInitialRadianceHandle, RestirGIInitialRayDirectionHandle, RestirGIReservoirDepthNormalAHandle, RestirGIReservoirDepthNormalBHandle, RestirGIReservoirSampleRadianceAHandle, RestirGIReservoirSampleRadianceBHandle, RestirGIReservoirRayDirectionAHandle, RestirGIReservoirRayDirectionBHandle, RestirGIReservoirMWAHandle, RestirGIReservoirMWBHandle](FRestirGIPassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("RestirGI");
         Data.bEnabled = bRestirGIEnabled
@@ -831,8 +834,10 @@ void FDeferredRenderer::AddRestirGIPass(FRenderGraph& Graph, const FDeferredFram
 
         Builder.ReadTexture(DepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(VelocityHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(PrevLinearDepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(RestirGIInitialRadianceHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(RestirGIInitialRayDirectionHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(PrevLinearDepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(RestirGIReservoirDepthNormalAHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(RestirGIReservoirSampleRadianceAHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(RestirGIReservoirRayDirectionAHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -866,7 +871,8 @@ void FDeferredRenderer::AddRestirGIPass(FRenderGraph& Graph, const FDeferredFram
             && (RestirGIReservoirDepthNormalBUavBindlessIndex != UINT32_MAX)
             && (RestirGIReservoirSampleRadianceBUavBindlessIndex != UINT32_MAX)
             && (RestirGIReservoirRayDirectionBUavBindlessIndex != UINT32_MAX)
-            && (RestirGIReservoirMWBUavBindlessIndex != UINT32_MAX);
+            && (RestirGIReservoirMWBUavBindlessIndex != UINT32_MAX)
+            && (RestirGiPrevLinearDepthSrvBindlessIndex != UINT32_MAX);
 
         const uint32_t BindlessIndices[28] =
         {
@@ -896,7 +902,7 @@ void FDeferredRenderer::AddRestirGIPass(FRenderGraph& Graph, const FDeferredFram
             UINT32_MAX,
             UINT32_MAX,
             RestirGIHistorySrvBindlessIndex,
-            LinearDepthBindlessIndex,
+            RestirGiPrevLinearDepthSrvBindlessIndex,
             GpuDebugLineBufferUavBindlessIndex
         };
 
@@ -905,7 +911,7 @@ void FDeferredRenderer::AddRestirGIPass(FRenderGraph& Graph, const FDeferredFram
         DispatchNewPass(Cmd, RestirGITemporalPipeline.Get(), L"TemporalResampling", 0u, BindlessIndices, (FullWidth + 1u) / 2u, (FullHeight + 1u) / 2u, Data.bEnabled && bInputsValid);
     });
 
-    Graph.AddPass<FRestirGIPassData>("SpatialResampling0", [&, RestirGIReservoirDepthNormalAHandle, RestirGIReservoirDepthNormalBHandle, RestirGIReservoirSampleRadianceAHandle, RestirGIReservoirSampleRadianceBHandle, RestirGIReservoirRayDirectionAHandle, RestirGIReservoirRayDirectionBHandle, RestirGIReservoirMWAHandle, RestirGIReservoirMWBHandle](FRestirGIPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FRestirGIPassData>("SpatialResampling0", [&, PrevLinearDepthHandle, RestirGIReservoirDepthNormalAHandle, RestirGIReservoirDepthNormalBHandle, RestirGIReservoirSampleRadianceAHandle, RestirGIReservoirSampleRadianceBHandle, RestirGIReservoirRayDirectionAHandle, RestirGIReservoirRayDirectionBHandle, RestirGIReservoirMWAHandle, RestirGIReservoirMWBHandle](FRestirGIPassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("RestirGI");
         Data.bEnabled = bRestirGIEnabled
@@ -916,6 +922,7 @@ void FDeferredRenderer::AddRestirGIPass(FRenderGraph& Graph, const FDeferredFram
             return;
         }
 
+        Builder.ReadTexture(PrevLinearDepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(RestirGIReservoirDepthNormalBHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(RestirGIReservoirSampleRadianceBHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(RestirGIReservoirRayDirectionBHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -945,7 +952,8 @@ void FDeferredRenderer::AddRestirGIPass(FRenderGraph& Graph, const FDeferredFram
             && (RestirGIReservoirDepthNormalAUavBindlessIndex != UINT32_MAX)
             && (RestirGIReservoirSampleRadianceAUavBindlessIndex != UINT32_MAX)
             && (RestirGIReservoirRayDirectionAUavBindlessIndex != UINT32_MAX)
-            && (RestirGIReservoirMWAUavBindlessIndex != UINT32_MAX);
+            && (RestirGIReservoirMWAUavBindlessIndex != UINT32_MAX)
+            && (RestirGiPrevLinearDepthSrvBindlessIndex != UINT32_MAX);
 
         const uint32_t BindlessIndices[28] =
         {
@@ -975,7 +983,7 @@ void FDeferredRenderer::AddRestirGIPass(FRenderGraph& Graph, const FDeferredFram
             UINT32_MAX,
             UINT32_MAX,
             RestirGIHistorySrvBindlessIndex,
-            LinearDepthBindlessIndex,
+            RestirGiPrevLinearDepthSrvBindlessIndex,
             GpuDebugLineBufferUavBindlessIndex
         };
 
@@ -984,7 +992,7 @@ void FDeferredRenderer::AddRestirGIPass(FRenderGraph& Graph, const FDeferredFram
         DispatchNewPass(Cmd, RestirGISpatialPipeline.Get(), L"SpatialResampling0", 0u, BindlessIndices, (FullWidth + 1u) / 2u, (FullHeight + 1u) / 2u, Data.bEnabled && bInputsValid);
     });
 
-    Graph.AddPass<FRestirGIPassData>("SpatialResampling1", [&, RestirGIReservoirDepthNormalAHandle, RestirGIReservoirDepthNormalBHandle, RestirGIReservoirSampleRadianceAHandle, RestirGIReservoirSampleRadianceBHandle, RestirGIReservoirRayDirectionAHandle, RestirGIReservoirRayDirectionBHandle, RestirGIReservoirMWAHandle, RestirGIReservoirMWBHandle](FRestirGIPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FRestirGIPassData>("SpatialResampling1", [&, PrevLinearDepthHandle, RestirGIReservoirDepthNormalAHandle, RestirGIReservoirDepthNormalBHandle, RestirGIReservoirSampleRadianceAHandle, RestirGIReservoirSampleRadianceBHandle, RestirGIReservoirRayDirectionAHandle, RestirGIReservoirRayDirectionBHandle, RestirGIReservoirMWAHandle, RestirGIReservoirMWBHandle](FRestirGIPassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("RestirGI");
         Data.bEnabled = bRestirGIEnabled
@@ -1024,7 +1032,8 @@ void FDeferredRenderer::AddRestirGIPass(FRenderGraph& Graph, const FDeferredFram
             && (RestirGIReservoirDepthNormalBUavBindlessIndex != UINT32_MAX)
             && (RestirGIReservoirSampleRadianceBUavBindlessIndex != UINT32_MAX)
             && (RestirGIReservoirRayDirectionBUavBindlessIndex != UINT32_MAX)
-            && (RestirGIReservoirMWBUavBindlessIndex != UINT32_MAX);
+            && (RestirGIReservoirMWBUavBindlessIndex != UINT32_MAX)
+            && (RestirGiPrevLinearDepthSrvBindlessIndex != UINT32_MAX);
 
         const uint32_t BindlessIndices[28] =
         {
@@ -1054,7 +1063,7 @@ void FDeferredRenderer::AddRestirGIPass(FRenderGraph& Graph, const FDeferredFram
             UINT32_MAX,
             UINT32_MAX,
             RestirGIHistorySrvBindlessIndex,
-            LinearDepthBindlessIndex,
+            RestirGiPrevLinearDepthSrvBindlessIndex,
             GpuDebugLineBufferUavBindlessIndex
         };
 
@@ -1063,7 +1072,7 @@ void FDeferredRenderer::AddRestirGIPass(FRenderGraph& Graph, const FDeferredFram
         DispatchNewPass(Cmd, RestirGISpatialPipeline.Get(), L"SpatialResampling1", 1u, BindlessIndices, (FullWidth + 1u) / 2u, (FullHeight + 1u) / 2u, Data.bEnabled && bInputsValid);
     });
 
-    Graph.AddPass<FRestirGIPassData>("RestirGIResolve", [&, DepthHandle, GBufferHandles, RestirGIHandle, RestirGIReservoirDepthNormalBHandle, RestirGIReservoirSampleRadianceBHandle, RestirGIReservoirRayDirectionBHandle, RestirGIReservoirMWBHandle, RestirGiInputSHHandle, RestirGiVarianceHandle](FRestirGIPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FRestirGIPassData>("RestirGIResolve", [&, DepthHandle, PrevLinearDepthHandle, GBufferHandles, RestirGIHandle, RestirGIReservoirDepthNormalBHandle, RestirGIReservoirSampleRadianceBHandle, RestirGIReservoirRayDirectionBHandle, RestirGIReservoirMWBHandle, RestirGiInputSHHandle, RestirGiVarianceHandle](FRestirGIPassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("RestirGI");
         Data.bEnabled = bRestirGIEnabled
@@ -1075,6 +1084,7 @@ void FDeferredRenderer::AddRestirGIPass(FRenderGraph& Graph, const FDeferredFram
         }
 
         Builder.ReadTexture(DepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(PrevLinearDepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(GBufferHandles[1], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(GBufferHandles[2], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -1106,38 +1116,39 @@ void FDeferredRenderer::AddRestirGIPass(FRenderGraph& Graph, const FDeferredFram
             && (RestirGIReservoirMWBSrvBindlessIndex != UINT32_MAX)
             && (RestirGiInputSHUavBindlessIndex != UINT32_MAX)
             && (RestirGiVarianceUavBindlessIndex != UINT32_MAX)
-;
+            && (RestirGiPrevLinearDepthSrvBindlessIndex != UINT32_MAX);
 
+        // RestirGI resolve bindless slots contract: output UAVs must be b2[23]/b2[24].
         const uint32_t BindlessIndices[28] =
         {
-            RestirGIUavBindlessIndex,
-            DepthBindlessIndex,
-            VelocityBindlessIndex,
-            GBufferBindlessIndices[0],
-            GBufferBindlessIndices[1],
-            GBufferBindlessIndices[2],
-            InstanceDataBindlessIndex,
-            EnvironmentCubeBindlessIndex,
-            LinearClampSamplerIndex,
-            RestirGiInputSHUavBindlessIndex,
-            RestirGiVarianceUavBindlessIndex,
-            UINT32_MAX,
-            UINT32_MAX,
-            UINT32_MAX,
-            UINT32_MAX,
-            UINT32_MAX,
-            UINT32_MAX,
-            UINT32_MAX,
-            UINT32_MAX,
-            RestirGIReservoirDepthNormalBSrvBindlessIndex,
-            RestirGIReservoirSampleRadianceBSrvBindlessIndex,
-            RestirGIReservoirRayDirectionBSrvBindlessIndex,
-            RestirGIReservoirMWBSrvBindlessIndex,
-            UINT32_MAX,
-            UINT32_MAX,
-            RestirGIHistorySrvBindlessIndex,
-            LinearDepthBindlessIndex,
-            GpuDebugLineBufferUavBindlessIndex
+            RestirGIUavBindlessIndex,                      // b2[0]
+            DepthBindlessIndex,                           // b2[1]
+            VelocityBindlessIndex,                        // b2[2]
+            GBufferBindlessIndices[0],                    // b2[3]
+            GBufferBindlessIndices[1],                    // b2[4]
+            GBufferBindlessIndices[2],                    // b2[5]
+            InstanceDataBindlessIndex,                    // b2[6]
+            EnvironmentCubeBindlessIndex,                 // b2[7]
+            LinearClampSamplerIndex,                      // b2[8]
+            UINT32_MAX,                                   // b2[9]  initial radiance SRV (unused in resolve)
+            UINT32_MAX,                                   // b2[10] initial ray direction SRV (unused in resolve)
+            UINT32_MAX,                                   // b2[11]
+            UINT32_MAX,                                   // b2[12]
+            UINT32_MAX,                                   // b2[13]
+            UINT32_MAX,                                   // b2[14]
+            UINT32_MAX,                                   // b2[15]
+            UINT32_MAX,                                   // b2[16]
+            UINT32_MAX,                                   // b2[17]
+            UINT32_MAX,                                   // b2[18]
+            RestirGIReservoirDepthNormalBSrvBindlessIndex,// b2[19]
+            RestirGIReservoirSampleRadianceBSrvBindlessIndex, // b2[20]
+            RestirGIReservoirRayDirectionBSrvBindlessIndex,   // b2[21]
+            RestirGIReservoirMWBSrvBindlessIndex,         // b2[22]
+            RestirGiInputSHUavBindlessIndex,              // b2[23] resolve InputSH UAV output
+            RestirGiVarianceUavBindlessIndex,             // b2[24] resolve Variance UAV output
+            RestirGIHistorySrvBindlessIndex,              // b2[25]
+            RestirGiPrevLinearDepthSrvBindlessIndex,      // b2[26] previous linear depth SRV
+            GpuDebugLineBufferUavBindlessIndex            // b2[27]
         };
 
         const uint32_t FullWidth = static_cast<uint32_t>(Viewport.Width);

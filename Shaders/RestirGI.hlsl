@@ -33,34 +33,34 @@ cbuffer RestirGIConstants : register(b1)
 
 cbuffer RestirGIBindless : register(b2)
 {
-    uint OutputTextureUavIndex;
-    uint DepthIndex;
-    uint VelocityIndex;
-    uint GBufferAIndex;
-    uint GBufferBIndex;
-    uint GBufferCIndex;
-    uint InstanceDataBufferIndex;
-    uint EnvironmentCubeBindlessIndex;
-    uint LinearClampSamplerIndex;
-    uint InputInitialRadianceSrvIndex;
-    uint InputInitialRayDirectionSrvIndex;
-    uint HistoryDepthNormalSrvIndex;
-    uint HistorySampleRadianceSrvIndex;
-    uint HistoryRayDirectionSrvIndex;
-    uint HistoryMWSrvIndex;
-    uint OutputDepthNormalUavIndex;
-    uint OutputSampleRadianceUavIndex;
-    uint OutputRayDirectionUavIndex;
-    uint OutputMWUavIndex;
-    uint InputDepthNormalSrvIndex;
-    uint InputSampleRadianceSrvIndex;
-    uint InputRayDirectionSrvIndex;
-    uint InputMWSrvIndex;
-    uint UnusedResolveUavIndex0;
-    uint UnusedResolveUavIndex1;
-    uint HistoryIrradianceIndex;
-    uint PrevLinearDepthIndex;
-    uint DebugLineBufferUavIndex;
+    uint OutputTextureUavIndex;         // b2[0]  : final GI output UAV
+    uint DepthIndex;                    // b2[1]  : depth SRV
+    uint VelocityIndex;                 // b2[2]  : velocity SRV
+    uint GBufferAIndex;                 // b2[3]  : gbuffer A SRV
+    uint GBufferBIndex;                 // b2[4]  : gbuffer B SRV
+    uint GBufferCIndex;                 // b2[5]  : gbuffer C SRV
+    uint InstanceDataBufferIndex;       // b2[6]  : instance data buffer SRV
+    uint EnvironmentCubeBindlessIndex;  // b2[7]  : environment cube SRV
+    uint LinearClampSamplerIndex;       // b2[8]  : linear clamp sampler
+    uint InputInitialRadianceSrvIndex;  // b2[9]  : initial sampling radiance SRV
+    uint InputInitialRayDirectionSrvIndex; // b2[10] : initial sampling ray direction SRV
+    uint HistoryDepthNormalSrvIndex;    // b2[11] : temporal history depth/normal SRV
+    uint HistorySampleRadianceSrvIndex; // b2[12] : temporal history sample radiance SRV
+    uint HistoryRayDirectionSrvIndex;   // b2[13] : temporal history ray direction SRV
+    uint HistoryMWSrvIndex;             // b2[14] : temporal history M/W SRV
+    uint OutputDepthNormalUavIndex;     // b2[15] : output depth/normal UAV
+    uint OutputSampleRadianceUavIndex;  // b2[16] : output sample radiance UAV
+    uint OutputRayDirectionUavIndex;    // b2[17] : output ray direction UAV
+    uint OutputMWUavIndex;              // b2[18] : output M/W UAV
+    uint InputDepthNormalSrvIndex;      // b2[19] : spatial input depth/normal SRV
+    uint InputSampleRadianceSrvIndex;   // b2[20] : spatial input sample radiance SRV
+    uint InputRayDirectionSrvIndex;     // b2[21] : spatial input ray direction SRV
+    uint InputMWSrvIndex;               // b2[22] : spatial input M/W SRV
+    uint ResolveInputSHUavIndex;        // b2[23] : resolve output InputSH UAV
+    uint ResolveVarianceUavIndex;       // b2[24] : resolve output Variance UAV
+    uint HistoryIrradianceIndex;        // b2[25] : history irradiance SRV
+    uint PrevLinearDepthIndex;          // b2[26] : previous linear depth SRV
+    uint DebugLineBufferUavIndex;       // b2[27] : debug line buffer UAV
 };
 
 #include "RayTracingCommon.hlsl"
@@ -558,8 +558,8 @@ void CSResolve(uint3 DispatchThreadId : SV_DispatchThreadID)
     Texture2D<float2> ReservoirMW = ResourceDescriptorHeap[InputMWSrvIndex];
 
     RWTexture2D<float4> OutputTexture = ResourceDescriptorHeap[OutputTextureUavIndex];
-    RWTexture2D<uint4> InputSHOut = ResourceDescriptorHeap[UnusedResolveUavIndex0];
-    RWTexture2D<float> VarianceOut = ResourceDescriptorHeap[UnusedResolveUavIndex1];
+    RWTexture2D<uint4> InputSHOut = ResourceDescriptorHeap[ResolveInputSHUavIndex];
+    RWTexture2D<float> VarianceOut = ResourceDescriptorHeap[ResolveVarianceUavIndex];
     const float Depth = DepthTexture[Pixel];
 
     if (Enabled == 0u || Depth <= 0.0f || Depth >= 1.0f)
