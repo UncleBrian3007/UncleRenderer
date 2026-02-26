@@ -3,10 +3,13 @@
 #include "../RendererUtils.h"
 #include "../ShaderCompiler.h"
 #include "../../Core/GpuDebugMarkers.h"
+#include "../../Core/Logger.h"
 #include "../../RHI/DX12Device.h"
 #include <algorithm>
-#include <cstring>
 #include <array>
+#include <cstring>
+#include <mutex>
+#include <string>
 #include <d3dx12.h>
 namespace
 {
@@ -445,6 +448,484 @@ bool FDeferredRenderer::CreateGtaoPipeline(FDX12Device* Device)
     HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(GtaoPipelines[0].GetAddressOf())));
     PsoDesc.PS = { PSByteCodes[1].data(), PSByteCodes[1].size() };
     HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(GtaoPipelines[1].GetAddressOf())));
+    return true;
+}
+
+bool FDeferredRenderer::CreateSsrRootSignature(FDX12Device* Device)
+{
+    D3D12_ROOT_PARAMETER1 RootParams[3] = {};
+
+    // RootParams[0]: Scene constants (b0), used in Shaders/SsrSWTracePS.hlsl PSMain
+    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    RootParams[0].Descriptor.ShaderRegister = 0;
+    RootParams[0].Descriptor.RegisterSpace = 0;
+    RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+
+    // RootParams[1]: SSR constants (b1), used in Shaders/SsrSWTracePS.hlsl PSMain
+    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    RootParams[1].Constants.Num32BitValues = 15;
+    RootParams[1].Constants.RegisterSpace = 0;
+    RootParams[1].Constants.ShaderRegister = 1;
+
+    // RootParams[2]: SSR bindless indices (b2), used in Shaders/SsrSWTracePS.hlsl PSMain
+    RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    RootParams[2].Constants.Num32BitValues = 9;
+    RootParams[2].Constants.RegisterSpace = 0;
+    RootParams[2].Constants.ShaderRegister = 2;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
+    RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    RootSigDesc.Desc_1_1.NumParameters = _countof(RootParams);
+    RootSigDesc.Desc_1_1.pParameters = RootParams;
+    RootSigDesc.Desc_1_1.NumStaticSamplers = 0;
+    RootSigDesc.Desc_1_1.pStaticSamplers = nullptr;
+    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+        | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
+        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
+
+    ComPtr<ID3DBlob> SerializedSig;
+    ComPtr<ID3DBlob> ErrorBlob;
+    HR_CHECK(D3D12SerializeVersionedRootSignature(&RootSigDesc, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
+
+    if (ErrorBlob)
+    {
+        OutputDebugStringA(static_cast<const char*>(ErrorBlob->GetBufferPointer()));
+    }
+
+    HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(SsrRootSignature.GetAddressOf())));
+    return true;
+}
+
+bool FDeferredRenderer::CreateSsrPipeline(FDX12Device* Device)
+{
+    FShaderCompiler Compiler;
+
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
+
+    if (!Compiler.CompileFromFile(L"Shaders/SsrSWTracePS.hlsl", L"VSMain", VSTarget, SsrGraphicsVsBytecode))
+    {
+        return false;
+    }
+
+    for (size_t PipelineIndex = 0; PipelineIndex < SsrPipelines.size(); ++PipelineIndex)
+    {
+        SsrPipelines[PipelineIndex].Reset();
+        SsrGraphicsPsBytecodes[PipelineIndex].clear();
+        SsrGraphicsPsCompiled[PipelineIndex] = false;
+        SsrGraphicsFailureLogged[PipelineIndex] = false;
+    }
+
+    return true;
+}
+
+bool FDeferredRenderer::CreateSsrDenoiseRootSignature(FDX12Device* Device)
+{
+    D3D12_ROOT_PARAMETER1 RootParams[2] = {};
+
+    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    RootParams[0].Constants.Num32BitValues = 4;
+    RootParams[0].Constants.RegisterSpace = 0;
+    RootParams[0].Constants.ShaderRegister = 0;
+
+    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    RootParams[1].Constants.Num32BitValues = 5;
+    RootParams[1].Constants.RegisterSpace = 0;
+    RootParams[1].Constants.ShaderRegister = 1;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
+    RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    RootSigDesc.Desc_1_1.NumParameters = _countof(RootParams);
+    RootSigDesc.Desc_1_1.pParameters = RootParams;
+    RootSigDesc.Desc_1_1.NumStaticSamplers = 0;
+    RootSigDesc.Desc_1_1.pStaticSamplers = nullptr;
+    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+        | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
+        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
+
+    ComPtr<ID3DBlob> SerializedSig;
+    ComPtr<ID3DBlob> ErrorBlob;
+    HR_CHECK(D3D12SerializeVersionedRootSignature(&RootSigDesc, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
+
+    if (ErrorBlob)
+    {
+        OutputDebugStringA(static_cast<const char*>(ErrorBlob->GetBufferPointer()));
+    }
+
+    HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(SsrDenoiseRootSignature.GetAddressOf())));
+    return true;
+}
+
+bool FDeferredRenderer::CreateSsrDenoisePipeline(FDX12Device* Device)
+{
+    FShaderCompiler Compiler;
+    std::vector<uint8_t> VSByteCode;
+    std::vector<uint8_t> PSByteCode;
+
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
+    const std::wstring PSTarget = RendererUtils::BuildShaderTarget(L"ps", ShaderModel);
+
+    if (!Compiler.CompileFromFile(L"Shaders/ScreenSpaceReflectionsDenoise.hlsl", L"VSMain", VSTarget, VSByteCode))
+    {
+        return false;
+    }
+
+    if (!Compiler.CompileFromFile(L"Shaders/ScreenSpaceReflectionsDenoise.hlsl", L"PSMain", PSTarget, PSByteCode))
+    {
+        return false;
+    }
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
+    PsoDesc.pRootSignature = SsrDenoiseRootSignature.Get();
+    PsoDesc.VS = { VSByteCode.data(), VSByteCode.size() };
+    PsoDesc.PS = { PSByteCode.data(), PSByteCode.size() };
+    PsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    PsoDesc.SampleDesc.Count = 1;
+    PsoDesc.SampleMask = UINT_MAX;
+
+    PsoDesc.RasterizerState = {};
+    PsoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    PsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    PsoDesc.RasterizerState.FrontCounterClockwise = TRUE;
+    PsoDesc.RasterizerState.DepthClipEnable = TRUE;
+
+    PsoDesc.BlendState = {};
+    PsoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    PsoDesc.DepthStencilState = {};
+    PsoDesc.DepthStencilState.DepthEnable = FALSE;
+    PsoDesc.DepthStencilState.StencilEnable = FALSE;
+    PsoDesc.NumRenderTargets = 1;
+    PsoDesc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    PsoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
+
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(SsrDenoisePipeline.GetAddressOf())));
+    return true;
+}
+
+bool FDeferredRenderer::CreateSsrRayGatherRootSignature(FDX12Device* Device)
+{
+    D3D12_ROOT_PARAMETER1 RootParams[3] = {};
+
+    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[0].Descriptor.ShaderRegister = 0;
+    RootParams[0].Descriptor.RegisterSpace = 0;
+    RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+
+    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[1].Constants.Num32BitValues = 11;
+    RootParams[1].Constants.RegisterSpace = 0;
+    RootParams[1].Constants.ShaderRegister = 1;
+
+    RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[2].Constants.Num32BitValues = 6;
+    RootParams[2].Constants.RegisterSpace = 0;
+    RootParams[2].Constants.ShaderRegister = 2;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
+    RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    RootSigDesc.Desc_1_1.NumParameters = _countof(RootParams);
+    RootSigDesc.Desc_1_1.pParameters = RootParams;
+    RootSigDesc.Desc_1_1.NumStaticSamplers = 0;
+    RootSigDesc.Desc_1_1.pStaticSamplers = nullptr;
+    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
+        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
+
+    ComPtr<ID3DBlob> SerializedSig;
+    ComPtr<ID3DBlob> ErrorBlob;
+    HR_CHECK(D3D12SerializeVersionedRootSignature(&RootSigDesc, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
+
+    if (ErrorBlob)
+    {
+        OutputDebugStringA(static_cast<const char*>(ErrorBlob->GetBufferPointer()));
+    }
+
+    HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(SsrRayGatherRootSignature.GetAddressOf())));
+    return true;
+}
+
+bool FDeferredRenderer::CreateSsrRayGatherPipeline(FDX12Device* Device)
+{
+    FShaderCompiler Compiler;
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring CSTarget = RendererUtils::BuildShaderTarget(L"cs", ShaderModel);
+
+    std::vector<uint8_t> CSByteCode;
+    if (!Compiler.CompileFromFile(L"Shaders/SsrRayGather.hlsl", L"CSMain", CSTarget, CSByteCode))
+    {
+        return false;
+    }
+
+    D3D12_COMPUTE_PIPELINE_STATE_DESC PsoDesc = {};
+    PsoDesc.pRootSignature = SsrRayGatherRootSignature.Get();
+    PsoDesc.CS = { CSByteCode.data(), CSByteCode.size() };
+    HR_CHECK(Device->GetDevice()->CreateComputePipelineState(&PsoDesc, IID_PPV_ARGS(SsrRayGatherPipeline.GetAddressOf())));
+    return true;
+}
+
+bool FDeferredRenderer::CreateSsrSwTraceRootSignature(FDX12Device* Device)
+{
+    D3D12_ROOT_PARAMETER1 RootParams[3] = {};
+
+    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[0].Descriptor.ShaderRegister = 0;
+    RootParams[0].Descriptor.RegisterSpace = 0;
+    RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+
+    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[1].Constants.Num32BitValues = 13;
+    RootParams[1].Constants.RegisterSpace = 0;
+    RootParams[1].Constants.ShaderRegister = 1;
+
+    RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[2].Constants.Num32BitValues = 10;
+    RootParams[2].Constants.RegisterSpace = 0;
+    RootParams[2].Constants.ShaderRegister = 2;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
+    RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    RootSigDesc.Desc_1_1.NumParameters = _countof(RootParams);
+    RootSigDesc.Desc_1_1.pParameters = RootParams;
+    RootSigDesc.Desc_1_1.NumStaticSamplers = 0;
+    RootSigDesc.Desc_1_1.pStaticSamplers = nullptr;
+    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
+        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
+
+    ComPtr<ID3DBlob> SerializedSig;
+    ComPtr<ID3DBlob> ErrorBlob;
+    HR_CHECK(D3D12SerializeVersionedRootSignature(&RootSigDesc, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
+
+    if (ErrorBlob)
+    {
+        OutputDebugStringA(static_cast<const char*>(ErrorBlob->GetBufferPointer()));
+    }
+
+    HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(SsrSwTraceRootSignature.GetAddressOf())));
+    return true;
+}
+
+bool FDeferredRenderer::CreateSsrSwTracePipeline(FDX12Device* Device)
+{
+    (void)Device;
+
+    for (size_t PipelineIndex = 0; PipelineIndex < SsrSwTracePipelines.size(); ++PipelineIndex)
+    {
+        SsrSwTracePipelines[PipelineIndex].Reset();
+        SsrSwTraceCsBytecodes[PipelineIndex].clear();
+        SsrSwTraceCsCompiled[PipelineIndex] = false;
+        SsrSwTraceFailureLogged[PipelineIndex] = false;
+    }
+
+    return true;
+}
+
+bool FDeferredRenderer::CreateSsrBuildIndirectArgsRootSignature(FDX12Device* Device)
+{
+    D3D12_ROOT_PARAMETER1 RootParams[2] = {};
+
+    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[0].Constants.Num32BitValues = 2;
+    RootParams[0].Constants.RegisterSpace = 0;
+    RootParams[0].Constants.ShaderRegister = 0;
+
+    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[1].Constants.Num32BitValues = 2;
+    RootParams[1].Constants.RegisterSpace = 0;
+    RootParams[1].Constants.ShaderRegister = 1;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
+    RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    RootSigDesc.Desc_1_1.NumParameters = _countof(RootParams);
+    RootSigDesc.Desc_1_1.pParameters = RootParams;
+    RootSigDesc.Desc_1_1.NumStaticSamplers = 0;
+    RootSigDesc.Desc_1_1.pStaticSamplers = nullptr;
+    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
+        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
+
+    ComPtr<ID3DBlob> SerializedSig;
+    ComPtr<ID3DBlob> ErrorBlob;
+    HR_CHECK(D3D12SerializeVersionedRootSignature(&RootSigDesc, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
+
+    if (ErrorBlob)
+    {
+        OutputDebugStringA(static_cast<const char*>(ErrorBlob->GetBufferPointer()));
+    }
+
+    HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(SsrBuildIndirectArgsRootSignature.GetAddressOf())));
+    return true;
+}
+
+bool FDeferredRenderer::CreateSsrBuildIndirectArgsPipeline(FDX12Device* Device)
+{
+    FShaderCompiler Compiler;
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring CSTarget = RendererUtils::BuildShaderTarget(L"cs", ShaderModel);
+
+    std::vector<uint8_t> CSByteCode;
+    if (!Compiler.CompileFromFile(L"Shaders/SsrBuildIndirectArgs.hlsl", L"CSMain", CSTarget, CSByteCode))
+    {
+        return false;
+    }
+
+    D3D12_COMPUTE_PIPELINE_STATE_DESC PsoDesc = {};
+    PsoDesc.pRootSignature = SsrBuildIndirectArgsRootSignature.Get();
+    PsoDesc.CS = { CSByteCode.data(), CSByteCode.size() };
+    HR_CHECK(Device->GetDevice()->CreateComputePipelineState(&PsoDesc, IID_PPV_ARGS(SsrBuildIndirectArgsPipeline.GetAddressOf())));
+    return true;
+}
+
+bool FDeferredRenderer::CreateSsrResolveRootSignature(FDX12Device* Device)
+{
+    D3D12_ROOT_PARAMETER1 RootParams[2] = {};
+
+    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[0].Constants.Num32BitValues = 5;
+    RootParams[0].Constants.RegisterSpace = 0;
+    RootParams[0].Constants.ShaderRegister = 1;
+
+    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[1].Constants.Num32BitValues = 6;
+    RootParams[1].Constants.RegisterSpace = 0;
+    RootParams[1].Constants.ShaderRegister = 2;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
+    RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    RootSigDesc.Desc_1_1.NumParameters = _countof(RootParams);
+    RootSigDesc.Desc_1_1.pParameters = RootParams;
+    RootSigDesc.Desc_1_1.NumStaticSamplers = 0;
+    RootSigDesc.Desc_1_1.pStaticSamplers = nullptr;
+    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
+        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
+
+    ComPtr<ID3DBlob> SerializedSig;
+    ComPtr<ID3DBlob> ErrorBlob;
+    HR_CHECK(D3D12SerializeVersionedRootSignature(&RootSigDesc, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
+
+    if (ErrorBlob)
+    {
+        OutputDebugStringA(static_cast<const char*>(ErrorBlob->GetBufferPointer()));
+    }
+
+    HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(SsrResolveRootSignature.GetAddressOf())));
+    return true;
+}
+
+bool FDeferredRenderer::CreateSsrResolvePipeline(FDX12Device* Device)
+{
+    FShaderCompiler Compiler;
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring CSTarget = RendererUtils::BuildShaderTarget(L"cs", ShaderModel);
+
+    std::vector<uint8_t> CSByteCode;
+    if (!Compiler.CompileFromFile(L"Shaders/SsrResolve.hlsl", L"CSMain", CSTarget, CSByteCode))
+    {
+        return false;
+    }
+
+    D3D12_COMPUTE_PIPELINE_STATE_DESC PsoDesc = {};
+    PsoDesc.pRootSignature = SsrResolveRootSignature.Get();
+    PsoDesc.CS = { CSByteCode.data(), CSByteCode.size() };
+    HR_CHECK(Device->GetDevice()->CreateComputePipelineState(&PsoDesc, IID_PPV_ARGS(SsrResolvePipeline.GetAddressOf())));
+    return true;
+}
+
+bool FDeferredRenderer::CreateHZBRootSignature(FDX12Device* Device)
+{
+    D3D12_ROOT_PARAMETER1 RootParams[2] = {};
+
+    // RootParams[0]: HZB constants (mip counts, dimensions, source mip), used in Shaders/BuildHZB.hlsl BuildHZB
+    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[0].Constants.Num32BitValues = 12;
+    RootParams[0].Constants.RegisterSpace = 0;
+    RootParams[0].Constants.ShaderRegister = 0;
+
+    // RootParams[1]: HZB bindless indices (b1), used in Shaders/BuildHZB.hlsl BuildHZB
+    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[1].Constants.Num32BitValues = 6;
+    RootParams[1].Constants.RegisterSpace = 0;
+    RootParams[1].Constants.ShaderRegister = 1;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
+    RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    RootSigDesc.Desc_1_1.NumParameters = _countof(RootParams);
+    RootSigDesc.Desc_1_1.pParameters = RootParams;
+    RootSigDesc.Desc_1_1.NumStaticSamplers = 0;
+    RootSigDesc.Desc_1_1.pStaticSamplers = nullptr;
+    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+
+    ComPtr<ID3DBlob> SerializedSig;
+    ComPtr<ID3DBlob> ErrorBlob;
+    HR_CHECK(D3D12SerializeVersionedRootSignature(&RootSigDesc, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
+
+    if (ErrorBlob)
+    {
+        OutputDebugStringA(static_cast<const char*>(ErrorBlob->GetBufferPointer()));
+    }
+
+    HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(HZBRootSignature.GetAddressOf())));
+    return true;
+}
+
+bool FDeferredRenderer::CreateHZBPipeline(FDX12Device* Device)
+{
+    FShaderCompiler Compiler;
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring CSTarget = RendererUtils::BuildShaderTarget(L"cs", ShaderModel);
+
+    for (size_t PipelineIndex = 0; PipelineIndex < HZBPipelines.size(); ++PipelineIndex)
+    {
+        std::vector<uint8_t> CSByteCode;
+        const std::wstring Define = L"HZB_MIPS_PER_DISPATCH=" + std::to_wstring(PipelineIndex + 1);
+        const std::vector<std::wstring> Defines = { Define };
+
+        if (!Compiler.CompileFromFile(L"Shaders/BuildHZB.hlsl", L"BuildHZB", CSTarget, CSByteCode, Defines))
+        {
+            return false;
+        }
+
+        D3D12_COMPUTE_PIPELINE_STATE_DESC PsoDesc = {};
+        PsoDesc.pRootSignature = HZBRootSignature.Get();
+        PsoDesc.CS = { CSByteCode.data(), CSByteCode.size() };
+
+        HR_CHECK(Device->GetDevice()->CreateComputePipelineState(&PsoDesc, IID_PPV_ARGS(HZBPipelines[PipelineIndex].GetAddressOf())));
+    }
+    return true;
+}
+
+bool FDeferredRenderer::CreateSsrDispatchCommandSignature(FDX12Device* Device)
+{
+    if (Device == nullptr)
+    {
+        return false;
+    }
+
+    D3D12_INDIRECT_ARGUMENT_DESC ArgumentDesc = {};
+    ArgumentDesc.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
+
+    D3D12_COMMAND_SIGNATURE_DESC CommandDesc = {};
+    CommandDesc.ByteStride = sizeof(D3D12_DISPATCH_ARGUMENTS);
+    CommandDesc.NumArgumentDescs = 1;
+    CommandDesc.pArgumentDescs = &ArgumentDesc;
+
+    HR_CHECK(Device->GetDevice()->CreateCommandSignature(&CommandDesc, nullptr, IID_PPV_ARGS(SsrDispatchCommandSignature.ReleaseAndGetAddressOf())));
     return true;
 }
 

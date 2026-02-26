@@ -1530,9 +1530,6 @@ void FDeferredRayTracingPasses::AddRestirGIPassImpl(FDeferredPassContext& Contex
     auto& RestirGiInputSHUavBindlessIndex = Owner.RestirGiInputSHUavBindlessIndex;
     auto& RestirGiVarianceUavBindlessIndex = Owner.RestirGiVarianceUavBindlessIndex;
 
-    auto GetFrameIndex = [&Owner]() { return Owner.GetFrameIndex(); };
-    auto GetSceneConstantBufferAddress = [&Owner]() { return Owner.GetSceneConstantBufferAddress(); };
-
     struct FRestirGIPassData
     {
         bool bEnabled = false;
@@ -1602,7 +1599,7 @@ void FDeferredRayTracingPasses::AddRestirGIPassImpl(FDeferredPassContext& Contex
         const uint32_t HalfWidth = (FullWidth + 1u) / 2u;
         const uint32_t HalfHeight = (FullHeight + 1u) / 2u;
         const uint32_t MaxHistoryFrames = (std::max)(1u, RestirGIMaxHistoryFrames);
-        const uint32_t SequenceFrame = bRestirGIFreezeFrame ? RestirGIFrozenSequenceFrame : (FrameState.bTaaActive ? FrameState.TaaFrameIndex : GetFrameIndex());
+        const uint32_t SequenceFrame = bRestirGIFreezeFrame ? RestirGIFrozenSequenceFrame : (FrameState.bTaaActive ? FrameState.TaaFrameIndex : Owner.GetFrameIndex());
 
         const FRestirGIConstants Constants =
         {
@@ -1610,7 +1607,7 @@ void FDeferredRayTracingPasses::AddRestirGIPassImpl(FDeferredPassContext& Contex
             FullHeight,
             HalfWidth,
             HalfHeight,
-            FrameState.bTaaActive ? FrameState.TaaFrameIndex : GetFrameIndex(),
+            FrameState.bTaaActive ? FrameState.TaaFrameIndex : Owner.GetFrameIndex(),
             bRestirGIEnabled ? 1u : 0u,
             (bRestirGIHistoryValid && RestirGIHistoryFrameCount >= MaxHistoryFrames) ? 1u : 0u,
             SpatialPassIndex,
@@ -1633,7 +1630,7 @@ void FDeferredRayTracingPasses::AddRestirGIPassImpl(FDeferredPassContext& Contex
         CommandList4->SetComputeRootSignature(RestirGIRootSignature.Get());
         CommandList4->SetPipelineState(PipelineState);
         CommandList4->SetComputeRootShaderResourceView(0, TlasResource->GetGPUVirtualAddress());
-        CommandList4->SetComputeRootConstantBufferView(1, GetSceneConstantBufferAddress());
+        CommandList4->SetComputeRootConstantBufferView(1, Owner.GetSceneConstantBufferAddress());
         CommandList4->SetComputeRoot32BitConstants(2, sizeof(FRestirGIConstants) / sizeof(uint32_t), &Constants, 0);
         CommandList4->SetComputeRoot32BitConstants(3, 28, BindlessIndices, 0);
 
@@ -1666,9 +1663,9 @@ void FDeferredRayTracingPasses::AddRestirGIPassImpl(FDeferredPassContext& Contex
             Builder.ReadTexture(GBufferHandles[2], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             Builder.WriteTexture(RestirGIInitialRadianceHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             Builder.WriteTexture(RestirGIInitialRayDirectionHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        }, [&](const FRestirGIPassData& Data, FDX12CommandContext& Cmd)
+        }, [&, DispatchNewPass](const FRestirGIPassData& Data, FDX12CommandContext& Cmd)
         {
-            const uint32_t DepthArrayIndex = GetFrameIndex() % static_cast<uint32_t>(DepthBindlessIndices.size());
+            const uint32_t DepthArrayIndex = Owner.GetFrameIndex() % static_cast<uint32_t>(DepthBindlessIndices.size());
             const uint32_t DepthBindlessIndex = DepthBindlessIndices.empty() ? UINT32_MAX : DepthBindlessIndices[DepthArrayIndex];
             const uint32_t FrameIndex = Cmd.GetCurrentFrameIndex();
             const uint32_t InstanceDataBindlessIndex = (FrameIndex < PathTracingInstanceDataBindlessIndices.size()) ? PathTracingInstanceDataBindlessIndices[FrameIndex] : UINT32_MAX;
@@ -1754,9 +1751,9 @@ void FDeferredRayTracingPasses::AddRestirGIPassImpl(FDeferredPassContext& Contex
             Builder.WriteTexture(RestirGIReservoirSampleRadianceBHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             Builder.WriteTexture(RestirGIReservoirRayDirectionBHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             Builder.WriteTexture(RestirGIReservoirMWBHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        }, [&](const FRestirGIPassData& Data, FDX12CommandContext& Cmd)
+        }, [&, DispatchNewPass](const FRestirGIPassData& Data, FDX12CommandContext& Cmd)
         {
-        const uint32_t DepthArrayIndex = GetFrameIndex() % static_cast<uint32_t>(DepthBindlessIndices.size());
+        const uint32_t DepthArrayIndex = Owner.GetFrameIndex() % static_cast<uint32_t>(DepthBindlessIndices.size());
         const uint32_t DepthBindlessIndex = DepthBindlessIndices.empty() ? UINT32_MAX : DepthBindlessIndices[DepthArrayIndex];
         const uint32_t FrameIndex = Cmd.GetCurrentFrameIndex();
         const uint32_t InstanceDataBindlessIndex = (FrameIndex < PathTracingInstanceDataBindlessIndices.size()) ? PathTracingInstanceDataBindlessIndices[FrameIndex] : UINT32_MAX;
@@ -1843,9 +1840,9 @@ void FDeferredRayTracingPasses::AddRestirGIPassImpl(FDeferredPassContext& Contex
             Builder.WriteTexture(RestirGIReservoirSampleRadianceAHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             Builder.WriteTexture(RestirGIReservoirRayDirectionAHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             Builder.WriteTexture(RestirGIReservoirMWAHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        }, [&](const FRestirGIPassData& Data, FDX12CommandContext& Cmd)
+        }, [&, DispatchNewPass](const FRestirGIPassData& Data, FDX12CommandContext& Cmd)
         {
-        const uint32_t DepthArrayIndex = GetFrameIndex() % static_cast<uint32_t>(DepthBindlessIndices.size());
+        const uint32_t DepthArrayIndex = Owner.GetFrameIndex() % static_cast<uint32_t>(DepthBindlessIndices.size());
         const uint32_t DepthBindlessIndex = DepthBindlessIndices.empty() ? UINT32_MAX : DepthBindlessIndices[DepthArrayIndex];
         const uint32_t FrameIndex = Cmd.GetCurrentFrameIndex();
         const uint32_t InstanceDataBindlessIndex = (FrameIndex < PathTracingInstanceDataBindlessIndices.size()) ? PathTracingInstanceDataBindlessIndices[FrameIndex] : UINT32_MAX;
@@ -1927,9 +1924,9 @@ void FDeferredRayTracingPasses::AddRestirGIPassImpl(FDeferredPassContext& Contex
             Builder.WriteTexture(RestirGIReservoirSampleRadianceBHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             Builder.WriteTexture(RestirGIReservoirRayDirectionBHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             Builder.WriteTexture(RestirGIReservoirMWBHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        }, [&](const FRestirGIPassData& Data, FDX12CommandContext& Cmd)
+        }, [&, DispatchNewPass](const FRestirGIPassData& Data, FDX12CommandContext& Cmd)
         {
-        const uint32_t DepthArrayIndex = GetFrameIndex() % static_cast<uint32_t>(DepthBindlessIndices.size());
+        const uint32_t DepthArrayIndex = Owner.GetFrameIndex() % static_cast<uint32_t>(DepthBindlessIndices.size());
         const uint32_t DepthBindlessIndex = DepthBindlessIndices.empty() ? UINT32_MAX : DepthBindlessIndices[DepthArrayIndex];
         const uint32_t FrameIndex = Cmd.GetCurrentFrameIndex();
         const uint32_t InstanceDataBindlessIndex = (FrameIndex < PathTracingInstanceDataBindlessIndices.size()) ? PathTracingInstanceDataBindlessIndices[FrameIndex] : UINT32_MAX;
@@ -2015,9 +2012,9 @@ void FDeferredRayTracingPasses::AddRestirGIPassImpl(FDeferredPassContext& Contex
             Builder.WriteTexture(RestirGIHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             Builder.WriteTexture(RestirGiInputSHHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             Builder.WriteTexture(RestirGiVarianceHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        }, [&](const FRestirGIPassData& Data, FDX12CommandContext& Cmd)
+        }, [&, DispatchNewPass](const FRestirGIPassData& Data, FDX12CommandContext& Cmd)
         {
-        const uint32_t DepthArrayIndex = GetFrameIndex() % static_cast<uint32_t>(DepthBindlessIndices.size());
+        const uint32_t DepthArrayIndex = Owner.GetFrameIndex() % static_cast<uint32_t>(DepthBindlessIndices.size());
         const uint32_t DepthBindlessIndex = DepthBindlessIndices.empty() ? UINT32_MAX : DepthBindlessIndices[DepthArrayIndex];
         const uint32_t FrameIndex = Cmd.GetCurrentFrameIndex();
         const uint32_t InstanceDataBindlessIndex = (FrameIndex < PathTracingInstanceDataBindlessIndices.size()) ? PathTracingInstanceDataBindlessIndices[FrameIndex] : UINT32_MAX;

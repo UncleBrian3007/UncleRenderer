@@ -58,6 +58,163 @@ bool FDeferredGeometryPasses::InitializeResources(FDeferredRenderer& Owner, FDX1
     return true;
 }
 
+bool FDeferredRenderer::CreateBasePassRootSignature(FDX12Device* Device)
+{
+    D3D12_ROOT_PARAMETER1 RootParams[2] = {};
+    // RootParams[0]: Scene constant buffer (b0), used in Shaders/DeferredBasePass.hlsl VSMain and PSMain
+    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[0].Descriptor.ShaderRegister = 0;
+    RootParams[0].Descriptor.RegisterSpace = 0;
+    RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
+
+    // RootParams[1]: Base pass bindless indices (b1), used in Shaders/DeferredBasePass.hlsl PSMain
+    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    RootParams[1].Constants.ShaderRegister = 1;
+    RootParams[1].Constants.RegisterSpace = 0;
+    RootParams[1].Constants.Num32BitValues = 10;
+
+
+    D3D12_STATIC_SAMPLER_DESC SamplerDesc = {};
+    SamplerDesc.Filter = D3D12_FILTER_ANISOTROPIC;
+    SamplerDesc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    SamplerDesc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    SamplerDesc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    SamplerDesc.MipLODBias = 0.0f;
+    SamplerDesc.MaxAnisotropy = 4;
+    SamplerDesc.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    SamplerDesc.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+    SamplerDesc.MinLOD = 0.0f;
+    SamplerDesc.MaxLOD = D3D12_FLOAT32_MAX;
+    SamplerDesc.ShaderRegister = 0;
+    SamplerDesc.RegisterSpace = 0;
+    SamplerDesc.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
+    RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    RootSigDesc.Desc_1_1.NumParameters = _countof(RootParams);
+    RootSigDesc.Desc_1_1.pParameters = RootParams;
+    RootSigDesc.Desc_1_1.NumStaticSamplers = 1;
+    RootSigDesc.Desc_1_1.pStaticSamplers = &SamplerDesc;
+    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+        | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
+        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
+
+    ComPtr<ID3DBlob> SerializedSig;
+    ComPtr<ID3DBlob> ErrorBlob;
+    HR_CHECK(D3D12SerializeVersionedRootSignature(&RootSigDesc, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
+
+    if (ErrorBlob)
+    {
+        OutputDebugStringA(static_cast<const char*>(ErrorBlob->GetBufferPointer()));
+    }
+
+    HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(BasePassRootSignature.GetAddressOf())));
+    return true;
+}
+
+bool FDeferredRenderer::CreateBasePassPipeline(FDX12Device* Device, DXGI_FORMAT LightingFormat)
+{
+    FShaderCompiler Compiler;
+
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
+
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"VSMain", VSTarget, DeferredBasePassVsBytecodes[0]))
+    {
+        return false;
+    }
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"VSMain", VSTarget, DeferredBasePassVsBytecodes[1], { L"USE_SKINNING=1" }))
+    {
+        return false;
+    }
+
+    DeferredBasePassLightingFormat = LightingFormat;
+    for (uint32_t PipelineKey = 0; PipelineKey < 512; ++PipelineKey)
+    {
+        BasePassPipelines[PipelineKey].Reset();
+        BasePassPipelinesSkinned[PipelineKey].Reset();
+        DeferredBasePassPsBytecodes[PipelineKey].clear();
+        DeferredBasePassPsCompiled[PipelineKey] = false;
+        DeferredBasePassFailureLogged[PipelineKey] = false;
+    }
+
+    return true;
+}
+
+bool FDeferredRenderer::CreateDepthPrepassPipeline(FDX12Device* Device)
+{
+    FShaderCompiler Compiler;
+    std::vector<uint8_t> VSByteCode;
+    std::vector<uint8_t> VSByteCodeSkinned;
+
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
+
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"VSMain", VSTarget, VSByteCode))
+    {
+        return false;
+    }
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"VSMain", VSTarget, VSByteCodeSkinned, { L"USE_SKINNING=1" }))
+    {
+        return false;
+    }
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
+    PsoDesc.pRootSignature = BasePassRootSignature.Get();
+    PsoDesc.InputLayout = { nullptr, 0 };
+    PsoDesc.VS = { VSByteCode.data(), VSByteCode.size() };
+    PsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    PsoDesc.SampleDesc.Count = 1;
+    PsoDesc.SampleMask = UINT_MAX;
+
+    PsoDesc.RasterizerState = {};
+    PsoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    // Single-sided and double-sided depth prepass pipelines are created per variant
+    PsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+    PsoDesc.RasterizerState.FrontCounterClockwise = TRUE;
+    PsoDesc.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
+    PsoDesc.RasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
+    PsoDesc.RasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
+    PsoDesc.RasterizerState.DepthClipEnable = TRUE;
+    PsoDesc.RasterizerState.MultisampleEnable = FALSE;
+    PsoDesc.RasterizerState.AntialiasedLineEnable = FALSE;
+    PsoDesc.RasterizerState.ForcedSampleCount = 0;
+    PsoDesc.RasterizerState.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+
+    PsoDesc.BlendState = {};
+    PsoDesc.BlendState.AlphaToCoverageEnable = FALSE;
+    PsoDesc.BlendState.IndependentBlendEnable = FALSE;
+    PsoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = 0;
+
+    PsoDesc.DepthStencilState = {};
+    PsoDesc.DepthStencilState.DepthEnable = TRUE;
+    PsoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    PsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+    PsoDesc.DepthStencilState.StencilEnable = FALSE;
+    PsoDesc.DepthStencilState.StencilReadMask = D3D12_DEFAULT_STENCIL_READ_MASK;
+    PsoDesc.DepthStencilState.StencilWriteMask = D3D12_DEFAULT_STENCIL_WRITE_MASK;
+    PsoDesc.DepthStencilState.FrontFace.StencilFailOp = D3D12_STENCIL_OP_KEEP;
+    PsoDesc.DepthStencilState.FrontFace.StencilDepthFailOp = D3D12_STENCIL_OP_KEEP;
+    PsoDesc.DepthStencilState.FrontFace.StencilPassOp = D3D12_STENCIL_OP_KEEP;
+    PsoDesc.DepthStencilState.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    PsoDesc.DepthStencilState.BackFace = PsoDesc.DepthStencilState.FrontFace;
+    PsoDesc.NumRenderTargets = 0;
+    PsoDesc.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
+    PsoDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
+
+    for (uint32_t DoubleSidedVariant = 0; DoubleSidedVariant < 2; ++DoubleSidedVariant)
+    {
+        PsoDesc.RasterizerState.CullMode = (DoubleSidedVariant == 0) ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_NONE;
+        PsoDesc.VS = { VSByteCode.data(), VSByteCode.size() };
+        HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(DepthPrepassPipelines[DoubleSidedVariant].GetAddressOf())));
+        PsoDesc.VS = { VSByteCodeSkinned.data(), VSByteCodeSkinned.size() };
+        HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(DepthPrepassPipelinesSkinned[DoubleSidedVariant].GetAddressOf())));
+    }
+    return true;
+}
+
 bool FDeferredRenderer::CreateObjectIdResources(FDX12Device* Device, uint32_t Width, uint32_t Height)
 {
     const bool bCreated = RendererUtils::CreateObjectIdResources(
