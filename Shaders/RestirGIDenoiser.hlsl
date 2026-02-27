@@ -57,9 +57,38 @@ uint4 PackSh(FRestirGiPackedSh Sh)
 
 float ComputeGeometryWeight(float CenterDepth, float SampleDepth, float3 CenterNormal, float3 SampleNormal)
 {
-    const float DepthWeight = exp(-abs(CenterDepth - SampleDepth) * 20.0f);
-    const float NormalWeight = saturate(dot(CenterNormal, SampleNormal));
-    return DepthWeight * NormalWeight;
+    const float DepthWeight = exp(-abs(CenterDepth - SampleDepth));
+    const float NormalWeight = pow(saturate(dot(CenterNormal, SampleNormal)), 32.0f);
+    return saturate(DepthWeight * NormalWeight);
+}
+
+static const uint RecurrentBlurSampleNum = 4u;
+static const float2 RecurrentBlurPoisson[RecurrentBlurSampleNum] =
+{
+    float2(-0.4646624f, 0.2480316f),
+    float2(0.9562537f, 0.1687815f),
+    float2(0.1834577f, -0.8139205f),
+    float2(0.1929236f, 0.6890683f)
+};
+
+uint RestirGiHash32(uint Value)
+{
+    Value ^= Value >> 17;
+    Value *= 0xed5ad4bbu;
+    Value ^= Value >> 11;
+    Value *= 0xac4c1b51u;
+    Value ^= Value >> 15;
+    Value *= 0x31848babu;
+    Value ^= Value >> 14;
+    return Value;
+}
+
+float RestirGiRandom01(uint2 Pixel, uint Salt)
+{
+    uint Seed = RestirGiHash32(Pixel.x + 0x9e3779b9u);
+    Seed = RestirGiHash32(Seed + Pixel.y);
+    Seed = RestirGiHash32(Seed + Salt * 1664525u);
+    return (Seed & 0x00ffffffu) / 16777216.0f;
 }
 
 [numthreads(8, 8, 1)]
@@ -78,41 +107,45 @@ void CSPreBlur(uint3 DispatchThreadId : SV_DispatchThreadID)
     RWTexture2D<uint4> TemporalSH = ResourceDescriptorHeap[TemporalSHIndex];
 
     const FRestirGiPackedSh CenterSh = LoadPackedSh(InputSH, Pixel);
-    const float3 CenterIrradiance = CenterSh.Irradiance;
     const float CenterDepth = LinearDepthTexture[Pixel];
-    const float3 CenterNormal = DecodeNormalFromGBufferA(GBufferA[Pixel]);
-
-    float3 Accum = CenterIrradiance;
-    float TotalWeight = 1.0f;
-
-    const float RadiusScale = 1.0f + VarianceTexture[Pixel] * 2.0f;
-    const int Radius = (int)round(clamp(RadiusScale, 1.0f, 3.0f));
-
-    [loop]
-    for (int y = -Radius; y <= Radius; ++y)
+    if (CenterDepth <= 0.0f)
     {
-        [loop]
-        for (int x = -Radius; x <= Radius; ++x)
-        {
-            if (x == 0 && y == 0)
-            {
-                continue;
-            }
-
-            const int2 SamplePixelI = clamp(int2(Pixel) + int2(x, y), int2(0, 0), int2((int)Width - 1, (int)Height - 1));
-            const uint2 SamplePixel = uint2(SamplePixelI);
-            const float3 SampleIrradiance = LoadPackedSh(InputSH, SamplePixel).Irradiance;
-            const float SampleDepth = LinearDepthTexture[SamplePixel];
-            const float3 SampleNormal = DecodeNormalFromGBufferA(GBufferA[SamplePixel]);
-            const float Weight = ComputeGeometryWeight(CenterDepth, SampleDepth, CenterNormal, SampleNormal);
-            Accum += SampleIrradiance * Weight;
-            TotalWeight += Weight;
-        }
+        TemporalSH[Pixel] = uint4(0u, 0u, 0u, 0u);
+        return;
     }
 
-    const float3 Filtered = Accum / max(1e-5f, TotalWeight);
-    FRestirGiPackedSh OutSh = CenterSh;
-    OutSh.Irradiance = Filtered;
+    const float3 CenterNormal = DecodeNormalFromGBufferA(GBufferA[Pixel]);
+
+    FRestirGiPackedSh AccumSh = CenterSh;
+    float TotalWeight = 1.0f;
+
+    const float Variance = saturate(VarianceTexture[Pixel]);
+    const float2 BlurRadius = lerp(2.0f.xx, 8.0f.xx, Variance.xx) / float2(Width, Height) * max(CenterDepth, 0.01f);
+    const float2 CenterUv = (float2(Pixel) + 0.5f) / float2(Width, Height);
+
+    [unroll]
+    for (uint SampleIndex = 0u; SampleIndex < RecurrentBlurSampleNum; ++SampleIndex)
+    {
+        const float2 SampleUv = CenterUv + RecurrentBlurPoisson[SampleIndex] * BlurRadius;
+        if (any(SampleUv < 0.0f.xx) || any(SampleUv > 1.0f.xx))
+        {
+            continue;
+        }
+
+        const uint2 SamplePixel = min(uint2(SampleUv * float2(Width, Height)), uint2(Width - 1u, Height - 1u));
+        const float SampleDepth = LinearDepthTexture[SamplePixel];
+        if (SampleDepth <= 0.0f)
+        {
+            continue;
+        }
+
+        const float3 SampleNormal = DecodeNormalFromGBufferA(GBufferA[SamplePixel]);
+        const float Weight = ComputeGeometryWeight(CenterDepth, SampleDepth, CenterNormal, SampleNormal);
+        AccumSh = RestirGiAddSh(AccumSh, RestirGiScaleSh(LoadPackedSh(InputSH, SamplePixel), Weight));
+        TotalWeight += Weight;
+    }
+
+    const FRestirGiPackedSh OutSh = RestirGiScaleSh(AccumSh, rcp(max(1e-5f, TotalWeight)));
     TemporalSH[Pixel] = PackSh(OutSh);
 }
 
@@ -140,48 +173,91 @@ void CSTemporalAccumulation(uint3 DispatchThreadId : SV_DispatchThreadID)
     RWTexture2D<float4> OutPrevNormal = ResourceDescriptorHeap[OutPrevNormalIndex];
 
     FRestirGiPackedSh CurrentSh = LoadPackedSh(TemporalSH, Pixel);
-    const float3 CurrentIrradiance = CurrentSh.Irradiance;
     const float2 Uv = (float2(Pixel) + 0.5f) / float2(Width, Height);
     const float2 VelocityNdc = VelocityTexture[Pixel];
     const float2 PrevUv = float2(Uv.x - VelocityNdc.x * 0.5f, Uv.y + VelocityNdc.y * 0.5f);
 
-    bool bHistoryAccepted = HistoryValid != 0u;
-    uint2 PrevPixel = Pixel;
-    if (any(PrevUv <= 0.0f.xx) || any(PrevUv >= 1.0f.xx))
+    const float3 CurrentNormal = DecodeNormalFromGBufferA(GBufferA[Pixel]);
+    const float CurrentLinearDepth = CurrentLinearDepthTexture[Pixel];
+    FRestirGiPackedSh TemporalSh = CurrentSh;
+    uint NextCount = 1u;
+
+    bool bHistoryAccepted = (HistoryValid != 0u) && (CurrentLinearDepth > 0.0f);
+    if (bHistoryAccepted && (any(PrevUv <= 0.0f.xx) || any(PrevUv >= 1.0f.xx)))
     {
         bHistoryAccepted = false;
     }
-    else
-    {
-        PrevPixel = min(uint2(PrevUv * float2(Width, Height)), uint2(Width - 1u, Height - 1u));
-    }
 
-    const float3 CurrentNormal = DecodeNormalFromGBufferA(GBufferA[Pixel]);
-    const float CurrentLinearDepth = CurrentLinearDepthTexture[Pixel];
     if (bHistoryAccepted)
     {
-        const float PrevLinearDepth = PrevLinearDepthTexture[PrevPixel];
-        const float3 PrevNormal = normalize(PrevNormalTexture[PrevPixel].xyz * 2.0f - 1.0f);
-        const bool bDepthAccepted = CurrentLinearDepth <= PrevLinearDepth * DepthThresholdScale;
-        const bool bNormalAccepted = dot(CurrentNormal, PrevNormal) > NormalThreshold;
-        bHistoryAccepted = bDepthAccepted && bNormalAccepted;
+        const float2 PrevCoord = PrevUv * float2(Width, Height) - 0.5f;
+        const int2 PrevBase = int2(floor(PrevCoord));
+        const float2 PrevFrac = frac(PrevCoord);
+
+        const int2 Tap00 = clamp(PrevBase + int2(0, 0), int2(0, 0), int2((int)Width - 1, (int)Height - 1));
+        const int2 Tap10 = clamp(PrevBase + int2(1, 0), int2(0, 0), int2((int)Width - 1, (int)Height - 1));
+        const int2 Tap01 = clamp(PrevBase + int2(0, 1), int2(0, 0), int2((int)Width - 1, (int)Height - 1));
+        const int2 Tap11 = clamp(PrevBase + int2(1, 1), int2(0, 0), int2((int)Width - 1, (int)Height - 1));
+
+        const uint2 P00 = uint2(Tap00);
+        const uint2 P10 = uint2(Tap10);
+        const uint2 P01 = uint2(Tap01);
+        const uint2 P11 = uint2(Tap11);
+
+        const float4 BilinearWeights = float4(
+            (1.0f - PrevFrac.x) * (1.0f - PrevFrac.y),
+            PrevFrac.x * (1.0f - PrevFrac.y),
+            (1.0f - PrevFrac.x) * PrevFrac.y,
+            PrevFrac.x * PrevFrac.y);
+
+        const float D00 = PrevLinearDepthTexture[P00];
+        const float D10 = PrevLinearDepthTexture[P10];
+        const float D01 = PrevLinearDepthTexture[P01];
+        const float D11 = PrevLinearDepthTexture[P11];
+        const float3 N00 = normalize(PrevNormalTexture[P00].xyz * 2.0f - 1.0f);
+        const float3 N10 = normalize(PrevNormalTexture[P10].xyz * 2.0f - 1.0f);
+        const float3 N01 = normalize(PrevNormalTexture[P01].xyz * 2.0f - 1.0f);
+        const float3 N11 = normalize(PrevNormalTexture[P11].xyz * 2.0f - 1.0f);
+
+        const float4 Occlusion = float4(
+            ((CurrentLinearDepth <= D00 * DepthThresholdScale) && (dot(CurrentNormal, N00) > NormalThreshold)) ? 1.0f : 0.0f,
+            ((CurrentLinearDepth <= D10 * DepthThresholdScale) && (dot(CurrentNormal, N10) > NormalThreshold)) ? 1.0f : 0.0f,
+            ((CurrentLinearDepth <= D01 * DepthThresholdScale) && (dot(CurrentNormal, N01) > NormalThreshold)) ? 1.0f : 0.0f,
+            ((CurrentLinearDepth <= D11 * DepthThresholdScale) && (dot(CurrentNormal, N11) > NormalThreshold)) ? 1.0f : 0.0f);
+
+        const float4 FinalWeights = BilinearWeights * Occlusion;
+        const float WeightSum = dot(FinalWeights, 1.0f.xxxx);
+        if (WeightSum > 1e-5f)
+        {
+            const FRestirGiPackedSh H00 = LoadPackedSh(HistorySH, P00);
+            const FRestirGiPackedSh H10 = LoadPackedSh(HistorySH, P10);
+            const FRestirGiPackedSh H01 = LoadPackedSh(HistorySH, P01);
+            const FRestirGiPackedSh H11 = LoadPackedSh(HistorySH, P11);
+
+            const FRestirGiPackedSh PrevSh = RestirGiScaleSh(
+                RestirGiAddSh(
+                    RestirGiAddSh(RestirGiScaleSh(H00, FinalWeights.x), RestirGiScaleSh(H10, FinalWeights.y)),
+                    RestirGiAddSh(RestirGiScaleSh(H01, FinalWeights.z), RestirGiScaleSh(H11, FinalWeights.w))),
+                rcp(WeightSum));
+
+            const float PrevCount =
+                (float(HistoryCount[P00]) * FinalWeights.x +
+                float(HistoryCount[P10]) * FinalWeights.y +
+                float(HistoryCount[P01]) * FinalWeights.z +
+                float(HistoryCount[P11]) * FinalWeights.w) / WeightSum;
+            const float ClampedPrevCount = min(PrevCount, 31.0f);
+            const float BlendFactor = saturate((1.0f / (1.0f + ClampedPrevCount)) * BlendStrength);
+
+            TemporalSh = RestirGiLerpSh(PrevSh, CurrentSh, BlendFactor);
+            NextCount = min((uint)round(ClampedPrevCount) + 1u, 32u);
+        }
+        else
+        {
+            bHistoryAccepted = false;
+        }
     }
 
-    float3 TemporalIrradiance = CurrentIrradiance;
-    uint NextCount = 1u;
-    if (bHistoryAccepted)
-    {
-        const FRestirGiPackedSh PrevSh = LoadPackedSh(HistorySH, PrevPixel);
-        const float3 PrevIrradiance = PrevSh.Irradiance;
-        const uint PrevCount = min(HistoryCount[PrevPixel], 31u);
-        const float HistoryWeight = PrevCount / max(1.0f, PrevCount + 1.0f);
-        TemporalIrradiance = lerp(CurrentIrradiance, PrevIrradiance, saturate(HistoryWeight * BlendStrength));
-        CurrentSh.DominantDirection = normalize(lerp(CurrentSh.DominantDirection, PrevSh.DominantDirection, saturate(HistoryWeight)));
-        NextCount = min(PrevCount + 1u, 32u);
-    }
-
-    CurrentSh.Irradiance = TemporalIrradiance;
-    OutTemporalSH[Pixel] = PackSh(CurrentSh);
+    OutTemporalSH[Pixel] = PackSh(TemporalSh);
     OutHistoryCount[Pixel] = NextCount;
     OutPrevLinearDepth[Pixel] = CurrentLinearDepth;
     OutPrevNormal[Pixel] = float4(CurrentNormal * 0.5f + 0.5f, 1.0f);
@@ -219,9 +295,9 @@ void CSGenerateShMips(uint3 DispatchThreadId : SV_DispatchThreadID)
     FRestirGiPackedSh Sh2 = LoadPackedSh(SourceSH, S2);
     FRestirGiPackedSh Sh3 = LoadPackedSh(SourceSH, S3);
 
-    FRestirGiPackedSh OutSh;
-    OutSh.Irradiance = (Sh0.Irradiance + Sh1.Irradiance + Sh2.Irradiance + Sh3.Irradiance) * 0.25f;
-    OutSh.DominantDirection = normalize(Sh0.DominantDirection + Sh1.DominantDirection + Sh2.DominantDirection + Sh3.DominantDirection);
+    FRestirGiPackedSh OutSh = RestirGiScaleSh(
+        RestirGiAddSh(RestirGiAddSh(Sh0, Sh1), RestirGiAddSh(Sh2, Sh3)),
+        0.25f);
     OutShMip[Pixel] = PackSh(OutSh);
 }
 
@@ -267,7 +343,6 @@ void CSHistoryReconstruction(uint3 DispatchThreadId : SV_DispatchThreadID)
     Texture2D<uint4> ShMip = ResourceDescriptorHeap[Reserved0];
     Texture2D<float> DepthMip = ResourceDescriptorHeap[OutPrevLinearDepthIndex];
     Texture2D<float> CurrentLinearDepthTexture = ResourceDescriptorHeap[CurrentLinearDepthIndex];
-    Texture2D<float4> GBufferA = ResourceDescriptorHeap[GBufferAIndex];
     Texture2D<uint> HistoryCount = ResourceDescriptorHeap[HistoryCountIndex];
     RWTexture2D<uint4> TemporalSH = ResourceDescriptorHeap[TemporalSHIndex];
 
@@ -303,14 +378,13 @@ void CSHistoryReconstruction(uint3 DispatchThreadId : SV_DispatchThreadID)
     const int2 Tap11 = clamp(MipBase + int2(1, 1), int2(0, 0), int2((int)MipWidth - 1, (int)MipHeight - 1));
 
     const float CurrentDepth = CurrentLinearDepthTexture[Pixel];
-    const float3 CurrentNormal = DecodeNormalFromGBufferA(GBufferA[Pixel]);
 
     const float W00 = (1.0f - Frac.x) * (1.0f - Frac.y);
     const float W10 = Frac.x * (1.0f - Frac.y);
     const float W01 = (1.0f - Frac.x) * Frac.y;
     const float W11 = Frac.x * Frac.y;
 
-    float3 Accum = 0.0f.xxx;
+    FRestirGiPackedSh AccumSh = RestirGiScaleSh(LoadPackedSh(ShMip, uint2(Tap00)), 0.0f);
     float Total = 0.0f;
 
     const float D00 = DepthMip[uint2(Tap00)];
@@ -318,27 +392,21 @@ void CSHistoryReconstruction(uint3 DispatchThreadId : SV_DispatchThreadID)
     const float D01 = DepthMip[uint2(Tap01)];
     const float D11 = DepthMip[uint2(Tap11)];
 
-    const float3 N00 = normalize(LoadPackedSh(ShMip, uint2(Tap00)).DominantDirection);
-    const float3 N10 = normalize(LoadPackedSh(ShMip, uint2(Tap10)).DominantDirection);
-    const float3 N01 = normalize(LoadPackedSh(ShMip, uint2(Tap01)).DominantDirection);
-    const float3 N11 = normalize(LoadPackedSh(ShMip, uint2(Tap11)).DominantDirection);
-
     const float4 BilinearWeights = float4(W00, W10, W01, W11);
     const float4 GeometryWeights = float4(
-        ComputeGeometryWeight(CurrentDepth, D00, CurrentNormal, N00),
-        ComputeGeometryWeight(CurrentDepth, D10, CurrentNormal, N10),
-        ComputeGeometryWeight(CurrentDepth, D01, CurrentNormal, N01),
-        ComputeGeometryWeight(CurrentDepth, D11, CurrentNormal, N11));
+        exp(-abs(CurrentDepth - D00)),
+        exp(-abs(CurrentDepth - D10)),
+        exp(-abs(CurrentDepth - D01)),
+        exp(-abs(CurrentDepth - D11)));
 
     const float4 FinalWeights = BilinearWeights * GeometryWeights;
-    Accum += LoadPackedSh(ShMip, uint2(Tap00)).Irradiance * FinalWeights.x;
-    Accum += LoadPackedSh(ShMip, uint2(Tap10)).Irradiance * FinalWeights.y;
-    Accum += LoadPackedSh(ShMip, uint2(Tap01)).Irradiance * FinalWeights.z;
-    Accum += LoadPackedSh(ShMip, uint2(Tap11)).Irradiance * FinalWeights.w;
+    AccumSh = RestirGiAddSh(AccumSh, RestirGiScaleSh(LoadPackedSh(ShMip, uint2(Tap00)), FinalWeights.x));
+    AccumSh = RestirGiAddSh(AccumSh, RestirGiScaleSh(LoadPackedSh(ShMip, uint2(Tap10)), FinalWeights.y));
+    AccumSh = RestirGiAddSh(AccumSh, RestirGiScaleSh(LoadPackedSh(ShMip, uint2(Tap01)), FinalWeights.z));
+    AccumSh = RestirGiAddSh(AccumSh, RestirGiScaleSh(LoadPackedSh(ShMip, uint2(Tap11)), FinalWeights.w));
     Total += FinalWeights.x + FinalWeights.y + FinalWeights.z + FinalWeights.w;
 
-    FRestirGiPackedSh Reconstructed = LoadPackedSh(TemporalSH, Pixel);
-    Reconstructed.Irradiance = Accum / max(1e-5f, Total);
+    FRestirGiPackedSh Reconstructed = RestirGiScaleSh(AccumSh, rcp(max(1e-5f, Total)));
     TemporalSH[Pixel] = PackSh(Reconstructed);
 }
 
@@ -360,38 +428,51 @@ void CSFinalBlur(uint3 DispatchThreadId : SV_DispatchThreadID)
     RWTexture2D<uint4> OutHistorySH = ResourceDescriptorHeap[OutHistorySHIndex];
 
     const FRestirGiPackedSh CenterSh = LoadPackedSh(TemporalSH, Pixel);
-    const float3 CenterIrradiance = CenterSh.Irradiance;
     const uint Count = HistoryCount[Pixel];
-    const int Radius = (Count < 4u) ? 2 : 1;
     const float CenterDepth = LinearDepthTexture[Pixel];
-    const float3 CenterNormal = DecodeNormalFromGBufferA(GBufferA[Pixel]);
-
-    float3 Accum = CenterIrradiance;
-    float Total = 1.0f;
-    [loop]
-    for (int y = -Radius; y <= Radius; ++y)
+    if (CenterDepth <= 0.0f)
     {
-        [loop]
-        for (int x = -Radius; x <= Radius; ++x)
-        {
-            if (x == 0 && y == 0)
-            {
-                continue;
-            }
-
-            const int2 SampleI = clamp(int2(Pixel) + int2(x, y), int2(0, 0), int2((int)Width - 1, (int)Height - 1));
-            const uint2 SamplePixel = uint2(SampleI);
-            const float3 SampleIrradiance = LoadPackedSh(TemporalSH, SamplePixel).Irradiance;
-            const float SampleDepth = LinearDepthTexture[SamplePixel];
-            const float3 SampleNormal = DecodeNormalFromGBufferA(GBufferA[SamplePixel]);
-            const float Weight = ComputeGeometryWeight(CenterDepth, SampleDepth, CenterNormal, SampleNormal);
-            Accum += SampleIrradiance * Weight;
-            Total += Weight;
-        }
+        OutHistorySH[Pixel] = uint4(0u, 0u, 0u, 0u);
+        OutHistoryIrradiance[Pixel] = 0.0f.xxx;
+        return;
     }
 
-    FRestirGiPackedSh OutSh = CenterSh;
-    OutSh.Irradiance = max(Accum / max(1e-5f, Total), 0.0f.xxx);
+    const float3 CenterNormal = DecodeNormalFromGBufferA(GBufferA[Pixel]);
+    const float CountRatio = saturate((float)Count / 32.0f);
+    const float RadiusScale = lerp(2.0f, 8.0f, smoothstep(0.0f, 1.0f, 1.0f - CountRatio));
+    const float2 BlurRadius = RadiusScale.xx / float2(Width, Height) * max(CenterDepth, 0.01f);
+    const float2 CenterUv = (float2(Pixel) + 0.5f) / float2(Width, Height);
+    const float Angle = RestirGiRandom01(Pixel, 617u) * 6.2831853f;
+    const float S = sin(Angle);
+    const float C = cos(Angle);
+    const float2x2 Rotation = float2x2(C, -S, S, C);
+
+    FRestirGiPackedSh AccumSh = CenterSh;
+    float Total = 1.0f;
+    [unroll]
+    for (uint SampleIndex = 0u; SampleIndex < RecurrentBlurSampleNum; ++SampleIndex)
+    {
+        const float2 Rotated = mul(Rotation, RecurrentBlurPoisson[SampleIndex]);
+        const float2 SampleUv = CenterUv + Rotated * BlurRadius;
+        if (any(SampleUv < 0.0f.xx) || any(SampleUv > 1.0f.xx))
+        {
+            continue;
+        }
+
+        const uint2 SamplePixel = min(uint2(SampleUv * float2(Width, Height)), uint2(Width - 1u, Height - 1u));
+        const float SampleDepth = LinearDepthTexture[SamplePixel];
+        if (SampleDepth <= 0.0f)
+        {
+            continue;
+        }
+
+        const float3 SampleNormal = DecodeNormalFromGBufferA(GBufferA[SamplePixel]);
+        const float Weight = ComputeGeometryWeight(CenterDepth, SampleDepth, CenterNormal, SampleNormal);
+        AccumSh = RestirGiAddSh(AccumSh, RestirGiScaleSh(LoadPackedSh(TemporalSH, SamplePixel), Weight));
+        Total += Weight;
+    }
+
+    FRestirGiPackedSh OutSh = RestirGiScaleSh(AccumSh, rcp(max(1e-5f, Total)));
     OutHistoryIrradiance[Pixel] = RestirGiUnprojectIrradiance(OutSh, CenterNormal);
     OutHistorySH[Pixel] = PackSh(OutSh);
 }

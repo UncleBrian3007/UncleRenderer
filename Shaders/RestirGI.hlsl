@@ -299,6 +299,20 @@ float3 RestirGIDecodeNormal16x2(uint Packed)
     return normalize(N);
 }
 
+float RestirGIResolveLinearDepth(float Depth)
+{
+    return Projection._43 / max(Depth, 1e-6f);
+}
+
+float RestirGIResolveGeometryWeight(float CenterDepth, float3 CenterNormal, float SampleDepth, float3 SampleNormal)
+{
+    const float CenterLinearDepth = RestirGIResolveLinearDepth(CenterDepth);
+    const float SampleLinearDepth = RestirGIResolveLinearDepth(SampleDepth);
+    const float DepthWeight = exp(-abs(CenterLinearDepth - SampleLinearDepth));
+    const float NormalWeight = saturate(dot(CenterNormal, SampleNormal));
+    return DepthWeight * NormalWeight;
+}
+
 FRestirGISample RestirGILoadSample(Texture2D<float4> RadianceTexture, Texture2D<uint> RayDirTexture, uint2 Pos)
 {
     FRestirGISample S;
@@ -553,6 +567,8 @@ void CSResolve(uint3 DispatchThreadId : SV_DispatchThreadID)
     }
 
     Texture2D<float> DepthTexture = ResourceDescriptorHeap[DepthIndex];
+    Texture2D<float4> GBufferA = ResourceDescriptorHeap[GBufferAIndex];
+    Texture2D<uint2> HalfDepthNormal = ResourceDescriptorHeap[InputDepthNormalSrvIndex];
     Texture2D<float4> ReservoirSampleRadiance = ResourceDescriptorHeap[InputSampleRadianceSrvIndex];
     Texture2D<uint> ReservoirRayDirection = ResourceDescriptorHeap[InputRayDirectionSrvIndex];
     Texture2D<float2> ReservoirMW = ResourceDescriptorHeap[InputMWSrvIndex];
@@ -570,14 +586,84 @@ void CSResolve(uint3 DispatchThreadId : SV_DispatchThreadID)
         return;
     }
 
-    const uint2 HalfPos = min(Pixel / 2u, uint2(HalfWidth - 1u, HalfHeight - 1u));
-    const float3 SampleRadiance = ReservoirSampleRadiance[HalfPos].xyz;
-    const float3 SampleDirection = RestirGiDecodeDirection16x2(ReservoirRayDirection[HalfPos]);
-    const float2 MW = ReservoirMW[HalfPos];
-    const float W = max(0.0f, MW.y);
-    const float3 Resolved = min(max(SampleRadiance * W * max(0.0f, Intensity), 0.0f.xxx), ClampThreshold.xxx);
-    const FRestirGiPackedSh Sh = RestirGiProjectSh(Resolved, SampleDirection);
+    const float2 Uv = (float2(Pixel) + 0.5f) / float2(FullWidth, FullHeight);
+    const float2 HalfCoord = Uv * float2(HalfWidth, HalfHeight) - 0.5f;
+    const int2 HalfBase = int2(floor(HalfCoord));
+    const float2 Frac = frac(HalfCoord);
+
+    const int2 Tap00 = clamp(HalfBase + int2(0, 0), int2(0, 0), int2((int)HalfWidth - 1, (int)HalfHeight - 1));
+    const int2 Tap10 = clamp(HalfBase + int2(1, 0), int2(0, 0), int2((int)HalfWidth - 1, (int)HalfHeight - 1));
+    const int2 Tap01 = clamp(HalfBase + int2(0, 1), int2(0, 0), int2((int)HalfWidth - 1, (int)HalfHeight - 1));
+    const int2 Tap11 = clamp(HalfBase + int2(1, 1), int2(0, 0), int2((int)HalfWidth - 1, (int)HalfHeight - 1));
+
+    const float4 BilinearWeights = float4(
+        (1.0f - Frac.x) * (1.0f - Frac.y),
+        Frac.x * (1.0f - Frac.y),
+        (1.0f - Frac.x) * Frac.y,
+        Frac.x * Frac.y);
+
+    const float3 CenterNormal = normalize(GBufferA[Pixel].xyz * 2.0f - 1.0f);
+    const uint2 Packed00 = HalfDepthNormal[uint2(Tap00)];
+    const uint2 Packed10 = HalfDepthNormal[uint2(Tap10)];
+    const uint2 Packed01 = HalfDepthNormal[uint2(Tap01)];
+    const uint2 Packed11 = HalfDepthNormal[uint2(Tap11)];
+    const float D00 = asfloat(Packed00.x);
+    const float D10 = asfloat(Packed10.x);
+    const float D01 = asfloat(Packed01.x);
+    const float D11 = asfloat(Packed11.x);
+    const float3 N00 = RestirGIDecodeNormal16x2(Packed00.y);
+    const float3 N10 = RestirGIDecodeNormal16x2(Packed10.y);
+    const float3 N01 = RestirGIDecodeNormal16x2(Packed01.y);
+    const float3 N11 = RestirGIDecodeNormal16x2(Packed11.y);
+
+    const float4 GeometryWeights = float4(
+        RestirGIResolveGeometryWeight(Depth, CenterNormal, D00, N00),
+        RestirGIResolveGeometryWeight(Depth, CenterNormal, D10, N10),
+        RestirGIResolveGeometryWeight(Depth, CenterNormal, D01, N01),
+        RestirGIResolveGeometryWeight(Depth, CenterNormal, D11, N11));
+    const float4 FinalWeights = BilinearWeights * GeometryWeights;
+    const float WeightSum = max(1e-6f, dot(FinalWeights, 1.0f.xxxx));
+
+    const float2 MW00 = ReservoirMW[uint2(Tap00)];
+    const float2 MW10 = ReservoirMW[uint2(Tap10)];
+    const float2 MW01 = ReservoirMW[uint2(Tap01)];
+    const float2 MW11 = ReservoirMW[uint2(Tap11)];
+    const float3 R00 = ReservoirSampleRadiance[uint2(Tap00)].xyz;
+    const float3 R10 = ReservoirSampleRadiance[uint2(Tap10)].xyz;
+    const float3 R01 = ReservoirSampleRadiance[uint2(Tap01)].xyz;
+    const float3 R11 = ReservoirSampleRadiance[uint2(Tap11)].xyz;
+    const float3 SampleRadiance00 = min(max(R00 * max(0.0f, MW00.y) * max(0.0f, Intensity), 0.0f.xxx), ClampThreshold.xxx);
+    const float3 SampleRadiance10 = min(max(R10 * max(0.0f, MW10.y) * max(0.0f, Intensity), 0.0f.xxx), ClampThreshold.xxx);
+    const float3 SampleRadiance01 = min(max(R01 * max(0.0f, MW01.y) * max(0.0f, Intensity), 0.0f.xxx), ClampThreshold.xxx);
+    const float3 SampleRadiance11 = min(max(R11 * max(0.0f, MW11.y) * max(0.0f, Intensity), 0.0f.xxx), ClampThreshold.xxx);
+    const float3 WeightedRadiance =
+        SampleRadiance00 * FinalWeights.x +
+        SampleRadiance10 * FinalWeights.y +
+        SampleRadiance01 * FinalWeights.z +
+        SampleRadiance11 * FinalWeights.w;
+
+    const float3 Dir00 = RestirGiDecodeDirection16x2(ReservoirRayDirection[uint2(Tap00)]);
+    const float3 Dir10 = RestirGiDecodeDirection16x2(ReservoirRayDirection[uint2(Tap10)]);
+    const float3 Dir01 = RestirGiDecodeDirection16x2(ReservoirRayDirection[uint2(Tap01)]);
+    const float3 Dir11 = RestirGiDecodeDirection16x2(ReservoirRayDirection[uint2(Tap11)]);
+    const FRestirGiPackedSh Sh00 = RestirGiProjectSh(SampleRadiance00, Dir00);
+    const FRestirGiPackedSh Sh10 = RestirGiProjectSh(SampleRadiance10, Dir10);
+    const FRestirGiPackedSh Sh01 = RestirGiProjectSh(SampleRadiance01, Dir01);
+    const FRestirGiPackedSh Sh11 = RestirGiProjectSh(SampleRadiance11, Dir11);
+    FRestirGiPackedSh Sh = RestirGiScaleSh(
+        RestirGiAddSh(
+            RestirGiAddSh(RestirGiScaleSh(Sh00, FinalWeights.x), RestirGiScaleSh(Sh10, FinalWeights.y)),
+            RestirGiAddSh(RestirGiScaleSh(Sh01, FinalWeights.z), RestirGiScaleSh(Sh11, FinalWeights.w))),
+        rcp(WeightSum));
+
+    const float3 Resolved = max(WeightedRadiance / WeightSum, 0.0f.xxx);
+    const float SampleCount = (
+        MW00.x * FinalWeights.x +
+        MW10.x * FinalWeights.y +
+        MW01.x * FinalWeights.z +
+        MW11.x * FinalWeights.w) / WeightSum;
     OutputTexture[Pixel] = float4(Resolved, saturate(Depth));
     InputSHOut[Pixel] = RestirGiPackSh(Sh);
-    VarianceOut[Pixel] = RestirGiShVariance(Sh);
+    const float Variance = 1.0f - saturate(SampleCount / 500.0f);
+    VarianceOut[Pixel] = Variance * Variance;
 }
