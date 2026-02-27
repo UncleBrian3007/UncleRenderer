@@ -3,13 +3,18 @@
 #include "../DeferredRenderer.h"
 #include "../RendererUtils.h"
 #include "../ShaderCompiler.h"
+#include "../TextureLoader.h"
+#include "../../Core/Logger.h"
 #include "../../Core/GpuDebugMarkers.h"
 #include "../../RHI/DX12Device.h"
 
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <mutex>
+#include <string>
 #include <vector>
+#include <d3dx12.h>
 
 bool FDeferredGeometryPasses::InitializePipelines(FDeferredRenderer& Owner, FDX12Device* Device, DXGI_FORMAT LightingBufferFormat) const
 {
@@ -54,6 +59,138 @@ bool FDeferredGeometryPasses::InitializeResources(FDeferredRenderer& Owner, FDX1
     {
         Owner.ObjectIdReadback->SetName(L"ObjectIdReadback");
     }
+
+    return true;
+}
+
+bool FDeferredRenderer::CreateGBufferResources(FDX12Device* Device, uint32_t Width, uint32_t Height)
+{
+    Microsoft::WRL::ComPtr<ID3D12Resource>* Targets[4] = { &GBufferA, &GBufferB, &GBufferC, &GBufferD };
+    const wchar_t* GBufferNames[4] = { L"GBufferA", L"GBufferB", L"GBufferC", L"GBufferD" };
+
+    CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
+
+    const UINT RtvDescriptorSize = Device->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    D3D12_CPU_DESCRIPTOR_HANDLE RtvHandle = {};
+    RtvHandle.ptr = 0;
+
+    D3D12_DESCRIPTOR_HEAP_DESC RtvHeapDesc = {};
+    RtvHeapDesc.NumDescriptors = 6;
+    RtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    RtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&RtvHeapDesc, IID_PPV_ARGS(GBufferRTVHeap.GetAddressOf())));
+    if (GBufferRTVHeap)
+    {
+        GBufferRTVHeap->SetName(L"GBufferRTVHeap");
+    }
+
+    RtvHandle = GBufferRTVHeap->GetCPUDescriptorHandleForHeapStart();
+
+    for (int i = 0; i < 4; ++i)
+    {
+        CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
+            FDeferredRenderer::GBufferFormats[i],
+            Width,
+            Height,
+            1,
+            1,
+            1,
+            0,
+            D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+
+        D3D12_CLEAR_VALUE ClearValue = {};
+        ClearValue.Format = Desc.Format;
+        ClearValue.Color[0] = 0.0f;
+        ClearValue.Color[1] = 0.0f;
+        ClearValue.Color[2] = 0.0f;
+        ClearValue.Color[3] = 1.0f;
+
+        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+            &HeapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &Desc,
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+            &ClearValue,
+            IID_PPV_ARGS(Targets[i]->GetAddressOf())));
+
+        Targets[i]->Get()->SetName(GBufferNames[i]);
+
+        GBufferRTVHandles[i] = RtvHandle;
+        D3D12_RENDER_TARGET_VIEW_DESC RtvDesc = {};
+        RtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+        RtvDesc.Format = FDeferredRenderer::GBufferFormats[i];
+        Device->GetDevice()->CreateRenderTargetView(Targets[i]->Get(), &RtvDesc, RtvHandle);
+        RtvHandle.ptr += RtvDescriptorSize;
+
+        GBufferStates[i] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    }
+
+    CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
+        LightingBufferFormat,
+        Width,
+        Height,
+        1,
+        1,
+        1,
+        0,
+        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+
+    D3D12_CLEAR_VALUE LightingClear = {};
+    LightingClear.Format = Desc.Format;
+    LightingClear.Color[0] = 0.0f;
+    LightingClear.Color[1] = 0.0f;
+    LightingClear.Color[2] = 0.0f;
+    LightingClear.Color[3] = 1.0f;
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &HeapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &Desc,
+        LightingBufferState,
+        &LightingClear,
+        IID_PPV_ARGS(LightingBuffer.GetAddressOf())));
+
+    LightingBuffer->SetName(L"LightingBuffer");
+
+    LightingRTVHandle = RtvHandle;
+    D3D12_RENDER_TARGET_VIEW_DESC LightingRtvDesc = {};
+    LightingRtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+    LightingRtvDesc.Format = LightingBufferFormat;
+    Device->GetDevice()->CreateRenderTargetView(LightingBuffer.Get(), &LightingRtvDesc, RtvHandle);
+    RtvHandle.ptr += RtvDescriptorSize;
+
+    Desc = CD3DX12_RESOURCE_DESC::Tex2D(
+        BackBufferFormat,
+        Width,
+        Height,
+        1,
+        1,
+        1,
+        0,
+        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+
+    D3D12_CLEAR_VALUE TonemapClear = {};
+    TonemapClear.Format = Desc.Format;
+    TonemapClear.Color[0] = 0.0f;
+    TonemapClear.Color[1] = 0.0f;
+    TonemapClear.Color[2] = 0.0f;
+    TonemapClear.Color[3] = 1.0f;
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &HeapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &Desc,
+        TonemapOutputState,
+        &TonemapClear,
+        IID_PPV_ARGS(TonemapOutput.GetAddressOf())));
+
+    TonemapOutput->SetName(L"TonemapOutput");
+
+    TonemapOutputRtvHandle = RtvHandle;
+    D3D12_RENDER_TARGET_VIEW_DESC TonemapRtvDesc = {};
+    TonemapRtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+    TonemapRtvDesc.Format = BackBufferFormat;
+    Device->GetDevice()->CreateRenderTargetView(TonemapOutput.Get(), &TonemapRtvDesc, RtvHandle);
 
     return true;
 }
@@ -213,6 +350,173 @@ bool FDeferredRenderer::CreateDepthPrepassPipeline(FDX12Device* Device)
         HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(DepthPrepassPipelinesSkinned[DoubleSidedVariant].GetAddressOf())));
     }
     return true;
+}
+
+bool FDeferredRenderer::CompileDeferredBasePassPs(uint32_t PipelineKey, std::vector<uint8_t>& OutPs)
+{
+    FShaderCompiler Compiler;
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring PSTarget = RendererUtils::BuildShaderTarget(L"ps", ShaderModel);
+
+    const bool bUseNormal = (PipelineKey & 1u) != 0;
+    const bool bUseMR = (PipelineKey & 2u) != 0;
+    const bool bUseBaseColor = (PipelineKey & 4u) != 0;
+    const bool bUseEmissive = (PipelineKey & 8u) != 0;
+    const bool bUseAlphaMask = (PipelineKey & 16u) != 0;
+    const bool bUseSheenModel = (PipelineKey & 32u) != 0;
+    const bool bUseClearcoatModel = (PipelineKey & 64u) != 0;
+    const bool bUseAnisotropyModel = (PipelineKey & 128u) != 0;
+    const bool bUseDoubleSided = (PipelineKey & 256u) != 0;
+
+    std::vector<std::wstring> Defines;
+    Defines.push_back(bUseNormal ? L"USE_NORMAL_MAP=1" : L"USE_NORMAL_MAP=0");
+    Defines.push_back(bUseMR ? L"USE_METALLIC_ROUGHNESS_MAP=1" : L"USE_METALLIC_ROUGHNESS_MAP=0");
+    Defines.push_back(bUseBaseColor ? L"USE_BASE_COLOR_MAP=1" : L"USE_BASE_COLOR_MAP=0");
+    Defines.push_back(bUseEmissive ? L"USE_EMISSIVE_MAP=1" : L"USE_EMISSIVE_MAP=0");
+    Defines.push_back(bUseSheenModel ? L"SHADINGMODEL_SHEEN=1" : L"SHADINGMODEL_SHEEN=0");
+    Defines.push_back(bUseClearcoatModel ? L"SHADINGMODEL_CLEARCOAT=1" : L"SHADINGMODEL_CLEARCOAT=0");
+    Defines.push_back(bUseAnisotropyModel ? L"SHADINGMODEL_ANISOTROPY=1" : L"SHADINGMODEL_ANISOTROPY=0");
+    Defines.push_back(bUseDoubleSided ? L"USE_DOUBLE_SIDED=1" : L"USE_DOUBLE_SIDED=0");
+    if (bUseAlphaMask)
+    {
+        Defines.push_back(L"USE_ALPHA_MASK=1");
+    }
+
+    return Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"PSMain", PSTarget, OutPs, Defines);
+}
+
+bool FDeferredRenderer::BuildDeferredBasePassPsoDesc(uint32_t PipelineKey, bool bUseSkinning, D3D12_GRAPHICS_PIPELINE_STATE_DESC& OutDesc) const
+{
+    if (DeferredBasePassLightingFormat == DXGI_FORMAT_UNKNOWN)
+    {
+        return false;
+    }
+
+    OutDesc = {};
+    OutDesc.pRootSignature = BasePassRootSignature.Get();
+    OutDesc.InputLayout = { nullptr, 0 };
+    const std::vector<uint8_t>& VsBytecode = DeferredBasePassVsBytecodes[bUseSkinning ? 1u : 0u];
+    OutDesc.VS = { VsBytecode.data(), VsBytecode.size() };
+    OutDesc.PS = { DeferredBasePassPsBytecodes[PipelineKey].data(), DeferredBasePassPsBytecodes[PipelineKey].size() };
+    OutDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    OutDesc.SampleDesc.Count = 1;
+    OutDesc.SampleMask = UINT_MAX;
+
+    OutDesc.RasterizerState = {};
+    OutDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    OutDesc.RasterizerState.CullMode = (PipelineKey & 256u) != 0 ? D3D12_CULL_MODE_NONE : D3D12_CULL_MODE_BACK;
+    OutDesc.RasterizerState.FrontCounterClockwise = TRUE;
+    OutDesc.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
+    OutDesc.RasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
+    OutDesc.RasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
+    OutDesc.RasterizerState.DepthClipEnable = TRUE;
+    OutDesc.RasterizerState.MultisampleEnable = FALSE;
+    OutDesc.RasterizerState.AntialiasedLineEnable = FALSE;
+    OutDesc.RasterizerState.ForcedSampleCount = 0;
+    OutDesc.RasterizerState.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+
+    OutDesc.BlendState = {};
+    OutDesc.BlendState.AlphaToCoverageEnable = FALSE;
+    OutDesc.BlendState.IndependentBlendEnable = TRUE;
+    for (int i = 0; i < 5; ++i)
+    {
+        D3D12_RENDER_TARGET_BLEND_DESC RtBlend = {};
+        RtBlend.BlendEnable = FALSE;
+        RtBlend.LogicOpEnable = FALSE;
+        RtBlend.SrcBlend = D3D12_BLEND_ONE;
+        RtBlend.DestBlend = D3D12_BLEND_ZERO;
+        RtBlend.BlendOp = D3D12_BLEND_OP_ADD;
+        RtBlend.SrcBlendAlpha = D3D12_BLEND_ONE;
+        RtBlend.DestBlendAlpha = D3D12_BLEND_ZERO;
+        RtBlend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        RtBlend.LogicOp = D3D12_LOGIC_OP_NOOP;
+        RtBlend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        OutDesc.BlendState.RenderTarget[i] = RtBlend;
+    }
+
+    OutDesc.DepthStencilState = {};
+    OutDesc.DepthStencilState.DepthEnable = TRUE;
+    OutDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    OutDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+    OutDesc.DepthStencilState.StencilEnable = FALSE;
+    OutDesc.DepthStencilState.StencilReadMask = D3D12_DEFAULT_STENCIL_READ_MASK;
+    OutDesc.DepthStencilState.StencilWriteMask = D3D12_DEFAULT_STENCIL_WRITE_MASK;
+    OutDesc.DepthStencilState.FrontFace.StencilFailOp = D3D12_STENCIL_OP_KEEP;
+    OutDesc.DepthStencilState.FrontFace.StencilDepthFailOp = D3D12_STENCIL_OP_KEEP;
+    OutDesc.DepthStencilState.FrontFace.StencilPassOp = D3D12_STENCIL_OP_KEEP;
+    OutDesc.DepthStencilState.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    OutDesc.DepthStencilState.BackFace = OutDesc.DepthStencilState.FrontFace;
+    OutDesc.NumRenderTargets = 5;
+    OutDesc.RTVFormats[0] = FDeferredRenderer::GBufferFormats[0];
+    OutDesc.RTVFormats[1] = FDeferredRenderer::GBufferFormats[1];
+    OutDesc.RTVFormats[2] = FDeferredRenderer::GBufferFormats[2];
+    OutDesc.RTVFormats[3] = FDeferredRenderer::GBufferFormats[3];
+    OutDesc.RTVFormats[4] = DeferredBasePassLightingFormat;
+    OutDesc.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
+    OutDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
+    return true;
+}
+
+bool FDeferredRenderer::EnsureBasePassPipeline(uint32_t PipelineKey, bool bUseSkinning)
+{
+    auto& TargetPipeline = bUseSkinning ? BasePassPipelinesSkinned[PipelineKey] : BasePassPipelines[PipelineKey];
+    if (TargetPipeline)
+    {
+        return true;
+    }
+
+    std::lock_guard<std::mutex> Lock(DeferredBasePassPipelineMutex);
+    if (TargetPipeline)
+    {
+        return true;
+    }
+
+    if (!DeferredBasePassPsCompiled[PipelineKey])
+    {
+        if (!CompileDeferredBasePassPs(PipelineKey, DeferredBasePassPsBytecodes[PipelineKey]))
+        {
+            return false;
+        }
+        DeferredBasePassPsCompiled[PipelineKey] = true;
+    }
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC Desc = {};
+    if (!BuildDeferredBasePassPsoDesc(PipelineKey, bUseSkinning, Desc))
+    {
+        return false;
+    }
+
+    HRESULT Hr = Device->GetDevice()->CreateGraphicsPipelineState(&Desc, IID_PPV_ARGS(TargetPipeline.GetAddressOf()));
+    if (FAILED(Hr))
+    {
+        return false;
+    }
+
+    LogInfo(std::string("Deferred BasePass pipeline created. key=") + std::to_string(PipelineKey) + ", skinned=" + (bUseSkinning ? "1" : "0"));
+    return true;
+}
+
+bool FDeferredRenderer::EnsureBasePassPipelineOrFail(uint32_t PipelineKey, bool bUseSkinning, const char* PassContext)
+{
+    if (EnsureBasePassPipeline(PipelineKey, bUseSkinning))
+    {
+        return true;
+    }
+
+    if (!DeferredBasePassFailureLogged[PipelineKey])
+    {
+        DeferredBasePassFailureLogged[PipelineKey] = true;
+        LogError(std::string("Deferred BasePass pipeline creation failed. context=")
+            + (PassContext ? PassContext : "Unknown")
+            + ", key=" + std::to_string(PipelineKey)
+            + ", skinned=" + (bUseSkinning ? "1" : "0"));
+    }
+
+    SetRenderFatalError(std::string("Deferred BasePass fatal failure. context=")
+        + (PassContext ? PassContext : "Unknown")
+        + ", key=" + std::to_string(PipelineKey)
+        + ", skinned=" + (bUseSkinning ? "1" : "0"));
+    return false;
 }
 
 bool FDeferredRenderer::CreateObjectIdResources(FDX12Device* Device, uint32_t Width, uint32_t Height)
@@ -1147,4 +1451,140 @@ void FDeferredGeometryPasses::AddVelocityPass(FDeferredPassContext& Context) con
             LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0);
         }
     });
+}
+
+bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, const std::vector<FSceneModelResource>& Models)
+{
+    if (!TextureLoader)
+    {
+        return false;
+    }
+
+    SceneTextures.clear();
+    SceneTextures.reserve(Models.size());
+
+    // Prepare all texture load requests
+    std::vector<FTextureLoadRequest> Requests;
+    Requests.reserve(Models.size() * 10); // 10 textures per model
+
+    // Pre-allocate texture sets
+    for (const FSceneModelResource& Model : Models)
+    {
+        FModelTextureSet TextureSet;
+        SceneTextures.push_back(TextureSet);
+    }
+
+    // Build load requests for all textures
+    for (size_t i = 0; i < Models.size(); ++i)
+    {
+        const FSceneModelResource& Model = Models[i];
+        FModelTextureSet& TextureSet = SceneTextures[i];
+
+        // Base color texture - skip when missing
+        if (!Model.BaseColorTexturePath.empty())
+        {
+            FTextureLoadRequest BaseColorRequest;
+            BaseColorRequest.Path = Model.BaseColorTexturePath;
+            BaseColorRequest.bUseSolidColor = false;
+            BaseColorRequest.bUseSRGB = true;
+            BaseColorRequest.OutTexture = &TextureSet.BaseColor;
+            Requests.push_back(BaseColorRequest);
+        }
+
+        // Metallic roughness texture - skip when missing
+        if (!Model.MetallicRoughnessTexturePath.empty())
+        {
+            FTextureLoadRequest MetallicRoughnessRequest;
+            MetallicRoughnessRequest.Path = Model.MetallicRoughnessTexturePath;
+            MetallicRoughnessRequest.bUseSolidColor = false;
+            MetallicRoughnessRequest.OutTexture = &TextureSet.MetallicRoughness;
+            Requests.push_back(MetallicRoughnessRequest);
+        }
+
+		if (!Model.NormalTexturePath.empty())
+		{
+			FTextureLoadRequest NormalRequest;
+            NormalRequest.Path = Model.NormalTexturePath;
+            NormalRequest.bUseSolidColor = false;
+            NormalRequest.OutTexture = &TextureSet.Normal;
+			Requests.push_back(NormalRequest);
+		}
+
+        // Emissive texture - skip when missing
+        if (!Model.EmissiveTexturePath.empty())
+        {
+            FTextureLoadRequest EmissiveRequest;
+            EmissiveRequest.Path = Model.EmissiveTexturePath;
+            EmissiveRequest.bUseSolidColor = false;
+            EmissiveRequest.bUseSRGB = true;
+            EmissiveRequest.OutTexture = &TextureSet.Emissive;
+            Requests.push_back(EmissiveRequest);
+        }
+
+        if (!Model.SheenColorTexturePath.empty())
+        {
+            FTextureLoadRequest SheenColorRequest;
+            SheenColorRequest.Path = Model.SheenColorTexturePath;
+            SheenColorRequest.bUseSolidColor = false;
+            SheenColorRequest.bUseSRGB = true;
+            SheenColorRequest.OutTexture = &TextureSet.SheenColor;
+            Requests.push_back(SheenColorRequest);
+        }
+
+        if (!Model.SheenRoughnessTexturePath.empty())
+        {
+            FTextureLoadRequest SheenRoughnessRequest;
+            SheenRoughnessRequest.Path = Model.SheenRoughnessTexturePath;
+            SheenRoughnessRequest.bUseSolidColor = false;
+            SheenRoughnessRequest.OutTexture = &TextureSet.SheenRoughness;
+            Requests.push_back(SheenRoughnessRequest);
+        }
+
+        if (!Model.ClearcoatTexturePath.empty())
+        {
+            FTextureLoadRequest ClearcoatRequest;
+            ClearcoatRequest.Path = Model.ClearcoatTexturePath;
+            ClearcoatRequest.bUseSolidColor = false;
+            ClearcoatRequest.OutTexture = &TextureSet.Clearcoat;
+            Requests.push_back(ClearcoatRequest);
+        }
+
+        if (!Model.ClearcoatRoughnessTexturePath.empty())
+        {
+            FTextureLoadRequest ClearcoatRoughnessRequest;
+            ClearcoatRoughnessRequest.Path = Model.ClearcoatRoughnessTexturePath;
+            ClearcoatRoughnessRequest.bUseSolidColor = false;
+            ClearcoatRoughnessRequest.OutTexture = &TextureSet.ClearcoatRoughness;
+            Requests.push_back(ClearcoatRoughnessRequest);
+        }
+
+        if (!Model.ClearcoatNormalTexturePath.empty())
+        {
+            FTextureLoadRequest ClearcoatNormalRequest;
+            ClearcoatNormalRequest.Path = Model.ClearcoatNormalTexturePath;
+            ClearcoatNormalRequest.bUseSolidColor = false;
+            ClearcoatNormalRequest.OutTexture = &TextureSet.ClearcoatNormal;
+            Requests.push_back(ClearcoatNormalRequest);
+        }
+
+        if (!Model.AnisotropyTexturePath.empty())
+        {
+            FTextureLoadRequest AnisotropyRequest;
+            AnisotropyRequest.Path = Model.AnisotropyTexturePath;
+            AnisotropyRequest.bUseSolidColor = false;
+            AnisotropyRequest.OutTexture = &TextureSet.Anisotropy;
+            Requests.push_back(AnisotropyRequest);
+        }
+    }
+
+    // Load all textures in parallel
+    LogInfo("Loading " + std::to_string(Requests.size()) + " textures in parallel for " + std::to_string(Models.size()) + " models");
+    const bool bSuccess = TextureLoader->LoadTexturesParallel(Requests);
+
+    if (!bSuccess)
+    {
+        LogError("Failed to load scene textures");
+    }
+
+    return bSuccess;
 }

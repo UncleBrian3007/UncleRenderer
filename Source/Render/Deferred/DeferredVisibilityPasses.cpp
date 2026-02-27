@@ -10,6 +10,65 @@ bool FDeferredVisibilityPasses::InitializeResources(FDeferredRenderer& Owner, FD
     return Owner.CreateGpuDrivenResources(Device);
 }
 
+bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
+{
+    if (!Device || SceneModels.empty() || !GetSceneConstantBuffer())
+    {
+        return false;
+    }
+
+    // Step 1: Prepare indirect draw data
+    FGpuDrivenPreparedData PreparedData;
+    if (!PrepareGpuDrivenDrawData(PreparedData))
+    {
+        LogError("Failed to prepare GPU-driven draw data");
+        return false;
+    }
+
+    // Step 2: Create per-frame indirect buffers
+    if (!CreatePerFrameIndirectBuffers(Device, PreparedData))
+    {
+        LogError("Failed to create per-frame indirect buffers");
+        return false;
+    }
+
+    // Step 3: Create shared GPU-driven buffers
+    if (!CreateSharedGpuDrivenBuffers(Device, PreparedData))
+    {
+        LogError("Failed to create shared GPU-driven buffers");
+        return false;
+    }
+
+    // Step 4: Upload buffers to GPU
+    if (!UploadGpuDrivenBuffers(Device, PreparedData))
+    {
+        LogError("Failed to upload GPU-driven buffers");
+        return false;
+    }
+
+    // Step 5: Create culling pipelines
+    if (!CreateCullingPipelines(Device))
+    {
+        LogError("Failed to create culling pipelines");
+        return false;
+    }
+
+    if (!CreateVisibilityListPipelines(Device))
+    {
+        LogError("Failed to create visibility list pipelines");
+        return false;
+    }
+
+    // Step 6: Create indirect command signature
+    if (!CreateIndirectCommandSignature(Device, BasePassRootSignature.Get()))
+    {
+        LogError("Failed to create indirect command signature");
+        return false;
+    }
+
+    return true;
+}
+
 void FDeferredVisibilityPasses::AddVisibilityListPass(FDeferredPassContext& Context, uint32_t VisibilityIndex, uint32_t VisibilityFrameIndex) const
 {
     FDeferredRenderer& Owner = Context.Owner;

@@ -44,6 +44,7 @@ class FDeferredRenderer : public FRenderer
 public:
     static constexpr DXGI_FORMAT LightingBufferFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
     static constexpr DXGI_FORMAT PathTracingBufferFormat = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    static const DXGI_FORMAT GBufferFormats[4];
 
     FDeferredRenderer();
 

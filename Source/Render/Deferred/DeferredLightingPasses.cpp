@@ -522,6 +522,118 @@ bool FDeferredRenderer::CreateSsrPipeline(FDX12Device* Device)
     return true;
 }
 
+bool FDeferredRenderer::CompileSsrGraphicsPs(uint32_t PipelineIndex, std::vector<uint8_t>& OutPs)
+{
+    FShaderCompiler Compiler;
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring PSTarget = RendererUtils::BuildShaderTarget(L"ps", ShaderModel);
+
+    const bool bUseHzb = (PipelineIndex & 2u) != 0;
+    const bool bUseRefine = (PipelineIndex & 1u) != 0;
+    const bool bUseSwSsr = (PipelineIndex & 4u) == 0;
+
+    const std::vector<std::wstring> Defines =
+    {
+        bUseHzb ? L"HZB_ENABLED=1" : L"HZB_ENABLED=0",
+        bUseRefine ? L"SSR_REFINE_ENABLED=1" : L"SSR_REFINE_ENABLED=0",
+        bUseSwSsr ? L"SW_SSR_ENABLED=1" : L"SW_SSR_ENABLED=0"
+    };
+
+    return Compiler.CompileFromFile(L"Shaders/SsrSWTracePS.hlsl", L"PSMain", PSTarget, OutPs, Defines);
+}
+
+bool FDeferredRenderer::BuildSsrGraphicsPsoDesc(uint32_t PipelineIndex, D3D12_GRAPHICS_PIPELINE_STATE_DESC& OutDesc) const
+{
+    OutDesc = {};
+    OutDesc.pRootSignature = SsrRootSignature.Get();
+    OutDesc.VS = { SsrGraphicsVsBytecode.data(), SsrGraphicsVsBytecode.size() };
+    OutDesc.PS = { SsrGraphicsPsBytecodes[PipelineIndex].data(), SsrGraphicsPsBytecodes[PipelineIndex].size() };
+    OutDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    OutDesc.SampleDesc.Count = 1;
+    OutDesc.SampleMask = UINT_MAX;
+
+    OutDesc.RasterizerState = {};
+    OutDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    OutDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    OutDesc.RasterizerState.FrontCounterClockwise = TRUE;
+    OutDesc.RasterizerState.DepthClipEnable = TRUE;
+
+    OutDesc.BlendState = {};
+    OutDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    OutDesc.DepthStencilState = {};
+    OutDesc.DepthStencilState.DepthEnable = FALSE;
+    OutDesc.DepthStencilState.StencilEnable = FALSE;
+    OutDesc.NumRenderTargets = 1;
+    OutDesc.RTVFormats[0] = LightingBufferFormat;
+    OutDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
+    return true;
+}
+
+bool FDeferredRenderer::EnsureSsrGraphicsPipeline(uint32_t PipelineIndex)
+{
+    if (PipelineIndex >= SsrPipelines.size())
+    {
+        return false;
+    }
+
+    if (SsrPipelines[PipelineIndex])
+    {
+        return true;
+    }
+
+    std::lock_guard<std::mutex> Lock(SsrGraphicsPipelineMutex);
+    if (SsrPipelines[PipelineIndex])
+    {
+        return true;
+    }
+
+    if (!SsrGraphicsPsCompiled[PipelineIndex])
+    {
+        if (!CompileSsrGraphicsPs(PipelineIndex, SsrGraphicsPsBytecodes[PipelineIndex]))
+        {
+            return false;
+        }
+        SsrGraphicsPsCompiled[PipelineIndex] = true;
+    }
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC Desc = {};
+    if (!BuildSsrGraphicsPsoDesc(PipelineIndex, Desc))
+    {
+        return false;
+    }
+
+    HRESULT Hr = Device->GetDevice()->CreateGraphicsPipelineState(&Desc, IID_PPV_ARGS(SsrPipelines[PipelineIndex].GetAddressOf()));
+    if (FAILED(Hr))
+    {
+        return false;
+    }
+
+    LogInfo("SSR graphics pipeline created. index=" + std::to_string(PipelineIndex));
+    return true;
+}
+
+bool FDeferredRenderer::EnsureSsrGraphicsPipelineOrFail(uint32_t PipelineIndex, const char* PassContext)
+{
+    if (EnsureSsrGraphicsPipeline(PipelineIndex))
+    {
+        return true;
+    }
+
+    if (PipelineIndex < SsrGraphicsFailureLogged.size() && !SsrGraphicsFailureLogged[PipelineIndex])
+    {
+        SsrGraphicsFailureLogged[PipelineIndex] = true;
+        LogError(std::string("SSR graphics pipeline creation failed. context=")
+            + (PassContext ? PassContext : "Unknown")
+            + ", index=" + std::to_string(PipelineIndex));
+    }
+
+    SetRenderFatalError(std::string("SSR graphics fatal failure. context=")
+        + (PassContext ? PassContext : "Unknown")
+        + ", index=" + std::to_string(PipelineIndex));
+    return false;
+}
+
 bool FDeferredRenderer::CreateSsrDenoiseRootSignature(FDX12Device* Device)
 {
     D3D12_ROOT_PARAMETER1 RootParams[2] = {};
@@ -729,6 +841,87 @@ bool FDeferredRenderer::CreateSsrSwTracePipeline(FDX12Device* Device)
     }
 
     return true;
+}
+
+bool FDeferredRenderer::CompileSsrSwTraceCs(uint32_t PipelineIndex, std::vector<uint8_t>& OutCs)
+{
+    FShaderCompiler Compiler;
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring CSTarget = RendererUtils::BuildShaderTarget(L"cs", ShaderModel);
+
+    const bool bUseHzb = (PipelineIndex & 2u) != 0;
+    const bool bUseRefine = (PipelineIndex & 1u) != 0;
+    const bool bUseSwSsr = (PipelineIndex & 4u) == 0;
+
+    const std::vector<std::wstring> Defines =
+    {
+        bUseHzb ? L"HZB_ENABLED=1" : L"HZB_ENABLED=0",
+        bUseRefine ? L"SSR_REFINE_ENABLED=1" : L"SSR_REFINE_ENABLED=0",
+        bUseSwSsr ? L"SW_SSR_ENABLED=1" : L"SW_SSR_ENABLED=0"
+    };
+
+    return Compiler.CompileFromFile(L"Shaders/SsrSWTraceCS.hlsl", L"CSMain", CSTarget, OutCs, Defines);
+}
+
+bool FDeferredRenderer::EnsureSsrSwTracePipeline(uint32_t PipelineIndex)
+{
+    if (PipelineIndex >= SsrSwTracePipelines.size())
+    {
+        return false;
+    }
+
+    if (SsrSwTracePipelines[PipelineIndex])
+    {
+        return true;
+    }
+
+    std::lock_guard<std::mutex> Lock(SsrSwTracePipelineMutex);
+    if (SsrSwTracePipelines[PipelineIndex])
+    {
+        return true;
+    }
+
+    if (!SsrSwTraceCsCompiled[PipelineIndex])
+    {
+        if (!CompileSsrSwTraceCs(PipelineIndex, SsrSwTraceCsBytecodes[PipelineIndex]))
+        {
+            return false;
+        }
+        SsrSwTraceCsCompiled[PipelineIndex] = true;
+    }
+
+    D3D12_COMPUTE_PIPELINE_STATE_DESC Desc = {};
+    Desc.pRootSignature = SsrSwTraceRootSignature.Get();
+    Desc.CS = { SsrSwTraceCsBytecodes[PipelineIndex].data(), SsrSwTraceCsBytecodes[PipelineIndex].size() };
+    HRESULT Hr = Device->GetDevice()->CreateComputePipelineState(&Desc, IID_PPV_ARGS(SsrSwTracePipelines[PipelineIndex].GetAddressOf()));
+    if (FAILED(Hr))
+    {
+        return false;
+    }
+
+    LogInfo("SSR SW trace pipeline created. index=" + std::to_string(PipelineIndex));
+    return true;
+}
+
+bool FDeferredRenderer::EnsureSsrSwTracePipelineOrFail(uint32_t PipelineIndex, const char* PassContext)
+{
+    if (EnsureSsrSwTracePipeline(PipelineIndex))
+    {
+        return true;
+    }
+
+    if (PipelineIndex < SsrSwTraceFailureLogged.size() && !SsrSwTraceFailureLogged[PipelineIndex])
+    {
+        SsrSwTraceFailureLogged[PipelineIndex] = true;
+        LogError(std::string("SSR SW trace pipeline creation failed. context=")
+            + (PassContext ? PassContext : "Unknown")
+            + ", index=" + std::to_string(PipelineIndex));
+    }
+
+    SetRenderFatalError(std::string("SSR SW trace fatal failure. context=")
+        + (PassContext ? PassContext : "Unknown")
+        + ", index=" + std::to_string(PipelineIndex));
+    return false;
 }
 
 bool FDeferredRenderer::CreateSsrBuildIndirectArgsRootSignature(FDX12Device* Device)
