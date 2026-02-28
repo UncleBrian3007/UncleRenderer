@@ -172,6 +172,8 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <ClCompile Include="ThirdParty\meshoptimizer\vfetchoptimizer.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="Shaders\ffx_a.h" />
+    <None Include="Shaders\ffx_spd.h" />
     <ClInclude Include="Source\Core\Application.h" />
     <ClInclude Include="Source\Core\GpuDebugMarkers.h" />
     <ClInclude Include="Source\Core\RendererConfig.h" />

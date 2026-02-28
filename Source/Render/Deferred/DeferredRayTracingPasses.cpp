@@ -468,14 +468,14 @@ bool FDeferredRenderer::CreateRestirGiDenoiserResources(FDX12Device* Device, uin
     }
 
     CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
-    auto CreateTexture = [&](DXGI_FORMAT Format, uint32_t InWidth, uint32_t InHeight, const wchar_t* Name, Microsoft::WRL::ComPtr<ID3D12Resource>& OutResource)
+    auto CreateTexture = [&](DXGI_FORMAT Format, uint32_t InWidth, uint32_t InHeight, uint16_t MipLevels, const wchar_t* Name, Microsoft::WRL::ComPtr<ID3D12Resource>& OutResource)
     {
         CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
             Format,
             InWidth,
             InHeight,
             1,
-            1,
+            MipLevels,
             1,
             0,
             D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
@@ -494,27 +494,17 @@ bool FDeferredRenderer::CreateRestirGiDenoiserResources(FDX12Device* Device, uin
         }
     };
 
-    CreateTexture(DXGI_FORMAT_R32G32B32A32_UINT, Width, Height, L"ReSTIR_GI_InputSH", RestirGiInputSHTexture);
-    CreateTexture(DXGI_FORMAT_R8_UNORM, Width, Height, L"ReSTIR_GI_Variance", RestirGiVarianceTexture);
-    CreateTexture(DXGI_FORMAT_R11G11B10_FLOAT, Width, Height, L"ReSTIR_GI_HistoryIrradiance", RestirGiHistoryIrradianceTexture);
-    CreateTexture(DXGI_FORMAT_R32G32B32A32_UINT, Width, Height, L"ReSTIR_GI_TemporalSH", RestirGiTemporalSHTexture);
-    CreateTexture(DXGI_FORMAT_R32G32B32A32_UINT, Width, Height, L"ReSTIR_GI_HistorySH", RestirGiHistorySHTexture);
-    CreateTexture(DXGI_FORMAT_R8_UINT, Width, Height, L"ReSTIR_GI_HistoryCountA", RestirGiHistoryCountATexture);
-    CreateTexture(DXGI_FORMAT_R8_UINT, Width, Height, L"ReSTIR_GI_HistoryCountB", RestirGiHistoryCountBTexture);
-    CreateTexture(DXGI_FORMAT_R16_FLOAT, Width, Height, L"ReSTIR_GI_PrevLinearDepth", RestirGiPrevLinearDepthTexture);
-    CreateTexture(DXGI_FORMAT_R16G16B16A16_FLOAT, Width, Height, L"ReSTIR_GI_PrevNormal", RestirGiPrevNormalTexture);
-
-    uint32_t MipWidth = (Width + 1u) / 2u;
-    uint32_t MipHeight = (Height + 1u) / 2u;
-    for (uint32_t MipIndex = 0; MipIndex < 4u; ++MipIndex)
-    {
-        const std::wstring ShName = L"ReSTIR_GI_SH_Mip_" + std::to_wstring(MipIndex);
-        const std::wstring DepthName = L"ReSTIR_GI_LinearDepth_Mip_" + std::to_wstring(MipIndex);
-        CreateTexture(DXGI_FORMAT_R32G32B32A32_UINT, MipWidth, MipHeight, ShName.c_str(), RestirGiShMipTextures[MipIndex]);
-        CreateTexture(DXGI_FORMAT_R16_FLOAT, MipWidth, MipHeight, DepthName.c_str(), RestirGiLinearDepthMipTextures[MipIndex]);
-        MipWidth = (std::max)(1u, (MipWidth + 1u) / 2u);
-        MipHeight = (std::max)(1u, (MipHeight + 1u) / 2u);
-    }
+    CreateTexture(DXGI_FORMAT_R32G32B32A32_UINT, Width, Height, 1, L"ReSTIR_GI_InputSH", RestirGiInputSHTexture);
+    CreateTexture(DXGI_FORMAT_R8_UNORM, Width, Height, 1, L"ReSTIR_GI_Variance", RestirGiVarianceTexture);
+    CreateTexture(DXGI_FORMAT_R11G11B10_FLOAT, Width, Height, 1, L"ReSTIR_GI_HistoryIrradiance", RestirGiHistoryIrradianceTexture);
+    CreateTexture(DXGI_FORMAT_R32G32B32A32_UINT, Width, Height, 1, L"ReSTIR_GI_TemporalSH", RestirGiTemporalSHTexture);
+    CreateTexture(DXGI_FORMAT_R32G32B32A32_UINT, Width, Height, 1, L"ReSTIR_GI_HistorySH", RestirGiHistorySHTexture);
+    CreateTexture(DXGI_FORMAT_R8_UINT, Width, Height, 1, L"ReSTIR_GI_HistoryCountA", RestirGiHistoryCountATexture);
+    CreateTexture(DXGI_FORMAT_R8_UINT, Width, Height, 1, L"ReSTIR_GI_HistoryCountB", RestirGiHistoryCountBTexture);
+    CreateTexture(DXGI_FORMAT_R16_FLOAT, Width, Height, 1, L"ReSTIR_GI_PrevLinearDepth", RestirGiPrevLinearDepthTexture);
+    CreateTexture(DXGI_FORMAT_R16G16B16A16_FLOAT, Width, Height, 1, L"ReSTIR_GI_PrevNormal", RestirGiPrevNormalTexture);
+    CreateTexture(DXGI_FORMAT_R32G32B32A32_UINT, (Width + 1u) / 2u, (Height + 1u) / 2u, 4, L"ReSTIR_GI_SH_Mips", RestirGiShMipTexture);
+    CreateTexture(DXGI_FORMAT_R16_FLOAT, (Width + 1u) / 2u, (Height + 1u) / 2u, 4, L"ReSTIR_GI_LinearDepth_Mips", RestirGiLinearDepthMipTexture);
 
     RestirGiInputSHState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     RestirGiVarianceState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -525,11 +515,8 @@ bool FDeferredRenderer::CreateRestirGiDenoiserResources(FDX12Device* Device, uin
     RestirGiHistoryCountBState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     RestirGiPrevLinearDepthState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     RestirGiPrevNormalState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    for (uint32_t MipIndex = 0; MipIndex < 4u; ++MipIndex)
-    {
-        RestirGiShMipStates[MipIndex] = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-        RestirGiLinearDepthMipStates[MipIndex] = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    }
+    RestirGiShMipState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    RestirGiLinearDepthMipState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     return true;
 }
 
@@ -1202,23 +1189,20 @@ void FDeferredRayTracingPasses::AddRestirGiDenoiserPasses(FDeferredPassContext& 
     const FRGResourceHandle HistoryCountBHandle = Context.Resources.RestirGiHistoryCountBHandle;
     const FRGResourceHandle PrevLinearDepthHandle = Context.Resources.RestirGiPrevLinearDepthHandle;
     const FRGResourceHandle PrevNormalHandle = Context.Resources.RestirGiPrevNormalHandle;
-    const std::array<FRGResourceHandle, 4>& ShMipHandles = Context.Resources.RestirGiShMipHandles;
-    const std::array<FRGResourceHandle, 4>& LinearDepthMipHandles = Context.Resources.RestirGiLinearDepthMipHandles;
+    const FRGResourceHandle ShMipHandle = Context.Resources.RestirGiShMipHandle;
+    const FRGResourceHandle LinearDepthMipHandle = Context.Resources.RestirGiLinearDepthMipHandle;
 
     AddRestirGiDenoiserPreTemporalPass(Owner, Graph, FrameState, GBufferHandles, VelocityHandle, LinearDepthHandle, InputSHHandle, VarianceHandle, TemporalSHHandle, HistorySHHandle, HistoryIrradianceHandle, HistoryCountAHandle, HistoryCountBHandle, PrevLinearDepthHandle, PrevNormalHandle);
 
     for (uint32_t MipLevel = 0; MipLevel < 4u; ++MipLevel)
     {
-        const FRGResourceHandle ShSourceHandle = (MipLevel == 0u) ? TemporalSHHandle : ShMipHandles[MipLevel - 1u];
-        const FRGResourceHandle DepthSourceHandle = (MipLevel == 0u) ? LinearDepthHandle : LinearDepthMipHandles[MipLevel - 1u];
-        AddRestirGiShMipGenPass(Owner, Graph, MipLevel, ShSourceHandle, ShMipHandles[MipLevel]);
-        AddRestirGiLinearDepthMipGenPass(Owner, Graph, MipLevel, DepthSourceHandle, LinearDepthMipHandles[MipLevel]);
+        const FRGResourceHandle ShSourceHandle = (MipLevel == 0u) ? TemporalSHHandle : ShMipHandle;
+        const FRGResourceHandle DepthSourceHandle = (MipLevel == 0u) ? LinearDepthHandle : LinearDepthMipHandle;
+        AddRestirGiShMipGenPass(Owner, Graph, MipLevel, ShSourceHandle, ShMipHandle);
+        AddRestirGiLinearDepthMipGenPass(Owner, Graph, MipLevel, DepthSourceHandle, LinearDepthMipHandle);
     }
 
-    for (uint32_t DispatchMip = 0; DispatchMip < 4u; ++DispatchMip)
-    {
-        AddRestirGiHistoryReconstructionPass(Owner, Graph, DispatchMip, GBufferHandles, LinearDepthHandle, HistorySHHandle, HistoryCountBHandle, TemporalSHHandle, ShMipHandles[DispatchMip], LinearDepthMipHandles[DispatchMip]);
-    }
+    AddRestirGiHistoryReconstructionPass(Owner, Graph, GBufferHandles, LinearDepthHandle, HistorySHHandle, HistoryCountBHandle, TemporalSHHandle, ShMipHandle, LinearDepthMipHandle);
 
     AddRestirGiFinalBlurPass(Owner, Graph, GBufferHandles, LinearDepthHandle, TemporalSHHandle, HistoryIrradianceHandle, HistorySHHandle, HistoryCountBHandle);
 }
@@ -1226,12 +1210,16 @@ void FDeferredRayTracingPasses::AddRestirGiDenoiserPasses(FDeferredPassContext& 
 void FDeferredRayTracingPasses::AddRestirGiShMipGenPass(FDeferredRenderer& Owner, FRenderGraph& Graph, uint32_t MipLevel, FRGResourceHandle SourceHandle, FRGResourceHandle DestinationHandle) const
 {
     struct FPassData { bool bEnabled = false; };
-    const char* const PassNames[4] = { "RestirGI Denoiser SH Mip L0", "RestirGI Denoiser SH Mip L1", "RestirGI Denoiser SH Mip L2", "RestirGI Denoiser SH Mip L3" };
-    Graph.AddPass<FPassData>(PassNames[(std::min)(MipLevel, 3u)], [&Owner, SourceHandle, DestinationHandle](FPassData& Data, FRGPassBuilder& Builder)
+    const char* const PassNames[4] = { "Denoiser SH Mip L0", "Denoiser SH Mip L1", "Denoiser SH Mip L2", "Denoiser SH Mip L3" };
+    Graph.AddPass<FPassData>(PassNames[(std::min)(MipLevel, 3u)], [&Owner, SourceHandle, DestinationHandle, MipLevel](FPassData& Data, FRGPassBuilder& Builder)
     {
+        Builder.SetPixGroup("RestirGI Denoiser");
         Data.bEnabled = Owner.bRestirGIEnabled && Owner.RestirGiDenoiserRootSignature && Owner.RestirGiGenerateShMipsPipeline;
         if (!Data.bEnabled) { return; }
-        Builder.ReadTexture(SourceHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        if (MipLevel == 0u)
+        {
+            Builder.ReadTexture(SourceHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        }
         Builder.WriteTexture(DestinationHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     }, [&Owner, MipLevel](const FPassData& Data, FDX12CommandContext& Cmd)
     {
@@ -1269,26 +1257,53 @@ void FDeferredRayTracingPasses::AddRestirGiShMipGenPass(FDeferredRenderer& Owner
             Owner.RestirGiShMipUavBindlessIndices[MipLevel]
         };
 
-        FScopedPixEvent Event(LocalCommandList, L"RestirGI Denoiser SH Mip");
+        FScopedPixEvent Event(LocalCommandList, L"Denoiser SH Mip");
         ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         LocalCommandList->SetComputeRootSignature(Owner.RestirGiDenoiserRootSignature.Get());
         LocalCommandList->SetPipelineState(Owner.RestirGiGenerateShMipsPipeline.Get());
         LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(FRestirGiDenoiserConstants) / sizeof(uint32_t), &Constants, 0);
-        LocalCommandList->SetComputeRoot32BitConstants(1, 16, Bindless, 0);
+        LocalCommandList->SetComputeRoot32BitConstants(1, _countof(Bindless), Bindless, 0);
+
+        if (MipLevel > 0u)
+        {
+            D3D12_RESOURCE_BARRIER ToSrvBarrier = {};
+            ToSrvBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            ToSrvBarrier.Transition.pResource = Owner.RestirGiShMipTexture.Get();
+            ToSrvBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+            ToSrvBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+            ToSrvBarrier.Transition.Subresource = D3D12CalcSubresource(MipLevel - 1u, 0, 0, 4, 1);
+            LocalCommandList->ResourceBarrier(1, &ToSrvBarrier);
+        }
+
         LocalCommandList->Dispatch(DispatchX, DispatchY, 1);
+
+        if (MipLevel > 0u)
+        {
+            D3D12_RESOURCE_BARRIER ToUavBarrier = {};
+            ToUavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            ToUavBarrier.Transition.pResource = Owner.RestirGiShMipTexture.Get();
+            ToUavBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+            ToUavBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+            ToUavBarrier.Transition.Subresource = D3D12CalcSubresource(MipLevel - 1u, 0, 0, 4, 1);
+            LocalCommandList->ResourceBarrier(1, &ToUavBarrier);
+        }
     });
 }
 
 void FDeferredRayTracingPasses::AddRestirGiLinearDepthMipGenPass(FDeferredRenderer& Owner, FRenderGraph& Graph, uint32_t MipLevel, FRGResourceHandle SourceHandle, FRGResourceHandle DestinationHandle) const
 {
     struct FPassData { bool bEnabled = false; };
-    const char* const PassNames[4] = { "RestirGI Denoiser Depth Mip L0", "RestirGI Denoiser Depth Mip L1", "RestirGI Denoiser Depth Mip L2", "RestirGI Denoiser Depth Mip L3" };
-    Graph.AddPass<FPassData>(PassNames[(std::min)(MipLevel, 3u)], [&Owner, SourceHandle, DestinationHandle](FPassData& Data, FRGPassBuilder& Builder)
+    const char* const PassNames[4] = { "Denoiser Depth Mip L0", "Denoiser Depth Mip L1", "Denoiser Depth Mip L2", "Denoiser Depth Mip L3" };
+    Graph.AddPass<FPassData>(PassNames[(std::min)(MipLevel, 3u)], [&Owner, SourceHandle, DestinationHandle, MipLevel](FPassData& Data, FRGPassBuilder& Builder)
     {
+        Builder.SetPixGroup("RestirGI Denoiser");
         Data.bEnabled = Owner.bRestirGIEnabled && Owner.RestirGiDenoiserRootSignature && Owner.RestirGiGenerateLinearDepthMipsPipeline;
         if (!Data.bEnabled) { return; }
-        Builder.ReadTexture(SourceHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        if (MipLevel == 0u)
+        {
+            Builder.ReadTexture(SourceHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        }
         Builder.WriteTexture(DestinationHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     }, [&Owner, MipLevel](const FPassData& Data, FDX12CommandContext& Cmd)
     {
@@ -1326,23 +1341,46 @@ void FDeferredRayTracingPasses::AddRestirGiLinearDepthMipGenPass(FDeferredRender
             Owner.RestirGiLinearDepthMipUavBindlessIndices[MipLevel]
         };
 
-        FScopedPixEvent Event(LocalCommandList, L"RestirGI Denoiser Depth Mip");
+        FScopedPixEvent Event(LocalCommandList, L"Denoiser Depth Mip");
         ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         LocalCommandList->SetComputeRootSignature(Owner.RestirGiDenoiserRootSignature.Get());
         LocalCommandList->SetPipelineState(Owner.RestirGiGenerateLinearDepthMipsPipeline.Get());
         LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(FRestirGiDenoiserConstants) / sizeof(uint32_t), &Constants, 0);
-        LocalCommandList->SetComputeRoot32BitConstants(1, 16, Bindless, 0);
+        LocalCommandList->SetComputeRoot32BitConstants(1, _countof(Bindless), Bindless, 0);
+
+        if (MipLevel > 0u)
+        {
+            D3D12_RESOURCE_BARRIER ToSrvBarrier = {};
+            ToSrvBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            ToSrvBarrier.Transition.pResource = Owner.RestirGiLinearDepthMipTexture.Get();
+            ToSrvBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+            ToSrvBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+            ToSrvBarrier.Transition.Subresource = D3D12CalcSubresource(MipLevel - 1u, 0, 0, 4, 1);
+            LocalCommandList->ResourceBarrier(1, &ToSrvBarrier);
+        }
+
         LocalCommandList->Dispatch(DispatchX, DispatchY, 1);
+
+        if (MipLevel > 0u)
+        {
+            D3D12_RESOURCE_BARRIER ToUavBarrier = {};
+            ToUavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            ToUavBarrier.Transition.pResource = Owner.RestirGiLinearDepthMipTexture.Get();
+            ToUavBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+            ToUavBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+            ToUavBarrier.Transition.Subresource = D3D12CalcSubresource(MipLevel - 1u, 0, 0, 4, 1);
+            LocalCommandList->ResourceBarrier(1, &ToUavBarrier);
+        }
     });
 }
 
-void FDeferredRayTracingPasses::AddRestirGiHistoryReconstructionPass(FDeferredRenderer& Owner, FRenderGraph& Graph, uint32_t DispatchMip, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle HistorySHHandle, FRGResourceHandle HistoryCountHandle, FRGResourceHandle TemporalSHHandle, FRGResourceHandle ShMipHandle, FRGResourceHandle DepthMipHandle) const
+void FDeferredRayTracingPasses::AddRestirGiHistoryReconstructionPass(FDeferredRenderer& Owner, FRenderGraph& Graph, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle HistorySHHandle, FRGResourceHandle HistoryCountHandle, FRGResourceHandle TemporalSHHandle, FRGResourceHandle ShMipHandle, FRGResourceHandle DepthMipHandle) const
 {
     struct FPassData { bool bEnabled = false; };
-    const char* const PassNames[4] = { "RestirGI Denoiser Reconstruction Mip 0", "RestirGI Denoiser Reconstruction Mip 1", "RestirGI Denoiser Reconstruction Mip 2", "RestirGI Denoiser Reconstruction Mip 3" };
-    Graph.AddPass<FPassData>(PassNames[(std::min)(DispatchMip, 3u)], [&Owner, GBufferHandles, LinearDepthHandle, HistorySHHandle, HistoryCountHandle, TemporalSHHandle, ShMipHandle, DepthMipHandle](FPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FPassData>("Denoiser HistoryBlur", [&Owner, GBufferHandles, LinearDepthHandle, HistorySHHandle, HistoryCountHandle, TemporalSHHandle, ShMipHandle, DepthMipHandle](FPassData& Data, FRGPassBuilder& Builder)
     {
+        Builder.SetPixGroup("RestirGI Denoiser");
         Data.bEnabled = Owner.bRestirGIEnabled && Owner.RestirGiDenoiserRootSignature && Owner.RestirGiHistoryReconstructionPipeline;
         if (!Data.bEnabled) { return; }
         Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -1352,15 +1390,14 @@ void FDeferredRayTracingPasses::AddRestirGiHistoryReconstructionPass(FDeferredRe
         Builder.ReadTexture(ShMipHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(DepthMipHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.WriteTexture(TemporalSHHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    }, [&Owner, DispatchMip](const FPassData& Data, FDX12CommandContext& Cmd)
+    }, [&Owner](const FPassData& Data, FDX12CommandContext& Cmd)
     {
         if (!Data.bEnabled || !Owner.Device || !Owner.Device->GetBindlessDescriptorHeap()) { return; }
-        if (DispatchMip >= Owner.RestirGiShMipSrvBindlessIndices.size() || DispatchMip >= Owner.RestirGiLinearDepthMipSrvBindlessIndices.size()) { return; }
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
         if (!LocalCommandList) { return; }
 
         struct FRestirGiDenoiserConstants { uint32_t Width; uint32_t Height; uint32_t HistoryValid; uint32_t PassIndex; float DepthThresholdScale; float NormalThreshold; float BlendStrength; uint32_t MipLevel; float Padding1; float Padding2; };
-        FRestirGiDenoiserConstants Constants = { static_cast<uint32_t>(Owner.Viewport.Width), static_cast<uint32_t>(Owner.Viewport.Height), 0u, 4u, 1.03f, 0.9f, 1.0f, DispatchMip, 0.0f, 0.0f };
+        FRestirGiDenoiserConstants Constants = { static_cast<uint32_t>(Owner.Viewport.Width), static_cast<uint32_t>(Owner.Viewport.Height), 0u, 4u, 1.03f, 0.9f, 1.0f, 0u, 0.0f, 0.0f };
         const uint32_t DispatchX = (Constants.Width + 7u) / 8u;
         const uint32_t DispatchY = (Constants.Height + 7u) / 8u;
 
@@ -1379,18 +1416,18 @@ void FDeferredRayTracingPasses::AddRestirGiHistoryReconstructionPass(FDeferredRe
             Owner.RestirGiHistoryIrradianceUavBindlessIndex,
             Owner.RestirGiHistorySHUavBindlessIndex,
             Owner.RestirGiHistoryCountBUavBindlessIndex,
-            Owner.RestirGiLinearDepthMipSrvBindlessIndices[DispatchMip],
+            Owner.RestirGiLinearDepthMipSrvBindlessIndex,
             Owner.RestirGiPrevNormalUavBindlessIndex,
-            Owner.RestirGiShMipSrvBindlessIndices[DispatchMip]
+            Owner.RestirGiShMipSrvBindlessIndex
         };
 
-        FScopedPixEvent Event(LocalCommandList, L"RestirGI Denoiser Reconstruction");
+        FScopedPixEvent Event(LocalCommandList, L"Denoiser HistoryBlur");
         ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         LocalCommandList->SetComputeRootSignature(Owner.RestirGiDenoiserRootSignature.Get());
         LocalCommandList->SetPipelineState(Owner.RestirGiHistoryReconstructionPipeline.Get());
         LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(FRestirGiDenoiserConstants) / sizeof(uint32_t), &Constants, 0);
-        LocalCommandList->SetComputeRoot32BitConstants(1, 16, Bindless, 0);
+        LocalCommandList->SetComputeRoot32BitConstants(1, _countof(Bindless), Bindless, 0);
         LocalCommandList->Dispatch(DispatchX, DispatchY, 1);
     });
 }
@@ -1398,8 +1435,9 @@ void FDeferredRayTracingPasses::AddRestirGiHistoryReconstructionPass(FDeferredRe
 void FDeferredRayTracingPasses::AddRestirGiFinalBlurPass(FDeferredRenderer& Owner, FRenderGraph& Graph, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle TemporalSHHandle, FRGResourceHandle HistoryIrradianceHandle, FRGResourceHandle HistorySHHandle, FRGResourceHandle HistoryCountHandle) const
 {
     struct FPassData { bool bEnabled = false; };
-    Graph.AddPass<FPassData>("RestirGI Denoiser FinalBlur", [&Owner, GBufferHandles, LinearDepthHandle, TemporalSHHandle, HistoryIrradianceHandle, HistorySHHandle, HistoryCountHandle](FPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FPassData>("Denoiser FinalBlur", [&Owner, GBufferHandles, LinearDepthHandle, TemporalSHHandle, HistoryIrradianceHandle, HistorySHHandle, HistoryCountHandle](FPassData& Data, FRGPassBuilder& Builder)
     {
+        Builder.SetPixGroup("RestirGI Denoiser");
         Data.bEnabled = Owner.bRestirGIEnabled && Owner.RestirGiDenoiserRootSignature && Owner.RestirGiFinalBlurPipeline;
         if (!Data.bEnabled) { return; }
         Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -1437,13 +1475,13 @@ void FDeferredRayTracingPasses::AddRestirGiFinalBlurPass(FDeferredRenderer& Owne
             UINT32_MAX
         };
 
-        FScopedPixEvent Event(LocalCommandList, L"RestirGI Denoiser FinalBlur");
+        FScopedPixEvent Event(LocalCommandList, L"Denoiser FinalBlur");
         ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         LocalCommandList->SetComputeRootSignature(Owner.RestirGiDenoiserRootSignature.Get());
         LocalCommandList->SetPipelineState(Owner.RestirGiFinalBlurPipeline.Get());
         LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(FRestirGiDenoiserConstants) / sizeof(uint32_t), &Constants, 0);
-        LocalCommandList->SetComputeRoot32BitConstants(1, 16, Bindless, 0);
+        LocalCommandList->SetComputeRoot32BitConstants(1, _countof(Bindless), Bindless, 0);
         LocalCommandList->Dispatch((Constants.Width + 7u) / 8u, (Constants.Height + 7u) / 8u, 1);
     });
 }
@@ -2079,8 +2117,9 @@ void FDeferredRayTracingPasses::AddRestirGIPassImpl(FDeferredPassContext& Contex
 void FDeferredRayTracingPasses::AddRestirGiDenoiserPreTemporalPass(FDeferredRenderer& Owner, FRenderGraph& Graph, const FDeferredRenderer::FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle VelocityHandle, FRGResourceHandle LinearDepthHandle, FRGResourceHandle InputSHHandle, FRGResourceHandle VarianceHandle, FRGResourceHandle TemporalSHHandle, FRGResourceHandle HistorySHHandle, FRGResourceHandle HistoryIrradianceHandle, FRGResourceHandle HistoryCountAHandle, FRGResourceHandle HistoryCountBHandle, FRGResourceHandle PrevLinearDepthHandle, FRGResourceHandle PrevNormalHandle) const
 {
     struct FPassData { bool bEnabled = false; };
-    Graph.AddPass<FPassData>("RestirGI Denoiser PreTemporal", [&Owner, VelocityHandle, LinearDepthHandle, InputSHHandle, VarianceHandle, TemporalSHHandle, HistorySHHandle, HistoryIrradianceHandle, HistoryCountAHandle, HistoryCountBHandle, PrevLinearDepthHandle, PrevNormalHandle, GBufferHandles](FPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FPassData>("Denoiser PreTemporal", [&Owner, VelocityHandle, LinearDepthHandle, InputSHHandle, VarianceHandle, TemporalSHHandle, HistorySHHandle, HistoryIrradianceHandle, HistoryCountAHandle, HistoryCountBHandle, PrevLinearDepthHandle, PrevNormalHandle, GBufferHandles](FPassData& Data, FRGPassBuilder& Builder)
     {
+        Builder.SetPixGroup("RestirGI Denoiser");
         Data.bEnabled = Owner.bRestirGIEnabled && Owner.RestirGiDenoiserRootSignature && Owner.RestirGiPreBlurPipeline && Owner.RestirGiTemporalAccumulationPipeline;
         if (!Data.bEnabled) { return; }
         Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -2140,13 +2179,13 @@ void FDeferredRayTracingPasses::AddRestirGiDenoiserPreTemporalPass(FDeferredRend
         const uint32_t DispatchX = (Constants.Width + 7u) / 8u;
         const uint32_t DispatchY = (Constants.Height + 7u) / 8u;
 
-        auto DispatchDenoiserPass = [&](ID3D12PipelineState* Pipeline, uint32_t PassIndex, const uint32_t BindlessIndices[16])
+        auto DispatchDenoiserPass = [&](ID3D12PipelineState* Pipeline, uint32_t PassIndex, const uint32_t* BindlessIndices, uint32_t BindlessCount)
         {
             Constants.PassIndex = PassIndex;
             Constants.MipLevel = 0u;
             LocalCommandList->SetPipelineState(Pipeline);
             LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(FRestirGiDenoiserConstants) / sizeof(uint32_t), &Constants, 0);
-            LocalCommandList->SetComputeRoot32BitConstants(1, 16, BindlessIndices, 0);
+            LocalCommandList->SetComputeRoot32BitConstants(1, BindlessCount, BindlessIndices, 0);
             LocalCommandList->Dispatch(DispatchX, DispatchY, 1);
 
             D3D12_RESOURCE_BARRIER UavBarrier = {};
@@ -2200,7 +2239,7 @@ void FDeferredRayTracingPasses::AddRestirGiDenoiserPreTemporalPass(FDeferredRend
             UINT32_MAX
         };
 
-        DispatchDenoiserPass(Owner.RestirGiPreBlurPipeline.Get(), 0u, PreBlurBindless);
-        DispatchDenoiserPass(Owner.RestirGiTemporalAccumulationPipeline.Get(), 1u, TemporalBindless);
+        DispatchDenoiserPass(Owner.RestirGiPreBlurPipeline.Get(), 0u, PreBlurBindless, _countof(PreBlurBindless));
+        DispatchDenoiserPass(Owner.RestirGiTemporalAccumulationPipeline.Get(), 1u, TemporalBindless, _countof(TemporalBindless));
     });
 }

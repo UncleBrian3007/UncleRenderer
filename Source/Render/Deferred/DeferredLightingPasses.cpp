@@ -1879,6 +1879,7 @@ void FDeferredLightingPasses::AddSsrRayCounterClearPass(FDeferredPassContext& Co
 
     Graph.AddPass<FSsrRayCounterClearPassData>("SSR RayCounter Clear", [&Owner, FrameIndex, &Graph](FSsrRayCounterClearPassData& Data, FRGPassBuilder& Builder)
     {
+        Builder.SetPixGroup("SSR");
         if (FrameIndex >= Owner.SsrRayCounterPrimaryBuffers.size() || FrameIndex >= Owner.SsrRayCounterHwMissBuffers.size())
         {
             return;
@@ -1953,6 +1954,7 @@ void FDeferredLightingPasses::AddSsrRayGatherPass(FDeferredPassContext& Context)
 
     Graph.AddPass<FSsrRayGatherPassData>("SSR Ray Gather", [&Owner, FrameIndex, GBufferHandles, LinearDepthHandle, &Graph](FSsrRayGatherPassData& Data, FRGPassBuilder& Builder)
     {
+        Builder.SetPixGroup("SSR");
         Data.bEnabled = Owner.SsrRayGatherPipeline && Owner.SsrRayGatherRootSignature;
         if (!Data.bEnabled)
         {
@@ -2086,6 +2088,7 @@ void FDeferredLightingPasses::AddSsrBuildIndirectArgsPass(FDeferredPassContext& 
     const char* PassName = bHwMiss ? "SSR Build IndirectArgs HW Miss" : "SSR Build IndirectArgs Primary";
     Graph.AddPass<FSsrBuildIndirectArgsPassData>(PassName, [&Owner, FrameIndex, bHwMiss, &Graph](FSsrBuildIndirectArgsPassData& Data, FRGPassBuilder& Builder)
     {
+        Builder.SetPixGroup("SSR");
         Data.bEnabled = Owner.SsrBuildIndirectArgsPipeline && Owner.SsrBuildIndirectArgsRootSignature;
         Data.bHwMiss = bHwMiss;
         if (!Data.bEnabled)
@@ -2199,6 +2202,7 @@ void FDeferredLightingPasses::AddSsrSwTracePass(FDeferredPassContext& Context) c
 
     Graph.AddPass<FSsrSwTracePassData>("SSR SW Trace", [&Owner, FrameIndex, FrameState, TaaHandles, LinearDepthHandle, HZBHandle, SsrHandle, &Graph](FSsrSwTracePassData& Data, FRGPassBuilder& Builder)
     {
+        Builder.SetPixGroup("SSR");
         Data.bUseHzb = Owner.bSsrHzbEnabled && Owner.bHZBReady && Owner.HZBSrvBindlessIndex != UINT32_MAX;
         Data.HistoryIndex = FrameState.TaaReadIndex;
         Data.bUseHistory = FrameState.bTaaHistoryReady && Data.HistoryIndex < TaaHandles.size();
@@ -2429,6 +2433,7 @@ void FDeferredLightingPasses::AddSsrHwTracePass(FDeferredPassContext& Context) c
 
     Graph.AddPass<FSsrHwTracePassData>("SSR HW Trace", [&Owner, FrameIndex, FrameState, &Camera, TaaHandles, SsrHandle, &Graph](FSsrHwTracePassData& Data, FRGPassBuilder& Builder)
     {
+        Builder.SetPixGroup("SSR");
         Data.HistoryIndex = FrameState.TaaReadIndex;
         Data.bUseHistory = FrameState.bTaaHistoryReady && Data.HistoryIndex < TaaHandles.size();
         Data.bEnabled = Owner.bSsrHwEnabled && Owner.bRayTracingPipelineReady && Owner.RayQueryRootSignature && Owner.RayQuerySsrHwPipeline;
@@ -2619,6 +2624,7 @@ void FDeferredLightingPasses::AddSsrResolvePass(FDeferredPassContext& Context) c
 
     Graph.AddPass<FSsrResolvePassData>("SSR Resolve", [&Owner, GBufferHandles, LinearDepthHandle, SsrInputHandle, SsrResolveHandle](FSsrResolvePassData& Data, FRGPassBuilder& Builder)
     {
+        Builder.SetPixGroup("SSR");
         Data.bEnabled = Owner.SsrResolvePipeline && Owner.SsrResolveRootSignature;
         if (!Data.bEnabled)
         {
@@ -2709,6 +2715,7 @@ void FDeferredLightingPasses::AddSsrPass(FDeferredPassContext& Context) const
 
     Graph.AddPass<FSsrPassData>("SSR", [&Owner, FrameIndex, GBufferHandles, LinearDepthHandle, TaaHandles, HZBHandle, SsrHandle, FrameState, &Graph](FSsrPassData& Data, FRGPassBuilder& Builder)
     {
+        Builder.SetPixGroup("SSR");
         Data.bUseHzb = Owner.bSsrHzbEnabled && Owner.bHZBReady && Owner.HZBSrvBindlessIndex != UINT32_MAX;
         Data.HistoryIndex = FrameState.TaaReadIndex;
         Data.bUseHistory = FrameState.bTaaHistoryReady && Data.HistoryIndex < TaaHandles.size();
@@ -2903,6 +2910,7 @@ void FDeferredLightingPasses::AddSsrFallbackPass(FDeferredPassContext& Context) 
 
     Graph.AddPass<FSsrFallbackPassData>("SSR Fallback", [&Owner, FrameIndex, FrameState, &Camera, TaaHandles, SsrFallbackHandle, &Graph](FSsrFallbackPassData& Data, FRGPassBuilder& Builder)
     {
+        Builder.SetPixGroup("SSR");
         Data.HistoryIndex = FrameState.TaaReadIndex;
         Data.bUseHistory = FrameState.bTaaHistoryReady && Data.HistoryIndex < TaaHandles.size();
         Data.bEnabled = static_cast<bool>(SsrFallbackHandle);
@@ -3095,6 +3103,7 @@ void FDeferredLightingPasses::AddSsrDenoisePass(FDeferredPassContext& Context, F
 
     Graph.AddPass<FSsrDenoisePassData>("SSR Denoise", [&Owner, InputHandle, GBufferHandles, LinearDepthHandle, SsrDenoiseHandle](FSsrDenoisePassData& Data, FRGPassBuilder& Builder)
     {
+        Builder.SetPixGroup("SSR");
         Data.bEnabled = (Owner.bSsrSwEnabled || Owner.bSsrHwEnabled) && Owner.bSsrDenoiseEnabled && Owner.SsrDenoiseRootSignature && Owner.SsrDenoisePipeline;
 
         Builder.ReadTexture(InputHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);

@@ -349,26 +349,18 @@ void CSHistoryReconstruction(uint3 DispatchThreadId : SV_DispatchThreadID)
     const uint Count = HistoryCount[Pixel];
     if (Count >= 10u)
     {
-        if (MipLevel == 0u)
-        {
-            TemporalSH[Pixel] = HistorySH[Pixel];
-        }
         return;
     }
 
     const float CountRatio = saturate((float)Count / 10.0f);
-    const uint ComputedMip = (uint)round(3.0f * (1.0f - CountRatio));
-    if (ComputedMip != MipLevel)
-    {
-        return;
-    }
-
-    uint MipWidth = 0;
-    uint MipHeight = 0;
-    ShMip.GetDimensions(MipWidth, MipHeight);
+    const uint ComputedMip = min((uint)round(3.0f * (1.0f - CountRatio)), 3u);
+    const uint Scale = 1u << (ComputedMip + 1u);
+    const uint MipWidth = (Width + Scale - 1u) / Scale;
+    const uint MipHeight = (Height + Scale - 1u) / Scale;
 
     const float2 FullUv = (float2(Pixel) + 0.5f) / float2(Width, Height);
-    const float2 MipCoord = FullUv * float2(MipWidth, MipHeight) - 0.5f;
+    const float2 MipSize = float2(MipWidth, MipHeight);
+    const float2 MipCoord = FullUv * MipSize - 0.5f;
     const int2 MipBase = int2(floor(MipCoord));
     const float2 Frac = frac(MipCoord);
 
@@ -384,13 +376,13 @@ void CSHistoryReconstruction(uint3 DispatchThreadId : SV_DispatchThreadID)
     const float W01 = (1.0f - Frac.x) * Frac.y;
     const float W11 = Frac.x * Frac.y;
 
-    FRestirGiPackedSh AccumSh = RestirGiScaleSh(LoadPackedSh(ShMip, uint2(Tap00)), 0.0f);
+    FRestirGiPackedSh AccumSh = RestirGiScaleSh(RestirGiUnpackSh(ShMip.Load(uint3(uint2(Tap00), ComputedMip))), 0.0f);
     float Total = 0.0f;
 
-    const float D00 = DepthMip[uint2(Tap00)];
-    const float D10 = DepthMip[uint2(Tap10)];
-    const float D01 = DepthMip[uint2(Tap01)];
-    const float D11 = DepthMip[uint2(Tap11)];
+    const float D00 = DepthMip.Load(uint3(uint2(Tap00), ComputedMip));
+    const float D10 = DepthMip.Load(uint3(uint2(Tap10), ComputedMip));
+    const float D01 = DepthMip.Load(uint3(uint2(Tap01), ComputedMip));
+    const float D11 = DepthMip.Load(uint3(uint2(Tap11), ComputedMip));
 
     const float4 BilinearWeights = float4(W00, W10, W01, W11);
     const float4 GeometryWeights = float4(
@@ -400,10 +392,10 @@ void CSHistoryReconstruction(uint3 DispatchThreadId : SV_DispatchThreadID)
         exp(-abs(CurrentDepth - D11)));
 
     const float4 FinalWeights = BilinearWeights * GeometryWeights;
-    AccumSh = RestirGiAddSh(AccumSh, RestirGiScaleSh(LoadPackedSh(ShMip, uint2(Tap00)), FinalWeights.x));
-    AccumSh = RestirGiAddSh(AccumSh, RestirGiScaleSh(LoadPackedSh(ShMip, uint2(Tap10)), FinalWeights.y));
-    AccumSh = RestirGiAddSh(AccumSh, RestirGiScaleSh(LoadPackedSh(ShMip, uint2(Tap01)), FinalWeights.z));
-    AccumSh = RestirGiAddSh(AccumSh, RestirGiScaleSh(LoadPackedSh(ShMip, uint2(Tap11)), FinalWeights.w));
+    AccumSh = RestirGiAddSh(AccumSh, RestirGiScaleSh(RestirGiUnpackSh(ShMip.Load(uint3(uint2(Tap00), ComputedMip))), FinalWeights.x));
+    AccumSh = RestirGiAddSh(AccumSh, RestirGiScaleSh(RestirGiUnpackSh(ShMip.Load(uint3(uint2(Tap10), ComputedMip))), FinalWeights.y));
+    AccumSh = RestirGiAddSh(AccumSh, RestirGiScaleSh(RestirGiUnpackSh(ShMip.Load(uint3(uint2(Tap01), ComputedMip))), FinalWeights.z));
+    AccumSh = RestirGiAddSh(AccumSh, RestirGiScaleSh(RestirGiUnpackSh(ShMip.Load(uint3(uint2(Tap11), ComputedMip))), FinalWeights.w));
     Total += FinalWeights.x + FinalWeights.y + FinalWeights.z + FinalWeights.w;
 
     FRestirGiPackedSh Reconstructed = RestirGiScaleSh(AccumSh, rcp(max(1e-5f, Total)));

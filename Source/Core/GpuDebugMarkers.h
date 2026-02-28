@@ -59,3 +59,54 @@ inline bool AreModelPixEventsEnabled()
 {
     return GModelPixEventsEnabled;
 }
+
+inline bool BeginPixGpuCapture(bool bShouldCapture = true)
+{
+#if WITH_PIX_EVENTS
+    if (!bShouldCapture)
+    {
+        return false;
+    }
+
+    return SUCCEEDED(PIXBeginCapture(PIX_CAPTURE_GPU, nullptr));
+#else
+    (void)bShouldCapture;
+    return false;
+#endif
+}
+
+inline bool BeginPixGpuCaptureOnce(bool bShouldCapture = true)
+{
+#if WITH_PIX_EVENTS
+    static bool bCaptured = false;
+    if (!bShouldCapture || bCaptured)
+    {
+        return false;
+    }
+
+    if (!BeginPixGpuCapture(true))
+    {
+        return false;
+    }
+
+    bCaptured = true;
+    return true;
+#else
+    (void)bShouldCapture;
+    return false;
+#endif
+}
+
+inline void EndPixGpuCapture(bool bCaptureActive)
+{
+#if WITH_PIX_EVENTS
+    if (!bCaptureActive)
+    {
+        return;
+    }
+
+    PIXEndCapture(FALSE);
+#else
+    (void)bCaptureActive;
+#endif
+}

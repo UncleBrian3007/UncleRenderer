@@ -285,8 +285,8 @@ public:
         FRGResourceHandle RestirGiHistoryCountBHandle{};
         FRGResourceHandle RestirGiPrevLinearDepthHandle{};
         FRGResourceHandle RestirGiPrevNormalHandle{};
-        std::array<FRGResourceHandle, 4> RestirGiShMipHandles{};
-        std::array<FRGResourceHandle, 4> RestirGiLinearDepthMipHandles{};
+        FRGResourceHandle RestirGiShMipHandle{};
+        FRGResourceHandle RestirGiLinearDepthMipHandle{};
         FRGResourceHandle SsrHandle{};
         FRGResourceHandle SsrDenoiseHandle{};
         FRGResourceHandle SsrFallbackHandle{};
@@ -504,8 +504,8 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiHistoryCountBTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiPrevLinearDepthTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiPrevNormalTexture;
-    std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 4> RestirGiShMipTextures;
-    std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 4> RestirGiLinearDepthMipTextures;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiShMipTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiLinearDepthMipTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> SsrTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> SsrDenoiseTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> SsrFallbackTexture;
@@ -595,6 +595,8 @@ private:
     uint32_t RestirGiPrevLinearDepthUavBindlessIndex = UINT32_MAX;
     uint32_t RestirGiPrevNormalSrvBindlessIndex = UINT32_MAX;
     uint32_t RestirGiPrevNormalUavBindlessIndex = UINT32_MAX;
+    uint32_t RestirGiShMipSrvBindlessIndex = UINT32_MAX;
+    uint32_t RestirGiLinearDepthMipSrvBindlessIndex = UINT32_MAX;
     std::array<uint32_t, 4> RestirGiShMipSrvBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX } };
     std::array<uint32_t, 4> RestirGiShMipUavBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX } };
     std::array<uint32_t, 4> RestirGiLinearDepthMipSrvBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX } };
@@ -656,20 +658,8 @@ private:
     D3D12_RESOURCE_STATES RestirGiHistoryCountBState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES RestirGiPrevLinearDepthState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES RestirGiPrevNormalState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    std::array<D3D12_RESOURCE_STATES, 4> RestirGiShMipStates
-    {
-        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-        D3D12_RESOURCE_STATE_UNORDERED_ACCESS
-    };
-    std::array<D3D12_RESOURCE_STATES, 4> RestirGiLinearDepthMipStates
-    {
-        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-        D3D12_RESOURCE_STATE_UNORDERED_ACCESS
-    };
+    D3D12_RESOURCE_STATES RestirGiShMipState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    D3D12_RESOURCE_STATES RestirGiLinearDepthMipState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES SsrState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES SsrDenoiseState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES SsrFallbackState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;

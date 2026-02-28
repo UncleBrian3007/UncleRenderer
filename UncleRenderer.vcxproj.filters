@@ -587,5 +587,11 @@
     <None Include="Shaders\RestirGISamplingCommon.hlsli">
       <Filter>Shaders</Filter>
     </None>
+    <None Include="Shaders\ffx_a.h">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\ffx_spd.h">
+      <Filter>Shaders</Filter>
+    </None>
   </ItemGroup>
 </Project>

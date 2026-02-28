@@ -207,27 +207,17 @@ void FDeferredResourceImporter::ImportFrameResources(FDeferredPassContext& Conte
         &Owner.RestirGiPrevNormalState,
         { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), DXGI_FORMAT_R16G16B16A16_FLOAT });
 
-    uint32_t MipWidth = (static_cast<uint32>(Owner.Viewport.Width) + 1u) / 2u;
-    uint32_t MipHeight = (static_cast<uint32>(Owner.Viewport.Height) + 1u) / 2u;
-    for (uint32_t MipIndex = 0; MipIndex < 4u; ++MipIndex)
-    {
-        const std::string ShName = "ReSTIR GI SH Mip " + std::to_string(MipIndex);
-        OutResources.RestirGiShMipHandles[MipIndex] = Graph.ImportTexture(
-            ShName,
-            Owner.RestirGiShMipTextures[MipIndex].Get(),
-            &Owner.RestirGiShMipStates[MipIndex],
-            { MipWidth, MipHeight, DXGI_FORMAT_R32G32B32A32_UINT });
+    OutResources.RestirGiShMipHandle = Graph.ImportTexture(
+        "ReSTIR GI SH Mips",
+        Owner.RestirGiShMipTexture.Get(),
+        &Owner.RestirGiShMipState,
+        { (static_cast<uint32>(Owner.Viewport.Width) + 1u) / 2u, (static_cast<uint32>(Owner.Viewport.Height) + 1u) / 2u, DXGI_FORMAT_R32G32B32A32_UINT });
 
-        const std::string DepthName = "ReSTIR GI LinearDepth Mip " + std::to_string(MipIndex);
-        OutResources.RestirGiLinearDepthMipHandles[MipIndex] = Graph.ImportTexture(
-            DepthName,
-            Owner.RestirGiLinearDepthMipTextures[MipIndex].Get(),
-            &Owner.RestirGiLinearDepthMipStates[MipIndex],
-            { MipWidth, MipHeight, DXGI_FORMAT_R16_FLOAT });
-
-        MipWidth = (std::max)(1u, (MipWidth + 1u) / 2u);
-        MipHeight = (std::max)(1u, (MipHeight + 1u) / 2u);
-    }
+    OutResources.RestirGiLinearDepthMipHandle = Graph.ImportTexture(
+        "ReSTIR GI LinearDepth Mips",
+        Owner.RestirGiLinearDepthMipTexture.Get(),
+        &Owner.RestirGiLinearDepthMipState,
+        { (static_cast<uint32>(Owner.Viewport.Width) + 1u) / 2u, (static_cast<uint32>(Owner.Viewport.Height) + 1u) / 2u, DXGI_FORMAT_R16_FLOAT });
 
     OutResources.SsrHandle = Graph.ImportTexture(
         "SSR",
@@ -564,18 +554,30 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
 
         RestirGISrvDesc.Format = DXGI_FORMAT_R32G32B32A32_UINT;
         RestirGIUavDesc.Format = DXGI_FORMAT_R32G32B32A32_UINT;
+        RestirGISrvDesc.Texture2D.MipLevels = 4;
+        RestirGISrvDesc.Texture2D.MostDetailedMip = 0;
+        RestirGiShMipSrvBindlessIndex = Device->CreateBindlessSrv(RestirGiShMipTexture.Get(), RestirGISrvDesc);
         for (uint32_t MipIndex = 0; MipIndex < 4u; ++MipIndex)
         {
-            RestirGiShMipSrvBindlessIndices[MipIndex] = Device->CreateBindlessSrv(RestirGiShMipTextures[MipIndex].Get(), RestirGISrvDesc);
-            RestirGiShMipUavBindlessIndices[MipIndex] = Device->CreateBindlessUav(RestirGiShMipTextures[MipIndex].Get(), nullptr, RestirGIUavDesc);
+            RestirGISrvDesc.Texture2D.MipLevels = 1;
+            RestirGISrvDesc.Texture2D.MostDetailedMip = MipIndex;
+            RestirGIUavDesc.Texture2D.MipSlice = MipIndex;
+            RestirGiShMipSrvBindlessIndices[MipIndex] = Device->CreateBindlessSrv(RestirGiShMipTexture.Get(), RestirGISrvDesc);
+            RestirGiShMipUavBindlessIndices[MipIndex] = Device->CreateBindlessUav(RestirGiShMipTexture.Get(), nullptr, RestirGIUavDesc);
         }
 
         RestirGISrvDesc.Format = DXGI_FORMAT_R16_FLOAT;
         RestirGIUavDesc.Format = DXGI_FORMAT_R16_FLOAT;
+        RestirGISrvDesc.Texture2D.MipLevels = 4;
+        RestirGISrvDesc.Texture2D.MostDetailedMip = 0;
+        RestirGiLinearDepthMipSrvBindlessIndex = Device->CreateBindlessSrv(RestirGiLinearDepthMipTexture.Get(), RestirGISrvDesc);
         for (uint32_t MipIndex = 0; MipIndex < 4u; ++MipIndex)
         {
-            RestirGiLinearDepthMipSrvBindlessIndices[MipIndex] = Device->CreateBindlessSrv(RestirGiLinearDepthMipTextures[MipIndex].Get(), RestirGISrvDesc);
-            RestirGiLinearDepthMipUavBindlessIndices[MipIndex] = Device->CreateBindlessUav(RestirGiLinearDepthMipTextures[MipIndex].Get(), nullptr, RestirGIUavDesc);
+            RestirGISrvDesc.Texture2D.MipLevels = 1;
+            RestirGISrvDesc.Texture2D.MostDetailedMip = MipIndex;
+            RestirGIUavDesc.Texture2D.MipSlice = MipIndex;
+            RestirGiLinearDepthMipSrvBindlessIndices[MipIndex] = Device->CreateBindlessSrv(RestirGiLinearDepthMipTexture.Get(), RestirGISrvDesc);
+            RestirGiLinearDepthMipUavBindlessIndices[MipIndex] = Device->CreateBindlessUav(RestirGiLinearDepthMipTexture.Get(), nullptr, RestirGIUavDesc);
         }
         return true;
     };
