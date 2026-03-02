@@ -420,6 +420,12 @@
     <None Include="Shaders\DeferredLighting.hlsl">
       <Filter>Shaders</Filter>
     </None>
+    <None Include="Shaders\DeferredCompositeLight.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\DeferredDirectLighting.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
     <None Include="Shaders\ForwardPS.hlsl">
       <Filter>Shaders</Filter>
     </None>

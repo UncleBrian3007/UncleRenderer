@@ -150,7 +150,9 @@ void FDeferredFrameOrchestrator::BuildFrameGraph(FDeferredPassContext& Context) 
             Owner.LightingPasses->AddSsrDenoisePass(Context, SsrBaseHandle);
         }
         const FRGResourceHandle SsrOutputHandle = Owner.bSsrDenoiseEnabled ? Resources.SsrDenoiseHandle : SsrBaseHandle;
-        Owner.LightingPasses->AddLightingPass(Context, SsrOutputHandle);
+        FRGResourceHandle DirectLightingHandle{};
+        Owner.LightingPasses->AddDirectLightingPass(Context, DirectLightingHandle);
+        Owner.LightingPasses->AddCompositeLightPass(Context, SsrOutputHandle, DirectLightingHandle);
     }
 
     Owner.LightingPasses->AddSkyPass(Context);

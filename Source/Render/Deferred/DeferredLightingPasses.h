@@ -21,6 +21,7 @@ public:
     void AddSsrPass(FDeferredPassContext& Context) const;
     void AddSsrFallbackPass(FDeferredPassContext& Context) const;
     void AddSsrDenoisePass(FDeferredPassContext& Context, FRGResourceHandle InputHandle) const;
-    void AddLightingPass(FDeferredPassContext& Context, FRGResourceHandle SsrHandle) const;
+    void AddDirectLightingPass(FDeferredPassContext& Context, FRGResourceHandle& OutDirectHandle) const;
+    void AddCompositeLightPass(FDeferredPassContext& Context, FRGResourceHandle SsrHandle, FRGResourceHandle DirectHandle) const;
     void AddSkyPass(FDeferredPassContext& Context) const;
 };

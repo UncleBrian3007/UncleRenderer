@@ -245,6 +245,8 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <None Include="README.md" />
     <None Include="Shaders\DeferredBasePass.hlsl" />
     <None Include="Shaders\DeferredLighting.hlsl" />
+    <None Include="Shaders\DeferredCompositeLight.hlsl" />
+    <None Include="Shaders\DeferredDirectLighting.hlsl" />
     <None Include="Shaders\ForwardPS.hlsl" />
     <None Include="Shaders\ForwardVS.hlsl" />
     <None Include="Shaders\FullscreenTriangle.hlsl" />

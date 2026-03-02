@@ -457,7 +457,8 @@ private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> SsrResolveRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> SsrResolvePipeline;
     Microsoft::WRL::ComPtr<ID3D12CommandSignature> SsrDispatchCommandSignature;
-    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> LightingPipelines;
+    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> DirectLightingPipelines;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> CompositeLightingPipeline;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> VelocityPipelines;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> VelocityPipelinesSkinned;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGIInitialPipeline;
@@ -622,6 +623,7 @@ private:
     uint32_t SsrUavBindlessIndex = UINT32_MAX;
     uint32_t SsrResolveBindlessIndex = UINT32_MAX;
     uint32_t SsrResolveUavBindlessIndex = UINT32_MAX;
+    uint32_t DirectLightingBindlessIndex = UINT32_MAX;
     uint32_t LightingBufferBindlessIndex = UINT32_MAX;
     uint32_t TonemapOutputBindlessIndex = UINT32_MAX;
     std::array<uint32_t, 2> LuminanceSrvBindlessIndices{ { UINT32_MAX, UINT32_MAX } };
@@ -710,6 +712,7 @@ private:
     std::vector<uint32_t> SsrIndirectArgsHwMissUavBindlessIndices;
     std::vector<D3D12_RESOURCE_STATES> SsrIndirectArgsPrimaryStates;
     std::vector<D3D12_RESOURCE_STATES> SsrIndirectArgsHwMissStates;
+    ID3D12Resource* DirectLightingResource = nullptr;
     uint32_t SsrMaxRayCount = 0;
     std::vector<FGltfScene> GltfScenes;
     std::vector<FGltfAnimationPose> GltfScenePoses;

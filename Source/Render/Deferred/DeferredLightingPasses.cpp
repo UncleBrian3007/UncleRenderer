@@ -60,7 +60,7 @@ bool FDeferredRenderer::CreateLightingRootSignature(FDX12Device* Device)
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     RootParams[1].Constants.ShaderRegister = 1;
     RootParams[1].Constants.RegisterSpace = 0;
-    RootParams[1].Constants.Num32BitValues = 13;
+    RootParams[1].Constants.Num32BitValues = 14;
 
     // RootParams[2]: ReSTIR GI constants (b2), used in Shaders/DeferredLighting.hlsl PSMain
     RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
@@ -232,15 +232,19 @@ bool FDeferredRenderer::CreateLinearDepthPipeline(FDX12Device* Device)
 
 bool FDeferredRenderer::CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat)
 {
+    (void)BackBufferFormat;
+
     FShaderCompiler Compiler;
-    std::vector<uint8_t> VSByteCode;
-    std::vector<uint8_t> PSByteCodes[4];
+    std::vector<uint8_t> DirectVSByteCode;
+    std::vector<uint8_t> DirectPSByteCodes[4];
+    std::vector<uint8_t> CompositeVSByteCode;
+    std::vector<uint8_t> CompositePSByteCode;
 
     const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
     const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
     const std::wstring PSTarget = RendererUtils::BuildShaderTarget(L"ps", ShaderModel);
 
-    if (!Compiler.CompileFromFile(L"Shaders/DeferredLighting.hlsl", L"VSMain", VSTarget, VSByteCode))
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredDirectLighting.hlsl", L"VSMain", VSTarget, DirectVSByteCode))
     {
         return false;
     }
@@ -250,30 +254,40 @@ bool FDeferredRenderer::CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT 
     const std::vector<std::wstring> ResearchDefines = { L"USE_PBR_RESEARCH=1" };
     const std::vector<std::wstring> ShadowMaskResearchDefines = { L"USE_SHADOW_MASK=1", L"USE_PBR_RESEARCH=1" };
 
-    if (!Compiler.CompileFromFile(L"Shaders/DeferredLighting.hlsl", L"PSMain", PSTarget, PSByteCodes[0], DefaultDefines))
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredDirectLighting.hlsl", L"PSMain", PSTarget, DirectPSByteCodes[0], DefaultDefines))
     {
         return false;
     }
 
-    if (!Compiler.CompileFromFile(L"Shaders/DeferredLighting.hlsl", L"PSMain", PSTarget, PSByteCodes[1], ShadowMaskDefines))
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredDirectLighting.hlsl", L"PSMain", PSTarget, DirectPSByteCodes[1], ShadowMaskDefines))
     {
         return false;
     }
 
-    if (!Compiler.CompileFromFile(L"Shaders/DeferredLighting.hlsl", L"PSMain", PSTarget, PSByteCodes[2], ResearchDefines))
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredDirectLighting.hlsl", L"PSMain", PSTarget, DirectPSByteCodes[2], ResearchDefines))
     {
         return false;
     }
 
-    if (!Compiler.CompileFromFile(L"Shaders/DeferredLighting.hlsl", L"PSMain", PSTarget, PSByteCodes[3], ShadowMaskResearchDefines))
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredDirectLighting.hlsl", L"PSMain", PSTarget, DirectPSByteCodes[3], ShadowMaskResearchDefines))
+    {
+        return false;
+    }
+
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredCompositeLight.hlsl", L"VSMain", VSTarget, CompositeVSByteCode))
+    {
+        return false;
+    }
+
+    if (!Compiler.CompileFromFile(L"Shaders/DeferredCompositeLight.hlsl", L"PSMain", PSTarget, CompositePSByteCode))
     {
         return false;
     }
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
     PsoDesc.pRootSignature = LightingRootSignature.Get();
-    PsoDesc.VS = { VSByteCode.data(), VSByteCode.size() };
-    PsoDesc.PS = { PSByteCodes[0].data(), PSByteCodes[0].size() };
+    PsoDesc.VS = { DirectVSByteCode.data(), DirectVSByteCode.size() };
+    PsoDesc.PS = { DirectPSByteCodes[0].data(), DirectPSByteCodes[0].size() };
     PsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     PsoDesc.SampleDesc.Count = 1;
     PsoDesc.SampleMask = UINT_MAX;
@@ -281,17 +295,11 @@ bool FDeferredRenderer::CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT 
     PsoDesc.RasterizerState = {};
     PsoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
     PsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-    PsoDesc.RasterizerState.FrontCounterClockwise = TRUE;
+    PsoDesc.RasterizerState.FrontCounterClockwise = FALSE;
     PsoDesc.RasterizerState.DepthClipEnable = TRUE;
 
     PsoDesc.BlendState = {};
-    PsoDesc.BlendState.RenderTarget[0].BlendEnable = TRUE;
-    PsoDesc.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_ONE;
-    PsoDesc.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_ONE;
-    PsoDesc.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
-    PsoDesc.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
-    PsoDesc.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ONE;
-    PsoDesc.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    PsoDesc.BlendState.RenderTarget[0].BlendEnable = FALSE;
     PsoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 
     PsoDesc.DepthStencilState = {};
@@ -301,11 +309,23 @@ bool FDeferredRenderer::CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT 
     PsoDesc.RTVFormats[0] = LightingBufferFormat;
     PsoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
 
-    for (size_t Index = 0; Index < LightingPipelines.size(); ++Index)
+    for (size_t Index = 0; Index < DirectLightingPipelines.size(); ++Index)
     {
-        PsoDesc.PS = { PSByteCodes[Index].data(), PSByteCodes[Index].size() };
-        HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(LightingPipelines[Index].GetAddressOf())));
+        PsoDesc.PS = { DirectPSByteCodes[Index].data(), DirectPSByteCodes[Index].size() };
+        HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(DirectLightingPipelines[Index].GetAddressOf())));
     }
+
+    PsoDesc.VS = { CompositeVSByteCode.data(), CompositeVSByteCode.size() };
+    PsoDesc.PS = { CompositePSByteCode.data(), CompositePSByteCode.size() };
+    PsoDesc.BlendState.RenderTarget[0].BlendEnable = TRUE;
+    PsoDesc.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_ONE;
+    PsoDesc.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_ONE;
+    PsoDesc.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+    PsoDesc.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+    PsoDesc.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ONE;
+    PsoDesc.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(CompositeLightingPipeline.GetAddressOf())));
+
     return true;
 }
 
@@ -562,62 +582,79 @@ void FDeferredLightingPasses::AddLinearDepthPass(FDeferredPassContext& Context) 
     });
 }
 
-void FDeferredLightingPasses::AddLightingPass(FDeferredPassContext& Context, FRGResourceHandle SsrHandle) const
+void FDeferredLightingPasses::AddDirectLightingPass(FDeferredPassContext& Context, FRGResourceHandle& OutDirectHandle) const
 {
     FDeferredRenderer& Owner = Context.Owner;
     FRenderGraph& Graph = Context.Graph;
     const FDeferredRenderer::FDeferredFrameState& FrameState = Context.FrameState;
     const std::array<FRGResourceHandle, 4>& GBufferHandles = Context.Resources.GBufferHandles;
     const FRGResourceHandle DepthHandle = Context.Resources.DepthHandle;
-    const FRGResourceHandle GtaoHandle = Context.Resources.GtaoHandle;
-    const FRGResourceHandle RestirGIInputHandle = Owner.bRestirGIDenoiserEnabled ? Context.Resources.RestirGiHistoryIrradianceHandle : Context.Resources.RestirGIHandle;
-    const FRGResourceHandle SsrFallbackHandle = Context.Resources.SsrFallbackHandle;
     const FRGResourceHandle ShadowHandle = Context.Resources.ShadowHandle;
-    const FRGResourceHandle LightingHandle = Context.Resources.LightingHandle;
 
-    struct FLightingPassData
+    struct FDirectLightingPassData
     {
         bool bUseShadows = false;
+        FRGResourceHandle DirectLightingHandle{};
     };
 
-    Graph.AddPass<FLightingPassData>("Lighting", [&](FLightingPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FDirectLightingPassData>("DirectLighting", [&](FDirectLightingPassData& Data, FRGPassBuilder& Builder)
     {
         Data.bUseShadows = FrameState.bRenderShadows;
+        const FRGTextureDesc DirectLightingDesc =
+        {
+            static_cast<uint32>(Owner.Viewport.Width),
+            static_cast<uint32>(Owner.Viewport.Height),
+            FDeferredRenderer::LightingBufferFormat
+        };
+        Data.DirectLightingHandle = Builder.CreateTexture("DirectLighting", DirectLightingDesc);
+        Builder.WriteTexture(Data.DirectLightingHandle, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        OutDirectHandle = Data.DirectLightingHandle;
 
         Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(GBufferHandles[1], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(GBufferHandles[2], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(GBufferHandles[3], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(DepthHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        Builder.ReadTexture(GtaoHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        Builder.ReadTexture(RestirGIInputHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        Builder.ReadTexture(SsrHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        Builder.ReadTexture(SsrFallbackHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
         if (Data.bUseShadows)
         {
             Builder.ReadTexture(ShadowHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         }
-
-        Builder.WriteTexture(LightingHandle, D3D12_RESOURCE_STATE_RENDER_TARGET);
-    }, [&Owner](const FLightingPassData&, FDX12CommandContext& Cmd)
+    }, [&Owner, &Graph](const FDirectLightingPassData& Data, FDX12CommandContext& Cmd)
     {
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
-
-        FScopedPixEvent LightingEvent(LocalCommandList, L"Lighting");
+        FScopedPixEvent DirectLightingEvent(LocalCommandList, L"DirectLighting");
 
         if (!Owner.Device || !Owner.Device->GetBindlessDescriptorHeap())
         {
             return;
         }
 
+        ID3D12Resource* DirectLightingResource = Graph.GetTextureResource(Data.DirectLightingHandle);
+        if (!DirectLightingResource)
+        {
+            return;
+        }
+
+        ComPtr<ID3D12DescriptorHeap> DirectLightingRtvHeap;
+        D3D12_DESCRIPTOR_HEAP_DESC RtvHeapDesc = {};
+        RtvHeapDesc.NumDescriptors = 1;
+        RtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        RtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        if (FAILED(Owner.Device->GetDevice()->CreateDescriptorHeap(&RtvHeapDesc, IID_PPV_ARGS(DirectLightingRtvHeap.GetAddressOf()))))
+        {
+            return;
+        }
+
+        const D3D12_CPU_DESCRIPTOR_HANDLE DirectLightingRtvHandle = DirectLightingRtvHeap->GetCPUDescriptorHandleForHeapStart();
+        D3D12_RENDER_TARGET_VIEW_DESC DirectLightingRtvDesc = {};
+        DirectLightingRtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+        DirectLightingRtvDesc.Format = FDeferredRenderer::LightingBufferFormat;
+        Owner.Device->GetDevice()->CreateRenderTargetView(DirectLightingResource, &DirectLightingRtvDesc, DirectLightingRtvHandle);
+
         const uint32_t DepthIndex = Owner.GetFrameIndex() % static_cast<uint32_t>(Owner.DepthBindlessIndices.size());
         const uint32_t DepthBindlessIndex = Owner.DepthBindlessIndices.empty() ? UINT32_MAX : Owner.DepthBindlessIndices[DepthIndex];
-        const uint32_t BaseSsrIndex = (Owner.SsrMode == ESSRMode::CS) ? Owner.SsrResolveBindlessIndex : Owner.SsrBindlessIndex;
-        const uint32_t SsrLightingBindlessIndex = Owner.bSsrDenoiseEnabled ? Owner.SsrDenoiseBindlessIndex : BaseSsrIndex;
-        const uint32_t SsrFallbackIndex = Owner.SsrFallbackBindlessIndex;
-        const uint32_t RestirGILightingBindlessIndex = Owner.bRestirGIDenoiserEnabled ? Owner.RestirGiHistoryIrradianceSrvBindlessIndex : Owner.RestirGIBindlessIndex;
-        if (DepthBindlessIndex == UINT32_MAX || Owner.GtaoBindlessIndex == UINT32_MAX || RestirGILightingBindlessIndex == UINT32_MAX || SsrLightingBindlessIndex == UINT32_MAX || SsrFallbackIndex == UINT32_MAX || Owner.ShadowMapBindlessIndex == UINT32_MAX
+        if (DepthBindlessIndex == UINT32_MAX || Owner.ShadowMapBindlessIndex == UINT32_MAX
             || Owner.EnvironmentCubeBindlessIndex == UINT32_MAX || Owner.BrdfLutBindlessIndex == UINT32_MAX
             || Owner.GBufferBindlessIndices[0] == UINT32_MAX || Owner.GBufferBindlessIndices[1] == UINT32_MAX || Owner.GBufferBindlessIndices[2] == UINT32_MAX)
         {
@@ -626,11 +663,11 @@ void FDeferredLightingPasses::AddLightingPass(FDeferredPassContext& Context, FRG
 
         ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
-        Cmd.SetRenderTarget(Owner.LightingRTVHandle, nullptr);
+        Cmd.SetRenderTarget(DirectLightingRtvHandle, nullptr);
 
         const bool bUseShadowMask = Owner.bShadowsEnabled && Owner.bRayTracedShadowsEnabled && Owner.bRayTracingPipelineReady && Owner.ShadowMaskBindlessIndex != UINT32_MAX;
         const uint32_t PipelineIndex = (bUseShadowMask ? 1u : 0u) | (Owner.bEnablePbrResearch ? 2u : 0u);
-        LocalCommandList->SetPipelineState(Owner.LightingPipelines[PipelineIndex].Get());
+        LocalCommandList->SetPipelineState(Owner.DirectLightingPipelines[PipelineIndex].Get());
         LocalCommandList->SetGraphicsRootSignature(Owner.LightingRootSignature.Get());
 
         LocalCommandList->RSSetViewports(1, &Owner.Viewport);
@@ -650,10 +687,11 @@ void FDeferredLightingPasses::AddLightingPass(FDeferredPassContext& Context, FRG
             Owner.EnvironmentCubeBindlessIndex,
             Owner.BrdfLutBindlessIndex,
             DepthBindlessIndex,
-            Owner.GtaoBindlessIndex,
-            RestirGILightingBindlessIndex,
-            SsrLightingBindlessIndex,
-            SsrFallbackIndex
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX
         };
         LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(LightingBindlessIndices), LightingBindlessIndices, 0);
 
@@ -683,6 +721,142 @@ void FDeferredLightingPasses::AddLightingPass(FDeferredPassContext& Context, FRG
         LocalCommandList->DrawInstanced(3, 1, 0, 0);
     });
 }
+
+void FDeferredLightingPasses::AddCompositeLightPass(FDeferredPassContext& Context, FRGResourceHandle SsrHandle, FRGResourceHandle DirectHandle) const
+{
+    FDeferredRenderer& Owner = Context.Owner;
+    FRenderGraph& Graph = Context.Graph;
+    const std::array<FRGResourceHandle, 4>& GBufferHandles = Context.Resources.GBufferHandles;
+    const FRGResourceHandle DepthHandle = Context.Resources.DepthHandle;
+    const FRGResourceHandle GtaoHandle = Context.Resources.GtaoHandle;
+    const FRGResourceHandle RestirGIInputHandle = Owner.bRestirGIDenoiserEnabled ? Context.Resources.RestirGiHistoryIrradianceHandle : Context.Resources.RestirGIHandle;
+    const FRGResourceHandle SsrFallbackHandle = Context.Resources.SsrFallbackHandle;
+    const FRGResourceHandle LightingHandle = Context.Resources.LightingHandle;
+
+    struct FCompositeLightPassData
+    {
+        FRGResourceHandle DirectLightingHandle{};
+    };
+
+    Graph.AddPass<FCompositeLightPassData>("CompositeLight", [&](FCompositeLightPassData& Data, FRGPassBuilder& Builder)
+    {
+        Data.DirectLightingHandle = DirectHandle;
+
+        Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(GBufferHandles[1], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(GBufferHandles[2], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(GBufferHandles[3], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(DepthHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(GtaoHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(RestirGIInputHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(SsrHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(SsrFallbackHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(Data.DirectLightingHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Builder.WriteTexture(LightingHandle, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    }, [&Owner, &Graph](const FCompositeLightPassData& Data, FDX12CommandContext& Cmd)
+    {
+        ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
+        FScopedPixEvent CompositeLightEvent(LocalCommandList, L"CompositeLight");
+
+        if (!Owner.Device || !Owner.Device->GetBindlessDescriptorHeap())
+        {
+            return;
+        }
+
+        ID3D12Resource* DirectLightingResource = Graph.GetTextureResource(Data.DirectLightingHandle);
+        if (!DirectLightingResource)
+        {
+            return;
+        }
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC DirectLightingSrvDesc = {};
+        DirectLightingSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        DirectLightingSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        DirectLightingSrvDesc.Format = FDeferredRenderer::LightingBufferFormat;
+        DirectLightingSrvDesc.Texture2D.MipLevels = 1;
+        DirectLightingSrvDesc.Texture2D.MostDetailedMip = 0;
+        DirectLightingSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+        if (Owner.DirectLightingBindlessIndex == UINT32_MAX)
+        {
+            Owner.DirectLightingBindlessIndex = Owner.Device->CreateBindlessSrv(DirectLightingResource, DirectLightingSrvDesc);
+        }
+        else if (Owner.DirectLightingResource != DirectLightingResource)
+        {
+            Owner.WriteBindlessSrv(Owner.DirectLightingBindlessIndex, DirectLightingResource, DirectLightingSrvDesc);
+        }
+        Owner.DirectLightingResource = DirectLightingResource;
+
+        const uint32_t DepthIndex = Owner.GetFrameIndex() % static_cast<uint32_t>(Owner.DepthBindlessIndices.size());
+        const uint32_t DepthBindlessIndex = Owner.DepthBindlessIndices.empty() ? UINT32_MAX : Owner.DepthBindlessIndices[DepthIndex];
+        const uint32_t BaseSsrIndex = (Owner.SsrMode == ESSRMode::CS) ? Owner.SsrResolveBindlessIndex : Owner.SsrBindlessIndex;
+        const uint32_t SsrLightingBindlessIndex = Owner.bSsrDenoiseEnabled ? Owner.SsrDenoiseBindlessIndex : BaseSsrIndex;
+        const uint32_t SsrFallbackIndex = Owner.SsrFallbackBindlessIndex;
+        const uint32_t RestirGILightingBindlessIndex = Owner.bRestirGIDenoiserEnabled ? Owner.RestirGiHistoryIrradianceSrvBindlessIndex : Owner.RestirGIBindlessIndex;
+        if (DepthBindlessIndex == UINT32_MAX || Owner.GtaoBindlessIndex == UINT32_MAX || RestirGILightingBindlessIndex == UINT32_MAX || SsrLightingBindlessIndex == UINT32_MAX || SsrFallbackIndex == UINT32_MAX || Owner.ShadowMapBindlessIndex == UINT32_MAX
+            || Owner.EnvironmentCubeBindlessIndex == UINT32_MAX || Owner.BrdfLutBindlessIndex == UINT32_MAX || Owner.DirectLightingBindlessIndex == UINT32_MAX
+            || Owner.GBufferBindlessIndices[0] == UINT32_MAX || Owner.GBufferBindlessIndices[1] == UINT32_MAX || Owner.GBufferBindlessIndices[2] == UINT32_MAX)
+        {
+            return;
+        }
+
+        ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
+        LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        Cmd.SetRenderTarget(Owner.LightingRTVHandle, nullptr);
+
+        LocalCommandList->SetPipelineState(Owner.CompositeLightingPipeline.Get());
+        LocalCommandList->SetGraphicsRootSignature(Owner.LightingRootSignature.Get());
+
+        LocalCommandList->RSSetViewports(1, &Owner.Viewport);
+        LocalCommandList->RSSetScissorRects(1, &Owner.ScissorRect);
+
+        LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        LocalCommandList->SetGraphicsRootConstantBufferView(0, Owner.GetSceneConstantBufferAddress());
+        const uint32_t LightingBindlessIndices[] =
+        {
+            Owner.GBufferBindlessIndices[0],
+            Owner.GBufferBindlessIndices[1],
+            Owner.GBufferBindlessIndices[2],
+            Owner.GBufferBindlessIndices[3],
+            Owner.ShadowMapBindlessIndex,
+            Owner.ShadowMapBindlessIndex,
+            Owner.EnvironmentCubeBindlessIndex,
+            Owner.BrdfLutBindlessIndex,
+            DepthBindlessIndex,
+            Owner.GtaoBindlessIndex,
+            RestirGILightingBindlessIndex,
+            SsrLightingBindlessIndex,
+            SsrFallbackIndex,
+            Owner.DirectLightingBindlessIndex
+        };
+        LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(LightingBindlessIndices), LightingBindlessIndices, 0);
+
+        struct FRestirGIConstants
+        {
+            float Intensity = 0.0f;
+            uint32_t Enabled = 0;
+            uint32_t SamplesPerPixel = 0;
+            uint32_t ShowOnly = 0;
+            uint32_t Padding = 0;
+        };
+
+        const float EffectiveRestirGIIntensity = (std::max)(0.0f, Owner.RestirGIIntensity);
+        const uint32_t EffectiveRestirGISamples = std::clamp(Owner.RestirGISamplesPerPixel, 1u, 32u);
+
+        const FRestirGIConstants RestirGIConstants =
+        {
+            1.0f,
+            Owner.bRestirGIEnabled ? 1u : 0u,
+            EffectiveRestirGISamples,
+            Owner.bRestirGIShowOnly ? 1u : 0u,
+            0u
+        };
+        (void)EffectiveRestirGIIntensity;
+        LocalCommandList->SetGraphicsRoot32BitConstants(2, sizeof(FRestirGIConstants) / sizeof(uint32_t), &RestirGIConstants, 0);
+
+        LocalCommandList->DrawInstanced(3, 1, 0, 0);
+    });
+}
+
 
 void FDeferredLightingPasses::AddSkyPass(FDeferredPassContext& Context) const
 {
