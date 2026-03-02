@@ -219,6 +219,16 @@ void FDeferredResourceImporter::ImportFrameResources(FDeferredPassContext& Conte
         &Owner.RestirGiLinearDepthMipState,
         { (static_cast<uint32>(Owner.Viewport.Width) + 1u) / 2u, (static_cast<uint32>(Owner.Viewport.Height) + 1u) / 2u, DXGI_FORMAT_R16_FLOAT });
 
+    FRGBufferDesc RestirGiSpdCounterDesc = {};
+    RestirGiSpdCounterDesc.Size = sizeof(uint32_t) * 4u;
+    RestirGiSpdCounterDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+    OutResources.RestirGiSpdAtomicCounterHandle = Graph.ImportBuffer(
+        "ReSTIR GI SPD Atomic Counter",
+        Owner.RestirGiSpdAtomicCounterBuffer.Get(),
+        &Owner.RestirGiSpdAtomicCounterState,
+        RestirGiSpdCounterDesc);
+
     OutResources.SsrHandle = Graph.ImportTexture(
         "SSR",
         Owner.SsrTexture.Get(),
@@ -565,6 +575,16 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
             RestirGiShMipSrvBindlessIndices[MipIndex] = Device->CreateBindlessSrv(RestirGiShMipTexture.Get(), RestirGISrvDesc);
             RestirGiShMipUavBindlessIndices[MipIndex] = Device->CreateBindlessUav(RestirGiShMipTexture.Get(), nullptr, RestirGIUavDesc);
         }
+
+        D3D12_UNORDERED_ACCESS_VIEW_DESC RestirSpdCounterUavDesc = {};
+        RestirSpdCounterUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        RestirSpdCounterUavDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+        RestirSpdCounterUavDesc.Buffer.FirstElement = 0;
+        RestirSpdCounterUavDesc.Buffer.NumElements = 1;
+        RestirSpdCounterUavDesc.Buffer.StructureByteStride = 0;
+        RestirSpdCounterUavDesc.Buffer.CounterOffsetInBytes = 0;
+        RestirSpdCounterUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+        RestirGiSpdAtomicCounterUavBindlessIndex = Device->CreateBindlessUav(RestirGiSpdAtomicCounterBuffer.Get(), nullptr, RestirSpdCounterUavDesc);
 
         RestirGISrvDesc.Format = DXGI_FORMAT_R16_FLOAT;
         RestirGIUavDesc.Format = DXGI_FORMAT_R16_FLOAT;

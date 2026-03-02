@@ -3185,7 +3185,7 @@ void FDeferredLightingPasses::AddLightingPass(FDeferredPassContext& Context, FRG
     const std::array<FRGResourceHandle, 4>& GBufferHandles = Context.Resources.GBufferHandles;
     const FRGResourceHandle DepthHandle = Context.Resources.DepthHandle;
     const FRGResourceHandle GtaoHandle = Context.Resources.GtaoHandle;
-    const FRGResourceHandle RestirGIHandle = Context.Resources.RestirGiHistoryIrradianceHandle;
+    const FRGResourceHandle RestirGIInputHandle = Owner.bRestirGIDenoiserEnabled ? Context.Resources.RestirGiHistoryIrradianceHandle : Context.Resources.RestirGIHandle;
     const FRGResourceHandle SsrFallbackHandle = Context.Resources.SsrFallbackHandle;
     const FRGResourceHandle ShadowHandle = Context.Resources.ShadowHandle;
     const FRGResourceHandle LightingHandle = Context.Resources.LightingHandle;
@@ -3205,7 +3205,7 @@ void FDeferredLightingPasses::AddLightingPass(FDeferredPassContext& Context, FRG
         Builder.ReadTexture(GBufferHandles[3], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(DepthHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(GtaoHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        Builder.ReadTexture(RestirGIHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(RestirGIInputHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(SsrHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(SsrFallbackHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
@@ -3231,7 +3231,8 @@ void FDeferredLightingPasses::AddLightingPass(FDeferredPassContext& Context, FRG
         const uint32_t BaseSsrIndex = (Owner.SsrMode == ESSRMode::CS) ? Owner.SsrResolveBindlessIndex : Owner.SsrBindlessIndex;
         const uint32_t SsrLightingBindlessIndex = Owner.bSsrDenoiseEnabled ? Owner.SsrDenoiseBindlessIndex : BaseSsrIndex;
         const uint32_t SsrFallbackIndex = Owner.SsrFallbackBindlessIndex;
-        if (DepthBindlessIndex == UINT32_MAX || Owner.GtaoBindlessIndex == UINT32_MAX || Owner.RestirGIBindlessIndex == UINT32_MAX || SsrLightingBindlessIndex == UINT32_MAX || SsrFallbackIndex == UINT32_MAX || Owner.ShadowMapBindlessIndex == UINT32_MAX
+        const uint32_t RestirGILightingBindlessIndex = Owner.bRestirGIDenoiserEnabled ? Owner.RestirGiHistoryIrradianceSrvBindlessIndex : Owner.RestirGIBindlessIndex;
+        if (DepthBindlessIndex == UINT32_MAX || Owner.GtaoBindlessIndex == UINT32_MAX || RestirGILightingBindlessIndex == UINT32_MAX || SsrLightingBindlessIndex == UINT32_MAX || SsrFallbackIndex == UINT32_MAX || Owner.ShadowMapBindlessIndex == UINT32_MAX
             || Owner.EnvironmentCubeBindlessIndex == UINT32_MAX || Owner.BrdfLutBindlessIndex == UINT32_MAX
             || Owner.GBufferBindlessIndices[0] == UINT32_MAX || Owner.GBufferBindlessIndices[1] == UINT32_MAX || Owner.GBufferBindlessIndices[2] == UINT32_MAX)
         {
@@ -3265,7 +3266,7 @@ void FDeferredLightingPasses::AddLightingPass(FDeferredPassContext& Context, FRG
             Owner.BrdfLutBindlessIndex,
             DepthBindlessIndex,
             Owner.GtaoBindlessIndex,
-            Owner.RestirGIBindlessIndex,
+            RestirGILightingBindlessIndex,
             SsrLightingBindlessIndex,
             SsrFallbackIndex
         };

@@ -392,6 +392,10 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     {
         OutConfig.bEnableRestirGI = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
+    if (LowerKey == "restirgidenoiser" || LowerKey == "enablerestirgidenoiser")
+    {
+        OutConfig.bEnableRestirGIDenoiser = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
     if (LowerKey == "restirgisamplesperpixel")
     {
         try

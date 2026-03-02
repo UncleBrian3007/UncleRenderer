@@ -133,6 +133,15 @@ public:
     float GetSsrIntensity() const { return SsrIntensity; }
     void SetRestirGIEnabled(bool bEnabled) { bRestirGIEnabled = bEnabled; }
     bool IsRestirGIEnabled() const { return bRestirGIEnabled; }
+    void SetRestirGIDenoiserEnabled(bool bEnabled)
+    {
+        if (bRestirGIDenoiserEnabled != bEnabled)
+        {
+            bRestirGIDenoiserEnabled = bEnabled;
+            InvalidateRestirGiDenoiserHistory();
+        }
+    }
+    bool IsRestirGIDenoiserEnabled() const { return bRestirGIDenoiserEnabled; }
     void SetRestirGISamplesPerPixel(uint32_t Samples) { RestirGISamplesPerPixel = Samples; }
     uint32_t GetRestirGISamplesPerPixel() const { return RestirGISamplesPerPixel; }
     void SetRestirGIIntensity(float Intensity) { RestirGIIntensity = Intensity; }
@@ -287,6 +296,7 @@ public:
         FRGResourceHandle RestirGiPrevNormalHandle{};
         FRGResourceHandle RestirGiShMipHandle{};
         FRGResourceHandle RestirGiLinearDepthMipHandle{};
+        FRGBufferHandle RestirGiSpdAtomicCounterHandle{};
         FRGResourceHandle SsrHandle{};
         FRGResourceHandle SsrDenoiseHandle{};
         FRGResourceHandle SsrFallbackHandle{};
@@ -376,6 +386,7 @@ private:
     void ConfigureFrameGraph(FRenderGraph& Graph) const;
     void FinalizeFrameState(const FDeferredFrameState& FrameState);
     void InvalidateRestirGiDenoiserHistory();
+    void InvalidateRestirGIReservoirHistory();
     void ApplyRendererConfig(const FRendererConfig& Config);
     bool InitializePipelineDomains(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool InitializeFrameResources(FDX12Device* Device, uint32_t Width, uint32_t Height, const FRendererConfig& Config);
@@ -450,6 +461,7 @@ private:
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> VelocityPipelines;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> VelocityPipelinesSkinned;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGIInitialPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGIReservoirBootstrapPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGITemporalPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGISpatialPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGIResolvePipeline;
@@ -506,6 +518,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiPrevNormalTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiShMipTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiLinearDepthMipTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiSpdAtomicCounterBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> SsrTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> SsrDenoiseTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> SsrFallbackTexture;
@@ -601,6 +614,7 @@ private:
     std::array<uint32_t, 4> RestirGiShMipUavBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX } };
     std::array<uint32_t, 4> RestirGiLinearDepthMipSrvBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX } };
     std::array<uint32_t, 4> RestirGiLinearDepthMipUavBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX } };
+    uint32_t RestirGiSpdAtomicCounterUavBindlessIndex = UINT32_MAX;
     uint32_t SsrBindlessIndex = UINT32_MAX;
     uint32_t SsrDenoiseBindlessIndex = UINT32_MAX;
     uint32_t SsrFallbackBindlessIndex = UINT32_MAX;
@@ -660,6 +674,7 @@ private:
     D3D12_RESOURCE_STATES RestirGiPrevNormalState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES RestirGiShMipState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES RestirGiLinearDepthMipState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    D3D12_RESOURCE_STATES RestirGiSpdAtomicCounterState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES SsrState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES SsrDenoiseState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES SsrFallbackState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -756,6 +771,7 @@ private:
     bool bSsrRefineEnabled = false;
     bool bSsrDenoiseEnabled = false;
     bool bRestirGIEnabled = false;
+    bool bRestirGIDenoiserEnabled = true;
 	uint32_t SsrMaxSteps = 32;
 	float SsrMaxDistance = 50.0f;
 	float SsrThickness = 1.00f;
@@ -768,7 +784,7 @@ private:
     float RestirGIRayLength = 100.0f;
     float RestirGIClamp = 10.0f;
     bool bRestirGITemporalReuse = true;
-    bool bRestirGISpatialReuse = false;
+    bool bRestirGISpatialReuse = true;
     float RestirGITemporalAdditionalScale = 0.2f;
     float RestirGISpatialAdditionalScale = 0.15f;
     float RestirGIResolveMinDenominator = 1e-5f;
@@ -784,8 +800,9 @@ private:
     uint32_t RestirGIDebugPixelY = 0;
     bool bRestirGIFreezeFrame = false;
     uint32_t RestirGIFrozenSequenceFrame = 0;
-    uint32_t RestirGIHistoryFrameCount = 0;
-    bool bRestirGIHistoryValid = false;
+    uint32_t RestirGIReservoirHistoryFrameCount = 0;
+    bool bRestirGIReservoirHistoryValid = false;
+    bool bRestirGIDenoiserHistoryValid = false;
     ESSRMode SsrMode = ESSRMode::PS;
     uint32_t SsrSamplesPerQuad = 1;
 

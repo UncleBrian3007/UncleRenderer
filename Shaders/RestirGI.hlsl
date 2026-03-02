@@ -21,7 +21,6 @@ cbuffer RestirGIConstants : register(b1)
     float Intensity;
     float RayLength;
     float ClampThreshold;
-    uint TemporalReuseEnabled;
     uint UseVisibility;
     uint UseBrdf;
     uint UseHistoryIndirect;
@@ -442,7 +441,7 @@ void CSTemporalResampling(uint3 DispatchThreadId : SV_DispatchThreadID)
     Reservoir.M = 0.0f;
     Reservoir.W = 0.0f;
 
-    if (TemporalReuseEnabled > 0u && HistoryValid > 0u)
+    if (HistoryValid > 0u)
     {
         const float2 Uv = (float2(FullPos) + 0.5f) / float2(FullWidth, FullHeight);
         const float2 VelocityNdc = VelocityTexture[FullPos];
@@ -476,6 +475,49 @@ void CSTemporalResampling(uint3 DispatchThreadId : SV_DispatchThreadID)
     const float SelectedTarget = max(1e-5f, RestirGITarget(Reservoir.Sample.Radiance));
     // Normalization factor W used in resolve: SampleRadiance * W.
     // Compensates for the selection bias of reservoir sampling (brighter samples are picked more often),
+    Reservoir.W = Reservoir.SumWeight / max(1e-5f, Reservoir.M * SelectedTarget);
+
+    RestirGIStoreReservoir(HalfPos, Reservoir, Depth, Normal, OutDepthNormal, OutSampleRadiance, OutRayDirection, OutMW);
+}
+
+[numthreads(8, 8, 1)]
+void CSReservoirBootstrap(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+    const uint2 HalfPos = DispatchThreadId.xy;
+    if (HalfPos.x >= HalfWidth || HalfPos.y >= HalfHeight)
+    {
+        return;
+    }
+
+    Texture2D<float> DepthTexture = ResourceDescriptorHeap[DepthIndex];
+    Texture2D<float4> GBufferA = ResourceDescriptorHeap[GBufferAIndex];
+    Texture2D<float4> InitialRadiance = ResourceDescriptorHeap[InputInitialRadianceSrvIndex];
+    Texture2D<uint> InitialRayDir = ResourceDescriptorHeap[InputInitialRayDirectionSrvIndex];
+
+    RWTexture2D<uint2> OutDepthNormal = ResourceDescriptorHeap[OutputDepthNormalUavIndex];
+    RWTexture2D<float4> OutSampleRadiance = ResourceDescriptorHeap[OutputSampleRadianceUavIndex];
+    RWTexture2D<uint> OutRayDirection = ResourceDescriptorHeap[OutputRayDirectionUavIndex];
+    RWTexture2D<float2> OutMW = ResourceDescriptorHeap[OutputMWUavIndex];
+
+    const uint2 FullPos = RestirGIHalfToFull(HalfPos);
+    const float Depth = DepthTexture[FullPos];
+    const float3 Normal = normalize(GBufferA[FullPos].xyz * 2.0f - 1.0f);
+
+    if (Enabled == 0u || Depth <= 0.0f || Depth >= 1.0f)
+    {
+        FRestirGIReservoir Empty = (FRestirGIReservoir)0;
+        RestirGIStoreReservoir(HalfPos, Empty, Depth, Normal, OutDepthNormal, OutSampleRadiance, OutRayDirection, OutMW);
+        return;
+    }
+
+    const FRestirGISample Current = RestirGILoadSample(InitialRadiance, InitialRayDir, HalfPos);
+    FRestirGIReservoir Reservoir = (FRestirGIReservoir)0;
+    Reservoir.Sample = Current;
+
+    const float CurrentWeight = max(1e-5f, RestirGITarget(Current.Radiance));
+    RestirGIUpdate(Reservoir, Current, CurrentWeight, RestirGIRandom01(HalfPos, SequenceFrame * 1531u + 41u));
+
+    const float SelectedTarget = max(1e-5f, RestirGITarget(Reservoir.Sample.Radiance));
     Reservoir.W = Reservoir.SumWeight / max(1e-5f, Reservoir.M * SelectedTarget);
     Reservoir.M = min(Reservoir.M, 30.0f);
 
@@ -552,7 +594,6 @@ void CSSpatialResampling(uint3 DispatchThreadId : SV_DispatchThreadID)
 
     const float SelectedTarget = max(1e-5f, RestirGITarget(Reservoir.Sample.Radiance));
     Reservoir.W = Reservoir.SumWeight / max(1e-5f, Reservoir.M * SelectedTarget);
-    Reservoir.M = min(Reservoir.M, 30.0f);
 
 	RestirGIStoreReservoir(HalfPos, Reservoir, CenterDepth, CenterNormal, OutDepthNormal, OutSampleRadiance, OutRayDirection, OutMW);
 }

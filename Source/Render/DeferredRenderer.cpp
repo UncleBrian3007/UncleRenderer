@@ -146,6 +146,7 @@ void FDeferredRenderer::ApplyRendererConfig(const FRendererConfig& Config)
     bSsrRefineEnabled = Config.bEnableSsrRefine;
     bSsrDenoiseEnabled = Config.bEnableSsrDenoise;
     bRestirGIEnabled = Config.bEnableRestirGI;
+    bRestirGIDenoiserEnabled = Config.bEnableRestirGIDenoiser;
     SsrMaxSteps = Config.SsrMaxSteps;
     SsrMaxDistance = Config.SsrMaxDistance;
     SsrThickness = Config.SsrThickness;
@@ -523,10 +524,17 @@ void FDeferredRenderer::PrepareFrameState(const FCamera& Camera, bool bAnySkinni
 
     if (bCameraMoved || !bHasPreviousViewProjection)
     {
+        InvalidateRestirGIReservoirHistory();
         InvalidateRestirGiDenoiserHistory();
     }
 
     if (!bRestirGIEnabled)
+    {
+        InvalidateRestirGIReservoirHistory();
+        InvalidateRestirGiDenoiserHistory();
+    }
+
+    if (!bRestirGIDenoiserEnabled)
     {
         InvalidateRestirGiDenoiserHistory();
     }
@@ -721,13 +729,22 @@ void FDeferredRenderer::FinalizeFrameState(const FDeferredFrameState& FrameState
     if (bRestirGIEnabled && RestirGIHistoryTexture != nullptr)
     {
         const uint32_t MaxHistoryFrames = (std::max)(1u, RestirGIMaxHistoryFrames);
-        RestirGIHistoryFrameCount = (std::min)(RestirGIHistoryFrameCount + 1u, MaxHistoryFrames);
-        bRestirGIHistoryValid = RestirGIHistoryFrameCount > 0u;
+        RestirGIReservoirHistoryFrameCount = (std::min)(RestirGIReservoirHistoryFrameCount + 1u, MaxHistoryFrames);
+        bRestirGIReservoirHistoryValid = RestirGIReservoirHistoryFrameCount > 0u;
     }
     else
     {
-        RestirGIHistoryFrameCount = 0u;
-        bRestirGIHistoryValid = false;
+        RestirGIReservoirHistoryFrameCount = 0u;
+        bRestirGIReservoirHistoryValid = false;
+    }
+
+    if (bRestirGIEnabled && bRestirGIDenoiserEnabled && RestirGiHistoryIrradianceTexture != nullptr)
+    {
+        bRestirGIDenoiserHistoryValid = true;
+    }
+    else
+    {
+        bRestirGIDenoiserHistoryValid = false;
     }
 
     for (FSceneModelResource& Model : SceneModels)
@@ -739,8 +756,7 @@ void FDeferredRenderer::FinalizeFrameState(const FDeferredFrameState& FrameState
 
 void FDeferredRenderer::InvalidateRestirGiDenoiserHistory()
 {
-    bRestirGIHistoryValid = false;
-    RestirGIHistoryFrameCount = 0;
+    bRestirGIDenoiserHistoryValid = false;
 
     if (RestirGiHistoryCountASrvBindlessIndex != UINT32_MAX && RestirGiHistoryCountBSrvBindlessIndex != UINT32_MAX)
     {
@@ -751,6 +767,12 @@ void FDeferredRenderer::InvalidateRestirGiDenoiserHistory()
             std::swap(RestirGiHistoryCountATexture, RestirGiHistoryCountBTexture);
         }
     }
+}
+
+void FDeferredRenderer::InvalidateRestirGIReservoirHistory()
+{
+    bRestirGIReservoirHistoryValid = false;
+    RestirGIReservoirHistoryFrameCount = 0;
 }
 
 void FDeferredRenderer::OnFrameFenceSignaled(uint32_t FrameIndex, uint64_t FenceValue)

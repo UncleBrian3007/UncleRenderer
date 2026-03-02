@@ -195,6 +195,7 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     SsrMode = RendererConfig.SsrMode;
     SsrSamplesPerQuad = RendererConfig.SsrSamplesPerQuad;
     bRestirGIEnabled = RendererConfig.bEnableRestirGI;
+    bRestirGIDenoiserEnabled = RendererConfig.bEnableRestirGIDenoiser;
     bRestirGIShowOnly = false;
     bRestirGITemporalReuseEnabled = RendererConfig.bEnableRestirGITemporalReuse;
     bRestirGISpatialReuseEnabled = RendererConfig.bEnableRestirGISpatialReuse;
@@ -1749,6 +1750,18 @@ void FApplication::RenderUI()
             if (DeferredRenderer)
             {
                 DeferredRenderer->SetRestirGIShowOnly(bRestirGIShowOnly);
+            }
+        }
+
+        ImGui::SameLine();
+        bool bRestirGIDenoiser = bRestirGIDenoiserEnabled;
+        if (ImGui::Checkbox("GI Denoiser", &bRestirGIDenoiser))
+        {
+            bRestirGIDenoiserEnabled = bRestirGIDenoiser;
+            RendererConfig.bEnableRestirGIDenoiser = bRestirGIDenoiserEnabled;
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetRestirGIDenoiserEnabled(bRestirGIDenoiserEnabled);
             }
         }
 

@@ -101,9 +101,10 @@ private:
     float GtaoRadius = 0.75f;
     float GtaoThickness = 0.1f;
     bool bRestirGIEnabled = false;
+    bool bRestirGIDenoiserEnabled = true;
     bool bRestirGIShowOnly = false;
     bool bRestirGITemporalReuseEnabled = true;
-    bool bRestirGISpatialReuseEnabled = false;
+    bool bRestirGISpatialReuseEnabled = true;
     float RestirGITemporalAdditionalScale = 0.2f;
     float RestirGISpatialAdditionalScale = 0.15f;
     bool bRestirGIUseVisibility = true;

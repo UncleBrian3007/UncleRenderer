@@ -59,12 +59,13 @@ struct FRendererConfig
     bool bEnableSsrRefine = false;
     bool bEnableSsrDenoise = true;
     bool bEnableRestirGI = false;
+    bool bEnableRestirGIDenoiser = true;
     uint32_t RestirGISamplesPerPixel = 2;
     float RestirGIIntensity = 1.0f;
     float RestirGIRayLength = 100.0f;
     float RestirGIClamp = 10.0f;
     bool bEnableRestirGITemporalReuse = true;
-    bool bEnableRestirGISpatialReuse = false;
+    bool bEnableRestirGISpatialReuse = true;
     float RestirGITemporalAdditionalScale = 0.2f;
     float RestirGISpatialAdditionalScale = 0.15f;
     float RestirGIResolveMinDenominator = 1e-5f;
