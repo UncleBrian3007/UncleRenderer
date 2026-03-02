@@ -132,8 +132,14 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <ClCompile Include="Source\Render\Deferred\DeferredFrameOrchestrator.cpp" />
     <ClCompile Include="Source\Render\Deferred\DeferredGeometryPasses.cpp" />
     <ClCompile Include="Source\Render\Deferred\DeferredLightingPasses.cpp" />
+    <ClCompile Include="Source\Render\Deferred\GTAO.cpp" />
     <ClCompile Include="Source\Render\Deferred\DeferredPostProcessPasses.cpp" />
     <ClCompile Include="Source\Render\Deferred\DeferredRayTracingPasses.cpp" />
+    <ClCompile Include="Source\Render\Deferred\Ssr.cpp" />
+    <ClCompile Include="Source\Render\Deferred\RestirGI.cpp" />
+    <ClCompile Include="Source\Render\Deferred\RayTracingShadow.cpp" />
+    <ClCompile Include="Source\Render\Deferred\PathTracing.cpp" />
+    <ClCompile Include="Source\Render\Deferred\RestirGIDenoiser.cpp" />
     <ClCompile Include="Source\Render\Deferred\DeferredResourceImporter.cpp" />
     <ClCompile Include="Source\Render\Deferred\DeferredVisibilityPasses.cpp" />
     <ClCompile Include="Source\Render\DebugPrintFont.cpp" />
@@ -443,3 +449,4 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <Error Condition="!Exists('packages\Microsoft.Direct3D.DXC.1.8.2505.32\build\native\Microsoft.Direct3D.DXC.targets')" Text="$([System.String]::Format('$(ErrorText)', 'packages\Microsoft.Direct3D.DXC.1.8.2505.32\build\native\Microsoft.Direct3D.DXC.targets'))" />
   </Target>
 </Project>
+
