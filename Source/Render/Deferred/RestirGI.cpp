@@ -173,6 +173,25 @@ bool FDeferredRenderer::CreateRestirGIPipeline(FDX12Device* Device)
     return true;
 }
 
+DXGI_FORMAT FDeferredRenderer::ResolveRestirGiRadianceFormat(FDX12Device* Device) const
+{
+    if (!Device || !Device->GetDevice())
+    {
+        return DXGI_FORMAT_R16G16B16A16_FLOAT;
+    }
+
+    D3D12_FEATURE_DATA_FORMAT_SUPPORT FormatSupport = {};
+    FormatSupport.Format = DXGI_FORMAT_R11G11B10_FLOAT;
+    if (SUCCEEDED(Device->GetDevice()->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &FormatSupport, sizeof(FormatSupport)))
+        && (FormatSupport.Support1 & D3D12_FORMAT_SUPPORT1_TEXTURE2D) != 0
+        && (FormatSupport.Support1 & D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW) != 0)
+    {
+        return DXGI_FORMAT_R11G11B10_FLOAT;
+    }
+
+    return DXGI_FORMAT_R16G16B16A16_FLOAT;
+}
+
 bool FDeferredRenderer::CreateRestirGIResources(FDX12Device* Device, uint32_t Width, uint32_t Height)
 {
     if (Device == nullptr)
@@ -181,9 +200,10 @@ bool FDeferredRenderer::CreateRestirGIResources(FDX12Device* Device, uint32_t Wi
     }
 
     CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
+    const DXGI_FORMAT RestirGiRadianceFormat = ResolveRestirGiRadianceFormat(Device);
 
     CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
-        DXGI_FORMAT_R16G16B16A16_FLOAT,
+        RestirGiRadianceFormat,
         Width,
         Height,
         1,
@@ -291,12 +311,12 @@ bool FDeferredRenderer::CreateRestirGIResources(FDX12Device* Device, uint32_t Wi
         }
     };
 
-    CreateRestirGITexture(DXGI_FORMAT_R16G16B16A16_FLOAT, L"ReSTIR_GI_InitialRadiance", RestirGIInitialRadianceTexture);
+    CreateRestirGITexture(RestirGiRadianceFormat, L"ReSTIR_GI_InitialRadiance", RestirGIInitialRadianceTexture);
     CreateRestirGITexture(DXGI_FORMAT_R32_UINT, L"ReSTIR_GI_InitialRayDirection", RestirGIInitialRayDirectionTexture);
     CreateRestirGITexture(DXGI_FORMAT_R32G32_UINT, L"ReSTIR_GI_ReservoirDepthNormalA", RestirGIReservoirDepthNormalATexture);
     CreateRestirGITexture(DXGI_FORMAT_R32G32_UINT, L"ReSTIR_GI_ReservoirDepthNormalB", RestirGIReservoirDepthNormalBTexture);
-    CreateRestirGITexture(DXGI_FORMAT_R16G16B16A16_FLOAT, L"ReSTIR_GI_ReservoirSampleRadianceA", RestirGIReservoirSampleRadianceATexture);
-    CreateRestirGITexture(DXGI_FORMAT_R16G16B16A16_FLOAT, L"ReSTIR_GI_ReservoirSampleRadianceB", RestirGIReservoirSampleRadianceBTexture);
+    CreateRestirGITexture(RestirGiRadianceFormat, L"ReSTIR_GI_ReservoirSampleRadianceA", RestirGIReservoirSampleRadianceATexture);
+    CreateRestirGITexture(RestirGiRadianceFormat, L"ReSTIR_GI_ReservoirSampleRadianceB", RestirGIReservoirSampleRadianceBTexture);
     CreateRestirGITexture(DXGI_FORMAT_R32_UINT, L"ReSTIR_GI_ReservoirRayDirectionA", RestirGIReservoirRayDirectionATexture);
     CreateRestirGITexture(DXGI_FORMAT_R32_UINT, L"ReSTIR_GI_ReservoirRayDirectionB", RestirGIReservoirRayDirectionBTexture);
     CreateRestirGITexture(DXGI_FORMAT_R32G32_FLOAT, L"ReSTIR_GI_ReservoirMWA", RestirGIReservoirMWATexture);
@@ -429,7 +449,8 @@ void FDeferredRayTracingPasses::DispatchRestirPass(FDeferredPassContext& Context
     const uint32_t HalfWidth = (FullWidth + 1u) / 2u;
     const uint32_t HalfHeight = (FullHeight + 1u) / 2u;
     const uint32_t MaxHistoryFrames = (std::max)(1u, Owner.RestirGIMaxHistoryFrames);
-    const uint32_t SequenceFrame = Owner.bRestirGIFreezeFrame ? Owner.RestirGIFrozenSequenceFrame : (Context.FrameState.bTaaActive ? Context.FrameState.TaaFrameIndex : Owner.GetFrameIndex());
+    const uint32_t GlobalFrameNumber = static_cast<uint32_t>(Owner.GetFrameNumber());
+    const uint32_t SequenceFrame = Owner.bRestirGIFreezeFrame ? Owner.RestirGIFrozenSequenceFrame : GlobalFrameNumber;
 
     const FRestirGIConstants Constants =
     {
@@ -437,7 +458,7 @@ void FDeferredRayTracingPasses::DispatchRestirPass(FDeferredPassContext& Context
         FullHeight,
         HalfWidth,
         HalfHeight,
-        Context.FrameState.bTaaActive ? Context.FrameState.TaaFrameIndex : Owner.GetFrameIndex(),
+        GlobalFrameNumber,
         Owner.bRestirGIEnabled ? 1u : 0u,
         (Owner.bRestirGIReservoirHistoryValid && Owner.RestirGIReservoirHistoryFrameCount >= MaxHistoryFrames) ? 1u : 0u,
         SpatialPassIndex,

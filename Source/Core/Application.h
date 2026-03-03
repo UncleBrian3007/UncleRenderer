@@ -82,6 +82,7 @@ private:
     bool bTaskSystemEnabled = true;
     bool bDepthPrepassEnabled = false;
     bool bFrameOverlapEnabled = false;
+    bool bVSyncEnabled = false;
     bool bShadowsEnabled = true;
     bool bRayTracedShadowsEnabled = false;
     bool bPathTracingEnabled = false;

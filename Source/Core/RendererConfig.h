@@ -24,6 +24,7 @@ struct FRendererConfig
     bool bUseDepthPrepass = true;
     uint32_t FramesInFlight = 3;
     bool bEnableFrameOverlap = true;
+    bool bEnableVSync = false;
     bool bEnableShadows = true;
     bool bEnableRayTracedShadows = false;
     bool bEnablePathTracing = false;

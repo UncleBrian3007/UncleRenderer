@@ -40,16 +40,26 @@ bool FWindow::Create(HINSTANCE InstanceHandle, int32_t InWidth, int32_t InHeight
 
     RECT WindowRect = { 0, 0, Width, Height };
     AdjustWindowRect(&WindowRect, WS_OVERLAPPEDWINDOW, FALSE);
+    const int32_t WindowWidth = WindowRect.right - WindowRect.left;
+    const int32_t WindowHeight = WindowRect.bottom - WindowRect.top;
+
+    RECT WorkArea = {};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &WorkArea, 0);
+
+    const int32_t WorkAreaWidth = WorkArea.right - WorkArea.left;
+    const int32_t WorkAreaHeight = WorkArea.bottom - WorkArea.top;
+    const int32_t WindowPosX = WorkArea.left + (WorkAreaWidth - WindowWidth) / 2;
+    const int32_t WindowPosY = WorkArea.top + (WorkAreaHeight - WindowHeight) / 2;
 
     WindowHandle = CreateWindowExW(
         0,
         WindowClassName.c_str(),
         Title,
         WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT,
-        CW_USEDEFAULT,
-        WindowRect.right - WindowRect.left,
-        WindowRect.bottom - WindowRect.top,
+        WindowPosX,
+        WindowPosY,
+        WindowWidth,
+        WindowHeight,
         nullptr,
         nullptr,
         InstanceHandle,

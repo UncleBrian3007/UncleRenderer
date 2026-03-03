@@ -75,6 +75,8 @@ public:
 
     void SetFrameIndex(uint32_t FrameIndex);
     uint32_t GetFrameIndex() const { return CurrentFrameIndex; }
+    void SetFrameNumber(uint64_t InFrameNumber) { CurrentFrameNumber = InFrameNumber; }
+    uint64_t GetFrameNumber() const { return CurrentFrameNumber; }
 
     const D3D12_CPU_DESCRIPTOR_HANDLE& GetDSVHandle() const;
     ID3D12Resource* GetDepthBuffer() const;
@@ -475,4 +477,5 @@ protected:
     FDX12Device* Device = nullptr;
     uint32_t FramesInFlight = 1;
     uint32_t CurrentFrameIndex = 0;
+    uint64_t CurrentFrameNumber = 0;
 };

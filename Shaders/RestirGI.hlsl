@@ -476,6 +476,7 @@ void CSTemporalResampling(uint3 DispatchThreadId : SV_DispatchThreadID)
     // Normalization factor W used in resolve: SampleRadiance * W.
     // Compensates for the selection bias of reservoir sampling (brighter samples are picked more often),
     Reservoir.W = Reservoir.SumWeight / max(1e-5f, Reservoir.M * SelectedTarget);
+    Reservoir.M = min(Reservoir.M, 30.0f);
 
     RestirGIStoreReservoir(HalfPos, Reservoir, Depth, Normal, OutDepthNormal, OutSampleRadiance, OutRayDirection, OutMW);
 }

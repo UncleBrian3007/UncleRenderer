@@ -155,6 +155,7 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     RendererConfig = FRendererConfigLoader::LoadOrDefault(ConfigPath);
     bTaskSystemEnabled = RendererConfig.bEnableTaskSystem;
     bFrameOverlapEnabled = RendererConfig.bEnableFrameOverlap;
+    bVSyncEnabled = RendererConfig.bEnableVSync;
     bDepthPrepassEnabled = RendererConfig.bUseDepthPrepass;
     bShadowsEnabled = RendererConfig.bEnableShadows;
     bRayTracedShadowsEnabled = RendererConfig.bEnableRayTracedShadows;
@@ -482,6 +483,7 @@ bool FApplication::RenderFrame()
         if (ActiveRenderer)
         {
             ActiveRenderer->SetFrameIndex(BackBufferIndex);
+            ActiveRenderer->SetFrameNumber(FrameIndex);
         }
         const D3D12_CPU_DESCRIPTOR_HANDLE* DsvHandle = ActiveRenderer ? &ActiveRenderer->GetDSVHandle() : nullptr;
 
@@ -568,9 +570,10 @@ bool FApplication::RenderFrame()
 
     SwapChain->SetBackBufferState(BackBufferIndex, D3D12_RESOURCE_STATE_PRESENT);
 
-    const UINT PresentFlags = SwapChain->AllowsTearing() ? DXGI_PRESENT_ALLOW_TEARING : 0;
-    LogVerbose("Present called (Flags: " + std::to_string(PresentFlags) + ")");
-    const HRESULT PresentHr = SwapChain->GetSwapChain()->Present(0, PresentFlags);
+    const UINT SyncInterval = bVSyncEnabled ? 1u : 0u;
+    const UINT PresentFlags = (!bVSyncEnabled && SwapChain->AllowsTearing()) ? DXGI_PRESENT_ALLOW_TEARING : 0u;
+    LogVerbose("Present called (SyncInterval: " + std::to_string(SyncInterval) + ", Flags: " + std::to_string(PresentFlags) + ")");
+    const HRESULT PresentHr = SwapChain->GetSwapChain()->Present(SyncInterval, PresentFlags);
     if (FAILED(PresentHr))
     {
         ReportDxFailure(Device ? Device->GetDevice() : nullptr, PresentHr, L"IDXGISwapChain::Present");
@@ -1604,6 +1607,14 @@ void FApplication::RenderUI()
         if (ImGui::Checkbox("Frame Overlap", &bFrameOverlap))
         {
             bFrameOverlapEnabled = bFrameOverlap;
+        }
+
+        ImGui::SameLine();
+        bool bVSync = bVSyncEnabled;
+        if (ImGui::Checkbox("VSync", &bVSync))
+        {
+            bVSyncEnabled = bVSync;
+            RendererConfig.bEnableVSync = bVSyncEnabled;
         }
 
         if (Device && Device->GetGraphicsQueue())

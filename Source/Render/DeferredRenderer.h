@@ -349,6 +349,7 @@ private:
     bool CreateSsrDispatchCommandSignature(FDX12Device* Device);
     bool CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateRestirGIPipeline(FDX12Device* Device);
+    DXGI_FORMAT ResolveRestirGiRadianceFormat(FDX12Device* Device) const;
     bool CreateRestirGiDenoiserResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateRestirGiDenoiserPipelines(FDX12Device* Device);
     bool CreateHZBRootSignature(FDX12Device* Device);

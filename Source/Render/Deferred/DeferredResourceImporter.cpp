@@ -60,13 +60,13 @@ void FDeferredResourceImporter::ImportFrameResources(FDeferredPassContext& Conte
         "ReSTIR GI",
         Owner.RestirGITexture.Get(),
         &Owner.RestirGIState,
-        { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), DXGI_FORMAT_R16G16B16A16_FLOAT });
+        { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), Owner.RestirGITexture->GetDesc().Format });
 
     OutResources.RestirGIHistoryHandle = Graph.ImportTexture(
         "ReSTIR GI History",
         Owner.RestirGIHistoryTexture.Get(),
         &Owner.RestirGIHistoryState,
-        { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), DXGI_FORMAT_R16G16B16A16_FLOAT });
+        { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), Owner.RestirGIHistoryTexture->GetDesc().Format });
 
     FRGBufferDesc RestirReservoirDesc = {};
     RestirReservoirDesc.Size = static_cast<size_t>(Owner.Viewport.Width) * static_cast<size_t>(Owner.Viewport.Height) * sizeof(float) * 8u;
@@ -97,7 +97,7 @@ void FDeferredResourceImporter::ImportFrameResources(FDeferredPassContext& Conte
         "ReSTIR GI Initial Radiance",
         Owner.RestirGIInitialRadianceTexture.Get(),
         &Owner.RestirGIInitialRadianceState,
-        { HalfWidth, HalfHeight, DXGI_FORMAT_R16G16B16A16_FLOAT });
+        { HalfWidth, HalfHeight, Owner.RestirGIInitialRadianceTexture->GetDesc().Format });
 
     OutResources.RestirGIInitialRayDirectionHandle = Graph.ImportTexture(
         "ReSTIR GI Initial RayDir",
@@ -121,13 +121,13 @@ void FDeferredResourceImporter::ImportFrameResources(FDeferredPassContext& Conte
         "ReSTIR GI Reservoir SampleRadiance A",
         Owner.RestirGIReservoirSampleRadianceATexture.Get(),
         &Owner.RestirGIReservoirSampleRadianceAState,
-        { HalfWidth, HalfHeight, DXGI_FORMAT_R16G16B16A16_FLOAT });
+        { HalfWidth, HalfHeight, Owner.RestirGIReservoirSampleRadianceATexture->GetDesc().Format });
 
     OutResources.RestirGIReservoirSampleRadianceBHandle = Graph.ImportTexture(
         "ReSTIR GI Reservoir SampleRadiance B",
         Owner.RestirGIReservoirSampleRadianceBTexture.Get(),
         &Owner.RestirGIReservoirSampleRadianceBState,
-        { HalfWidth, HalfHeight, DXGI_FORMAT_R16G16B16A16_FLOAT });
+        { HalfWidth, HalfHeight, Owner.RestirGIReservoirSampleRadianceBTexture->GetDesc().Format });
 
     OutResources.RestirGIReservoirRayDirectionAHandle = Graph.ImportTexture(
         "ReSTIR GI Reservoir RayDirection A",
@@ -169,7 +169,7 @@ void FDeferredResourceImporter::ImportFrameResources(FDeferredPassContext& Conte
         "ReSTIR GI Denoised Irradiance",
         Owner.RestirGiHistoryIrradianceTexture.Get(),
         &Owner.RestirGiHistoryIrradianceState,
-        { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), DXGI_FORMAT_R11G11B10_FLOAT });
+        { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), Owner.RestirGiHistoryIrradianceTexture->GetDesc().Format });
 
     OutResources.RestirGiTemporalSHHandle = Graph.ImportTexture(
         "ReSTIR GI Temporal SH",
@@ -441,16 +441,19 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
 
     const auto CreateRestirDescriptors = [&]() -> bool
     {
+        const DXGI_FORMAT RestirGiRadianceFormat = RestirGITexture ? RestirGITexture->GetDesc().Format : DXGI_FORMAT_R16G16B16A16_FLOAT;
+        const DXGI_FORMAT RestirGiDenoiserIrradianceFormat = RestirGiHistoryIrradianceTexture ? RestirGiHistoryIrradianceTexture->GetDesc().Format : DXGI_FORMAT_R16G16B16A16_FLOAT;
+
         D3D12_SHADER_RESOURCE_VIEW_DESC RestirSrvDesc = {};
         RestirSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         RestirSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        RestirSrvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        RestirSrvDesc.Format = RestirGiRadianceFormat;
         RestirSrvDesc.Texture2D.MipLevels = 1;
         RestirGIBindlessIndex = Device->CreateBindlessSrv(RestirGITexture.Get(), RestirSrvDesc);
 
         D3D12_UNORDERED_ACCESS_VIEW_DESC RestirUavDesc = {};
         RestirUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-        RestirUavDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        RestirUavDesc.Format = RestirGiRadianceFormat;
         RestirUavDesc.Texture2D.MipSlice = 0;
         RestirGIUavBindlessIndex = Device->CreateBindlessUav(RestirGITexture.Get(), nullptr, RestirUavDesc);
 
@@ -491,8 +494,8 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         RestirGIUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
         RestirGIUavDesc.Texture2D.MipSlice = 0;
 
-        RestirGISrvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-        RestirGIUavDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        RestirGISrvDesc.Format = RestirGiRadianceFormat;
+        RestirGIUavDesc.Format = RestirGiRadianceFormat;
         RestirGIInitialRadianceSrvBindlessIndex = Device->CreateBindlessSrv(RestirGIInitialRadianceTexture.Get(), RestirGISrvDesc);
         RestirGIInitialRadianceUavBindlessIndex = Device->CreateBindlessUav(RestirGIInitialRadianceTexture.Get(), nullptr, RestirGIUavDesc);
         RestirGIReservoirSampleRadianceASrvBindlessIndex = Device->CreateBindlessSrv(RestirGIReservoirSampleRadianceATexture.Get(), RestirGISrvDesc);
@@ -533,8 +536,8 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         RestirGiVarianceSrvBindlessIndex = Device->CreateBindlessSrv(RestirGiVarianceTexture.Get(), RestirGISrvDesc);
         RestirGiVarianceUavBindlessIndex = Device->CreateBindlessUav(RestirGiVarianceTexture.Get(), nullptr, RestirGIUavDesc);
 
-        RestirGISrvDesc.Format = DXGI_FORMAT_R11G11B10_FLOAT;
-        RestirGIUavDesc.Format = DXGI_FORMAT_R11G11B10_FLOAT;
+        RestirGISrvDesc.Format = RestirGiDenoiserIrradianceFormat;
+        RestirGIUavDesc.Format = RestirGiDenoiserIrradianceFormat;
         RestirGiHistoryIrradianceSrvBindlessIndex = Device->CreateBindlessSrv(RestirGiHistoryIrradianceTexture.Get(), RestirGISrvDesc);
         RestirGiHistoryIrradianceUavBindlessIndex = Device->CreateBindlessUav(RestirGiHistoryIrradianceTexture.Get(), nullptr, RestirGIUavDesc);
 

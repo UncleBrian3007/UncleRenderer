@@ -27,7 +27,7 @@ float3 BRDF(float3 wi, float3 wo, float3 N, float3 diffuse, float3 specular, flo
 {
     float3 F;
     float3 specularBrdf = SpecularBRDF(N, wo, wi, specular, roughness, F);
-    float3 diffuseBrdf = DiffuseBRDF(diffuse);
+    float3 diffuseBrdf = DiffuseBRDF(diffuse) * (1.0f - F);
     return diffuseBrdf + specularBrdf;
 }
 
