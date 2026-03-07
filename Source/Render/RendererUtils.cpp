@@ -1825,6 +1825,7 @@ void RendererUtils::UpdateSceneConstants(
 
     FSceneConstants Constants = {};
     XMStoreFloat4x4(&Constants.World, WorldMatrix);
+    XMStoreFloat4x4(&Constants.WorldInverseTranspose, XMMatrixTranspose(XMMatrixInverse(nullptr, WorldMatrix)));
     XMStoreFloat4x4(&Constants.View, View);
     XMStoreFloat4x4(&Constants.ViewInverse, ViewInverse);
     XMStoreFloat4x4(&Constants.Projection, Projection);

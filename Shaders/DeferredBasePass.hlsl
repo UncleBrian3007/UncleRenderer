@@ -140,11 +140,11 @@ VSOutput VSMain(VSInput Input)
     float4 ViewPos = mul(WorldPos, View);
     Output.Position = mul(ViewPos, Projection);
     Output.CurrentClipPos = Output.Position;
-    Output.Normal = mul(normal, (float3x3)World);
+    Output.Normal = normalize(mul(normal, (float3x3)WorldInverseTranspose));
     Output.UV = uv;
     Output.WorldPos = WorldPos.xyz;
     Output.PrevWorldPos = PreviousWorldPos.xyz;
-    Output.Tangent = float4(normalize(mul(tangent.xyz, (float3x3)World)), tangent.w);
+    Output.Tangent = float4(normalize(mul(tangent.xyz, (float3x3)WorldInverseTranspose)), tangent.w);
     Output.Color = color;
     return Output;
 }

@@ -126,6 +126,7 @@ void FDeferredFrameOrchestrator::BuildFrameGraph(FDeferredPassContext& Context) 
     {
         Owner.RayTracingPasses->AddRayTracingShadowPass(Context);
         Owner.LightingPasses->AddLinearDepthPass(Context);
+        Owner.LightingPasses->AddExtractHalfDepthNormalPass(Context);
         Owner.LightingPasses->AddGtaoPass(Context);
         Owner.RayTracingPasses->AddRestirGIPass(Context);
         Owner.RayTracingPasses->AddRestirGiDenoiserPasses(Context);

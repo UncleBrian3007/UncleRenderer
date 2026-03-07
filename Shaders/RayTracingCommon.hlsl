@@ -1,15 +1,7 @@
 #ifndef RAY_TRACING_COMMON_HLSL
 #define RAY_TRACING_COMMON_HLSL
 
-// "Efficient Construction of Perpendicular Vectors Without Branching"
-float3 GetPerpendicularVector(float3 u)
-{
-    float3 a = abs(u);
-    uint xm = ((a.x - a.y) < 0 && (a.x - a.z) < 0) ? 1 : 0;
-    uint ym = (a.y - a.z) < 0 ? (1 ^ xm) : 0;
-    uint zm = 1 ^ (xm | ym);
-    return cross(u, float3(xm, ym, zm));
-}
+#include "Common.hlsli"
 
 float3 TangentToWorld(float3 v, float3 N)
 {
@@ -30,6 +22,41 @@ float3 EvaluateSky(float3 direction)
     TextureCube EnvironmentMap = ResourceDescriptorHeap[EnvironmentCubeBindlessIndex];
     SamplerState LinearSampler = SamplerDescriptorHeap[LinearClampSamplerIndex];
     return EnvironmentMap.SampleLevel(LinearSampler, direction, 0).rgb;
+}
+
+// "Texture Level-of-Detail Strategies for Real-Time Ray Tracing"
+struct FRayCone
+{
+    float Width;
+    float SpreadAngle;
+};
+
+FRayCone RayConeFromCamera(uint RenderHeight)
+{
+    FRayCone Cone;
+    Cone.Width = 0.0f;
+    Cone.SpreadAngle = atan(2.0f * rcp(max(Projection._22, 1e-6f)) / max((float)RenderHeight, 1.0f));
+    return Cone;
+}
+
+void RayConePropagate(inout FRayCone Cone, float SurfaceSpreadAngle, float HitT)
+{
+    Cone.Width += Cone.SpreadAngle * max(HitT, 0.0f);
+    Cone.SpreadAngle += SurfaceSpreadAngle;
+}
+
+float ComputeRayConeTextureLod(Texture2D<float4> Texture, float3 RayDirection, float3 SurfaceNormal, FRayCone Cone, float TriangleLodConstant = 0.0f)
+{
+    uint TextureWidth = 1u;
+    uint TextureHeight = 1u;
+    uint MipCount = 1u;
+    Texture.GetDimensions(0, TextureWidth, TextureHeight, MipCount);
+
+    const float NdotD = max(1e-4f, abs(dot(normalize(RayDirection), normalize(SurfaceNormal))));
+    const float ConeTerm = max(1e-6f, Cone.Width / NdotD);
+    const float TexelTerm = max(1.0f, (float)TextureWidth * (float)TextureHeight);
+    const float Lod = TriangleLodConstant + 0.5f * log2(TexelTerm) + log2(ConeTerm);
+    return clamp(Lod, 0.0f, max(0.0f, (float)MipCount - 1.0f));
 }
 
 // Structure to hold per-instance geometry buffer indices
@@ -125,7 +152,7 @@ float4 GetInterpolatedTangent(uint instanceID, uint primitiveIndex, float2 baryc
 }
 
 // Get interpolated normal at hit point (transforms from object space to world space)
-float3 GetInterpolatedNormal(uint instanceID, uint primitiveIndex, float2 barycentrics)
+float3 GetInterpolatedNormal(uint instanceID, uint primitiveIndex, float2 barycentrics, float mipLod)
 {
     FInstanceData instData = GetInstanceData(instanceID);
     uint3 indices = GetTriangleIndices(instanceID, primitiveIndex);
@@ -157,14 +184,42 @@ float3 GetInterpolatedNormal(uint instanceID, uint primitiveIndex, float2 baryce
     float2 uv = GetInterpolatedUV(instanceID, primitiveIndex, barycentrics);
     Texture2D<float4> NormalTexture = ResourceDescriptorHeap[instData.NormalTextureIndex];
     SamplerState LinearSampler = SamplerDescriptorHeap[LinearClampSamplerIndex];
-    float3 tangentNormal = NormalTexture.SampleLevel(LinearSampler, uv, 0).xyz * 2.0f - 1.0f;
+    float3 tangentNormal = NormalTexture.SampleLevel(LinearSampler, uv, mipLod).xyz * 2.0f - 1.0f;
 
     float3x3 TBN = float3x3(worldTangent, worldBitangent, worldNormal);
     return normalize(mul(tangentNormal, TBN));
 }
 
+float3 GetInterpolatedNormal(uint instanceID, uint primitiveIndex, float2 barycentrics)
+{
+    return GetInterpolatedNormal(instanceID, primitiveIndex, barycentrics, 0.0f);
+}
+
+float3 GetInterpolatedNormalRayCone(uint instanceID, uint primitiveIndex, float2 barycentrics, float3 rayDirection, float3 surfaceNormal, FRayCone cone, float triangleLodConstant = 0.0f)
+{
+    FInstanceData instData = GetInstanceData(instanceID);
+    if (instData.NormalTextureIndex == 0xFFFFFFFF)
+    {
+        return GetInterpolatedNormal(instanceID, primitiveIndex, barycentrics, 0.0f);
+    }
+
+    Texture2D<float4> NormalTexture = ResourceDescriptorHeap[instData.NormalTextureIndex];
+    const float mipLod = ComputeRayConeTextureLod(NormalTexture, rayDirection, surfaceNormal, cone, triangleLodConstant);
+    return GetInterpolatedNormal(instanceID, primitiveIndex, barycentrics, mipLod);
+}
+
+float3 SampleAlbedo(uint instanceID, float2 uv, float mipLod);
+float3 SampleEmissive(uint instanceID, float2 uv, float mipLod);
+float SampleOpacity(uint instanceID, uint primitiveIndex, float2 barycentrics, float mipLod);
+float2 SampleMetallicRoughness(uint instanceID, float2 uv, float mipLod);
+
 // Sample albedo from texture
 float3 SampleAlbedo(uint instanceID, float2 uv)
+{
+    return SampleAlbedo(instanceID, uv, 0.0f);
+}
+
+float3 SampleAlbedo(uint instanceID, float2 uv, float mipLod)
 {
     FInstanceData instData = GetInstanceData(instanceID);
     float3 baseColorFactor = instData.BaseColorFactorAndAlpha.rgb;
@@ -176,11 +231,29 @@ float3 SampleAlbedo(uint instanceID, float2 uv)
 
     Texture2D<float4> BaseColorTexture = ResourceDescriptorHeap[instData.BaseColorTextureIndex];
     SamplerState LinearSampler = SamplerDescriptorHeap[LinearClampSamplerIndex];
-    return baseColorFactor * BaseColorTexture.SampleLevel(LinearSampler, uv, 0).rgb;
+    return baseColorFactor * BaseColorTexture.SampleLevel(LinearSampler, uv, mipLod).rgb;
+}
+
+float3 SampleAlbedoRayCone(uint instanceID, float2 uv, float3 rayDirection, float3 surfaceNormal, FRayCone cone, float triangleLodConstant = 0.0f)
+{
+    FInstanceData instData = GetInstanceData(instanceID);
+    if (instData.BaseColorTextureIndex == 0xFFFFFFFF)
+    {
+        return SampleAlbedo(instanceID, uv, 0.0f);
+    }
+
+    Texture2D<float4> BaseColorTexture = ResourceDescriptorHeap[instData.BaseColorTextureIndex];
+    const float mipLod = ComputeRayConeTextureLod(BaseColorTexture, rayDirection, surfaceNormal, cone, triangleLodConstant);
+    return SampleAlbedo(instanceID, uv, mipLod);
 }
 
 
 float3 SampleEmissive(uint instanceID, float2 uv)
+{
+    return SampleEmissive(instanceID, uv, 0.0f);
+}
+
+float3 SampleEmissive(uint instanceID, float2 uv, float mipLod)
 {
     FInstanceData instData = GetInstanceData(instanceID);
     float3 emissiveFactor = max(instData.EmissiveFactor.rgb, 0.0f.xxx);
@@ -192,10 +265,28 @@ float3 SampleEmissive(uint instanceID, float2 uv)
 
     Texture2D<float4> EmissiveTexture = ResourceDescriptorHeap[instData.EmissiveTextureIndex];
     SamplerState LinearSampler = SamplerDescriptorHeap[LinearClampSamplerIndex];
-    return emissiveFactor * EmissiveTexture.SampleLevel(LinearSampler, uv, 0).rgb;
+    return emissiveFactor * EmissiveTexture.SampleLevel(LinearSampler, uv, mipLod).rgb;
+}
+
+float3 SampleEmissiveRayCone(uint instanceID, float2 uv, float3 rayDirection, float3 surfaceNormal, FRayCone cone, float triangleLodConstant = 0.0f)
+{
+    FInstanceData instData = GetInstanceData(instanceID);
+    if (instData.EmissiveTextureIndex == 0xFFFFFFFF)
+    {
+        return SampleEmissive(instanceID, uv, 0.0f);
+    }
+
+    Texture2D<float4> EmissiveTexture = ResourceDescriptorHeap[instData.EmissiveTextureIndex];
+    const float mipLod = ComputeRayConeTextureLod(EmissiveTexture, rayDirection, surfaceNormal, cone, triangleLodConstant);
+    return SampleEmissive(instanceID, uv, mipLod);
 }
 
 float SampleOpacity(uint instanceID, uint primitiveIndex, float2 barycentrics)
+{
+    return SampleOpacity(instanceID, primitiveIndex, barycentrics, 0.0f);
+}
+
+float SampleOpacity(uint instanceID, uint primitiveIndex, float2 barycentrics, float mipLod)
 {
     FInstanceData instData = GetInstanceData(instanceID);
     float alpha = instData.BaseColorFactorAndAlpha.a;
@@ -208,7 +299,7 @@ float SampleOpacity(uint instanceID, uint primitiveIndex, float2 barycentrics)
     float2 uv = GetInterpolatedUV(instanceID, primitiveIndex, barycentrics);
     Texture2D<float4> BaseColorTexture = ResourceDescriptorHeap[instData.BaseColorTextureIndex];
     SamplerState LinearSampler = SamplerDescriptorHeap[LinearClampSamplerIndex];
-    return alpha * BaseColorTexture.SampleLevel(LinearSampler, uv, 0).a;
+    return alpha * BaseColorTexture.SampleLevel(LinearSampler, uv, mipLod).a;
 }
 
 bool AlphaTest(uint instanceID, uint primitiveIndex, float2 barycentrics)
@@ -231,6 +322,11 @@ bool AlphaTest(uint instanceID, uint primitiveIndex, float2 barycentrics)
 // Sample metallic and roughness from texture
 float2 SampleMetallicRoughness(uint instanceID, float2 uv)
 {
+    return SampleMetallicRoughness(instanceID, uv, 0.0f);
+}
+
+float2 SampleMetallicRoughness(uint instanceID, float2 uv, float mipLod)
+{
     FInstanceData instData = GetInstanceData(instanceID);
     float metallic = instData.MetallicRoughnessAlphaCutoff.x;
     float roughness = instData.MetallicRoughnessAlphaCutoff.y;
@@ -242,13 +338,26 @@ float2 SampleMetallicRoughness(uint instanceID, float2 uv)
 
     Texture2D<float4> MetallicRoughnessTexture = ResourceDescriptorHeap[instData.MetallicRoughnessTextureIndex];
     SamplerState LinearSampler = SamplerDescriptorHeap[LinearClampSamplerIndex];
-    float2 mr = MetallicRoughnessTexture.SampleLevel(LinearSampler, uv, 0).bg; // Blue=metallic, Green=roughness
+    float2 mr = MetallicRoughnessTexture.SampleLevel(LinearSampler, uv, mipLod).bg; // Blue=metallic, Green=roughness
 
     // Clamp to valid ranges
     metallic = saturate(metallic * mr.x);  // [0, 1]
     roughness = max(roughness * mr.y, 0.03f);  // Minimum roughness to avoid numerical issues
 
     return float2(metallic, roughness);
+}
+
+float2 SampleMetallicRoughnessRayCone(uint instanceID, float2 uv, float3 rayDirection, float3 surfaceNormal, FRayCone cone, float triangleLodConstant = 0.0f)
+{
+    FInstanceData instData = GetInstanceData(instanceID);
+    if (instData.MetallicRoughnessTextureIndex == 0xFFFFFFFF)
+    {
+        return SampleMetallicRoughness(instanceID, uv, 0.0f);
+    }
+
+    Texture2D<float4> MetallicRoughnessTexture = ResourceDescriptorHeap[instData.MetallicRoughnessTextureIndex];
+    const float mipLod = ComputeRayConeTextureLod(MetallicRoughnessTexture, rayDirection, surfaceNormal, cone, triangleLodConstant);
+    return SampleMetallicRoughness(instanceID, uv, mipLod);
 }
 
 #endif

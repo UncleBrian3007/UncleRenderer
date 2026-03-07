@@ -17,6 +17,8 @@ bool FDeferredLightingPasses::InitializePipelines(FDeferredRenderer& Owner, FDX1
         && Owner.CreateLightingPipeline(Device, BackBufferFormat)
         && Owner.CreateLinearDepthRootSignature(Device)
         && Owner.CreateLinearDepthPipeline(Device)
+        && Owner.CreateExtractHalfDepthNormalRootSignature(Device)
+        && Owner.CreateExtractHalfDepthNormalPipeline(Device)
         && Owner.CreateGtaoRootSignature(Device)
         && Owner.CreateGtaoPipeline(Device)
         && Owner.CreateSsrRootSignature(Device)
@@ -39,6 +41,7 @@ bool FDeferredLightingPasses::InitializePipelines(FDeferredRenderer& Owner, FDX1
 bool FDeferredLightingPasses::InitializeResources(FDeferredRenderer& Owner, FDX12Device* Device, uint32_t Width, uint32_t Height) const
 {
     return Owner.CreateLinearDepthResources(Device, Width, Height)
+        && Owner.CreateExtractHalfDepthNormalResources(Device, Width, Height)
         && Owner.CreateGtaoResources(Device, Width, Height)
         && Owner.CreateSsrResources(Device, Width, Height)
         && Owner.CreateHilbertLutResources(Device)
@@ -227,6 +230,94 @@ bool FDeferredRenderer::CreateLinearDepthPipeline(FDX12Device* Device)
     PsoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
 
     HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(LinearDepthPipeline.GetAddressOf())));
+    return true;
+}
+
+bool FDeferredRenderer::CreateExtractHalfDepthNormalResources(FDX12Device* Device, uint32_t Width, uint32_t Height)
+{
+    if (Device == nullptr)
+    {
+        return false;
+    }
+
+    const uint32_t HalfWidth = (Width + 1u) / 2u;
+    const uint32_t HalfHeight = (Height + 1u) / 2u;
+
+    CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
+    CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
+        DXGI_FORMAT_R32G32_UINT,
+        HalfWidth,
+        HalfHeight,
+        1,
+        1,
+        1,
+        0,
+        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &HeapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &Desc,
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        nullptr,
+        IID_PPV_ARGS(RestirGIHalfDepthNormalTexture.ReleaseAndGetAddressOf())));
+
+    if (RestirGIHalfDepthNormalTexture)
+    {
+        RestirGIHalfDepthNormalTexture->SetName(L"HalfDepthNormal");
+    }
+
+    RestirGIHalfDepthNormalState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    return true;
+}
+
+bool FDeferredRenderer::CreateExtractHalfDepthNormalRootSignature(FDX12Device* Device)
+{
+    D3D12_ROOT_PARAMETER1 RootParams[1] = {};
+    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    RootParams[0].Constants.Num32BitValues = 4;
+    RootParams[0].Constants.ShaderRegister = 1;
+    RootParams[0].Constants.RegisterSpace = 0;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
+    RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    RootSigDesc.Desc_1_1.NumParameters = _countof(RootParams);
+    RootSigDesc.Desc_1_1.pParameters = RootParams;
+    RootSigDesc.Desc_1_1.NumStaticSamplers = 0;
+    RootSigDesc.Desc_1_1.pStaticSamplers = nullptr;
+    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+
+    ComPtr<ID3DBlob> SerializedSig;
+    ComPtr<ID3DBlob> ErrorBlob;
+    HR_CHECK(D3D12SerializeVersionedRootSignature(&RootSigDesc, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
+
+    if (ErrorBlob)
+    {
+        OutputDebugStringA(static_cast<const char*>(ErrorBlob->GetBufferPointer()));
+    }
+
+    HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(ExtractHalfDepthNormalRootSignature.GetAddressOf())));
+    return true;
+}
+
+bool FDeferredRenderer::CreateExtractHalfDepthNormalPipeline(FDX12Device* Device)
+{
+    FShaderCompiler Compiler;
+    std::vector<uint8_t> CSByteCode;
+
+    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
+    const std::wstring CSTarget = RendererUtils::BuildShaderTarget(L"cs", ShaderModel);
+    if (!Compiler.CompileFromFile(L"Shaders/ExtractHalfDepthNormal.hlsl", L"CSMain", CSTarget, CSByteCode))
+    {
+        return false;
+    }
+
+    D3D12_COMPUTE_PIPELINE_STATE_DESC PsoDesc = {};
+    PsoDesc.pRootSignature = ExtractHalfDepthNormalRootSignature.Get();
+    PsoDesc.CS = { CSByteCode.data(), CSByteCode.size() };
+
+    HR_CHECK(Device->GetDevice()->CreateComputePipelineState(&PsoDesc, IID_PPV_ARGS(ExtractHalfDepthNormalPipeline.GetAddressOf())));
     return true;
 }
 
@@ -579,6 +670,73 @@ void FDeferredLightingPasses::AddLinearDepthPass(FDeferredPassContext& Context) 
         LocalCommandList->SetGraphicsRoot32BitConstant(1, DepthBindlessIndex, 0);
 
         LocalCommandList->DrawInstanced(3, 1, 0, 0);
+    });
+}
+
+void FDeferredLightingPasses::AddExtractHalfDepthNormalPass(FDeferredPassContext& Context) const
+{
+    FDeferredRenderer& Owner = Context.Owner;
+    FRenderGraph& Graph = Context.Graph;
+    const FRGResourceHandle DepthHandle = Context.Resources.DepthHandle;
+    const FRGResourceHandle GBufferAHandle = Context.Resources.GBufferHandles[0];
+    const FRGResourceHandle HalfDepthNormalHandle = Context.Resources.RestirGIHalfDepthNormalHandle;
+
+    struct FExtractHalfDepthNormalPassData
+    {
+        bool bEnabled = false;
+    };
+
+    Graph.AddPass<FExtractHalfDepthNormalPassData>("ExtractHalfDepthNormal", [&, DepthHandle, GBufferAHandle, HalfDepthNormalHandle](FExtractHalfDepthNormalPassData& Data, FRGPassBuilder& Builder)
+    {
+        Data.bEnabled = Owner.ExtractHalfDepthNormalRootSignature && Owner.ExtractHalfDepthNormalPipeline;
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        Builder.ReadTexture(DepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(GBufferAHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.WriteTexture(HalfDepthNormalHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    }, [&](const FExtractHalfDepthNormalPassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!Data.bEnabled || !Owner.Device || !Owner.Device->GetBindlessDescriptorHeap() || !Owner.Device->GetSamplerDescriptorHeap())
+        {
+            return;
+        }
+
+        const uint32_t DepthBindlessIndex = Owner.DepthBindlessIndices.empty() ? UINT32_MAX : Owner.DepthBindlessIndices[Owner.GetFrameIndex() % static_cast<uint32_t>(Owner.DepthBindlessIndices.size())];
+        if (DepthBindlessIndex == UINT32_MAX || Owner.GBufferBindlessIndices[0] == UINT32_MAX || Owner.RestirGIHalfDepthNormalUavBindlessIndex == UINT32_MAX)
+        {
+            return;
+        }
+
+        ID3D12GraphicsCommandList4* CommandList = Cmd.GetCommandList4();
+        if (!CommandList)
+        {
+            return;
+        }
+
+        FScopedPixEvent ExtractEvent(CommandList, L"ExtractHalfDepthNormal");
+        ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
+        CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        CommandList->SetComputeRootSignature(Owner.ExtractHalfDepthNormalRootSignature.Get());
+        CommandList->SetPipelineState(Owner.ExtractHalfDepthNormalPipeline.Get());
+
+		const uint32_t GlobalFrameNumber = static_cast<uint32_t>(Owner.GetFrameNumber());
+		const uint32_t SequenceFrame = Owner.bRestirGIFreezeFrame ? Owner.RestirGIFrozenSequenceFrame : GlobalFrameNumber;
+        const uint32_t Constants[4] =
+        {
+            DepthBindlessIndex,
+            Owner.GBufferBindlessIndices[0],
+            Owner.RestirGIHalfDepthNormalUavBindlessIndex,
+            SequenceFrame
+        };
+        CommandList->SetComputeRoot32BitConstants(0, _countof(Constants), Constants, 0);
+
+        const uint32_t HalfWidth = (static_cast<uint32_t>(Owner.Viewport.Width) + 1u) / 2u;
+        const uint32_t HalfHeight = (static_cast<uint32_t>(Owner.Viewport.Height) + 1u) / 2u;
+        constexpr uint32_t GroupSize = 8u;
+        CommandList->Dispatch((HalfWidth + GroupSize - 1u) / GroupSize, (HalfHeight + GroupSize - 1u) / GroupSize, 1u);
     });
 }
 

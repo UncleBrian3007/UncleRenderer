@@ -27,7 +27,7 @@ float RestirGITarget(float3 Radiance)
 
 bool RestirGIUpdate(inout FRestirGIReservoir Reservoir, FRestirGISample Candidate, float CandidateWeight, float RandomValue)
 {
-    if (!isfinite(CandidateWeight) || CandidateWeight <= 0.0f)
+    if (!isfinite(CandidateWeight))// || CandidateWeight <= 0.0f)
     {
         return false;
     }

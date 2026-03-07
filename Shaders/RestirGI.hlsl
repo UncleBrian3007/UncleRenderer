@@ -1,10 +1,24 @@
 #include "PBRCommon.hlsl"
 #include "SceneConstants.hlsl"
+#include "OctahedralEncoding.hlsli"
 #include "RestirGIReservoir.hlsli"
 #include "RestirGISamplingCommon.hlsli"
 #include "RestirGISh.hlsli"
 #include "PathBrdfCommon.hlsli"
 #include "GpuDebugLineCommon.hlsl"
+
+#if !defined(RESTIR_GI_RANDOM_MODE_HASH) && !defined(RESTIR_GI_RANDOM_MODE_BLUE_NOISE_SOBOL)
+    #define RESTIR_GI_RANDOM_MODE_HASH 1
+    #define RESTIR_GI_RANDOM_MODE_BLUE_NOISE_SOBOL 0
+#elif !defined(RESTIR_GI_RANDOM_MODE_HASH)
+    #define RESTIR_GI_RANDOM_MODE_HASH 0
+#elif !defined(RESTIR_GI_RANDOM_MODE_BLUE_NOISE_SOBOL)
+    #define RESTIR_GI_RANDOM_MODE_BLUE_NOISE_SOBOL 0
+#endif
+
+#if (RESTIR_GI_RANDOM_MODE_HASH + RESTIR_GI_RANDOM_MODE_BLUE_NOISE_SOBOL) != 1
+    #error "Exactly one ReSTIR GI random mode permutation must be enabled."
+#endif
 
 RaytracingAccelerationStructure Scene : register(t0);
 
@@ -60,8 +74,11 @@ cbuffer RestirGIBindless : register(b2)
     uint HistoryIrradianceIndex;        // b2[25] : history irradiance SRV
     uint PrevLinearDepthIndex;          // b2[26] : previous linear depth SRV
     uint DebugLineBufferUavIndex;       // b2[27] : debug line buffer UAV
+    uint BlueNoiseSobolTextureIndex;    // b2[28] : blue noise sobol SRV
+    uint BlueNoiseScramblingRankingTextureIndex; // b2[29] : blue noise scrambling/ranking SRV
 };
 
+#include "BlueNoiseSobolSampler.hlsli"
 #include "RayTracingCommon.hlsl"
 
 static const uint RestirGIRayFlags = RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES;
@@ -181,7 +198,7 @@ float3 RestirGISampleHistoryIndirect(uint2 FullPos, float3 HitWorldPos)
     return max(HistoryIrradianceTexture[PrevPixel].rgb, 0.0f.xxx);
 }
 
-float3 RestirGIEvaluateHitRadiance(uint InstanceID, float2 UV, float3 HitNormal, float3 HitAlbedo, float HitMetalness, float HitRoughness, float3 OutDirection, float3 HitWorldPos, uint2 FullPos)
+float3 RestirGIEvaluateHitRadiance(uint InstanceID, float2 UV, float3 HitNormal, float3 HitAlbedo, float HitMetalness, float HitRoughness, float3 HitEmissive, float3 OutDirection, float3 HitWorldPos, uint2 FullPos)
 {
     const float3 Diffuse = HitAlbedo * (1.0f - saturate(HitMetalness));
     const float3 Specular = lerp(0.04f.xxx, HitAlbedo, saturate(HitMetalness));
@@ -208,14 +225,12 @@ float3 RestirGIEvaluateHitRadiance(uint InstanceID, float2 UV, float3 HitNormal,
     }
 
     const float3 HistoryIndirect = RestirGISampleHistoryIndirect(FullPos, HitWorldPos);
-    const float3 Emissive = max(SampleEmissive(InstanceID, UV), 0.0f.xxx);
-    return max(Direct + HistoryIndirect + Emissive, 0.0f.xxx);
+    return max(Direct + HistoryIndirect + max(HitEmissive, 0.0f.xxx), 0.0f.xxx);
 }
 
-float3 RestirGISampleCandidate(float3 WorldPos, float3 Normal, uint2 FullPos, uint2 HalfPos, out float3 OutDirection, out float OutHitDistance, out bool bOutHit)
+float3 RestirGISampleCandidate(float3 WorldPos, float3 Normal, uint2 FullPos, float2 Xi, out float3 OutDirection, out float OutHitDistance, out bool bOutHit)
 {
-    const float2 Xi = RestirGIRandom02(HalfPos, SequenceFrame * 1999u + 17u);
-    const float3 Direction = SampleHemisphereCosine(Xi, Normal);
+    const float3 Direction = SampleHemisphereUniform(Xi, Normal);
     OutDirection = Direction;
     OutHitDistance = max(0.1f, RayLength);
     bOutHit = false;
@@ -246,21 +261,32 @@ float3 RestirGISampleCandidate(float3 WorldPos, float3 Normal, uint2 FullPos, ui
         const uint InstanceID = Query.CommittedInstanceID();
         const uint PrimitiveIndex = Query.CommittedPrimitiveIndex();
         const float2 Barycentrics = Query.CommittedTriangleBarycentrics();
+        FRayCone RayCone = RayConeFromCamera(FullHeight);
+        RayConePropagate(RayCone, 0.0f, length(WorldPos - CameraPosition));
 
         const float2 UV = GetInterpolatedUV(InstanceID, PrimitiveIndex, Barycentrics);
-        const float3 HitAlbedo = SampleAlbedo(InstanceID, UV);
-        const float2 HitMR = SampleMetallicRoughness(InstanceID, UV);
+        const float HitT = Query.CommittedRayT();
+        OutHitDistance = HitT;
+        bOutHit = true;
+        const float3 HitWorldPos = WorldPos + Direction * HitT;
+        RayConePropagate(RayCone, 0.03f, HitT);
+
         float3 HitNormal = GetInterpolatedNormal(InstanceID, PrimitiveIndex, Barycentrics);
         if (dot(HitNormal, -Direction) < 0.0f)
         {
             HitNormal = -HitNormal;
         }
 
-        const float HitT = Query.CommittedRayT();
-        OutHitDistance = HitT;
-        bOutHit = true;
-        const float3 HitWorldPos = WorldPos + Direction * HitT;
-        Incoming = RestirGIEvaluateHitRadiance(InstanceID, UV, HitNormal, HitAlbedo, HitMR.x, HitMR.y, -Direction, HitWorldPos, FullPos);
+        const float3 HitAlbedo = SampleAlbedoRayCone(InstanceID, UV, Direction, HitNormal, RayCone);
+        const float2 HitMR = SampleMetallicRoughnessRayCone(InstanceID, UV, Direction, HitNormal, RayCone);
+        const float3 HitEmissive = SampleEmissiveRayCone(InstanceID, UV, Direction, HitNormal, RayCone);
+        HitNormal = GetInterpolatedNormalRayCone(InstanceID, PrimitiveIndex, Barycentrics, Direction, HitNormal, RayCone);
+        if (dot(HitNormal, -Direction) < 0.0f)
+        {
+            HitNormal = -HitNormal;
+        }
+
+        Incoming = RestirGIEvaluateHitRadiance(InstanceID, UV, HitNormal, HitAlbedo, HitMR.x, HitMR.y, HitEmissive, -Direction, HitWorldPos, FullPos);
     }
     else
     {
@@ -274,28 +300,12 @@ float3 RestirGISampleCandidate(float3 WorldPos, float3 Normal, uint2 FullPos, ui
 
 uint RestirGIEncodeNormal16x2(float3 N)
 {
-    N /= (abs(N.x) + abs(N.y) + abs(N.z) + 1e-6f);
-    float2 Enc = N.xy;
-    if (N.z < 0.0f)
-    {
-        const float2 SignVec = lerp(-1.0f.xx, 1.0f.xx, step(0.0f.xx, Enc));
-        Enc = (1.0f - abs(Enc.yx)) * SignVec;
-    }
-
-    Enc = Enc * 0.5f + 0.5f;
-    uint2 Packed = (uint2)round(saturate(Enc) * 65535.0f);
-    return (Packed.x & 0xFFFFu) | ((Packed.y & 0xFFFFu) << 16u);
+    return EncodeOctahedral16x2(N);
 }
 
 float3 RestirGIDecodeNormal16x2(uint Packed)
 {
-    float2 Enc = float2(Packed & 0xFFFFu, Packed >> 16u) / 65535.0f;
-    Enc = Enc * 2.0f - 1.0f;
-
-    float3 N = float3(Enc.xy, 1.0f - abs(Enc.x) - abs(Enc.y));
-    float2 T = saturate(-N.zz);
-    N.xy += lerp(T, -T, step(0.0f.xx, N.xy));
-    return normalize(N);
+    return DecodeOctahedral16x2(Packed);
 }
 
 float RestirGIResolveLinearDepth(float Depth)
@@ -366,11 +376,11 @@ void CSInitialSampling(uint3 DispatchThreadId : SV_DispatchThreadID)
         return;
     }
 
-    Texture2D<float> DepthTexture = ResourceDescriptorHeap[DepthIndex];
-    Texture2D<float4> GBufferA = ResourceDescriptorHeap[GBufferAIndex];
+    Texture2D<uint2> HalfDepthNormalTexture = ResourceDescriptorHeap[InputDepthNormalSrvIndex];
 
     const uint2 FullPos = RestirGIHalfToFull(HalfPos);
-    const float Depth = DepthTexture[FullPos];
+    const uint2 PackedDepthNormal = HalfDepthNormalTexture[HalfPos];
+    const float Depth = asfloat(PackedDepthNormal.x);
     if (Depth <= 0.0f || Depth >= 1.0f)
     {
         InitialRadianceOut[HalfPos] = 0.0f.xxxx;
@@ -378,12 +388,20 @@ void CSInitialSampling(uint3 DispatchThreadId : SV_DispatchThreadID)
         return;
     }
 
-    const float3 Normal = normalize(GBufferA[FullPos].xyz * 2.0f - 1.0f);
+    const float3 Normal = RestirGIDecodeNormal16x2(PackedDepthNormal.y);
     const float3 WorldPos = RestirGIReconstructWorldPosition(FullPos, Depth);
+    float2 Xi = 0.0f.xx;
+#if RESTIR_GI_RANDOM_MODE_HASH
+    Xi = RestirGIRandom02(HalfPos, SequenceFrame * 1999u + 17u);
+#endif
+#if RESTIR_GI_RANDOM_MODE_BLUE_NOISE_SOBOL
+    FBlueNoiseSobolSampler BlueNoiseSobolSampler = BlueNoiseSobolSamplerCreate(HalfPos, uint2(HalfWidth, HalfHeight), SequenceFrame);
+    Xi = BlueNoiseSobolSamplerRandomFloat2(BlueNoiseSobolSampler);
+#endif
     float3 SampleDirection = 0.0f.xxx;
     float DebugHitDistance = max(0.1f, RayLength);
     bool bDebugHit = false;
-    const float3 Candidate = RestirGISampleCandidate(WorldPos, Normal, FullPos, HalfPos, SampleDirection, DebugHitDistance, bDebugHit);
+    const float3 Candidate = RestirGISampleCandidate(WorldPos, Normal, FullPos, Xi, SampleDirection, DebugHitDistance, bDebugHit);
 
     if (DebugRayEnabled != 0u && DebugLineBufferUavIndex != 0xFFFFFFFFu && all(HalfPos == uint2(DebugPixelX, DebugPixelY)))
     {
@@ -405,9 +423,8 @@ void CSTemporalResampling(uint3 DispatchThreadId : SV_DispatchThreadID)
         return;
     }
 
-    Texture2D<float> DepthTexture = ResourceDescriptorHeap[DepthIndex];
     Texture2D<float2> VelocityTexture = ResourceDescriptorHeap[VelocityIndex];
-    Texture2D<float4> GBufferA = ResourceDescriptorHeap[GBufferAIndex];
+    Texture2D<uint2> HalfDepthNormalTexture = ResourceDescriptorHeap[InputDepthNormalSrvIndex];
 
     Texture2D<float4> InitialRadiance = ResourceDescriptorHeap[InputInitialRadianceSrvIndex];
     Texture2D<uint> InitialRayDir = ResourceDescriptorHeap[InputInitialRayDirectionSrvIndex];
@@ -423,8 +440,9 @@ void CSTemporalResampling(uint3 DispatchThreadId : SV_DispatchThreadID)
     RWTexture2D<float2> OutMW = ResourceDescriptorHeap[OutputMWUavIndex];
 
     const uint2 FullPos = RestirGIHalfToFull(HalfPos);
-    const float Depth = DepthTexture[FullPos];
-    const float3 Normal = normalize(GBufferA[FullPos].xyz * 2.0f - 1.0f);
+    const uint2 PackedDepthNormal = HalfDepthNormalTexture[HalfPos];
+    const float Depth = asfloat(PackedDepthNormal.x);
+    const float3 Normal = RestirGIDecodeNormal16x2(PackedDepthNormal.y);
 
     if (Enabled == 0u || Depth <= 0.0f || Depth >= 1.0f)
     {
@@ -437,9 +455,6 @@ void CSTemporalResampling(uint3 DispatchThreadId : SV_DispatchThreadID)
 
     FRestirGIReservoir Reservoir = (FRestirGIReservoir)0;
     Reservoir.Sample = Current;
-    Reservoir.SumWeight = 0.0f;
-    Reservoir.M = 0.0f;
-    Reservoir.W = 0.0f;
 
     if (HistoryValid > 0u)
     {
@@ -460,19 +475,18 @@ void CSTemporalResampling(uint3 DispatchThreadId : SV_DispatchThreadID)
             if (PrevDepth > 0.0f && PrevDepth < 1.0f && DepthDelta < 0.01f && NormalSimilarity > 0.8f)
             {
                 FRestirGIReservoir History = RestirGILoadReservoir(HistorySampleRadiance, HistoryRayDirection, HistoryMW, PrevHalfPos);
-                const float Target = RestirGITarget(History.Sample.Radiance);
-                if (History.M > 0.0f && History.W > 0.0f && Target > 0.0f)
+                if (History.M > 0.0f && History.W > 0.0f)
                 {
-                    RestirGIMerge(Reservoir, History, Target, RestirGIRandom01(HalfPos, SequenceFrame * 1543u + 3u));
+                    Reservoir = History;
                 }
             }
         }
     }
 
-    const float CurrentWeight = max(1e-5f, RestirGITarget(Current.Radiance));
+    const float CurrentWeight = RestirGITarget(Current.Radiance);
     RestirGIUpdate(Reservoir, Current, CurrentWeight, RestirGIRandom01(HalfPos, SequenceFrame * 1531u + 41u));
 
-    const float SelectedTarget = max(1e-5f, RestirGITarget(Reservoir.Sample.Radiance));
+    const float SelectedTarget = RestirGITarget(Reservoir.Sample.Radiance);
     // Normalization factor W used in resolve: SampleRadiance * W.
     // Compensates for the selection bias of reservoir sampling (brighter samples are picked more often),
     Reservoir.W = Reservoir.SumWeight / max(1e-5f, Reservoir.M * SelectedTarget);
@@ -490,8 +504,7 @@ void CSReservoirBootstrap(uint3 DispatchThreadId : SV_DispatchThreadID)
         return;
     }
 
-    Texture2D<float> DepthTexture = ResourceDescriptorHeap[DepthIndex];
-    Texture2D<float4> GBufferA = ResourceDescriptorHeap[GBufferAIndex];
+    Texture2D<uint2> HalfDepthNormalTexture = ResourceDescriptorHeap[InputDepthNormalSrvIndex];
     Texture2D<float4> InitialRadiance = ResourceDescriptorHeap[InputInitialRadianceSrvIndex];
     Texture2D<uint> InitialRayDir = ResourceDescriptorHeap[InputInitialRayDirectionSrvIndex];
 
@@ -500,9 +513,9 @@ void CSReservoirBootstrap(uint3 DispatchThreadId : SV_DispatchThreadID)
     RWTexture2D<uint> OutRayDirection = ResourceDescriptorHeap[OutputRayDirectionUavIndex];
     RWTexture2D<float2> OutMW = ResourceDescriptorHeap[OutputMWUavIndex];
 
-    const uint2 FullPos = RestirGIHalfToFull(HalfPos);
-    const float Depth = DepthTexture[FullPos];
-    const float3 Normal = normalize(GBufferA[FullPos].xyz * 2.0f - 1.0f);
+    const uint2 PackedDepthNormal = HalfDepthNormalTexture[HalfPos];
+    const float Depth = asfloat(PackedDepthNormal.x);
+    const float3 Normal = RestirGIDecodeNormal16x2(PackedDepthNormal.y);
 
     if (Enabled == 0u || Depth <= 0.0f || Depth >= 1.0f)
     {
@@ -515,10 +528,10 @@ void CSReservoirBootstrap(uint3 DispatchThreadId : SV_DispatchThreadID)
     FRestirGIReservoir Reservoir = (FRestirGIReservoir)0;
     Reservoir.Sample = Current;
 
-    const float CurrentWeight = max(1e-5f, RestirGITarget(Current.Radiance));
+    const float CurrentWeight = RestirGITarget(Current.Radiance);
     RestirGIUpdate(Reservoir, Current, CurrentWeight, RestirGIRandom01(HalfPos, SequenceFrame * 1531u + 41u));
 
-    const float SelectedTarget = max(1e-5f, RestirGITarget(Reservoir.Sample.Radiance));
+    const float SelectedTarget = RestirGITarget(Reservoir.Sample.Radiance);
     Reservoir.W = Reservoir.SumWeight / max(1e-5f, Reservoir.M * SelectedTarget);
     Reservoir.M = min(Reservoir.M, 30.0f);
 
@@ -587,13 +600,13 @@ void CSSpatialResampling(uint3 DispatchThreadId : SV_DispatchThreadID)
         const float Target = RestirGITarget(Neighbor.Sample.Radiance);
         if (Target <= 0.0f || Neighbor.M <= 0.0f || Neighbor.W <= 0.0f)
         {
-            continue;
+//            continue;
         }
 
         RestirGIMerge(Reservoir, Neighbor, Target, RestirGIRandom01(HalfPos, SequenceFrame * 4513u + Iteration * 53u));
     }
 
-    const float SelectedTarget = max(1e-5f, RestirGITarget(Reservoir.Sample.Radiance));
+    const float SelectedTarget = RestirGITarget(Reservoir.Sample.Radiance);
     Reservoir.W = Reservoir.SumWeight / max(1e-5f, Reservoir.M * SelectedTarget);
 
 	RestirGIStoreReservoir(HalfPos, Reservoir, CenterDepth, CenterNormal, OutDepthNormal, OutSampleRadiance, OutRayDirection, OutMW);

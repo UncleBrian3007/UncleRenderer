@@ -22,6 +22,7 @@
 #include <commdlg.h>
 #include <cstdint>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <DirectXMath.h>
 #include <limits>
@@ -31,6 +32,8 @@
 #include <array>
 #include <chrono>
 #include <cwchar>
+#include <fstream>
+#include <vector>
 #include <d3dx12.h>
 
 extern "C"
@@ -45,6 +48,82 @@ namespace
     {
         const auto Utf8 = std::filesystem::path(Path).u8string();
         return std::string(Utf8.begin(), Utf8.end());
+    }
+
+    std::filesystem::path GetRendererConfigPath()
+    {
+        return std::filesystem::current_path() / "bin/RendererConfig.ini";
+    }
+
+    std::string TrimConfigLine(const std::string& Input)
+    {
+        const char* Whitespace = " \t\r\n";
+        const size_t Start = Input.find_first_not_of(Whitespace);
+        if (Start == std::string::npos)
+        {
+            return std::string();
+        }
+
+        const size_t End = Input.find_last_not_of(Whitespace);
+        return Input.substr(Start, End - Start + 1);
+    }
+
+    const char* RestirRandomModeToConfigString(ERestirGIRandomMode Mode)
+    {
+        return (Mode == ERestirGIRandomMode::BlueNoiseSobol) ? "BlueNoiseSobol" : "Hash";
+    }
+
+    void UpsertConfigValue(const std::filesystem::path& ConfigPath, const std::string& Key, const std::string& Value)
+    {
+        std::vector<std::string> Lines;
+        bool bUpdated = false;
+
+        if (std::ifstream Input(ConfigPath); Input.is_open())
+        {
+            std::string Line;
+            while (std::getline(Input, Line))
+            {
+                const std::string Trimmed = TrimConfigLine(Line);
+                const size_t DelimiterPos = Trimmed.find('=');
+                if (DelimiterPos != std::string::npos)
+                {
+                    const std::string ExistingKey = TrimConfigLine(Trimmed.substr(0, DelimiterPos));
+                    std::string LowerExistingKey = ExistingKey;
+                    std::string LowerTargetKey = Key;
+                    std::transform(LowerExistingKey.begin(), LowerExistingKey.end(), LowerExistingKey.begin(), [](unsigned char Ch) { return static_cast<char>(std::tolower(Ch)); });
+                    std::transform(LowerTargetKey.begin(), LowerTargetKey.end(), LowerTargetKey.begin(), [](unsigned char Ch) { return static_cast<char>(std::tolower(Ch)); });
+                    if (LowerExistingKey == LowerTargetKey)
+                    {
+                        Lines.push_back(Key + "=" + Value);
+                        bUpdated = true;
+                        continue;
+                    }
+                }
+
+                Lines.push_back(Line);
+            }
+        }
+
+        if (!bUpdated)
+        {
+            Lines.push_back(Key + "=" + Value);
+        }
+
+        std::ofstream Output(ConfigPath, std::ios::trunc);
+        if (!Output.is_open())
+        {
+            LogWarning("Failed to update renderer config file: " + ConfigPath.string());
+            return;
+        }
+
+        for (size_t Index = 0; Index < Lines.size(); ++Index)
+        {
+            Output << Lines[Index];
+            if (Index + 1u < Lines.size())
+            {
+                Output << "\n";
+            }
+        }
     }
 
 #if WITH_IMGUI
@@ -151,7 +230,7 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
 {
     LogInfo("Application initialization started");
 
-    const std::filesystem::path ConfigPath = std::filesystem::current_path() / "bin/RendererConfig.ini";
+    const std::filesystem::path ConfigPath = GetRendererConfigPath();
     RendererConfig = FRendererConfigLoader::LoadOrDefault(ConfigPath);
     bTaskSystemEnabled = RendererConfig.bEnableTaskSystem;
     bFrameOverlapEnabled = RendererConfig.bEnableFrameOverlap;
@@ -205,6 +284,7 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     bRestirGIUseVisibility = RendererConfig.bRestirGIUseVisibility;
     bRestirGIUseBrdf = RendererConfig.bRestirGIUseBrdf;
     bRestirGIUseHistoryIndirect = RendererConfig.bRestirGIUseHistoryIndirect;
+    RestirGIRandomMode = RendererConfig.RestirGIRandomMode;
 
     if (bTaskSystemEnabled)
     {
@@ -1813,6 +1893,21 @@ void FApplication::RenderUI()
             }
         }
 
+        int RestirRandomModeIndex = (RestirGIRandomMode == ERestirGIRandomMode::BlueNoiseSobol) ? 1 : 0;
+        static const char* RestirRandomModeItems[] = { "Hash", "BlueNoiseSobol" };
+        ImGui::SetNextItemWidth(160.0f);
+        if (ImGui::Combo("Random Mode", &RestirRandomModeIndex, RestirRandomModeItems, IM_ARRAYSIZE(RestirRandomModeItems)))
+        {
+            RestirGIRandomMode = (RestirRandomModeIndex == 1) ? ERestirGIRandomMode::BlueNoiseSobol : ERestirGIRandomMode::Hash;
+            RendererConfig.RestirGIRandomMode = RestirGIRandomMode;
+            UpsertConfigValue(GetRendererConfigPath(), "RestirGIRandomMode", RestirRandomModeToConfigString(RestirGIRandomMode));
+
+            if (DeferredRenderer)
+            {
+                DeferredRenderer->SetRestirGIRandomMode(RestirGIRandomMode);
+            }
+        }
+
 
         bool bRestirGIFreezeFrameUI = bRestirGIFreezeFrame;
         if (ImGui::Checkbox("Freeze ReSTIR GI", &bRestirGIFreezeFrameUI))
@@ -1832,6 +1927,9 @@ void FApplication::RenderUI()
                 DeferredRenderer->StepRestirGIFreezeFrame();
             }
         }
+
+        ImGui::SameLine();
+        ImGui::Text("%u", DeferredRenderer ? DeferredRenderer->GetRestirGIFrozenSequenceFrame() : 0u);
 
         bool bRestirGIDebugRay = bRestirGIDebugRayEnabled;
         if (ImGui::Checkbox("Debug ReSTIR GI Ray", &bRestirGIDebugRay))

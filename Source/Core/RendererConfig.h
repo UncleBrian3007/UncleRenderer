@@ -16,6 +16,12 @@ enum class ESSRMode
     CS
 };
 
+enum class ERestirGIRandomMode : uint32_t
+{
+    Hash = 0,
+    BlueNoiseSobol = 1
+};
+
 
 struct FRendererConfig
 {
@@ -63,7 +69,7 @@ struct FRendererConfig
     bool bEnableRestirGIDenoiser = true;
     uint32_t RestirGISamplesPerPixel = 2;
     float RestirGIIntensity = 1.0f;
-    float RestirGIRayLength = 100.0f;
+    float RestirGIRayLength = 1000.0f;
     float RestirGIClamp = 10.0f;
     bool bEnableRestirGITemporalReuse = true;
     bool bEnableRestirGISpatialReuse = true;
@@ -77,6 +83,7 @@ struct FRendererConfig
     bool bRestirGIUseVisibility = true;
     bool bRestirGIUseBrdf = true;
     bool bRestirGIUseHistoryIndirect = true;
+    ERestirGIRandomMode RestirGIRandomMode = ERestirGIRandomMode::Hash;
     bool bEnableIndirectDraw = true;
     bool bEnableSkinningIndirectDraw = false;
     bool bEnablePbrResearch = false;

@@ -534,6 +534,17 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     {
         OutConfig.bRestirGIUseHistoryIndirect = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
+    if (LowerKey == "restirgirandommode")
+    {
+        if (LowerValue == "bluenoisesobol" || LowerValue == "blue_noise_sobol" || LowerValue == "blue_noise" || LowerValue == "bnds")
+        {
+            OutConfig.RestirGIRandomMode = ERestirGIRandomMode::BlueNoiseSobol;
+        }
+        else
+        {
+            OutConfig.RestirGIRandomMode = ERestirGIRandomMode::Hash;
+        }
+    }
     if (LowerKey == "restirgimaxhistoryframes")
     {
         try

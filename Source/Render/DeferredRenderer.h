@@ -171,6 +171,16 @@ public:
     bool IsRestirGIUseBrdf() const { return bRestirGIUseBrdf; }
     void SetRestirGIUseHistoryIndirect(bool bEnabled) { bRestirGIUseHistoryIndirect = bEnabled; }
     bool IsRestirGIUseHistoryIndirect() const { return bRestirGIUseHistoryIndirect; }
+    void SetRestirGIRandomMode(ERestirGIRandomMode Mode)
+    {
+        if (RestirGIRandomMode != Mode)
+        {
+            RestirGIRandomMode = Mode;
+            InvalidateRestirGIReservoirHistory();
+            InvalidateRestirGiDenoiserHistory();
+        }
+    }
+    ERestirGIRandomMode GetRestirGIRandomMode() const { return RestirGIRandomMode; }
     void SetRestirGIDebugRayEnabled(bool bEnabled) { bRestirGIDebugRayEnabled = bEnabled; }
     bool IsRestirGIDebugRayEnabled() const { return bRestirGIDebugRayEnabled; }
     void SetRestirGIDebugPixel(uint32_t X, uint32_t Y) { RestirGIDebugPixelX = X; RestirGIDebugPixelY = Y; }
@@ -178,11 +188,12 @@ public:
     {
         if (bEnabled && !bRestirGIFreezeFrame)
         {
-            RestirGIFrozenSequenceFrame = GetFrameIndex();
+            RestirGIFrozenSequenceFrame = 0;
         }
         bRestirGIFreezeFrame = bEnabled;
     }
     bool IsRestirGIFreezeFrame() const { return bRestirGIFreezeFrame; }
+    uint32_t GetRestirGIFrozenSequenceFrame() const { return RestirGIFrozenSequenceFrame; }
     void StepRestirGIFreezeFrame() { ++RestirGIFrozenSequenceFrame; }
 
     void SetPathTracingAccumulationEnabled(bool bEnabled)
@@ -269,6 +280,7 @@ public:
         FRGResourceHandle VelocityHandle{};
         std::array<FRGResourceHandle, 4> GBufferHandles{};
         FRGResourceHandle LinearDepthHandle{};
+        FRGResourceHandle RestirGIHalfDepthNormalHandle{};
         FRGResourceHandle GtaoHandle{};
         FRGResourceHandle RestirGIHandle{};
         FRGResourceHandle RestirGIHistoryHandle{};
@@ -325,6 +337,9 @@ private:
     bool CreateDepthPrepassPipeline(FDX12Device* Device);
     bool CreateLinearDepthRootSignature(FDX12Device* Device);
     bool CreateLinearDepthPipeline(FDX12Device* Device);
+    bool CreateExtractHalfDepthNormalResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
+    bool CreateExtractHalfDepthNormalRootSignature(FDX12Device* Device);
+    bool CreateExtractHalfDepthNormalPipeline(FDX12Device* Device);
     bool CreateGtaoRootSignature(FDX12Device* Device);
     bool CreateGtaoPipeline(FDX12Device* Device);
     bool CreateSsrRootSignature(FDX12Device* Device);
@@ -434,6 +449,8 @@ private:
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2> ShadowPipelinesSkinned;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> LinearDepthRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> LinearDepthPipeline;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> ExtractHalfDepthNormalRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> ExtractHalfDepthNormalPipeline;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> GtaoRootSignature;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2> GtaoPipelines;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> SsrRootSignature;
@@ -462,7 +479,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> CompositeLightingPipeline;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> VelocityPipelines;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> VelocityPipelinesSkinned;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGIInitialPipeline;
+    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2> RestirGIInitialPipelines;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGIReservoirBootstrapPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGITemporalPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGISpatialPipeline;
@@ -493,6 +510,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> LightingBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> VelocityTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> LinearDepthTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIHalfDepthNormalTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> GtaoTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGITexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIHistoryTexture;
@@ -526,6 +544,8 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> SsrFallbackTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> SsrResolveTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> HilbertLutTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> BlueNoiseSobolTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> BlueNoiseScramblingRanking1SPPTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> TonemapOutput;
     std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 2> LuminanceTextures;
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> TaaHistoryTextures;
@@ -559,8 +579,12 @@ private:
     uint32_t EnvironmentCubeBindlessIndex = UINT32_MAX;
     uint32_t BrdfLutBindlessIndex = UINT32_MAX;
     uint32_t LinearDepthBindlessIndex = UINT32_MAX;
+    uint32_t RestirGIHalfDepthNormalSrvBindlessIndex = UINT32_MAX;
+    uint32_t RestirGIHalfDepthNormalUavBindlessIndex = UINT32_MAX;
     uint32_t VelocityBindlessIndex = UINT32_MAX;
     uint32_t HilbertLutBindlessIndex = UINT32_MAX;
+    uint32_t BlueNoiseSobolSrvBindlessIndex = UINT32_MAX;
+    uint32_t BlueNoiseScramblingRanking1SPPSrvBindlessIndex = UINT32_MAX;
     uint32_t GtaoBindlessIndex = UINT32_MAX;
     uint32_t RestirGIBindlessIndex = UINT32_MAX;
     uint32_t RestirGIUavBindlessIndex = UINT32_MAX;
@@ -650,6 +674,7 @@ private:
     D3D12_RESOURCE_STATES LightingBufferState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES VelocityState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES LinearDepthState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    D3D12_RESOURCE_STATES RestirGIHalfDepthNormalState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES GtaoState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES RestirGIState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES RestirGIHistoryState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -785,7 +810,7 @@ private:
     uint32_t RestirGISamplesPerPixel = 2;
     float RestirGIIntensity = 1.0f;
     bool bRestirGIShowOnly = false;
-    float RestirGIRayLength = 100.0f;
+    float RestirGIRayLength = 1000.0f;
     float RestirGIClamp = 10.0f;
     bool bRestirGITemporalReuse = true;
     bool bRestirGISpatialReuse = true;
@@ -799,6 +824,7 @@ private:
     bool bRestirGIUseVisibility = true;
     bool bRestirGIUseBrdf = true;
     bool bRestirGIUseHistoryIndirect = true;
+    ERestirGIRandomMode RestirGIRandomMode = ERestirGIRandomMode::Hash;
     bool bRestirGIDebugRayEnabled = false;
     uint32_t RestirGIDebugPixelX = 0;
     uint32_t RestirGIDebugPixelY = 0;

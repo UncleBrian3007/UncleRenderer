@@ -11,6 +11,7 @@ public:
     bool InitializeResources(FDeferredRenderer& Owner, FDX12Device* Device, uint32_t Width, uint32_t Height) const;
 
     void AddLinearDepthPass(FDeferredPassContext& Context) const;
+    void AddExtractHalfDepthNormalPass(FDeferredPassContext& Context) const;
     void AddGtaoPass(FDeferredPassContext& Context) const;
     void AddSsrRayCounterClearPass(FDeferredPassContext& Context) const;
     void AddSsrRayGatherPass(FDeferredPassContext& Context) const;

@@ -1,6 +1,8 @@
 #ifndef RESTIR_GI_SH_HLSLI
 #define RESTIR_GI_SH_HLSLI
 
+#include "OctahedralEncoding.hlsli"
+
 // 1st-order SH basis constants.
 static const float SH_BASIS_L0 = 0.28209479177387814f;
 static const float SH_BASIS_L1 = 0.48860251190291992f;
@@ -29,29 +31,12 @@ float3 RestirGiRgbToYCoCg(float3 Rgb)
 
 uint RestirGiEncodeDirection16x2(float3 Direction)
 {
-    float3 N = normalize(Direction);
-    N /= (abs(N.x) + abs(N.y) + abs(N.z) + 1e-6f);
-    float2 Enc = N.xy;
-    if (N.z < 0.0f)
-    {
-        const float2 SignVec = lerp(-1.0f.xx, 1.0f.xx, step(0.0f.xx, Enc));
-        Enc = (1.0f - abs(Enc.yx)) * SignVec;
-    }
-
-    Enc = Enc * 0.5f + 0.5f;
-    uint2 Packed = (uint2)round(saturate(Enc) * 65535.0f);
-    return (Packed.x & 0xFFFFu) | ((Packed.y & 0xFFFFu) << 16u);
+    return EncodeOctahedral16x2(Direction);
 }
 
 float3 RestirGiDecodeDirection16x2(uint Packed)
 {
-    float2 Enc = float2(Packed & 0xFFFFu, Packed >> 16u) / 65535.0f;
-    Enc = Enc * 2.0f - 1.0f;
-
-    float3 N = float3(Enc.xy, 1.0f - abs(Enc.x) - abs(Enc.y));
-    float2 T = saturate(-N.zz);
-    N.xy += lerp(T, -T, step(0.0f.xx, N.xy));
-    return normalize(N);
+    return DecodeOctahedral16x2(Packed);
 }
 
 float3 RestirGiYCoCgToRgb(float3 YCoCg)

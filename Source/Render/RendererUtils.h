@@ -46,6 +46,7 @@ struct FMappedConstantBuffer
 struct FSceneConstants
 {
     DirectX::XMFLOAT4X4 World;
+    DirectX::XMFLOAT4X4 WorldInverseTranspose;
     DirectX::XMFLOAT4X4 View;
     DirectX::XMFLOAT4X4 ViewInverse;
     DirectX::XMFLOAT4X4 Projection;

@@ -93,6 +93,12 @@ void FDeferredResourceImporter::ImportFrameResources(FDeferredPassContext& Conte
     const uint32_t HalfWidth = (static_cast<uint32>(Owner.Viewport.Width) + 1u) / 2u;
     const uint32_t HalfHeight = (static_cast<uint32>(Owner.Viewport.Height) + 1u) / 2u;
 
+    OutResources.RestirGIHalfDepthNormalHandle = Graph.ImportTexture(
+        "HalfDepthNormal",
+        Owner.RestirGIHalfDepthNormalTexture.Get(),
+        &Owner.RestirGIHalfDepthNormalState,
+        { HalfWidth, HalfHeight, DXGI_FORMAT_R32G32_UINT });
+
     OutResources.RestirGIInitialRadianceHandle = Graph.ImportTexture(
         "ReSTIR GI Initial Radiance",
         Owner.RestirGIInitialRadianceTexture.Get(),
@@ -413,6 +419,21 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
     }
 
     {
+        D3D12_SHADER_RESOURCE_VIEW_DESC HalfDepthNormalSrvDesc = {};
+        HalfDepthNormalSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        HalfDepthNormalSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        HalfDepthNormalSrvDesc.Format = DXGI_FORMAT_R32G32_UINT;
+        HalfDepthNormalSrvDesc.Texture2D.MipLevels = 1;
+        RestirGIHalfDepthNormalSrvBindlessIndex = Device->CreateBindlessSrv(RestirGIHalfDepthNormalTexture.Get(), HalfDepthNormalSrvDesc);
+
+        D3D12_UNORDERED_ACCESS_VIEW_DESC HalfDepthNormalUavDesc = {};
+        HalfDepthNormalUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        HalfDepthNormalUavDesc.Format = DXGI_FORMAT_R32G32_UINT;
+        HalfDepthNormalUavDesc.Texture2D.MipSlice = 0;
+        RestirGIHalfDepthNormalUavBindlessIndex = Device->CreateBindlessUav(RestirGIHalfDepthNormalTexture.Get(), nullptr, HalfDepthNormalUavDesc);
+    }
+
+    {
         D3D12_SHADER_RESOURCE_VIEW_DESC VelocitySrvDesc = {};
         VelocitySrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         VelocitySrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -428,6 +449,28 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         HilbertSrvDesc.Format = DXGI_FORMAT_R16_UINT;
         HilbertSrvDesc.Texture2D.MipLevels = 1;
         HilbertLutBindlessIndex = Device->CreateBindlessSrv(HilbertLutTexture.Get(), HilbertSrvDesc);
+    }
+
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC SobolSrvDesc = {};
+        SobolSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        SobolSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        SobolSrvDesc.Format = BlueNoiseSobolTexture->GetDesc().Format;
+        SobolSrvDesc.Texture2D.MipLevels = 1;
+        SobolSrvDesc.Texture2D.MostDetailedMip = 0;
+        SobolSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+        BlueNoiseSobolSrvBindlessIndex = Device->CreateBindlessSrv(BlueNoiseSobolTexture.Get(), SobolSrvDesc);
+    }
+
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC ScramblingSrvDesc = {};
+        ScramblingSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        ScramblingSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        ScramblingSrvDesc.Format = BlueNoiseScramblingRanking1SPPTexture->GetDesc().Format;
+        ScramblingSrvDesc.Texture2D.MipLevels = 1;
+        ScramblingSrvDesc.Texture2D.MostDetailedMip = 0;
+        ScramblingSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+        BlueNoiseScramblingRanking1SPPSrvBindlessIndex = Device->CreateBindlessSrv(BlueNoiseScramblingRanking1SPPTexture.Get(), ScramblingSrvDesc);
     }
 
     {

@@ -19,7 +19,10 @@ bool FDeferredRayTracingPasses::InitializePipelines(FDeferredRenderer& Owner, FD
         {
             LogWarning("Deferred renderer: ReSTIR GI pipeline creation failed.");
             Owner.RestirGIRootSignature.Reset();
-            Owner.RestirGIInitialPipeline.Reset();
+            for (Microsoft::WRL::ComPtr<ID3D12PipelineState>& Pipeline : Owner.RestirGIInitialPipelines)
+            {
+                Pipeline.Reset();
+            }
             Owner.RestirGIReservoirBootstrapPipeline.Reset();
             Owner.RestirGITemporalPipeline.Reset();
             Owner.RestirGISpatialPipeline.Reset();

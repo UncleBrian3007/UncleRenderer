@@ -169,6 +169,7 @@ void FDeferredRenderer::ApplyRendererConfig(const FRendererConfig& Config)
     bRestirGIUseVisibility = Config.bRestirGIUseVisibility;
     bRestirGIUseBrdf = Config.bRestirGIUseBrdf;
     bRestirGIUseHistoryIndirect = Config.bRestirGIUseHistoryIndirect;
+    RestirGIRandomMode = Config.RestirGIRandomMode;
     SsrMode = Config.SsrMode;
     SsrSamplesPerQuad = Config.SsrSamplesPerQuad;
 }
@@ -360,6 +361,26 @@ bool FDeferredRenderer::InitializeEnvironmentAndDescriptorResources(FDX12Device*
     if (BrdfLutTexture)
     {
         BrdfLutTexture->SetName(L"BrdfLut");
+    }
+
+    if (!TextureLoader->LoadOrDefault(L"Assets/Textures/BlueNoise/sobol_256_4d.png", BlueNoiseSobolTexture))
+    {
+        LogError("Deferred renderer initialization failed: blue noise sobol texture loading failed");
+        return false;
+    }
+    if (BlueNoiseSobolTexture)
+    {
+        BlueNoiseSobolTexture->SetName(L"BlueNoiseSobol");
+    }
+
+    if (!TextureLoader->LoadOrDefault(L"Assets/Textures/BlueNoise/scrambling_ranking_128x128_2d_1spp.png", BlueNoiseScramblingRanking1SPPTexture))
+    {
+        LogError("Deferred renderer initialization failed: blue noise scrambling/ranking texture loading failed");
+        return false;
+    }
+    if (BlueNoiseScramblingRanking1SPPTexture)
+    {
+        BlueNoiseScramblingRanking1SPPTexture->SetName(L"BlueNoiseScramblingRanking1SPP");
     }
 
     if (EnvironmentCubeTexture)
