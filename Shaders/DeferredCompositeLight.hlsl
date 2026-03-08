@@ -29,7 +29,7 @@ cbuffer RestirGIConstants : register(b2)
 {
     float RestirGIIntensity;
     uint RestirGIEnabled;
-    uint RestirGISamplesPerPixel;
+    float SsrRoughnessCutoff;
     uint RestirGIShowOnly;
     uint RestirGIPadding;
 };
@@ -64,6 +64,20 @@ float3 ReconstructViewPosition(float2 uv, float depth)
     float viewX = ndc.x * viewZ / Projection._11;
     float viewY = -ndc.y * viewZ / Projection._22;
     return float3(viewX, viewY, viewZ);
+}
+
+float3 EvaluateSpecularIBL(float3 radiance, float3 worldNormal, float3 worldView, float roughness, float3 F0, Texture2D BrdfLut)
+{
+    float NdotV = saturate(dot(worldNormal, worldView));
+    float2 brdf = BrdfLut.Sample(IblSampler, float2(NdotV, roughness)).rg;
+    return radiance * (F0 * brdf.x + brdf.y);
+}
+
+float3 EvaluateSpecularIBLFromEnvironment(TextureCube EnvironmentMap, Texture2D BrdfLut, float3 reflection, float3 worldNormal, float3 worldView, float roughness, float3 F0, float maxMip)
+{
+    float mipLevel = roughness * maxMip;
+    float3 prefilteredColor = EnvironmentMap.SampleLevel(IblSampler, reflection, mipLevel).rgb;
+    return EvaluateSpecularIBL(prefilteredColor, worldNormal, worldView, roughness, F0, BrdfLut);
 }
 
 float4 PSMain(VSOutput Input) : SV_Target
@@ -113,46 +127,21 @@ float4 PSMain(VSOutput Input) : SV_Target
         float anisotropy = saturate(anisotropyValue * anisotropyStrength);
         specularRoughness = lerp(roughness, max(0.03f, roughness * 0.5f), anisotropy);
     }
-    float mipLevel = specularRoughness * maxMip;
-    float3 prefilteredColor = EnvironmentMap.SampleLevel(IblSampler, reflection, mipLevel).rgb;
-
+    float3 specularIbl = EvaluateSpecularIBLFromEnvironment(EnvironmentMap, BrdfLut, reflection, worldNormal, worldView, specularRoughness, F0, maxMip);
     float NdotV = saturate(dot(worldNormal, worldView));
-    float2 brdf = BrdfLut.Sample(IblSampler, float2(NdotV, specularRoughness)).rg;
-    float3 specularIbl = prefilteredColor * (F0 * brdf.x + brdf.y);
     if (shadingModelId == SHADINGMODEL_SHEEN)
     {
         float sheenRoughness = customData.a;
         float3 sheenColor = customData.rgb;
-        float sheenMip = sheenRoughness * maxMip;
-        float3 sheenPrefiltered = EnvironmentMap.SampleLevel(IblSampler, reflection, sheenMip).rgb;
-        float2 sheenBrdf = BrdfLut.Sample(IblSampler, float2(NdotV, sheenRoughness)).rg;
-        float3 sheenSpecIbl = sheenPrefiltered * (sheenColor * sheenBrdf.x + sheenBrdf.y);
+        float3 sheenSpecIbl = EvaluateSpecularIBLFromEnvironment(EnvironmentMap, BrdfLut, reflection, worldNormal, worldView, sheenRoughness, sheenColor, maxMip);
         specularIbl += sheenSpecIbl;
     }
     else if (shadingModelId == SHADINGMODEL_CLEARCOAT)
     {
         float clearcoat = customData.x;
         float clearcoatRoughness = customData.y;
-        float clearcoatMip = clearcoatRoughness * maxMip;
-        float3 clearcoatPrefiltered = EnvironmentMap.SampleLevel(IblSampler, reflection, clearcoatMip).rgb;
-        float2 clearcoatBrdf = BrdfLut.Sample(IblSampler, float2(NdotV, clearcoatRoughness)).rg;
-        float3 clearcoatSpecIbl = clearcoatPrefiltered * (0.04.xxx * clearcoatBrdf.x + clearcoatBrdf.y);
+        float3 clearcoatSpecIbl = EvaluateSpecularIBLFromEnvironment(EnvironmentMap, BrdfLut, reflection, worldNormal, worldView, clearcoatRoughness, 0.04.xxx, maxMip);
         specularIbl += clearcoatSpecIbl * clearcoat;
-    }
-
-    float4 ssrSample = SsrTexture.Sample(GBufferSampler, Input.UV);
-    float ssrWeight = saturate(ssrSample.a);
-    if (ssrWeight > 0.0f)
-    {
-        specularIbl = lerp(specularIbl, ssrSample.rgb, ssrWeight);
-    }
-    else
-    {
-        float4 fallbackSample = SsrFallbackTexture.Sample(GBufferSampler, Input.UV);
-        if (fallbackSample.a > 0.0f)
-        {
-            specularIbl = lerp(specularIbl, fallbackSample.rgb, saturate(fallbackSample.a));
-        }
     }
 
     float3 irradiance = EnvironmentMap.SampleLevel(IblSampler, worldNormal, maxMip).rgb;
@@ -174,6 +163,28 @@ float4 PSMain(VSOutput Input) : SV_Target
     if (RestirGIEnabled > 0 && RestirGIIntensity > 0.0f)
     {
         indirectDiffuse = restirIrradiance * albedo * (1.0f - metallic);
+    }
+
+    if (roughness < SsrRoughnessCutoff)
+    {
+        float4 ssrSample = SsrTexture.Sample(GBufferSampler, Input.UV);
+        float ssrWeight = saturate(ssrSample.a);
+        if (ssrWeight > 0.0f)
+        {
+            specularIbl = lerp(specularIbl, ssrSample.rgb, ssrWeight);
+        }
+        else
+        {
+            float4 fallbackSample = SsrFallbackTexture.Sample(GBufferSampler, Input.UV);
+            if (fallbackSample.a > 0.0f)
+            {
+                specularIbl = lerp(specularIbl, fallbackSample.rgb, saturate(fallbackSample.a));
+            }
+        }
+    }
+    else
+    {
+        specularIbl = EvaluateSpecularIBL(indirectDiffuse, worldNormal, worldView, specularRoughness, F0, BrdfLut);
     }
 
     float3 ambient = (indirectDiffuse + specularIbl) * ao;

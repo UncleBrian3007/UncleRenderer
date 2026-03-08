@@ -161,7 +161,6 @@ bool FDeferredRenderer::CreateRestirGIPipeline(FDX12Device* Device)
         {
             Pipeline.Reset();
         }
-        RestirGIReservoirBootstrapPipeline.Reset();
         RestirGITemporalPipeline.Reset();
         return false;
     }
@@ -174,6 +173,7 @@ bool FDeferredRenderer::CreateRestirGIPipeline(FDX12Device* Device)
             Pipeline.Reset();
         }
         RestirGITemporalPipeline.Reset();
+        RestirGIReservoirBootstrapPipeline.Reset();
         return false;
     }
 
@@ -622,7 +622,6 @@ void FDeferredRayTracingPasses::AddTemporalResamplingPass(FDeferredPassContext& 
     const FRGResourceHandle RestirGIReservoirRayDirectionBHandle = Context.Resources.RestirGIReservoirRayDirectionBHandle;
     const FRGResourceHandle RestirGIReservoirMWAHandle = Context.Resources.RestirGIReservoirMWAHandle;
     const FRGResourceHandle RestirGIReservoirMWBHandle = Context.Resources.RestirGIReservoirMWBHandle;
-
     Graph.AddPass<FRestirGiSplitPassData>("TemporalResampling", [&, DepthHandle, VelocityHandle, RestirGIHalfDepthNormalHandle, PrevLinearDepthHandle, RestirGIInitialRadianceHandle, RestirGIInitialRayDirectionHandle, RestirGIReservoirDepthNormalAHandle, RestirGIReservoirDepthNormalBHandle, RestirGIReservoirSampleRadianceAHandle, RestirGIReservoirSampleRadianceBHandle, RestirGIReservoirRayDirectionAHandle, RestirGIReservoirRayDirectionBHandle, RestirGIReservoirMWAHandle, RestirGIReservoirMWBHandle](FRestirGiSplitPassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("RestirGI");
@@ -722,7 +721,6 @@ void FDeferredRayTracingPasses::AddReservoirBootstrapPass(FDeferredPassContext& 
     const FRGResourceHandle RestirGIReservoirSampleRadianceBHandle = Context.Resources.RestirGIReservoirSampleRadianceBHandle;
     const FRGResourceHandle RestirGIReservoirRayDirectionBHandle = Context.Resources.RestirGIReservoirRayDirectionBHandle;
     const FRGResourceHandle RestirGIReservoirMWBHandle = Context.Resources.RestirGIReservoirMWBHandle;
-
     Graph.AddPass<FRestirGiSplitPassData>("ReservoirBootstrap", [&, DepthHandle, RestirGIHalfDepthNormalHandle, GBufferHandles, RestirGIInitialRadianceHandle, RestirGIInitialRayDirectionHandle, RestirGIReservoirDepthNormalBHandle, RestirGIReservoirSampleRadianceBHandle, RestirGIReservoirRayDirectionBHandle, RestirGIReservoirMWBHandle](FRestirGiSplitPassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("RestirGI");
@@ -810,7 +808,6 @@ void FDeferredRayTracingPasses::AddSpatialResampling0Pass(FDeferredPassContext& 
     const FRGResourceHandle RestirGIReservoirRayDirectionBHandle = Context.Resources.RestirGIReservoirRayDirectionBHandle;
     const FRGResourceHandle RestirGIReservoirMWAHandle = Context.Resources.RestirGIReservoirMWAHandle;
     const FRGResourceHandle RestirGIReservoirMWBHandle = Context.Resources.RestirGIReservoirMWBHandle;
-
     Graph.AddPass<FRestirGiSplitPassData>("SpatialResampling0", [&, PrevLinearDepthHandle, RestirGIReservoirDepthNormalAHandle, RestirGIReservoirDepthNormalBHandle, RestirGIReservoirSampleRadianceAHandle, RestirGIReservoirSampleRadianceBHandle, RestirGIReservoirRayDirectionAHandle, RestirGIReservoirRayDirectionBHandle, RestirGIReservoirMWAHandle, RestirGIReservoirMWBHandle](FRestirGiSplitPassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("RestirGI");
@@ -899,7 +896,6 @@ void FDeferredRayTracingPasses::AddSpatialResampling1Pass(FDeferredPassContext& 
     const FRGResourceHandle RestirGIReservoirRayDirectionBHandle = Context.Resources.RestirGIReservoirRayDirectionBHandle;
     const FRGResourceHandle RestirGIReservoirMWAHandle = Context.Resources.RestirGIReservoirMWAHandle;
     const FRGResourceHandle RestirGIReservoirMWBHandle = Context.Resources.RestirGIReservoirMWBHandle;
-
     Graph.AddPass<FRestirGiSplitPassData>("SpatialResampling1", [&, RestirGIReservoirDepthNormalAHandle, RestirGIReservoirDepthNormalBHandle, RestirGIReservoirSampleRadianceAHandle, RestirGIReservoirSampleRadianceBHandle, RestirGIReservoirRayDirectionAHandle, RestirGIReservoirRayDirectionBHandle, RestirGIReservoirMWAHandle, RestirGIReservoirMWBHandle](FRestirGiSplitPassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("RestirGI");

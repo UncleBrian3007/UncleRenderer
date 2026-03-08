@@ -857,19 +857,18 @@ void FDeferredLightingPasses::AddDirectLightingPass(FDeferredPassContext& Contex
         {
             float Intensity = 0.0f;
             uint32_t Enabled = 0;
-            uint32_t SamplesPerPixel = 0;
+            float SsrRoughnessCutoff = 0.0f;
             uint32_t ShowOnly = 0;
             uint32_t Padding = 0;
         };
 
         const float EffectiveRestirGIIntensity = (std::max)(0.0f, Owner.RestirGIIntensity);
-        const uint32_t EffectiveRestirGISamples = std::clamp(Owner.RestirGISamplesPerPixel, 1u, 32u);
 
         const FRestirGIConstants RestirGIConstants =
         {
             1.0f,
             Owner.bRestirGIEnabled ? 1u : 0u,
-            EffectiveRestirGISamples,
+            Owner.SsrRoughnessCutoff,
             Owner.bRestirGIShowOnly ? 1u : 0u,
             0u
         };
@@ -992,19 +991,18 @@ void FDeferredLightingPasses::AddCompositeLightPass(FDeferredPassContext& Contex
         {
             float Intensity = 0.0f;
             uint32_t Enabled = 0;
-            uint32_t SamplesPerPixel = 0;
+            float SsrRoughnessCutoff = 0.0f;
             uint32_t ShowOnly = 0;
             uint32_t Padding = 0;
         };
 
         const float EffectiveRestirGIIntensity = (std::max)(0.0f, Owner.RestirGIIntensity);
-        const uint32_t EffectiveRestirGISamples = std::clamp(Owner.RestirGISamplesPerPixel, 1u, 32u);
 
         const FRestirGIConstants RestirGIConstants =
         {
             1.0f,
             Owner.bRestirGIEnabled ? 1u : 0u,
-            EffectiveRestirGISamples,
+            Owner.SsrRoughnessCutoff,
             Owner.bRestirGIShowOnly ? 1u : 0u,
             0u
         };

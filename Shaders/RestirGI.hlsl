@@ -94,19 +94,41 @@ uint RestirGIHash32(uint Value)
     return Value;
 }
 
-float RestirGIRandom01(uint2 Pixel, uint Salt)
+uint RestirGIPcg(uint State)
 {
-    uint Seed = RestirGIHash32(Pixel.x + 0x9e3779b9u);
-    Seed = RestirGIHash32(Seed + Pixel.y);
-    Seed = RestirGIHash32(Seed + Salt * 1664525u);
-    return (Seed & 0x00ffffffu) / 16777216.0f;
+    const uint Word = ((State >> ((State >> 28u) + 4u)) ^ State) * 277803737u;
+    return (Word >> 22u) ^ Word;
 }
 
-float2 RestirGIRandom02(uint2 Pixel, uint Salt)
+struct FRestirGIPRNG
 {
-    return float2(
-        RestirGIRandom01(Pixel, Salt + 11u),
-        RestirGIRandom01(Pixel, Salt + 73u));
+    uint State;
+};
+
+FRestirGIPRNG RestirGIPRNGCreate(uint2 Pixel, uint FrameIndex, uint Salt)
+{
+    FRestirGIPRNG Rng;
+    uint Seed = RestirGIHash32(Pixel.x + 0x9e3779b9u);
+    Seed = RestirGIHash32(Seed + Pixel.y * 0x85ebca6bu);
+    Seed = RestirGIHash32(Seed + FrameIndex * 1664525u + Salt);
+    Rng.State = Seed;
+    return Rng;
+}
+
+uint RestirGIPRNGRandomUint(inout FRestirGIPRNG Rng)
+{
+    Rng.State = Rng.State * 747796405u + 2891336453u;
+    return RestirGIPcg(Rng.State);
+}
+
+float RestirGIPRNGRandomFloat(inout FRestirGIPRNG Rng)
+{
+    return (RestirGIPRNGRandomUint(Rng) & 0x00ffffffu) / 16777216.0f;
+}
+
+float2 RestirGIPRNGRandomFloat2(inout FRestirGIPRNG Rng)
+{
+    return float2(RestirGIPRNGRandomFloat(Rng), RestirGIPRNGRandomFloat(Rng));
 }
 
 uint RestirGIPackDebugColor(float3 Radiance)
@@ -392,7 +414,8 @@ void CSInitialSampling(uint3 DispatchThreadId : SV_DispatchThreadID)
     const float3 WorldPos = RestirGIReconstructWorldPosition(FullPos, Depth);
     float2 Xi = 0.0f.xx;
 #if RESTIR_GI_RANDOM_MODE_HASH
-    Xi = RestirGIRandom02(HalfPos, SequenceFrame * 1999u + 17u);
+    FRestirGIPRNG Rng = RestirGIPRNGCreate(HalfPos, SequenceFrame, 17u);
+    Xi = RestirGIPRNGRandomFloat2(Rng);
 #endif
 #if RESTIR_GI_RANDOM_MODE_BLUE_NOISE_SOBOL
     FBlueNoiseSobolSampler BlueNoiseSobolSampler = BlueNoiseSobolSamplerCreate(HalfPos, uint2(HalfWidth, HalfHeight), SequenceFrame);
@@ -456,6 +479,8 @@ void CSTemporalResampling(uint3 DispatchThreadId : SV_DispatchThreadID)
     FRestirGIReservoir Reservoir = (FRestirGIReservoir)0;
     Reservoir.Sample = Current;
 
+    FRestirGIPRNG Rng = RestirGIPRNGCreate(HalfPos, SequenceFrame, 41u);
+
     if (HistoryValid > 0u)
     {
         const float2 Uv = (float2(FullPos) + 0.5f) / float2(FullWidth, FullHeight);
@@ -484,7 +509,8 @@ void CSTemporalResampling(uint3 DispatchThreadId : SV_DispatchThreadID)
     }
 
     const float CurrentWeight = RestirGITarget(Current.Radiance);
-    RestirGIUpdate(Reservoir, Current, CurrentWeight, RestirGIRandom01(HalfPos, SequenceFrame * 1531u + 41u));
+    const float ReservoirUpdateRandom = RestirGIPRNGRandomFloat(Rng);
+    RestirGIUpdate(Reservoir, Current, CurrentWeight, ReservoirUpdateRandom);
 
     const float SelectedTarget = RestirGITarget(Reservoir.Sample.Radiance);
     // Normalization factor W used in resolve: SampleRadiance * W.
@@ -529,7 +555,9 @@ void CSReservoirBootstrap(uint3 DispatchThreadId : SV_DispatchThreadID)
     Reservoir.Sample = Current;
 
     const float CurrentWeight = RestirGITarget(Current.Radiance);
-    RestirGIUpdate(Reservoir, Current, CurrentWeight, RestirGIRandom01(HalfPos, SequenceFrame * 1531u + 41u));
+    FRestirGIPRNG Rng = RestirGIPRNGCreate(HalfPos, SequenceFrame, 41u);
+    const float ReservoirUpdateRandom = RestirGIPRNGRandomFloat(Rng);
+    RestirGIUpdate(Reservoir, Current, CurrentWeight, ReservoirUpdateRandom);
 
     const float SelectedTarget = RestirGITarget(Reservoir.Sample.Radiance);
     Reservoir.W = Reservoir.SumWeight / max(1e-5f, Reservoir.M * SelectedTarget);
@@ -561,6 +589,7 @@ void CSSpatialResampling(uint3 DispatchThreadId : SV_DispatchThreadID)
     const uint2 PackedCenter = InDepthNormal[HalfPos];
     const float CenterDepth = asfloat(PackedCenter.x);
     const float3 CenterNormal = RestirGIDecodeNormal16x2(PackedCenter.y);
+    const uint2 CenterFullPos = RestirGIHalfToFull(HalfPos);
 
     if (Enabled == 0u || CenterDepth <= 0.0f || CenterDepth >= 1.0f)
     {
@@ -571,11 +600,15 @@ void CSSpatialResampling(uint3 DispatchThreadId : SV_DispatchThreadID)
 
     const uint MaxIterations = (SpatialPassIndex == 0u) ? 8u : 5u;
     const float SearchRadius = (SpatialPassIndex == 0u) ? 16.0f : 8.0f;
+    const float CenterLinearDepth = RestirGIResolveLinearDepth(CenterDepth);
+    const float3 CenterWorldPos = RestirGIReconstructWorldPosition(CenterFullPos, CenterDepth);
+
+    FRestirGIPRNG Rng = RestirGIPRNGCreate(HalfPos, SequenceFrame, 73u + SpatialPassIndex * 17u);
 
     [loop]
     for (uint Iteration = 0u; Iteration < MaxIterations; ++Iteration)
     {
-        const float2 Jitter = RestirGIRandom02(HalfPos, SequenceFrame * 2467u + Iteration * 17u) * 2.0f - 1.0f;
+        const float2 Jitter = RestirGIPRNGRandomFloat2(Rng) * 2.0f - 1.0f;
         const int2 CandidatePos = int2(HalfPos) + int2(round(Jitter * SearchRadius));
         if (CandidatePos.x < 0 || CandidatePos.y < 0 || CandidatePos.x >= int(HalfWidth) || CandidatePos.y >= int(HalfHeight))
         {
@@ -583,6 +616,7 @@ void CSSpatialResampling(uint3 DispatchThreadId : SV_DispatchThreadID)
         }
 
         const uint2 NeighborPos = uint2(CandidatePos);
+        const uint2 NeighborFullPos = RestirGIHalfToFull(NeighborPos);
         const uint2 PackedNeighbor = InDepthNormal[NeighborPos];
         const float NeighborDepth = asfloat(PackedNeighbor.x);
         const float3 NeighborNormal = RestirGIDecodeNormal16x2(PackedNeighbor.y);
@@ -591,7 +625,9 @@ void CSSpatialResampling(uint3 DispatchThreadId : SV_DispatchThreadID)
             continue;
         }
 
-        if (abs(CenterDepth - NeighborDepth) > 0.01f || dot(CenterNormal, NeighborNormal) < 0.9f)
+        const float3 NeighborWorldPos = RestirGIReconstructWorldPosition(NeighborFullPos, NeighborDepth);
+        if (length(CenterWorldPos - NeighborWorldPos) > 0.05f * CenterLinearDepth ||
+            saturate(dot(CenterNormal, NeighborNormal)) < 0.9f)
         {
             continue;
         }
@@ -603,7 +639,8 @@ void CSSpatialResampling(uint3 DispatchThreadId : SV_DispatchThreadID)
 //            continue;
         }
 
-        RestirGIMerge(Reservoir, Neighbor, Target, RestirGIRandom01(HalfPos, SequenceFrame * 4513u + Iteration * 53u));
+        const float ReservoirMergeRandom = RestirGIPRNGRandomFloat(Rng);
+        RestirGIMerge(Reservoir, Neighbor, Target, ReservoirMergeRandom);
     }
 
     const float SelectedTarget = RestirGITarget(Reservoir.Sample.Radiance);
