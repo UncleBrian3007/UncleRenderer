@@ -205,7 +205,7 @@ float3 ComputeWorldNormalFromTexture(VSOutput Input, Texture2D NormalTexture, fl
 
 struct PSOutputVelocity
 {
-    float2 Velocity : SV_Target0;
+    float4 Velocity : SV_Target0;
 };
 
 PSOutputVelocity PSMainVelocity(VSOutput Input)
@@ -230,20 +230,20 @@ PSOutputVelocity PSMainVelocity(VSOutput Input)
 
     if (HasPreviousUnjitteredViewProjection == 0u)
     {
-        Output.Velocity = float2(0.0f, 0.0f);
+        Output.Velocity = 0.0f.xxxx;
         return Output;
     }
 
     const float Epsilon = 1e-6f;
     float4 CurrentClip = mul(float4(Input.WorldPos, 1.0f), CurrentUnjitteredViewProjection);
     float CurrentW = max(abs(CurrentClip.w), Epsilon);
-    float2 CurrentNdc = CurrentClip.xy / CurrentW;
+    float3 CurrentNdc = CurrentClip.xyz / CurrentW;
 
     float4 PreviousClip = mul(float4(Input.PrevWorldPos, 1.0f), PreviousUnjitteredViewProjection);
     float PreviousW = max(abs(PreviousClip.w), Epsilon);
-    float2 PreviousNdc = PreviousClip.xy / PreviousW;
+    float3 PreviousNdc = PreviousClip.xyz / PreviousW;
 
-    Output.Velocity = CurrentNdc - PreviousNdc;
+    Output.Velocity = float4(CurrentNdc - PreviousNdc, 0.0f);
     return Output;
 }
 

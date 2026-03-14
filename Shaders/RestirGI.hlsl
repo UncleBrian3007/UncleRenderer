@@ -197,12 +197,12 @@ float3 RestirGISampleHistoryIndirect(uint2 FullPos, float3 HitWorldPos)
         return 0.0f.xxx;
     }
 
-    Texture2D<float2> VelocityTexture = ResourceDescriptorHeap[VelocityIndex];
+    Texture2D<float4> VelocityTexture = ResourceDescriptorHeap[VelocityIndex];
     Texture2D<float4> HistoryIrradianceTexture = ResourceDescriptorHeap[HistoryIrradianceIndex];
     Texture2D<float> PrevLinearDepthTexture = ResourceDescriptorHeap[PrevLinearDepthIndex];
 
     const float2 Uv = (float2(FullPos) + 0.5f) / float2(FullWidth, FullHeight);
-    const float2 VelocityNdc = VelocityTexture[FullPos];
+    const float2 VelocityNdc = VelocityTexture[FullPos].xy;
     const float2 PrevUv = float2(Uv.x - VelocityNdc.x * 0.5f, Uv.y + VelocityNdc.y * 0.5f);
     if (any(PrevUv <= 0.0f.xx) || any(PrevUv >= 1.0f.xx))
     {
@@ -446,7 +446,7 @@ void CSTemporalResampling(uint3 DispatchThreadId : SV_DispatchThreadID)
         return;
     }
 
-    Texture2D<float2> VelocityTexture = ResourceDescriptorHeap[VelocityIndex];
+    Texture2D<float4> VelocityTexture = ResourceDescriptorHeap[VelocityIndex];
     Texture2D<uint2> HalfDepthNormalTexture = ResourceDescriptorHeap[InputDepthNormalSrvIndex];
 
     Texture2D<float4> InitialRadiance = ResourceDescriptorHeap[InputInitialRadianceSrvIndex];
@@ -484,7 +484,7 @@ void CSTemporalResampling(uint3 DispatchThreadId : SV_DispatchThreadID)
     if (HistoryValid > 0u)
     {
         const float2 Uv = (float2(FullPos) + 0.5f) / float2(FullWidth, FullHeight);
-        const float2 VelocityNdc = VelocityTexture[FullPos];
+        const float2 VelocityNdc = VelocityTexture[FullPos].xy;
         const float2 PrevUv = float2(Uv.x - VelocityNdc.x * 0.5f, Uv.y + VelocityNdc.y * 0.5f);
 
         if (all(PrevUv > 0.0f.xx) && all(PrevUv < 1.0f.xx))

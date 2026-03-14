@@ -83,7 +83,7 @@ struct FRendererConfig
     bool bRestirGIUseVisibility = true;
     bool bRestirGIUseBrdf = true;
     bool bRestirGIUseHistoryIndirect = true;
-    ERestirGIRandomMode RestirGIRandomMode = ERestirGIRandomMode::Hash;
+    ERestirGIRandomMode RestirGIRandomMode = ERestirGIRandomMode::BlueNoiseSobol;
     bool bEnableIndirectDraw = true;
     bool bEnableSkinningIndirectDraw = false;
     bool bEnablePbrResearch = false;

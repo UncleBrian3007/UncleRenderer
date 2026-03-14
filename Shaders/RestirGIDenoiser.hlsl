@@ -1,5 +1,5 @@
-#include "SceneConstants.hlsl"
 #include "RestirGISh.hlsli"
+#include "RestirGISamplingCommon.hlsli"
 
 cbuffer RestirGiDenoiserConstants : register(b0)
 {
@@ -32,7 +32,16 @@ cbuffer RestirGiDenoiserBindless : register(b1)
     uint OutHistoryCountIndex;
     uint OutPrevLinearDepthIndex;
     uint OutPrevNormalIndex;
-    uint Reserved0;
+    uint AuxiliaryIndex;
+};
+
+cbuffer RestirGiDenoiserSceneConstants : register(b2)
+{
+    row_major float4x4 SceneWorld;
+    row_major float4x4 SceneWorldInverseTranspose;
+    row_major float4x4 SceneView;
+    row_major float4x4 SceneViewInverse;
+    row_major float4x4 SceneProjection;
 };
 
 float3 DecodeNormalFromGBufferA(float4 GBufferA)
@@ -60,6 +69,49 @@ float ComputeGeometryWeight(float CenterDepth, float SampleDepth, float3 CenterN
     const float DepthWeight = exp(-abs(CenterDepth - SampleDepth));
     const float NormalWeight = pow(saturate(dot(CenterNormal, SampleNormal)), 32.0f);
     return saturate(DepthWeight * NormalWeight);
+}
+
+float3 ReconstructWorldPositionFromLinearDepth(uint2 Pixel, float LinearDepth)
+{
+    const float2 Uv = (float2(Pixel) + 0.5f) / float2(Width, Height);
+    const float2 Ndc = float2(Uv.x * 2.0f - 1.0f, Uv.y * 2.0f - 1.0f);
+    const float ViewX = Ndc.x * LinearDepth / SceneProjection._11;
+    const float ViewY = -Ndc.y * LinearDepth / SceneProjection._22;
+    const float3 ViewPosition = float3(ViewX, ViewY, LinearDepth);
+    return mul(float4(ViewPosition, 1.0f), SceneViewInverse).xyz;
+}
+
+float ResolveLinearDepthFromDeviceDepth(float DeviceDepth)
+{
+    const float DepthScale = rcp(max(SceneProjection._43, 1e-6f));
+    const float DepthBias = SceneProjection._33 * DepthScale;
+    return rcp(max(DeviceDepth * DepthScale - DepthBias, 1e-6f));
+}
+
+float2 ProjectWorldPositionToUv(float3 WorldPosition)
+{
+    const float4 ViewPosition = mul(float4(WorldPosition, 1.0f), SceneView);
+    const float4 ClipPosition = mul(ViewPosition, SceneProjection);
+    if (ClipPosition.w <= 1e-6f)
+    {
+        return -1.0f.xx;
+    }
+
+    const float InvW = rcp(ClipPosition.w);
+    const float2 Ndc = ClipPosition.xy * InvW;
+    return float2(Ndc.x * 0.5f + 0.5f, 0.5f - Ndc.y * 0.5f);
+}
+
+float ComputeSurfaceGeometryWeight(float3 CenterWorldPos, float3 CenterNormal, float3 SampleWorldPos)
+{
+    const float3 Ray = SampleWorldPos - CenterWorldPos;
+    const float DistanceToPlane = dot(CenterNormal, Ray);
+    return saturate(1.0f - abs(DistanceToPlane));
+}
+
+float ComputeSurfaceNormalWeight(float3 CenterNormal, float3 SampleNormal)
+{
+    return pow(saturate(dot(CenterNormal, SampleNormal)), 128.0f);
 }
 
 static const uint RecurrentBlurSampleNum = 4u;
@@ -104,17 +156,21 @@ void CSPreBlur(uint3 DispatchThreadId : SV_DispatchThreadID)
     Texture2D<float> VarianceTexture = ResourceDescriptorHeap[VarianceIndex];
     Texture2D<float> LinearDepthTexture = ResourceDescriptorHeap[CurrentLinearDepthIndex];
     Texture2D<float4> GBufferA = ResourceDescriptorHeap[GBufferAIndex];
-    RWTexture2D<uint4> TemporalSH = ResourceDescriptorHeap[TemporalSHIndex];
+    RWTexture2D<uint4> PreBlurSH = ResourceDescriptorHeap[AuxiliaryIndex];
 
     const FRestirGiPackedSh CenterSh = LoadPackedSh(InputSH, Pixel);
     const float CenterDepth = LinearDepthTexture[Pixel];
     if (CenterDepth <= 0.0f)
     {
-        TemporalSH[Pixel] = uint4(0u, 0u, 0u, 0u);
+        PreBlurSH[Pixel] = uint4(0u, 0u, 0u, 0u);
         return;
     }
 
     const float3 CenterNormal = DecodeNormalFromGBufferA(GBufferA[Pixel]);
+    const float3 CenterWorldPos = ReconstructWorldPositionFromLinearDepth(Pixel, CenterDepth);
+    float3 CenterTangent;
+    float3 CenterBitangent;
+    BuildOrthonormalBasis(CenterNormal, CenterTangent, CenterBitangent);
 
     FRestirGiPackedSh AccumSh = CenterSh;
     float TotalWeight = 1.0f;
@@ -126,7 +182,9 @@ void CSPreBlur(uint3 DispatchThreadId : SV_DispatchThreadID)
     [unroll]
     for (uint SampleIndex = 0u; SampleIndex < RecurrentBlurSampleNum; ++SampleIndex)
     {
-        const float2 SampleUv = CenterUv + RecurrentBlurPoisson[SampleIndex] * BlurRadius;
+        const float2 SurfaceOffset = RecurrentBlurPoisson[SampleIndex] * BlurRadius;
+        float3 SampleWorldPos = CenterWorldPos + CenterTangent * SurfaceOffset.x + CenterBitangent * SurfaceOffset.y;
+        const float2 SampleUv = ProjectWorldPositionToUv(SampleWorldPos);
         if (any(SampleUv < 0.0f.xx) || any(SampleUv > 1.0f.xx))
         {
             continue;
@@ -139,14 +197,17 @@ void CSPreBlur(uint3 DispatchThreadId : SV_DispatchThreadID)
             continue;
         }
 
+        SampleWorldPos = ReconstructWorldPositionFromLinearDepth(SamplePixel, SampleDepth);
         const float3 SampleNormal = DecodeNormalFromGBufferA(GBufferA[SamplePixel]);
-        const float Weight = ComputeGeometryWeight(CenterDepth, SampleDepth, CenterNormal, SampleNormal);
+        const float GeometryWeight = ComputeSurfaceGeometryWeight(CenterWorldPos, CenterNormal, SampleWorldPos);
+        const float NormalWeight = ComputeSurfaceNormalWeight(CenterNormal, SampleNormal);
+        const float Weight = smoothstep(0.0f, 1.0f, GeometryWeight * NormalWeight);
         AccumSh = RestirGiAddSh(AccumSh, RestirGiScaleSh(LoadPackedSh(InputSH, SamplePixel), Weight));
         TotalWeight += Weight;
     }
 
     const FRestirGiPackedSh OutSh = RestirGiScaleSh(AccumSh, rcp(max(1e-5f, TotalWeight)));
-    TemporalSH[Pixel] = PackSh(OutSh);
+    PreBlurSH[Pixel] = PackSh(OutSh);
 }
 
 [numthreads(8, 8, 1)]
@@ -158,8 +219,9 @@ void CSTemporalAccumulation(uint3 DispatchThreadId : SV_DispatchThreadID)
         return;
     }
 
-    Texture2D<uint4> TemporalSH = ResourceDescriptorHeap[TemporalSHIndex];
-    Texture2D<float2> VelocityTexture = ResourceDescriptorHeap[VelocityIndex];
+    Texture2D<uint4> PreBlurSH = ResourceDescriptorHeap[AuxiliaryIndex];
+    Texture2D<float> DepthBuffer = ResourceDescriptorHeap[OutHistoryIrradianceIndex];
+    Texture2D<float4> VelocityTexture = ResourceDescriptorHeap[VelocityIndex];
     Texture2D<float> CurrentLinearDepthTexture = ResourceDescriptorHeap[CurrentLinearDepthIndex];
     Texture2D<float> PrevLinearDepthTexture = ResourceDescriptorHeap[PrevLinearDepthIndex];
     Texture2D<float4> GBufferA = ResourceDescriptorHeap[GBufferAIndex];
@@ -172,9 +234,9 @@ void CSTemporalAccumulation(uint3 DispatchThreadId : SV_DispatchThreadID)
     RWTexture2D<float> OutPrevLinearDepth = ResourceDescriptorHeap[OutPrevLinearDepthIndex];
     RWTexture2D<float4> OutPrevNormal = ResourceDescriptorHeap[OutPrevNormalIndex];
 
-    FRestirGiPackedSh CurrentSh = LoadPackedSh(TemporalSH, Pixel);
+    FRestirGiPackedSh CurrentSh = LoadPackedSh(PreBlurSH, Pixel);
     const float2 Uv = (float2(Pixel) + 0.5f) / float2(Width, Height);
-    const float2 VelocityNdc = VelocityTexture[Pixel];
+    const float3 VelocityNdc = VelocityTexture[Pixel].xyz;
     const float2 PrevUv = float2(Uv.x - VelocityNdc.x * 0.5f, Uv.y + VelocityNdc.y * 0.5f);
 
     const float3 CurrentNormal = DecodeNormalFromGBufferA(GBufferA[Pixel]);
@@ -190,6 +252,7 @@ void CSTemporalAccumulation(uint3 DispatchThreadId : SV_DispatchThreadID)
 
     if (bHistoryAccepted)
     {
+        const float CurrentDeviceDepth = DepthBuffer[Pixel];
         const float2 PrevCoord = PrevUv * float2(Width, Height) - 0.5f;
         const int2 PrevBase = int2(floor(PrevCoord));
         const float2 PrevFrac = frac(PrevCoord);
@@ -219,11 +282,12 @@ void CSTemporalAccumulation(uint3 DispatchThreadId : SV_DispatchThreadID)
         const float3 N01 = normalize(PrevNormalTexture[P01].xyz * 2.0f - 1.0f);
         const float3 N11 = normalize(PrevNormalTexture[P11].xyz * 2.0f - 1.0f);
 
+        const float PrevLinearDepthEstimate = ResolveLinearDepthFromDeviceDepth(CurrentDeviceDepth - VelocityNdc.z);
         const float4 Occlusion = float4(
-            ((CurrentLinearDepth <= D00 * DepthThresholdScale) && (dot(CurrentNormal, N00) > NormalThreshold)) ? 1.0f : 0.0f,
-            ((CurrentLinearDepth <= D10 * DepthThresholdScale) && (dot(CurrentNormal, N10) > NormalThreshold)) ? 1.0f : 0.0f,
-            ((CurrentLinearDepth <= D01 * DepthThresholdScale) && (dot(CurrentNormal, N01) > NormalThreshold)) ? 1.0f : 0.0f,
-            ((CurrentLinearDepth <= D11 * DepthThresholdScale) && (dot(CurrentNormal, N11) > NormalThreshold)) ? 1.0f : 0.0f);
+            ((PrevLinearDepthEstimate <= D00 * DepthThresholdScale) && (dot(CurrentNormal, N00) > NormalThreshold)) ? 1.0f : 0.0f,
+            ((PrevLinearDepthEstimate <= D10 * DepthThresholdScale) && (dot(CurrentNormal, N10) > NormalThreshold)) ? 1.0f : 0.0f,
+            ((PrevLinearDepthEstimate <= D01 * DepthThresholdScale) && (dot(CurrentNormal, N01) > NormalThreshold)) ? 1.0f : 0.0f,
+            ((PrevLinearDepthEstimate <= D11 * DepthThresholdScale) && (dot(CurrentNormal, N11) > NormalThreshold)) ? 1.0f : 0.0f);
 
         const float4 FinalWeights = BilinearWeights * Occlusion;
         const float WeightSum = dot(FinalWeights, 1.0f.xxxx);
@@ -245,11 +309,10 @@ void CSTemporalAccumulation(uint3 DispatchThreadId : SV_DispatchThreadID)
                 float(HistoryCount[P10]) * FinalWeights.y +
                 float(HistoryCount[P01]) * FinalWeights.z +
                 float(HistoryCount[P11]) * FinalWeights.w) / WeightSum;
-            const float ClampedPrevCount = min(PrevCount, 31.0f);
-            const float BlendFactor = saturate((1.0f / (1.0f + ClampedPrevCount)) * BlendStrength);
+            const float BlendFactor = saturate((1.0f / (1.0f + PrevCount)) * BlendStrength);
 
             TemporalSh = RestirGiLerpSh(PrevSh, CurrentSh, BlendFactor);
-            NextCount = min((uint)round(ClampedPrevCount) + 1u, 32u);
+            NextCount = min((uint)round(PrevCount) + 1u, 1u);
         }
         else
         {
@@ -273,7 +336,7 @@ void CSGenerateShMips(uint3 DispatchThreadId : SV_DispatchThreadID)
     }
 
     Texture2D<uint4> SourceSH = ResourceDescriptorHeap[TemporalSHIndex];
-    RWTexture2D<uint4> OutShMip = ResourceDescriptorHeap[Reserved0];
+    RWTexture2D<uint4> OutShMip = ResourceDescriptorHeap[AuxiliaryIndex];
 
     uint OutWidth = 0;
     uint OutHeight = 0;
@@ -311,7 +374,7 @@ void CSGenerateLinearDepthMips(uint3 DispatchThreadId : SV_DispatchThreadID)
     }
 
     Texture2D<float> CurrentLinearDepthTexture = ResourceDescriptorHeap[CurrentLinearDepthIndex];
-    RWTexture2D<float> OutDepthMip = ResourceDescriptorHeap[Reserved0];
+    RWTexture2D<float> OutDepthMip = ResourceDescriptorHeap[AuxiliaryIndex];
 
     uint OutWidth = 0;
     uint OutHeight = 0;
@@ -340,7 +403,7 @@ void CSHistoryReconstruction(uint3 DispatchThreadId : SV_DispatchThreadID)
     }
 
     Texture2D<uint4> HistorySH = ResourceDescriptorHeap[HistorySHIndex];
-    Texture2D<uint4> ShMip = ResourceDescriptorHeap[Reserved0];
+    Texture2D<uint4> ShMip = ResourceDescriptorHeap[AuxiliaryIndex];
     Texture2D<float> DepthMip = ResourceDescriptorHeap[OutPrevLinearDepthIndex];
     Texture2D<float> CurrentLinearDepthTexture = ResourceDescriptorHeap[CurrentLinearDepthIndex];
     Texture2D<uint> HistoryCount = ResourceDescriptorHeap[HistoryCountIndex];
@@ -430,10 +493,13 @@ void CSFinalBlur(uint3 DispatchThreadId : SV_DispatchThreadID)
     }
 
     const float3 CenterNormal = DecodeNormalFromGBufferA(GBufferA[Pixel]);
+    const float3 CenterWorldPos = ReconstructWorldPositionFromLinearDepth(Pixel, CenterDepth);
+    float3 CenterTangent;
+    float3 CenterBitangent;
+    BuildOrthonormalBasis(CenterNormal, CenterTangent, CenterBitangent);
     const float CountRatio = saturate((float)Count / 32.0f);
     const float RadiusScale = lerp(2.0f, 8.0f, smoothstep(0.0f, 1.0f, 1.0f - CountRatio));
     const float2 BlurRadius = RadiusScale.xx / float2(Width, Height) * max(CenterDepth, 0.01f);
-    const float2 CenterUv = (float2(Pixel) + 0.5f) / float2(Width, Height);
     const float Angle = RestirGiRandom01(Pixel, 617u) * 6.2831853f;
     const float S = sin(Angle);
     const float C = cos(Angle);
@@ -445,7 +511,9 @@ void CSFinalBlur(uint3 DispatchThreadId : SV_DispatchThreadID)
     for (uint SampleIndex = 0u; SampleIndex < RecurrentBlurSampleNum; ++SampleIndex)
     {
         const float2 Rotated = mul(Rotation, RecurrentBlurPoisson[SampleIndex]);
-        const float2 SampleUv = CenterUv + Rotated * BlurRadius;
+        const float2 SurfaceOffset = Rotated * BlurRadius;
+        float3 SampleWorldPos = CenterWorldPos + CenterTangent * SurfaceOffset.x + CenterBitangent * SurfaceOffset.y;
+        const float2 SampleUv = ProjectWorldPositionToUv(SampleWorldPos);
         if (any(SampleUv < 0.0f.xx) || any(SampleUv > 1.0f.xx))
         {
             continue;
@@ -458,8 +526,11 @@ void CSFinalBlur(uint3 DispatchThreadId : SV_DispatchThreadID)
             continue;
         }
 
+        SampleWorldPos = ReconstructWorldPositionFromLinearDepth(SamplePixel, SampleDepth);
         const float3 SampleNormal = DecodeNormalFromGBufferA(GBufferA[SamplePixel]);
-        const float Weight = ComputeGeometryWeight(CenterDepth, SampleDepth, CenterNormal, SampleNormal);
+        const float GeometryWeight = ComputeSurfaceGeometryWeight(CenterWorldPos, CenterNormal, SampleWorldPos);
+        const float NormalWeight = ComputeSurfaceNormalWeight(CenterNormal, SampleNormal);
+        const float Weight = smoothstep(0.0f, 1.0f, GeometryWeight * NormalWeight);
         AccumSh = RestirGiAddSh(AccumSh, RestirGiScaleSh(LoadPackedSh(TemporalSH, SamplePixel), Weight));
         Total += Weight;
     }

@@ -35,7 +35,7 @@ void FDeferredResourceImporter::ImportFrameResources(FDeferredPassContext& Conte
         "Velocity",
         Owner.VelocityTexture.Get(),
         &Owner.VelocityState,
-        { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), DXGI_FORMAT_R16G16_FLOAT });
+        { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), DXGI_FORMAT_R16G16B16A16_FLOAT });
     OutResources.GBufferHandles =
     {
         Graph.ImportTexture("GBufferA", Owner.GBufferA.Get(), &Owner.GBufferStates[0], { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), FDeferredRenderer::GBufferFormats[0] }),
@@ -151,13 +151,13 @@ void FDeferredResourceImporter::ImportFrameResources(FDeferredPassContext& Conte
         "ReSTIR GI Reservoir MW A",
         Owner.RestirGIReservoirMWATexture.Get(),
         &Owner.RestirGIReservoirMWAState,
-        { HalfWidth, HalfHeight, DXGI_FORMAT_R32G32_FLOAT });
+        { HalfWidth, HalfHeight, DXGI_FORMAT_R16G16_FLOAT });
 
     OutResources.RestirGIReservoirMWBHandle = Graph.ImportTexture(
         "ReSTIR GI Reservoir MW B",
         Owner.RestirGIReservoirMWBTexture.Get(),
         &Owner.RestirGIReservoirMWBState,
-        { HalfWidth, HalfHeight, DXGI_FORMAT_R32G32_FLOAT });
+        { HalfWidth, HalfHeight, DXGI_FORMAT_R16G16_FLOAT });
 
     OutResources.RestirGiInputSHHandle = Graph.ImportTexture(
         "ReSTIR GI Input SH",
@@ -176,6 +176,12 @@ void FDeferredResourceImporter::ImportFrameResources(FDeferredPassContext& Conte
         Owner.RestirGiHistoryIrradianceTexture.Get(),
         &Owner.RestirGiHistoryIrradianceState,
         { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), Owner.RestirGiHistoryIrradianceTexture->GetDesc().Format });
+
+    OutResources.RestirGiPreBlurSHHandle = Graph.ImportTexture(
+        "ReSTIR GI PreBlur SH",
+        Owner.RestirGiPreBlurSHTexture.Get(),
+        &Owner.RestirGiPreBlurSHState,
+        { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), DXGI_FORMAT_R32G32B32A32_UINT });
 
     OutResources.RestirGiTemporalSHHandle = Graph.ImportTexture(
         "ReSTIR GI Temporal SH",
@@ -437,7 +443,7 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         D3D12_SHADER_RESOURCE_VIEW_DESC VelocitySrvDesc = {};
         VelocitySrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         VelocitySrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        VelocitySrvDesc.Format = DXGI_FORMAT_R16G16_FLOAT;
+        VelocitySrvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
         VelocitySrvDesc.Texture2D.MipLevels = 1;
         VelocityBindlessIndex = Device->CreateBindlessSrv(VelocityTexture.Get(), VelocitySrvDesc);
     }
@@ -562,8 +568,8 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         RestirGIReservoirDepthNormalBSrvBindlessIndex = Device->CreateBindlessSrv(RestirGIReservoirDepthNormalBTexture.Get(), RestirGISrvDesc);
         RestirGIReservoirDepthNormalBUavBindlessIndex = Device->CreateBindlessUav(RestirGIReservoirDepthNormalBTexture.Get(), nullptr, RestirGIUavDesc);
 
-        RestirGISrvDesc.Format = DXGI_FORMAT_R32G32_FLOAT;
-        RestirGIUavDesc.Format = DXGI_FORMAT_R32G32_FLOAT;
+        RestirGISrvDesc.Format = DXGI_FORMAT_R16G16_FLOAT;
+        RestirGIUavDesc.Format = DXGI_FORMAT_R16G16_FLOAT;
         RestirGIReservoirMWASrvBindlessIndex = Device->CreateBindlessSrv(RestirGIReservoirMWATexture.Get(), RestirGISrvDesc);
         RestirGIReservoirMWAUavBindlessIndex = Device->CreateBindlessUav(RestirGIReservoirMWATexture.Get(), nullptr, RestirGIUavDesc);
         RestirGIReservoirMWBSrvBindlessIndex = Device->CreateBindlessSrv(RestirGIReservoirMWBTexture.Get(), RestirGISrvDesc);
@@ -586,6 +592,8 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
 
         RestirGISrvDesc.Format = DXGI_FORMAT_R32G32B32A32_UINT;
         RestirGIUavDesc.Format = DXGI_FORMAT_R32G32B32A32_UINT;
+        RestirGiPreBlurSHSrvBindlessIndex = Device->CreateBindlessSrv(RestirGiPreBlurSHTexture.Get(), RestirGISrvDesc);
+        RestirGiPreBlurSHUavBindlessIndex = Device->CreateBindlessUav(RestirGiPreBlurSHTexture.Get(), nullptr, RestirGIUavDesc);
         RestirGiTemporalSHSrvBindlessIndex = Device->CreateBindlessSrv(RestirGiTemporalSHTexture.Get(), RestirGISrvDesc);
         RestirGiTemporalSHUavBindlessIndex = Device->CreateBindlessUav(RestirGiTemporalSHTexture.Get(), nullptr, RestirGIUavDesc);
         RestirGiHistorySHSrvBindlessIndex = Device->CreateBindlessSrv(RestirGiHistorySHTexture.Get(), RestirGISrvDesc);

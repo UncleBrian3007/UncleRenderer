@@ -543,7 +543,7 @@ void FDeferredRenderer::PrepareFrameState(const FCamera& Camera, bool bAnySkinni
     OutState.bCameraMoved = bCameraMoved;
     OutState.bAnySkinningUpdated = bAnySkinningUpdated;
 
-    if (bCameraMoved || !bHasPreviousViewProjection)
+    if (!bHasPreviousViewProjection)
     {
         InvalidateRestirGIReservoirHistory();
         InvalidateRestirGiDenoiserHistory();
@@ -684,14 +684,6 @@ void FDeferredRenderer::FinalizeFrameState(const FDeferredFrameState& FrameState
         RestirGIUavBindlessIndex = RestirGIHistoryUavBindlessIndex;
         RestirGIHistorySrvBindlessIndex = CurrentSrv;
         RestirGIHistoryUavBindlessIndex = CurrentUav;
-    }
-
-    if (RestirGiTemporalSHTexture && RestirGiHistorySHTexture)
-    {
-        std::swap(RestirGiTemporalSHTexture, RestirGiHistorySHTexture);
-        std::swap(RestirGiTemporalSHState, RestirGiHistorySHState);
-        std::swap(RestirGiTemporalSHSrvBindlessIndex, RestirGiHistorySHSrvBindlessIndex);
-        std::swap(RestirGiTemporalSHUavBindlessIndex, RestirGiHistorySHUavBindlessIndex);
     }
 
     if (RestirGiHistoryCountATexture && RestirGiHistoryCountBTexture)

@@ -339,8 +339,8 @@ bool FDeferredRenderer::CreateRestirGIResources(FDX12Device* Device, uint32_t Wi
     CreateRestirGITexture(RestirGiRadianceFormat, L"ReSTIR_GI_ReservoirSampleRadianceB", RestirGIReservoirSampleRadianceBTexture);
     CreateRestirGITexture(DXGI_FORMAT_R32_UINT, L"ReSTIR_GI_ReservoirRayDirectionA", RestirGIReservoirRayDirectionATexture);
     CreateRestirGITexture(DXGI_FORMAT_R32_UINT, L"ReSTIR_GI_ReservoirRayDirectionB", RestirGIReservoirRayDirectionBTexture);
-    CreateRestirGITexture(DXGI_FORMAT_R32G32_FLOAT, L"ReSTIR_GI_ReservoirMWA", RestirGIReservoirMWATexture);
-    CreateRestirGITexture(DXGI_FORMAT_R32G32_FLOAT, L"ReSTIR_GI_ReservoirMWB", RestirGIReservoirMWBTexture);
+    CreateRestirGITexture(DXGI_FORMAT_R16G16_FLOAT, L"ReSTIR_GI_ReservoirMWA", RestirGIReservoirMWATexture);
+    CreateRestirGITexture(DXGI_FORMAT_R16G16_FLOAT, L"ReSTIR_GI_ReservoirMWB", RestirGIReservoirMWBTexture);
 
     RestirGIState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     RestirGIHistoryState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;

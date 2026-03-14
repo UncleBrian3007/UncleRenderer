@@ -111,7 +111,7 @@ private:
     bool bRestirGIUseVisibility = true;
     bool bRestirGIUseBrdf = true;
     bool bRestirGIUseHistoryIndirect = true;
-    ERestirGIRandomMode RestirGIRandomMode = ERestirGIRandomMode::Hash;
+    ERestirGIRandomMode RestirGIRandomMode = ERestirGIRandomMode::BlueNoiseSobol;
     bool bRestirGIFreezeFrame = false;
     bool bRestirGIDebugRayEnabled = false;
     int RestirGIDebugPixelX = 0;

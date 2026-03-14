@@ -189,12 +189,16 @@ public:
         if (bEnabled && !bRestirGIFreezeFrame)
         {
             RestirGIFrozenSequenceFrame = 0;
+            RestirGIFreezeStartFrameNumber = GetFrameNumber();
         }
         bRestirGIFreezeFrame = bEnabled;
     }
     bool IsRestirGIFreezeFrame() const { return bRestirGIFreezeFrame; }
     uint32_t GetRestirGIFrozenSequenceFrame() const { return RestirGIFrozenSequenceFrame; }
+    uint64_t GetRestirGIFreezeStartFrameNumber() const { return RestirGIFreezeStartFrameNumber; }
     void StepRestirGIFreezeFrame() { ++RestirGIFrozenSequenceFrame; }
+    void SetRestirGIFreezeDenoiserHistoryResetPeriod(uint32_t InPeriod) { RestirGIFreezeDenoiserHistoryResetPeriod = InPeriod; }
+    uint32_t GetRestirGIFreezeDenoiserHistoryResetPeriod() const { return RestirGIFreezeDenoiserHistoryResetPeriod; }
 
     void SetPathTracingAccumulationEnabled(bool bEnabled)
     {
@@ -299,6 +303,7 @@ public:
         FRGResourceHandle RestirGIReservoirMWBHandle{};
         FRGResourceHandle RestirGiInputSHHandle{};
         FRGResourceHandle RestirGiVarianceHandle{};
+        FRGResourceHandle RestirGiPreBlurSHHandle{};
         FRGResourceHandle RestirGiTemporalSHHandle{};
         FRGResourceHandle RestirGiHistorySHHandle{};
         FRGResourceHandle RestirGiHistoryIrradianceHandle{};
@@ -529,6 +534,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIReservoirMWBTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiInputSHTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiVarianceTexture;
+    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiPreBlurSHTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiTemporalSHTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiHistorySHTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiHistoryIrradianceTexture;
@@ -622,6 +628,8 @@ private:
     uint32_t RestirGiVarianceUavBindlessIndex = UINT32_MAX;
     uint32_t RestirGiHistoryIrradianceSrvBindlessIndex = UINT32_MAX;
     uint32_t RestirGiHistoryIrradianceUavBindlessIndex = UINT32_MAX;
+    uint32_t RestirGiPreBlurSHSrvBindlessIndex = UINT32_MAX;
+    uint32_t RestirGiPreBlurSHUavBindlessIndex = UINT32_MAX;
     uint32_t RestirGiTemporalSHSrvBindlessIndex = UINT32_MAX;
     uint32_t RestirGiTemporalSHUavBindlessIndex = UINT32_MAX;
     uint32_t RestirGiHistorySHSrvBindlessIndex = UINT32_MAX;
@@ -694,6 +702,7 @@ private:
     D3D12_RESOURCE_STATES RestirGiInputSHState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES RestirGiVarianceState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES RestirGiHistoryIrradianceState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    D3D12_RESOURCE_STATES RestirGiPreBlurSHState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES RestirGiTemporalSHState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES RestirGiHistorySHState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES RestirGiHistoryCountAState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -824,12 +833,14 @@ private:
     bool bRestirGIUseVisibility = true;
     bool bRestirGIUseBrdf = true;
     bool bRestirGIUseHistoryIndirect = true;
-    ERestirGIRandomMode RestirGIRandomMode = ERestirGIRandomMode::Hash;
+    ERestirGIRandomMode RestirGIRandomMode = ERestirGIRandomMode::BlueNoiseSobol;
     bool bRestirGIDebugRayEnabled = false;
     uint32_t RestirGIDebugPixelX = 0;
     uint32_t RestirGIDebugPixelY = 0;
     bool bRestirGIFreezeFrame = false;
     uint32_t RestirGIFrozenSequenceFrame = 0;
+    uint64_t RestirGIFreezeStartFrameNumber = 0;
+    uint32_t RestirGIFreezeDenoiserHistoryResetPeriod = 3;
     uint32_t RestirGIReservoirHistoryFrameCount = 0;
     bool bRestirGIReservoirHistoryValid = false;
     bool bRestirGIDenoiserHistoryValid = false;

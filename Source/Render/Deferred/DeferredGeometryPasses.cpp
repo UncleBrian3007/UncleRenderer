@@ -661,7 +661,7 @@ bool FDeferredRenderer::CreateVelocityPipeline(FDX12Device* Device)
         Desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
 
         Desc.NumRenderTargets = 1;
-        Desc.RTVFormats[0] = DXGI_FORMAT_R16G16_FLOAT;
+        Desc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
         Desc.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
     };
 
@@ -695,7 +695,7 @@ bool FDeferredRenderer::CreateVelocityResources(FDX12Device* Device, uint32_t Wi
 
     CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
     CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
-        DXGI_FORMAT_R16G16_FLOAT,
+        DXGI_FORMAT_R16G16B16A16_FLOAT,
         Width,
         Height,
         1,
@@ -705,7 +705,7 @@ bool FDeferredRenderer::CreateVelocityResources(FDX12Device* Device, uint32_t Wi
         D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
 
     D3D12_CLEAR_VALUE ClearValue = {};
-    ClearValue.Format = DXGI_FORMAT_R16G16_FLOAT;
+    ClearValue.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
     ClearValue.Color[0] = 0.0f;
     ClearValue.Color[1] = 0.0f;
     ClearValue.Color[2] = 0.0f;
@@ -738,7 +738,7 @@ bool FDeferredRenderer::CreateVelocityResources(FDX12Device* Device, uint32_t Wi
     VelocityRtvHandle = VelocityRtvHeap->GetCPUDescriptorHandleForHeapStart();
     D3D12_RENDER_TARGET_VIEW_DESC RtvDesc = {};
     RtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
-    RtvDesc.Format = DXGI_FORMAT_R16G16_FLOAT;
+    RtvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
     Device->GetDevice()->CreateRenderTargetView(VelocityTexture.Get(), &RtvDesc, VelocityRtvHandle);
 
     VelocityState = D3D12_RESOURCE_STATE_RENDER_TARGET;
