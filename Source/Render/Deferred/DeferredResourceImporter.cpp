@@ -125,35 +125,11 @@ void FDeferredResourceImporter::ImportFrameResources(FDeferredPassContext& Conte
         &Owner.RestirGIReservoirMWBState,
         { HalfWidth, HalfHeight, DXGI_FORMAT_R16G16_FLOAT });
 
-    OutResources.RestirGiInputSHHandle = Graph.ImportTexture(
-        "ReSTIR GI Input SH",
-        Owner.RestirGiInputSHTexture.Get(),
-        &Owner.RestirGiInputSHState,
-        { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), DXGI_FORMAT_R32G32B32A32_UINT });
-
-    OutResources.RestirGiVarianceHandle = Graph.ImportTexture(
-        "ReSTIR GI Variance",
-        Owner.RestirGiVarianceTexture.Get(),
-        &Owner.RestirGiVarianceState,
-        { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), DXGI_FORMAT_R8_UNORM });
-
     OutResources.RestirGiHistoryIrradianceHandle = Graph.ImportTexture(
         "ReSTIR GI Denoised Irradiance",
         Owner.RestirGiHistoryIrradianceTexture.Get(),
         &Owner.RestirGiHistoryIrradianceState,
         { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), Owner.RestirGiHistoryIrradianceTexture->GetDesc().Format });
-
-    OutResources.RestirGiPreBlurSHHandle = Graph.ImportTexture(
-        "ReSTIR GI PreBlur SH",
-        Owner.RestirGiPreBlurSHTexture.Get(),
-        &Owner.RestirGiPreBlurSHState,
-        { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), DXGI_FORMAT_R32G32B32A32_UINT });
-
-    OutResources.RestirGiTemporalSHHandle = Graph.ImportTexture(
-        "ReSTIR GI Temporal SH",
-        Owner.RestirGiTemporalSHTexture.Get(),
-        &Owner.RestirGiTemporalSHState,
-        { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), DXGI_FORMAT_R32G32B32A32_UINT });
 
     OutResources.RestirGiHistorySHHandle = Graph.ImportTexture(
         "ReSTIR GI History SH",
@@ -512,16 +488,6 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         RestirGIReservoirMWBSrvBindlessIndex = Device->CreateBindlessSrv(RestirGIReservoirMWBTexture.Get(), RestirGISrvDesc);
         RestirGIReservoirMWBUavBindlessIndex = Device->CreateBindlessUav(RestirGIReservoirMWBTexture.Get(), nullptr, RestirGIUavDesc);
 
-        RestirGISrvDesc.Format = DXGI_FORMAT_R32G32B32A32_UINT;
-        RestirGIUavDesc.Format = DXGI_FORMAT_R32G32B32A32_UINT;
-        RestirGiInputSHSrvBindlessIndex = Device->CreateBindlessSrv(RestirGiInputSHTexture.Get(), RestirGISrvDesc);
-        RestirGiInputSHUavBindlessIndex = Device->CreateBindlessUav(RestirGiInputSHTexture.Get(), nullptr, RestirGIUavDesc);
-
-        RestirGISrvDesc.Format = DXGI_FORMAT_R8_UNORM;
-        RestirGIUavDesc.Format = DXGI_FORMAT_R8_UNORM;
-        RestirGiVarianceSrvBindlessIndex = Device->CreateBindlessSrv(RestirGiVarianceTexture.Get(), RestirGISrvDesc);
-        RestirGiVarianceUavBindlessIndex = Device->CreateBindlessUav(RestirGiVarianceTexture.Get(), nullptr, RestirGIUavDesc);
-
         RestirGISrvDesc.Format = RestirGiDenoiserIrradianceFormat;
         RestirGIUavDesc.Format = RestirGiDenoiserIrradianceFormat;
         RestirGiHistoryIrradianceSrvBindlessIndex = Device->CreateBindlessSrv(RestirGiHistoryIrradianceTexture.Get(), RestirGISrvDesc);
@@ -529,10 +495,6 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
 
         RestirGISrvDesc.Format = DXGI_FORMAT_R32G32B32A32_UINT;
         RestirGIUavDesc.Format = DXGI_FORMAT_R32G32B32A32_UINT;
-        RestirGiPreBlurSHSrvBindlessIndex = Device->CreateBindlessSrv(RestirGiPreBlurSHTexture.Get(), RestirGISrvDesc);
-        RestirGiPreBlurSHUavBindlessIndex = Device->CreateBindlessUav(RestirGiPreBlurSHTexture.Get(), nullptr, RestirGIUavDesc);
-        RestirGiTemporalSHSrvBindlessIndex = Device->CreateBindlessSrv(RestirGiTemporalSHTexture.Get(), RestirGISrvDesc);
-        RestirGiTemporalSHUavBindlessIndex = Device->CreateBindlessUav(RestirGiTemporalSHTexture.Get(), nullptr, RestirGIUavDesc);
         RestirGiHistorySHSrvBindlessIndex = Device->CreateBindlessSrv(RestirGiHistorySHTexture.Get(), RestirGISrvDesc);
         RestirGiHistorySHUavBindlessIndex = Device->CreateBindlessUav(RestirGiHistorySHTexture.Get(), nullptr, RestirGIUavDesc);
 
