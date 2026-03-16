@@ -339,7 +339,6 @@ private:
     bool CreateDepthPrepassPipeline(FDX12Device* Device);
     bool CreateLinearDepthRootSignature(FDX12Device* Device);
     bool CreateLinearDepthPipeline(FDX12Device* Device);
-    bool CreateExtractHalfDepthNormalResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateExtractHalfDepthNormalRootSignature(FDX12Device* Device);
     bool CreateExtractHalfDepthNormalPipeline(FDX12Device* Device);
     bool CreateGtaoRootSignature(FDX12Device* Device);
@@ -512,7 +511,6 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> LightingBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> VelocityTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> LinearDepthTexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIHalfDepthNormalTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> GtaoTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGITexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIHistoryTexture;
@@ -530,9 +528,6 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiHistoryCountBTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiPrevLinearDepthTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiPrevNormalTexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiShMipTexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiLinearDepthMipTexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiSpdAtomicCounterBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> SsrTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> SsrDenoiseTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> SsrFallbackTexture;
@@ -569,16 +564,10 @@ private:
     D3D12_CPU_DESCRIPTOR_HANDLE SsrDenoiseRtvHandle{};
     D3D12_CPU_DESCRIPTOR_HANDLE TonemapOutputRtvHandle{};
     std::array<uint32_t, 4> GBufferBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX } };
-    struct FBindlessTextureIndices
-    {
-        uint32_t Srv = UINT32_MAX;
-        uint32_t Uav = UINT32_MAX;
-    };
     uint32_t ShadowMapBindlessIndex = UINT32_MAX;
     uint32_t EnvironmentCubeBindlessIndex = UINT32_MAX;
     uint32_t BrdfLutBindlessIndex = UINT32_MAX;
     uint32_t LinearDepthBindlessIndex = UINT32_MAX;
-    FBindlessTextureIndices RestirGIHalfDepthNormalBindless;
     uint32_t VelocityBindlessIndex = UINT32_MAX;
     uint32_t HilbertLutBindlessIndex = UINT32_MAX;
     uint32_t BlueNoiseSobolSrvBindlessIndex = UINT32_MAX;
@@ -616,13 +605,6 @@ private:
     uint32_t RestirGiPrevLinearDepthUavBindlessIndex = UINT32_MAX;
     uint32_t RestirGiPrevNormalSrvBindlessIndex = UINT32_MAX;
     uint32_t RestirGiPrevNormalUavBindlessIndex = UINT32_MAX;
-    uint32_t RestirGiShMipSrvBindlessIndex = UINT32_MAX;
-    uint32_t RestirGiLinearDepthMipSrvBindlessIndex = UINT32_MAX;
-    std::array<uint32_t, 4> RestirGiShMipSrvBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX } };
-    std::array<uint32_t, 4> RestirGiShMipUavBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX } };
-    std::array<uint32_t, 4> RestirGiLinearDepthMipSrvBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX } };
-    std::array<uint32_t, 4> RestirGiLinearDepthMipUavBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX } };
-    uint32_t RestirGiSpdAtomicCounterUavBindlessIndex = UINT32_MAX;
     uint32_t SsrBindlessIndex = UINT32_MAX;
     uint32_t SsrDenoiseBindlessIndex = UINT32_MAX;
     uint32_t SsrFallbackBindlessIndex = UINT32_MAX;
@@ -656,7 +638,6 @@ private:
     D3D12_RESOURCE_STATES LightingBufferState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES VelocityState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES LinearDepthState = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    D3D12_RESOURCE_STATES RestirGIHalfDepthNormalState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES GtaoState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES RestirGIState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES RestirGIHistoryState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -674,9 +655,6 @@ private:
     D3D12_RESOURCE_STATES RestirGiHistoryCountBState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES RestirGiPrevLinearDepthState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES RestirGiPrevNormalState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    D3D12_RESOURCE_STATES RestirGiShMipState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    D3D12_RESOURCE_STATES RestirGiLinearDepthMipState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    D3D12_RESOURCE_STATES RestirGiSpdAtomicCounterState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES SsrState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES SsrDenoiseState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES SsrFallbackState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;

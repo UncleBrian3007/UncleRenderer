@@ -10,6 +10,7 @@
 #include <filesystem>
 
 std::vector<FRenderGraph::FPooledTexture> FRenderGraph::TexturePool;
+std::vector<FRenderGraph::FPooledBuffer> FRenderGraph::BufferPool;
 std::unordered_map<uint32, FRenderGraph::FGpuTimingData> FRenderGraph::PendingGpuTimings;
 std::unordered_map<uint32, FRenderGraph::FGpuTimingResources> FRenderGraph::GpuTimingResources;
 std::unordered_map<std::string, std::deque<FRenderGraph::FGpuTimingSample>> FRenderGraph::GpuTimingSamples;
@@ -252,6 +253,24 @@ uint32 FRenderGraph::GetTextureUavBindlessIndex(const FRGResourceHandle& Handle)
 {
     FRGTextureResource* Resource = ResolveResource(Handle);
     return Resource ? GetTextureViewBindlessIndex(*Resource, true) : UINT32_MAX;
+}
+
+uint32 FRenderGraph::GetTextureMipSrvBindlessIndex(const FRGResourceHandle& Handle, uint32 MipIndex)
+{
+    FRGTextureResource* Resource = ResolveResource(Handle);
+    return Resource ? GetTextureMipViewBindlessIndex(*Resource, false, MipIndex) : UINT32_MAX;
+}
+
+uint32 FRenderGraph::GetTextureMipUavBindlessIndex(const FRGResourceHandle& Handle, uint32 MipIndex)
+{
+    FRGTextureResource* Resource = ResolveResource(Handle);
+    return Resource ? GetTextureMipViewBindlessIndex(*Resource, true, MipIndex) : UINT32_MAX;
+}
+
+uint32 FRenderGraph::GetBufferUavBindlessIndex(const FRGBufferHandle& Handle)
+{
+    FRGBufferResource* Resource = ResolveBuffer(Handle);
+    return Resource ? GetBufferUavBindlessIndex(*Resource) : UINT32_MAX;
 }
 
 void FRenderGraph::RegisterUsage(PassEntry& Entry, const FRGResourceHandle& Handle, D3D12_RESOURCE_STATES RequiredState, ERGResourceAccess Access)
@@ -663,6 +682,11 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
             }
 
             FRGBufferResource& Resource = Buffers[Usage.Handle.Id];
+            if (!Resource.Resource && !Resource.bExternal)
+            {
+                AcquireTransientBuffer(Resource, Usage.RequiredState);
+            }
+
             if (!Resource.Resource)
             {
                 continue;
@@ -753,6 +777,20 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
                 ReleaseTransientTexture(*Resource);
             }
         }
+
+        for (const FRGResourceUsage& Usage : Entry.BufferUsages)
+        {
+            FRGBufferResource* Resource = ResolveBuffer({ Usage.Handle.Id });
+            if (!Resource || Resource->bExternal)
+            {
+                continue;
+            }
+
+            if (Resource->LastUsePass == PassIndex)
+            {
+                ReleaseTransientBuffer(*Resource);
+            }
+        }
     }
 
     if (bPixGroupOpen && GPixEventsEnabled)
@@ -802,6 +840,7 @@ bool FRenderGraph::AcquireTransientTexture(FRGTextureResource& Texture, D3D12_RE
             Candidate.Desc.Width == Texture.Desc.Width &&
             Candidate.Desc.Height == Texture.Desc.Height &&
             Candidate.Desc.Format == Texture.Desc.Format &&
+            Candidate.Desc.MipLevels == Texture.Desc.MipLevels &&
             Candidate.Flags == Texture.Flags;
     };
 
@@ -821,7 +860,7 @@ bool FRenderGraph::AcquireTransientTexture(FRGTextureResource& Texture, D3D12_RE
         Texture.Desc.Width,
         Texture.Desc.Height,
         1,
-        1,
+        Texture.Desc.MipLevels,
         1,
         0,
         Texture.Flags);
@@ -882,6 +921,78 @@ bool FRenderGraph::AcquireTransientTexture(FRGTextureResource& Texture, D3D12_RE
     return true;
 }
 
+bool FRenderGraph::AcquireTransientBuffer(FRGBufferResource& Buffer, D3D12_RESOURCE_STATES InitialState)
+{
+    if (!Device)
+    {
+        return false;
+    }
+
+    const FDX12CommandQueue* Queue = Device->GetGraphicsQueue();
+    const uint64 CompletedFenceValue = Queue ? Queue->GetCompletedFenceValue() : 0;
+
+    const auto Matches = [&](const FPooledBuffer& Candidate)
+    {
+        const bool bFenceComplete = Candidate.LastFenceValue == 0 || CompletedFenceValue >= Candidate.LastFenceValue;
+        return !Candidate.bInUse &&
+            bFenceComplete &&
+            Candidate.Desc.Size == Buffer.Desc.Size &&
+            Candidate.Desc.Flags == Buffer.Desc.Flags &&
+            Candidate.Desc.ViewFormat == Buffer.Desc.ViewFormat &&
+            Candidate.Desc.NumElements == Buffer.Desc.NumElements &&
+            Candidate.Desc.StructureByteStride == Buffer.Desc.StructureByteStride &&
+            Candidate.Desc.SrvFlags == Buffer.Desc.SrvFlags &&
+            Candidate.Desc.UavFlags == Buffer.Desc.UavFlags;
+    };
+
+    auto Found = std::find_if(BufferPool.begin(), BufferPool.end(), Matches);
+    if (Found != BufferPool.end())
+    {
+        Found->bInUse = true;
+        Found->FirstUseFrame = CurrentFrameIndex;
+        Buffer.Resource = Found->Resource.Get();
+        Buffer.CurrentState = Found->CurrentState;
+        Buffer.PoolIndex = static_cast<int32>(Found - BufferPool.begin());
+        return true;
+    }
+
+    const CD3DX12_RESOURCE_DESC ResourceDesc = CD3DX12_RESOURCE_DESC::Buffer(Buffer.Desc.Size, Buffer.Desc.Flags);
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> NewResource;
+    CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
+    const HRESULT Hr = Device->GetDevice()->CreateCommittedResource(
+        &HeapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &ResourceDesc,
+        InitialState,
+        nullptr,
+        IID_PPV_ARGS(&NewResource));
+
+    if (FAILED(Hr))
+    {
+        return false;
+    }
+
+    if (!Buffer.Name.empty())
+    {
+        std::wstring WName(Buffer.Name.begin(), Buffer.Name.end());
+        NewResource->SetName(WName.c_str());
+    }
+
+    FPooledBuffer Pooled;
+    Pooled.Desc = Buffer.Desc;
+    Pooled.Resource = NewResource;
+    Pooled.CurrentState = InitialState;
+    Pooled.bInUse = true;
+    Pooled.FirstUseFrame = CurrentFrameIndex;
+
+    BufferPool.push_back(Pooled);
+    Buffer.Resource = NewResource.Get();
+    Buffer.CurrentState = InitialState;
+    Buffer.PoolIndex = static_cast<int32>(BufferPool.size() - 1);
+    return true;
+}
+
 void FRenderGraph::ReleaseTransientTexture(FRGTextureResource& Texture)
 {
     if (Texture.PoolIndex < 0 || Texture.PoolIndex >= static_cast<int32>(TexturePool.size()))
@@ -898,13 +1009,47 @@ void FRenderGraph::ReleaseTransientTexture(FRGTextureResource& Texture)
     {
         Device->RetireTransientBindlessDescriptorIndex(Texture.DefaultSrvBindlessIndex, CurrentFrameFenceValue);
         Device->RetireTransientBindlessDescriptorIndex(Texture.DefaultUavBindlessIndex, CurrentFrameFenceValue);
+        for (uint32 Index : Texture.MipSrvBindlessIndices)
+        {
+            Device->RetireTransientBindlessDescriptorIndex(Index, CurrentFrameFenceValue);
+        }
+        for (uint32 Index : Texture.MipUavBindlessIndices)
+        {
+            Device->RetireTransientBindlessDescriptorIndex(Index, CurrentFrameFenceValue);
+        }
     }
     Texture.DefaultSrvBindlessIndex = UINT32_MAX;
     Texture.DefaultUavBindlessIndex = UINT32_MAX;
     Texture.DefaultSrvViewResource = nullptr;
     Texture.DefaultUavViewResource = nullptr;
+    Texture.MipSrvBindlessIndices.clear();
+    Texture.MipUavBindlessIndices.clear();
+    Texture.MipSrvViewResources.clear();
+    Texture.MipUavViewResources.clear();
     Texture.Resource = nullptr;
     Texture.PoolIndex = -1;
+}
+
+void FRenderGraph::ReleaseTransientBuffer(FRGBufferResource& Buffer)
+{
+    if (Buffer.PoolIndex < 0 || Buffer.PoolIndex >= static_cast<int32>(BufferPool.size()))
+    {
+        return;
+    }
+
+    FPooledBuffer& Pooled = BufferPool[Buffer.PoolIndex];
+    Pooled.CurrentState = Buffer.CurrentState;
+    Pooled.bInUse = false;
+    Pooled.LastUseFrame = CurrentFrameIndex;
+    Pooled.LastFenceValue = CurrentFrameFenceValue;
+    if (Device)
+    {
+        Device->RetireTransientBindlessDescriptorIndex(Buffer.DefaultUavBindlessIndex, CurrentFrameFenceValue);
+    }
+    Buffer.DefaultUavBindlessIndex = UINT32_MAX;
+    Buffer.DefaultUavViewResource = nullptr;
+    Buffer.Resource = nullptr;
+    Buffer.PoolIndex = -1;
 }
 
 uint32 FRenderGraph::GetTextureViewBindlessIndex(FRGTextureResource& Texture, bool bUav)
@@ -962,6 +1107,69 @@ uint32 FRenderGraph::GetTextureViewBindlessIndex(FRGTextureResource& Texture, bo
             SrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
             SrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
             SrvDesc.Format = Texture.Resource->GetDesc().Format;
+            SrvDesc.Texture2D.MipLevels = Texture.Desc.MipLevels;
+            Device->WriteBindlessSrv(BindlessIndex, Texture.Resource, SrvDesc);
+        }
+
+        ViewResource = Texture.Resource;
+    }
+
+    return BindlessIndex;
+}
+
+uint32 FRenderGraph::GetTextureMipViewBindlessIndex(FRGTextureResource& Texture, bool bUav, uint32 MipIndex)
+{
+    if (!Device || Texture.bExternal || !Texture.Resource)
+    {
+        return UINT32_MAX;
+    }
+
+    if (MipIndex >= Texture.Desc.MipLevels)
+    {
+        return UINT32_MAX;
+    }
+
+    if (bUav && (Texture.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) == 0)
+    {
+        return UINT32_MAX;
+    }
+
+    std::vector<uint32>& BindlessIndices = bUav ? Texture.MipUavBindlessIndices : Texture.MipSrvBindlessIndices;
+    std::vector<ID3D12Resource*>& ViewResources = bUav ? Texture.MipUavViewResources : Texture.MipSrvViewResources;
+    if (BindlessIndices.size() < Texture.Desc.MipLevels)
+    {
+        BindlessIndices.resize(Texture.Desc.MipLevels, UINT32_MAX);
+        ViewResources.resize(Texture.Desc.MipLevels, nullptr);
+    }
+
+    uint32& BindlessIndex = BindlessIndices[MipIndex];
+    ID3D12Resource*& ViewResource = ViewResources[MipIndex];
+    if (BindlessIndex == UINT32_MAX)
+    {
+        BindlessIndex = Device->AllocateTransientBindlessDescriptorIndex();
+        if (BindlessIndex == UINT32_MAX)
+        {
+            return UINT32_MAX;
+        }
+    }
+
+    if (ViewResource != Texture.Resource)
+    {
+        if (bUav)
+        {
+            D3D12_UNORDERED_ACCESS_VIEW_DESC UavDesc = {};
+            UavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+            UavDesc.Format = Texture.Resource->GetDesc().Format;
+            UavDesc.Texture2D.MipSlice = MipIndex;
+            Device->WriteBindlessUav(BindlessIndex, Texture.Resource, nullptr, UavDesc);
+        }
+        else
+        {
+            D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc = {};
+            SrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            SrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            SrvDesc.Format = Texture.Resource->GetDesc().Format;
+            SrvDesc.Texture2D.MostDetailedMip = MipIndex;
             SrvDesc.Texture2D.MipLevels = 1;
             Device->WriteBindlessSrv(BindlessIndex, Texture.Resource, SrvDesc);
         }
@@ -970,6 +1178,59 @@ uint32 FRenderGraph::GetTextureViewBindlessIndex(FRGTextureResource& Texture, bo
     }
 
     return BindlessIndex;
+}
+
+uint32 FRenderGraph::GetBufferUavBindlessIndex(FRGBufferResource& Buffer)
+{
+    if (!Device)
+    {
+        return UINT32_MAX;
+    }
+
+    if (Buffer.bExternal)
+    {
+        std::ostringstream Stream;
+        Stream << "RenderGraph bindless UAV requested for imported buffer '"
+            << (Buffer.Name.empty() ? "<Unnamed>" : Buffer.Name)
+            << "'";
+        LogWarning(Stream.str());
+        return UINT32_MAX;
+    }
+
+    if (!Buffer.Resource || (Buffer.Desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) == 0)
+    {
+        return UINT32_MAX;
+    }
+
+    if (Buffer.Desc.NumElements == 0)
+    {
+        return UINT32_MAX;
+    }
+
+    if (Buffer.DefaultUavBindlessIndex == UINT32_MAX)
+    {
+        Buffer.DefaultUavBindlessIndex = Device->AllocateTransientBindlessDescriptorIndex();
+        if (Buffer.DefaultUavBindlessIndex == UINT32_MAX)
+        {
+            return UINT32_MAX;
+        }
+    }
+
+    if (Buffer.DefaultUavViewResource != Buffer.Resource)
+    {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC UavDesc = {};
+        UavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        UavDesc.Format = Buffer.Desc.ViewFormat;
+        UavDesc.Buffer.FirstElement = 0;
+        UavDesc.Buffer.NumElements = Buffer.Desc.NumElements;
+        UavDesc.Buffer.StructureByteStride = Buffer.Desc.StructureByteStride;
+        UavDesc.Buffer.CounterOffsetInBytes = 0;
+        UavDesc.Buffer.Flags = Buffer.Desc.UavFlags;
+        Device->WriteBindlessUav(Buffer.DefaultUavBindlessIndex, Buffer.Resource, nullptr, UavDesc);
+        Buffer.DefaultUavViewResource = Buffer.Resource;
+    }
+
+    return Buffer.DefaultUavBindlessIndex;
 }
 
 void FRenderGraph::DumpDebugInfo(const std::vector<bool>& PassRequired, const std::vector<bool>& ResourceRequired)

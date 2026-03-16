@@ -71,12 +71,6 @@ void FDeferredResourceImporter::ImportFrameResources(FDeferredPassContext& Conte
     const uint32_t HalfWidth = (static_cast<uint32>(Owner.Viewport.Width) + 1u) / 2u;
     const uint32_t HalfHeight = (static_cast<uint32>(Owner.Viewport.Height) + 1u) / 2u;
 
-    OutResources.RestirGIHalfDepthNormalHandle = Graph.ImportTexture(
-        "HalfDepthNormal",
-        Owner.RestirGIHalfDepthNormalTexture.Get(),
-        &Owner.RestirGIHalfDepthNormalState,
-        { HalfWidth, HalfHeight, DXGI_FORMAT_R32G32_UINT });
-
     OutResources.RestirGIReservoirDepthNormalAHandle = Graph.ImportTexture(
         "ReSTIR GI Reservoir DepthNormal A",
         Owner.RestirGIReservoirDepthNormalATexture.Get(),
@@ -160,28 +154,6 @@ void FDeferredResourceImporter::ImportFrameResources(FDeferredPassContext& Conte
         Owner.RestirGiPrevNormalTexture.Get(),
         &Owner.RestirGiPrevNormalState,
         { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), DXGI_FORMAT_R16G16B16A16_FLOAT });
-
-    OutResources.RestirGiShMipHandle = Graph.ImportTexture(
-        "ReSTIR GI SH Mips",
-        Owner.RestirGiShMipTexture.Get(),
-        &Owner.RestirGiShMipState,
-        { (static_cast<uint32>(Owner.Viewport.Width) + 1u) / 2u, (static_cast<uint32>(Owner.Viewport.Height) + 1u) / 2u, DXGI_FORMAT_R32G32B32A32_UINT });
-
-    OutResources.RestirGiLinearDepthMipHandle = Graph.ImportTexture(
-        "ReSTIR GI LinearDepth Mips",
-        Owner.RestirGiLinearDepthMipTexture.Get(),
-        &Owner.RestirGiLinearDepthMipState,
-        { (static_cast<uint32>(Owner.Viewport.Width) + 1u) / 2u, (static_cast<uint32>(Owner.Viewport.Height) + 1u) / 2u, DXGI_FORMAT_R16_FLOAT });
-
-    FRGBufferDesc RestirGiSpdCounterDesc = {};
-    RestirGiSpdCounterDesc.Size = sizeof(uint32_t) * 4u;
-    RestirGiSpdCounterDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-
-    OutResources.RestirGiSpdAtomicCounterHandle = Graph.ImportBuffer(
-        "ReSTIR GI SPD Atomic Counter",
-        Owner.RestirGiSpdAtomicCounterBuffer.Get(),
-        &Owner.RestirGiSpdAtomicCounterState,
-        RestirGiSpdCounterDesc);
 
     OutResources.SsrHandle = Graph.ImportTexture(
         "SSR",
@@ -367,21 +339,6 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
     }
 
     {
-        D3D12_SHADER_RESOURCE_VIEW_DESC HalfDepthNormalSrvDesc = {};
-        HalfDepthNormalSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        HalfDepthNormalSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        HalfDepthNormalSrvDesc.Format = DXGI_FORMAT_R32G32_UINT;
-        HalfDepthNormalSrvDesc.Texture2D.MipLevels = 1;
-        RestirGIHalfDepthNormalBindless.Srv = Device->CreateBindlessSrv(RestirGIHalfDepthNormalTexture.Get(), HalfDepthNormalSrvDesc);
-
-        D3D12_UNORDERED_ACCESS_VIEW_DESC HalfDepthNormalUavDesc = {};
-        HalfDepthNormalUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-        HalfDepthNormalUavDesc.Format = DXGI_FORMAT_R32G32_UINT;
-        HalfDepthNormalUavDesc.Texture2D.MipSlice = 0;
-        RestirGIHalfDepthNormalBindless.Uav = Device->CreateBindlessUav(RestirGIHalfDepthNormalTexture.Get(), nullptr, HalfDepthNormalUavDesc);
-    }
-
-    {
         D3D12_SHADER_RESOURCE_VIEW_DESC VelocitySrvDesc = {};
         VelocitySrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         VelocitySrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -515,43 +472,6 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         RestirGiPrevNormalSrvBindlessIndex = Device->CreateBindlessSrv(RestirGiPrevNormalTexture.Get(), RestirGISrvDesc);
         RestirGiPrevNormalUavBindlessIndex = Device->CreateBindlessUav(RestirGiPrevNormalTexture.Get(), nullptr, RestirGIUavDesc);
 
-        RestirGISrvDesc.Format = DXGI_FORMAT_R32G32B32A32_UINT;
-        RestirGIUavDesc.Format = DXGI_FORMAT_R32G32B32A32_UINT;
-        RestirGISrvDesc.Texture2D.MipLevels = 4;
-        RestirGISrvDesc.Texture2D.MostDetailedMip = 0;
-        RestirGiShMipSrvBindlessIndex = Device->CreateBindlessSrv(RestirGiShMipTexture.Get(), RestirGISrvDesc);
-        for (uint32_t MipIndex = 0; MipIndex < 4u; ++MipIndex)
-        {
-            RestirGISrvDesc.Texture2D.MipLevels = 1;
-            RestirGISrvDesc.Texture2D.MostDetailedMip = MipIndex;
-            RestirGIUavDesc.Texture2D.MipSlice = MipIndex;
-            RestirGiShMipSrvBindlessIndices[MipIndex] = Device->CreateBindlessSrv(RestirGiShMipTexture.Get(), RestirGISrvDesc);
-            RestirGiShMipUavBindlessIndices[MipIndex] = Device->CreateBindlessUav(RestirGiShMipTexture.Get(), nullptr, RestirGIUavDesc);
-        }
-
-        D3D12_UNORDERED_ACCESS_VIEW_DESC RestirSpdCounterUavDesc = {};
-        RestirSpdCounterUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-        RestirSpdCounterUavDesc.Format = DXGI_FORMAT_R32_TYPELESS;
-        RestirSpdCounterUavDesc.Buffer.FirstElement = 0;
-        RestirSpdCounterUavDesc.Buffer.NumElements = 1;
-        RestirSpdCounterUavDesc.Buffer.StructureByteStride = 0;
-        RestirSpdCounterUavDesc.Buffer.CounterOffsetInBytes = 0;
-        RestirSpdCounterUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
-        RestirGiSpdAtomicCounterUavBindlessIndex = Device->CreateBindlessUav(RestirGiSpdAtomicCounterBuffer.Get(), nullptr, RestirSpdCounterUavDesc);
-
-        RestirGISrvDesc.Format = DXGI_FORMAT_R16_FLOAT;
-        RestirGIUavDesc.Format = DXGI_FORMAT_R16_FLOAT;
-        RestirGISrvDesc.Texture2D.MipLevels = 4;
-        RestirGISrvDesc.Texture2D.MostDetailedMip = 0;
-        RestirGiLinearDepthMipSrvBindlessIndex = Device->CreateBindlessSrv(RestirGiLinearDepthMipTexture.Get(), RestirGISrvDesc);
-        for (uint32_t MipIndex = 0; MipIndex < 4u; ++MipIndex)
-        {
-            RestirGISrvDesc.Texture2D.MipLevels = 1;
-            RestirGISrvDesc.Texture2D.MostDetailedMip = MipIndex;
-            RestirGIUavDesc.Texture2D.MipSlice = MipIndex;
-            RestirGiLinearDepthMipSrvBindlessIndices[MipIndex] = Device->CreateBindlessSrv(RestirGiLinearDepthMipTexture.Get(), RestirGISrvDesc);
-            RestirGiLinearDepthMipUavBindlessIndices[MipIndex] = Device->CreateBindlessUav(RestirGiLinearDepthMipTexture.Get(), nullptr, RestirGIUavDesc);
-        }
         return true;
     };
     if (!CreateRestirDescriptors())

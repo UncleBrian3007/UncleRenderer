@@ -494,7 +494,7 @@ void FDeferredRayTracingPasses::AddInitialSamplingPass(FDeferredPassContext& Con
         Builder.ReadTexture(GBufferHandles[2], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.WriteTexture(Context.Resources.RestirGIInitialRadianceHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         Builder.WriteTexture(Context.Resources.RestirGIInitialRayDirectionHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    }, [&, InitialPipeline, bUseBlueNoiseSobol](const FRestirGiSplitPassData& Data, FDX12CommandContext& Cmd)
+    }, [&, InitialPipeline, bUseBlueNoiseSobol, RestirGIHalfDepthNormalHandle](const FRestirGiSplitPassData& Data, FDX12CommandContext& Cmd)
     {
         const uint32_t DepthBindlessIndex = GetDepthBindlessIndexForRestir(Owner);
         const uint32_t FrameIndex = Cmd.GetCurrentFrameIndex();
@@ -502,6 +502,7 @@ void FDeferredRayTracingPasses::AddInitialSamplingPass(FDeferredPassContext& Con
         const uint32_t LinearClampSamplerIndex = Owner.Device ? Owner.Device->GetLinearClampSamplerIndex() : UINT32_MAX;
         const uint32_t InitialRadianceUavBindlessIndex = Graph.GetTextureUavBindlessIndex(Context.Resources.RestirGIInitialRadianceHandle);
         const uint32_t InitialRayDirectionUavBindlessIndex = Graph.GetTextureUavBindlessIndex(Context.Resources.RestirGIInitialRayDirectionHandle);
+        const uint32_t HalfDepthNormalSrvBindlessIndex = Graph.GetTextureSrvBindlessIndex(RestirGIHalfDepthNormalHandle);
         const bool bInputsValid =
             (DepthBindlessIndex != UINT32_MAX) &&
             (Owner.VelocityBindlessIndex != UINT32_MAX) &&
@@ -515,7 +516,7 @@ void FDeferredRayTracingPasses::AddInitialSamplingPass(FDeferredPassContext& Con
             (InitialRayDirectionUavBindlessIndex != UINT32_MAX) &&
             (Owner.RestirGIHistorySrvBindlessIndex != UINT32_MAX) &&
             (Owner.RestirGiPrevLinearDepthSrvBindlessIndex != UINT32_MAX) &&
-            (Owner.RestirGIHalfDepthNormalBindless.Srv != UINT32_MAX) &&
+            (HalfDepthNormalSrvBindlessIndex != UINT32_MAX) &&
             (!bUseBlueNoiseSobol || (Owner.BlueNoiseSobolSrvBindlessIndex != UINT32_MAX)) &&
             (!bUseBlueNoiseSobol || (Owner.BlueNoiseScramblingRanking1SPPSrvBindlessIndex != UINT32_MAX));
         const uint32_t BindlessIndices[30] =
@@ -539,7 +540,7 @@ void FDeferredRayTracingPasses::AddInitialSamplingPass(FDeferredPassContext& Con
             InitialRadianceUavBindlessIndex,
             InitialRayDirectionUavBindlessIndex,
             UINT32_MAX,
-            Owner.RestirGIHalfDepthNormalBindless.Srv,
+            HalfDepthNormalSrvBindlessIndex,
             UINT32_MAX,
             UINT32_MAX,
             UINT32_MAX,
@@ -595,7 +596,7 @@ void FDeferredRayTracingPasses::AddTemporalResamplingPass(FDeferredPassContext& 
         Builder.WriteTexture(RestirGIReservoirSampleRadianceBHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         Builder.WriteTexture(RestirGIReservoirRayDirectionBHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         Builder.WriteTexture(RestirGIReservoirMWBHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    }, [&, RestirGIInitialRadianceHandle, RestirGIInitialRayDirectionHandle](const FRestirGiSplitPassData& Data, FDX12CommandContext& Cmd)
+    }, [&, RestirGIHalfDepthNormalHandle, RestirGIInitialRadianceHandle, RestirGIInitialRayDirectionHandle](const FRestirGiSplitPassData& Data, FDX12CommandContext& Cmd)
     {
         const uint32_t DepthBindlessIndex = GetDepthBindlessIndexForRestir(Owner);
         const uint32_t FrameIndex = Cmd.GetCurrentFrameIndex();
@@ -603,6 +604,7 @@ void FDeferredRayTracingPasses::AddTemporalResamplingPass(FDeferredPassContext& 
         const uint32_t LinearClampSamplerIndex = Owner.Device ? Owner.Device->GetLinearClampSamplerIndex() : UINT32_MAX;
         const uint32_t InitialRadianceSrvBindlessIndex = Graph.GetTextureSrvBindlessIndex(RestirGIInitialRadianceHandle);
         const uint32_t InitialRayDirectionSrvBindlessIndex = Graph.GetTextureSrvBindlessIndex(RestirGIInitialRayDirectionHandle);
+        const uint32_t HalfDepthNormalSrvBindlessIndex = Graph.GetTextureSrvBindlessIndex(RestirGIHalfDepthNormalHandle);
         const bool bInputsValid =
             (DepthBindlessIndex != UINT32_MAX) &&
             (Owner.VelocityBindlessIndex != UINT32_MAX) &&
@@ -623,7 +625,7 @@ void FDeferredRayTracingPasses::AddTemporalResamplingPass(FDeferredPassContext& 
             (Owner.RestirGIReservoirRayDirectionBUavBindlessIndex != UINT32_MAX) &&
             (Owner.RestirGIReservoirMWBUavBindlessIndex != UINT32_MAX) &&
             (Owner.RestirGiPrevLinearDepthSrvBindlessIndex != UINT32_MAX) &&
-            (Owner.RestirGIHalfDepthNormalBindless.Srv != UINT32_MAX);
+            (HalfDepthNormalSrvBindlessIndex != UINT32_MAX);
         const uint32_t BindlessIndices[30] =
         {
             UINT32_MAX,
@@ -645,7 +647,7 @@ void FDeferredRayTracingPasses::AddTemporalResamplingPass(FDeferredPassContext& 
             Owner.RestirGIReservoirSampleRadianceBUavBindlessIndex,
             Owner.RestirGIReservoirRayDirectionBUavBindlessIndex,
             Owner.RestirGIReservoirMWBUavBindlessIndex,
-            Owner.RestirGIHalfDepthNormalBindless.Srv,
+            HalfDepthNormalSrvBindlessIndex,
             UINT32_MAX,
             UINT32_MAX,
             UINT32_MAX,
@@ -690,7 +692,7 @@ void FDeferredRayTracingPasses::AddReservoirBootstrapPass(FDeferredPassContext& 
         Builder.WriteTexture(RestirGIReservoirSampleRadianceBHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         Builder.WriteTexture(RestirGIReservoirRayDirectionBHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         Builder.WriteTexture(RestirGIReservoirMWBHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    }, [&, RestirGIInitialRadianceHandle, RestirGIInitialRayDirectionHandle](const FRestirGiSplitPassData& Data, FDX12CommandContext& Cmd)
+    }, [&, RestirGIHalfDepthNormalHandle, RestirGIInitialRadianceHandle, RestirGIInitialRayDirectionHandle](const FRestirGiSplitPassData& Data, FDX12CommandContext& Cmd)
     {
         const uint32_t DepthBindlessIndex = GetDepthBindlessIndexForRestir(Owner);
         const uint32_t FrameIndex = Cmd.GetCurrentFrameIndex();
@@ -698,6 +700,7 @@ void FDeferredRayTracingPasses::AddReservoirBootstrapPass(FDeferredPassContext& 
         const uint32_t LinearClampSamplerIndex = Owner.Device ? Owner.Device->GetLinearClampSamplerIndex() : UINT32_MAX;
         const uint32_t InitialRadianceSrvBindlessIndex = Graph.GetTextureSrvBindlessIndex(RestirGIInitialRadianceHandle);
         const uint32_t InitialRayDirectionSrvBindlessIndex = Graph.GetTextureSrvBindlessIndex(RestirGIInitialRayDirectionHandle);
+        const uint32_t HalfDepthNormalSrvBindlessIndex = Graph.GetTextureSrvBindlessIndex(RestirGIHalfDepthNormalHandle);
         const bool bInputsValid =
             (DepthBindlessIndex != UINT32_MAX) &&
             (Owner.GBufferBindlessIndices[0] != UINT32_MAX) &&
@@ -712,7 +715,7 @@ void FDeferredRayTracingPasses::AddReservoirBootstrapPass(FDeferredPassContext& 
             (Owner.RestirGIReservoirSampleRadianceBUavBindlessIndex != UINT32_MAX) &&
             (Owner.RestirGIReservoirRayDirectionBUavBindlessIndex != UINT32_MAX) &&
             (Owner.RestirGIReservoirMWBUavBindlessIndex != UINT32_MAX) &&
-            (Owner.RestirGIHalfDepthNormalBindless.Srv != UINT32_MAX);
+            (HalfDepthNormalSrvBindlessIndex != UINT32_MAX);
         const uint32_t BindlessIndices[30] =
         {
             UINT32_MAX,
@@ -734,7 +737,7 @@ void FDeferredRayTracingPasses::AddReservoirBootstrapPass(FDeferredPassContext& 
             Owner.RestirGIReservoirSampleRadianceBUavBindlessIndex,
             Owner.RestirGIReservoirRayDirectionBUavBindlessIndex,
             Owner.RestirGIReservoirMWBUavBindlessIndex,
-            Owner.RestirGIHalfDepthNormalBindless.Srv,
+            HalfDepthNormalSrvBindlessIndex,
             UINT32_MAX,
             UINT32_MAX,
             UINT32_MAX,

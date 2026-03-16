@@ -41,7 +41,6 @@ bool FDeferredLightingPasses::InitializePipelines(FDeferredRenderer& Owner, FDX1
 bool FDeferredLightingPasses::InitializeResources(FDeferredRenderer& Owner, FDX12Device* Device, uint32_t Width, uint32_t Height) const
 {
     return Owner.CreateLinearDepthResources(Device, Width, Height)
-        && Owner.CreateExtractHalfDepthNormalResources(Device, Width, Height)
         && Owner.CreateGtaoResources(Device, Width, Height)
         && Owner.CreateSsrResources(Device, Width, Height)
         && Owner.CreateHilbertLutResources(Device)
@@ -230,44 +229,6 @@ bool FDeferredRenderer::CreateLinearDepthPipeline(FDX12Device* Device)
     PsoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
 
     HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(LinearDepthPipeline.GetAddressOf())));
-    return true;
-}
-
-bool FDeferredRenderer::CreateExtractHalfDepthNormalResources(FDX12Device* Device, uint32_t Width, uint32_t Height)
-{
-    if (Device == nullptr)
-    {
-        return false;
-    }
-
-    const uint32_t HalfWidth = (Width + 1u) / 2u;
-    const uint32_t HalfHeight = (Height + 1u) / 2u;
-
-    CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
-    CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
-        DXGI_FORMAT_R32G32_UINT,
-        HalfWidth,
-        HalfHeight,
-        1,
-        1,
-        1,
-        0,
-        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &HeapProps,
-        D3D12_HEAP_FLAG_NONE,
-        &Desc,
-        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-        nullptr,
-        IID_PPV_ARGS(RestirGIHalfDepthNormalTexture.ReleaseAndGetAddressOf())));
-
-    if (RestirGIHalfDepthNormalTexture)
-    {
-        RestirGIHalfDepthNormalTexture->SetName(L"HalfDepthNormal");
-    }
-
-    RestirGIHalfDepthNormalState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     return true;
 }
 
@@ -679,14 +640,17 @@ void FDeferredLightingPasses::AddExtractHalfDepthNormalPass(FDeferredPassContext
     FRenderGraph& Graph = Context.Graph;
     const FRGResourceHandle DepthHandle = Context.Resources.DepthHandle;
     const FRGResourceHandle GBufferAHandle = Context.Resources.GBufferHandles[0];
-    const FRGResourceHandle HalfDepthNormalHandle = Context.Resources.RestirGIHalfDepthNormalHandle;
+    FRGResourceHandle& HalfDepthNormalHandle = Context.Resources.RestirGIHalfDepthNormalHandle;
 
     struct FExtractHalfDepthNormalPassData
     {
         bool bEnabled = false;
+        FRGResourceHandle HalfDepthNormalHandle{};
     };
 
-    Graph.AddPass<FExtractHalfDepthNormalPassData>("ExtractHalfDepthNormal", [&, DepthHandle, GBufferAHandle, HalfDepthNormalHandle](FExtractHalfDepthNormalPassData& Data, FRGPassBuilder& Builder)
+    HalfDepthNormalHandle = {};
+
+    Graph.AddPass<FExtractHalfDepthNormalPassData>("ExtractHalfDepthNormal", [&, DepthHandle, GBufferAHandle](FExtractHalfDepthNormalPassData& Data, FRGPassBuilder& Builder)
     {
         Data.bEnabled = Owner.ExtractHalfDepthNormalRootSignature && Owner.ExtractHalfDepthNormalPipeline;
         if (!Data.bEnabled)
@@ -694,10 +658,14 @@ void FDeferredLightingPasses::AddExtractHalfDepthNormalPass(FDeferredPassContext
             return;
         }
 
+        const uint32_t HalfWidth = (static_cast<uint32_t>(Owner.Viewport.Width) + 1u) / 2u;
+        const uint32_t HalfHeight = (static_cast<uint32_t>(Owner.Viewport.Height) + 1u) / 2u;
+        Data.HalfDepthNormalHandle = Builder.CreateTexture("HalfDepthNormal", { HalfWidth, HalfHeight, DXGI_FORMAT_R32G32_UINT });
+        HalfDepthNormalHandle = Data.HalfDepthNormalHandle;
         Builder.ReadTexture(DepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(GBufferAHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        Builder.WriteTexture(HalfDepthNormalHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    }, [&](const FExtractHalfDepthNormalPassData& Data, FDX12CommandContext& Cmd)
+        Builder.WriteTexture(Data.HalfDepthNormalHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    }, [&, DepthHandle, GBufferAHandle](const FExtractHalfDepthNormalPassData& Data, FDX12CommandContext& Cmd)
     {
         if (!Data.bEnabled || !Owner.Device || !Owner.Device->GetBindlessDescriptorHeap() || !Owner.Device->GetSamplerDescriptorHeap())
         {
@@ -705,7 +673,8 @@ void FDeferredLightingPasses::AddExtractHalfDepthNormalPass(FDeferredPassContext
         }
 
         const uint32_t DepthBindlessIndex = Owner.DepthBindlessIndices.empty() ? UINT32_MAX : Owner.DepthBindlessIndices[Owner.GetFrameIndex() % static_cast<uint32_t>(Owner.DepthBindlessIndices.size())];
-        if (DepthBindlessIndex == UINT32_MAX || Owner.GBufferBindlessIndices[0] == UINT32_MAX || Owner.RestirGIHalfDepthNormalBindless.Uav == UINT32_MAX)
+        const uint32_t HalfDepthNormalUavBindlessIndex = Graph.GetTextureUavBindlessIndex(Data.HalfDepthNormalHandle);
+        if (DepthBindlessIndex == UINT32_MAX || Owner.GBufferBindlessIndices[0] == UINT32_MAX || HalfDepthNormalUavBindlessIndex == UINT32_MAX)
         {
             return;
         }
@@ -728,7 +697,7 @@ void FDeferredLightingPasses::AddExtractHalfDepthNormalPass(FDeferredPassContext
         {
             DepthBindlessIndex,
             Owner.GBufferBindlessIndices[0],
-            Owner.RestirGIHalfDepthNormalBindless.Uav,
+            HalfDepthNormalUavBindlessIndex,
             SequenceFrame
         };
         CommandList->SetComputeRoot32BitConstants(0, _countof(Constants), Constants, 0);

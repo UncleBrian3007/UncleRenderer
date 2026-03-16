@@ -19,12 +19,18 @@ struct FRGTextureDesc
     uint32 Width = 0;
     uint32 Height = 0;
     DXGI_FORMAT Format = DXGI_FORMAT_UNKNOWN;
+    uint16 MipLevels = 1;
 };
 
 struct FRGBufferDesc
 {
     uint64 Size = 0;
     D3D12_RESOURCE_FLAGS Flags = D3D12_RESOURCE_FLAG_NONE;
+    DXGI_FORMAT ViewFormat = DXGI_FORMAT_UNKNOWN;
+    uint32 NumElements = 0;
+    uint32 StructureByteStride = 0;
+    D3D12_BUFFER_SRV_FLAGS SrvFlags = D3D12_BUFFER_SRV_FLAG_NONE;
+    D3D12_BUFFER_UAV_FLAGS UavFlags = D3D12_BUFFER_UAV_FLAG_NONE;
 };
 
 struct FRGResourceHandle
@@ -73,12 +79,15 @@ public:
     ID3D12Resource* GetTextureResource(const FRGResourceHandle& Handle) const;
     uint32 GetTextureSrvBindlessIndex(const FRGResourceHandle& Handle);
     uint32 GetTextureUavBindlessIndex(const FRGResourceHandle& Handle);
+    uint32 GetTextureMipSrvBindlessIndex(const FRGResourceHandle& Handle, uint32 MipIndex);
+    uint32 GetTextureMipUavBindlessIndex(const FRGResourceHandle& Handle, uint32 MipIndex);
     FRGBufferHandle ImportBuffer(
         const std::string& Name,
         ID3D12Resource* Resource,
         D3D12_RESOURCE_STATES* StatePtr,
         const FRGBufferDesc& Desc);
     ID3D12Resource* GetBufferResource(const FRGBufferHandle& Handle) const;
+    uint32 GetBufferUavBindlessIndex(const FRGBufferHandle& Handle);
 
     template <typename PassData, typename SetupFunc, typename ExecuteFunc>
     void AddPass(const std::string& Name, SetupFunc&& Setup, ExecuteFunc&& Execute)
@@ -139,6 +148,10 @@ private:
         uint32 DefaultUavBindlessIndex = UINT32_MAX;
         ID3D12Resource* DefaultSrvViewResource = nullptr;
         ID3D12Resource* DefaultUavViewResource = nullptr;
+        std::vector<uint32> MipSrvBindlessIndices;
+        std::vector<uint32> MipUavBindlessIndices;
+        std::vector<ID3D12Resource*> MipSrvViewResources;
+        std::vector<ID3D12Resource*> MipUavViewResources;
         bool bExternal = false;
     };
 
@@ -151,6 +164,9 @@ private:
         D3D12_RESOURCE_STATES CurrentState = D3D12_RESOURCE_STATE_COMMON;
         int32 FirstUsePass = -1;
         int32 LastUsePass = -1;
+        int32 PoolIndex = -1;
+        uint32 DefaultUavBindlessIndex = UINT32_MAX;
+        ID3D12Resource* DefaultUavViewResource = nullptr;
         bool bExternal = false;
     };
 
@@ -175,8 +191,12 @@ private:
 
     void AccumulateResourceFlags(const FRGResourceHandle& Handle, D3D12_RESOURCE_STATES RequiredState, ERGResourceAccess Access);
     bool AcquireTransientTexture(FRGTextureResource& Texture, D3D12_RESOURCE_STATES InitialState);
+    bool AcquireTransientBuffer(FRGBufferResource& Buffer, D3D12_RESOURCE_STATES InitialState);
     void ReleaseTransientTexture(FRGTextureResource& Texture);
+    void ReleaseTransientBuffer(FRGBufferResource& Buffer);
     uint32 GetTextureViewBindlessIndex(FRGTextureResource& Texture, bool bUav);
+    uint32 GetTextureMipViewBindlessIndex(FRGTextureResource& Texture, bool bUav, uint32 MipIndex);
+    uint32 GetBufferUavBindlessIndex(FRGBufferResource& Buffer);
     void DumpDebugInfo(const std::vector<bool>& PassRequired, const std::vector<bool>& ResourceRequired);
     void LogTimingSummary();
 
@@ -202,6 +222,19 @@ private:
     };
 
     static std::vector<FPooledTexture> TexturePool;
+
+    struct FPooledBuffer
+    {
+        FRGBufferDesc Desc;
+        Microsoft::WRL::ComPtr<ID3D12Resource> Resource;
+        D3D12_RESOURCE_STATES CurrentState = D3D12_RESOURCE_STATE_COMMON;
+        bool bInUse = false;
+        uint32 FirstUseFrame = UINT32_MAX;
+        uint32 LastUseFrame = UINT32_MAX;
+        uint64 LastFenceValue = 0;
+    };
+
+    static std::vector<FPooledBuffer> BufferPool;
 
     struct FGpuTimingData
     {
