@@ -337,6 +337,9 @@
     <ClInclude Include="Source\Render\Deferred\RestirGI.h">
       <Filter>Header Files\Render</Filter>
     </ClInclude>
+    <ClInclude Include="Source\Render\Deferred\RestirGIDenoiser.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
     <ClInclude Include="Source\Render\DebugPrintFont.h">
       <Filter>Header Files\Render</Filter>
     </ClInclude>

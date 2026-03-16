@@ -726,7 +726,7 @@ void FRestirGI::AddInitialSamplingPass(FDeferredPassContext& Context) const
     const FRGResourceHandle DepthHandle = Context.Resources.DepthHandle;
     const FRGResourceHandle VelocityHandle = Context.Resources.VelocityHandle;
     const FRGResourceHandle RestirGIHalfDepthNormalHandle = Context.Resources.RestirGI.RestirGIHalfDepthNormalHandle;
-    const FRGResourceHandle PrevLinearDepthHandle = Context.Resources.RestirGiPrevLinearDepthHandle;
+    const FRGResourceHandle PrevLinearDepthHandle = Context.Resources.RestirGIDenoiser.PrevLinearDepthHandle;
     const FRGResourceHandle RestirGIHistoryHandle = Context.Resources.RestirGI.RestirGIHistoryHandle;
 
     const uint32_t InitialPipelineIndex = (GetRandomMode() == ERestirGIRandomMode::BlueNoiseSobol) ? 1u : 0u;
@@ -774,7 +774,7 @@ void FRestirGI::AddInitialSamplingPass(FDeferredPassContext& Context) const
             (InitialRadianceUavBindlessIndex != UINT32_MAX) &&
             (InitialRayDirectionUavBindlessIndex != UINT32_MAX) &&
             (RestirGIHistorySrvBindlessIndex != UINT32_MAX) &&
-            (Owner.RestirGiPrevLinearDepthSrvBindlessIndex != UINT32_MAX) &&
+            ((Owner.RestirGIDenoiser != nullptr) && (Owner.RestirGIDenoiser->GetPrevLinearDepthSrvBindlessIndex() != UINT32_MAX)) &&
             (HalfDepthNormalSrvBindlessIndex != UINT32_MAX) &&
             (!bUseBlueNoiseSobol || (Owner.BlueNoiseSobolSrvBindlessIndex != UINT32_MAX)) &&
             (!bUseBlueNoiseSobol || (Owner.BlueNoiseScramblingRanking1SPPSrvBindlessIndex != UINT32_MAX));
@@ -806,7 +806,7 @@ void FRestirGI::AddInitialSamplingPass(FDeferredPassContext& Context) const
             UINT32_MAX,
             UINT32_MAX,
             RestirGIHistorySrvBindlessIndex,
-            Owner.RestirGiPrevLinearDepthSrvBindlessIndex,
+            Owner.RestirGIDenoiser->GetPrevLinearDepthSrvBindlessIndex(),
             Owner.GpuDebugLineBufferUavBindlessIndex,
             Owner.BlueNoiseSobolSrvBindlessIndex,
             Owner.BlueNoiseScramblingRanking1SPPSrvBindlessIndex
@@ -824,7 +824,7 @@ void FRestirGI::AddTemporalResamplingPass(FDeferredPassContext& Context) const
     const FRGResourceHandle DepthHandle = Context.Resources.DepthHandle;
     const FRGResourceHandle VelocityHandle = Context.Resources.VelocityHandle;
     const FRGResourceHandle RestirGIHalfDepthNormalHandle = Context.Resources.RestirGI.RestirGIHalfDepthNormalHandle;
-    const FRGResourceHandle PrevLinearDepthHandle = Context.Resources.RestirGiPrevLinearDepthHandle;
+    const FRGResourceHandle PrevLinearDepthHandle = Context.Resources.RestirGIDenoiser.PrevLinearDepthHandle;
     const FRGResourceHandle RestirGIInitialRadianceHandle = Context.Resources.RestirGI.RestirGIInitialRadianceHandle;
     const FRGResourceHandle RestirGIInitialRayDirectionHandle = Context.Resources.RestirGI.RestirGIInitialRayDirectionHandle;
     const FRGResourceHandle RestirGIReservoirDepthNormalAHandle = Context.Resources.RestirGI.RestirGIReservoirDepthNormalAHandle;
@@ -883,7 +883,7 @@ void FRestirGI::AddTemporalResamplingPass(FDeferredPassContext& Context) const
             (RestirGIReservoirSampleRadianceBUavBindlessIndex != UINT32_MAX) &&
             (RestirGIReservoirRayDirectionBUavBindlessIndex != UINT32_MAX) &&
             (RestirGIReservoirMWBUavBindlessIndex != UINT32_MAX) &&
-            (Owner.RestirGiPrevLinearDepthSrvBindlessIndex != UINT32_MAX) &&
+            ((Owner.RestirGIDenoiser != nullptr) && (Owner.RestirGIDenoiser->GetPrevLinearDepthSrvBindlessIndex() != UINT32_MAX)) &&
             (HalfDepthNormalSrvBindlessIndex != UINT32_MAX);
         const uint32_t BindlessIndices[30] =
         {
@@ -913,7 +913,7 @@ void FRestirGI::AddTemporalResamplingPass(FDeferredPassContext& Context) const
             UINT32_MAX,
             UINT32_MAX,
             RestirGIHistorySrvBindlessIndex,
-            Owner.RestirGiPrevLinearDepthSrvBindlessIndex,
+            Owner.RestirGIDenoiser->GetPrevLinearDepthSrvBindlessIndex(),
             Owner.GpuDebugLineBufferUavBindlessIndex,
             Owner.BlueNoiseSobolSrvBindlessIndex,
             Owner.BlueNoiseScramblingRanking1SPPSrvBindlessIndex
@@ -1003,7 +1003,7 @@ void FRestirGI::AddReservoirBootstrapPass(FDeferredPassContext& Context) const
             UINT32_MAX,
             UINT32_MAX,
             RestirGIHistorySrvBindlessIndex,
-            Owner.RestirGiPrevLinearDepthSrvBindlessIndex,
+            Owner.RestirGIDenoiser->GetPrevLinearDepthSrvBindlessIndex(),
             Owner.GpuDebugLineBufferUavBindlessIndex,
             Owner.BlueNoiseSobolSrvBindlessIndex,
             Owner.BlueNoiseScramblingRanking1SPPSrvBindlessIndex
@@ -1018,7 +1018,7 @@ void FRestirGI::AddSpatialResampling0Pass(FDeferredPassContext& Context) const
 {
     FDeferredRenderer& Owner = Context.Owner;
     FRenderGraph& Graph = Context.Graph;
-    const FRGResourceHandle PrevLinearDepthHandle = Context.Resources.RestirGiPrevLinearDepthHandle;
+    const FRGResourceHandle PrevLinearDepthHandle = Context.Resources.RestirGIDenoiser.PrevLinearDepthHandle;
     const FRGResourceHandle RestirGIReservoirDepthNormalAHandle = Context.Resources.RestirGI.RestirGIReservoirDepthNormalAHandle;
     const FRGResourceHandle RestirGIReservoirDepthNormalBHandle = Context.Resources.RestirGI.RestirGIReservoirDepthNormalBHandle;
     const FRGResourceHandle RestirGIReservoirSampleRadianceAHandle = Context.Resources.RestirGI.RestirGIReservoirSampleRadianceAHandle;
@@ -1063,7 +1063,7 @@ void FRestirGI::AddSpatialResampling0Pass(FDeferredPassContext& Context) const
             (RestirGIReservoirSampleRadianceAUavBindlessIndex != UINT32_MAX) &&
             (RestirGIReservoirRayDirectionAUavBindlessIndex != UINT32_MAX) &&
             (RestirGIReservoirMWAUavBindlessIndex != UINT32_MAX) &&
-            (Owner.RestirGiPrevLinearDepthSrvBindlessIndex != UINT32_MAX);
+            ((Owner.RestirGIDenoiser != nullptr) && (Owner.RestirGIDenoiser->GetPrevLinearDepthSrvBindlessIndex() != UINT32_MAX));
         const uint32_t BindlessIndices[30] =
         {
             UINT32_MAX,
@@ -1092,7 +1092,7 @@ void FRestirGI::AddSpatialResampling0Pass(FDeferredPassContext& Context) const
             UINT32_MAX,
             UINT32_MAX,
             RestirGIHistorySrvBindlessIndex,
-            Owner.RestirGiPrevLinearDepthSrvBindlessIndex,
+            Owner.RestirGIDenoiser->GetPrevLinearDepthSrvBindlessIndex(),
             Owner.GpuDebugLineBufferUavBindlessIndex,
             Owner.BlueNoiseSobolSrvBindlessIndex,
             Owner.BlueNoiseScramblingRanking1SPPSrvBindlessIndex
@@ -1150,7 +1150,7 @@ void FRestirGI::AddSpatialResampling1Pass(FDeferredPassContext& Context) const
             (RestirGIReservoirSampleRadianceBUavBindlessIndex != UINT32_MAX) &&
             (RestirGIReservoirRayDirectionBUavBindlessIndex != UINT32_MAX) &&
             (RestirGIReservoirMWBUavBindlessIndex != UINT32_MAX) &&
-            (Owner.RestirGiPrevLinearDepthSrvBindlessIndex != UINT32_MAX);
+            ((Owner.RestirGIDenoiser != nullptr) && (Owner.RestirGIDenoiser->GetPrevLinearDepthSrvBindlessIndex() != UINT32_MAX));
         const uint32_t BindlessIndices[30] =
         {
             UINT32_MAX,
@@ -1179,7 +1179,7 @@ void FRestirGI::AddSpatialResampling1Pass(FDeferredPassContext& Context) const
             UINT32_MAX,
             UINT32_MAX,
             RestirGIHistorySrvBindlessIndex,
-            Owner.RestirGiPrevLinearDepthSrvBindlessIndex,
+            Owner.RestirGIDenoiser->GetPrevLinearDepthSrvBindlessIndex(),
             Owner.GpuDebugLineBufferUavBindlessIndex,
             Owner.BlueNoiseSobolSrvBindlessIndex,
             Owner.BlueNoiseScramblingRanking1SPPSrvBindlessIndex
@@ -1196,7 +1196,7 @@ void FRestirGI::AddResolvePass(FDeferredPassContext& Context) const
     FRenderGraph& Graph = Context.Graph;
     const auto& GBufferHandles = Context.Resources.GBufferHandles;
     const FRGResourceHandle DepthHandle = Context.Resources.DepthHandle;
-    const FRGResourceHandle PrevLinearDepthHandle = Context.Resources.RestirGiPrevLinearDepthHandle;
+    const FRGResourceHandle PrevLinearDepthHandle = Context.Resources.RestirGIDenoiser.PrevLinearDepthHandle;
     const FRGResourceHandle RestirGIHandle = Context.Resources.RestirGI.RestirGIHandle;
     const FRGResourceHandle RestirGIReservoirDepthNormalBHandle = Context.Resources.RestirGI.RestirGIReservoirDepthNormalBHandle;
     const FRGResourceHandle RestirGIReservoirSampleRadianceBHandle = Context.Resources.RestirGI.RestirGIReservoirSampleRadianceBHandle;
@@ -1246,7 +1246,7 @@ void FRestirGI::AddResolvePass(FDeferredPassContext& Context) const
             (RestirGIReservoirMWBSrvBindlessIndex != UINT32_MAX) &&
             (InputSHUavBindlessIndex != UINT32_MAX) &&
             (VarianceUavBindlessIndex != UINT32_MAX) &&
-            (Owner.RestirGiPrevLinearDepthSrvBindlessIndex != UINT32_MAX);
+            ((Owner.RestirGIDenoiser != nullptr) && (Owner.RestirGIDenoiser->GetPrevLinearDepthSrvBindlessIndex() != UINT32_MAX));
         const uint32_t BindlessIndices[30] =
         {
             RestirGIUavBindlessIndex,
@@ -1275,7 +1275,7 @@ void FRestirGI::AddResolvePass(FDeferredPassContext& Context) const
             InputSHUavBindlessIndex,
             VarianceUavBindlessIndex,
             RestirGIHistorySrvBindlessIndex,
-            Owner.RestirGiPrevLinearDepthSrvBindlessIndex,
+            Owner.RestirGIDenoiser->GetPrevLinearDepthSrvBindlessIndex(),
             Owner.GpuDebugLineBufferUavBindlessIndex,
             Owner.BlueNoiseSobolSrvBindlessIndex,
             Owner.BlueNoiseScramblingRanking1SPPSrvBindlessIndex

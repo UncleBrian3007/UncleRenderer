@@ -39,6 +39,7 @@ FDeferredRenderer::FDeferredRenderer()
     , GeometryPasses(std::make_unique<FDeferredGeometryPasses>())
     , LightingPasses(std::make_unique<FDeferredLightingPasses>())
     , RestirGI(std::make_unique<FRestirGI>())
+    , RestirGIDenoiser(std::make_unique<FRestirGIDenoiser>())
     , RayTracingPasses(std::make_unique<FDeferredRayTracingPasses>())
     , PostProcessPasses(std::make_unique<FDeferredPostProcessPasses>())
     , ResourceImporter(std::make_unique<FDeferredResourceImporter>())
@@ -94,16 +95,33 @@ bool FDeferredRenderer::IsRestirGIEnabled() const
 
 void FDeferredRenderer::SetRestirGIDenoiserEnabled(bool bEnabled)
 {
-    if (bRestirGIDenoiserEnabled != bEnabled)
+    const bool bCurrentEnabled = RestirGIDenoiser && RestirGIDenoiser->IsEnabled();
+    if (bCurrentEnabled != bEnabled)
     {
-        bRestirGIDenoiserEnabled = bEnabled;
+        if (RestirGIDenoiser)
+        {
+            RestirGIDenoiser->SetEnabled(bEnabled);
+        }
         InvalidateRestirGiDenoiserHistory();
     }
 }
 
 bool FDeferredRenderer::IsRestirGIDenoiserEnabled() const
 {
-    return bRestirGIDenoiserEnabled;
+    return RestirGIDenoiser && RestirGIDenoiser->IsEnabled();
+}
+
+void FDeferredRenderer::SetRestirGIFreezeDenoiserHistoryResetPeriod(uint32_t InPeriod)
+{
+    if (RestirGIDenoiser)
+    {
+        RestirGIDenoiser->SetFreezeHistoryResetPeriod(InPeriod);
+    }
+}
+
+uint32_t FDeferredRenderer::GetRestirGIFreezeDenoiserHistoryResetPeriod() const
+{
+    return RestirGIDenoiser ? RestirGIDenoiser->GetFreezeHistoryResetPeriod() : 0u;
 }
 
 void FDeferredRenderer::SetRestirGISamplesPerPixel(uint32_t Samples)
@@ -433,7 +451,10 @@ void FDeferredRenderer::ApplyRendererConfig(const FRendererConfig& Config)
     bSsrHzbEnabled = Config.bEnableSsrHzb;
     bSsrRefineEnabled = Config.bEnableSsrRefine;
     bSsrDenoiseEnabled = Config.bEnableSsrDenoise;
-    bRestirGIDenoiserEnabled = Config.bEnableRestirGIDenoiser;
+    if (RestirGIDenoiser)
+    {
+        RestirGIDenoiser->SetEnabled(Config.bEnableRestirGIDenoiser);
+    }
     SsrMaxSteps = Config.SsrMaxSteps;
     SsrMaxDistance = Config.SsrMaxDistance;
     SsrThickness = Config.SsrThickness;
@@ -510,6 +531,12 @@ bool FDeferredRenderer::InitializePipelineDomains(FDX12Device* Device, DXGI_FORM
         return false;
     }
 
+    if (RestirGIDenoiser && !RestirGIDenoiser->InitializePipelines(*this, Device))
+    {
+        LogError("Deferred renderer initialization failed: ReSTIR GI denoiser pipeline creation failed");
+        return false;
+    }
+
     LogInfo("Creating deferred renderer post-process pipelines...");
     if (!PostProcessPasses->InitializePipelines(*this, Device, BackBufferFormat))
     {
@@ -556,6 +583,12 @@ bool FDeferredRenderer::InitializeFrameResources(FDX12Device* Device, uint32_t W
     if (RestirGI && !RestirGI->InitializeResources(*this, Device, Width, Height, Config.FramesInFlight))
     {
         LogError("Deferred renderer initialization failed: ReSTIR GI resource creation failed");
+        return false;
+    }
+
+    if (RestirGIDenoiser && !RestirGIDenoiser->InitializeResources(*this, Device, Width, Height))
+    {
+        LogError("Deferred renderer initialization failed: ReSTIR GI denoiser resource creation failed");
         return false;
     }
 
@@ -707,6 +740,12 @@ bool FDeferredRenderer::InitializeEnvironmentAndDescriptorResources(FDX12Device*
     if (RestirGI && !RestirGI->CreatePersistentDescriptors(*this, Device))
     {
         LogError("Deferred renderer initialization failed: ReSTIR GI descriptor creation failed");
+        return false;
+    }
+
+    if (RestirGIDenoiser && !RestirGIDenoiser->CreatePersistentDescriptors(*this, Device))
+    {
+        LogError("Deferred renderer initialization failed: ReSTIR GI denoiser descriptor creation failed");
         return false;
     }
 
@@ -870,7 +909,7 @@ void FDeferredRenderer::PrepareFrameState(const FCamera& Camera, bool bAnySkinni
         InvalidateRestirGiDenoiserHistory();
     }
 
-    if (!bRestirGIDenoiserEnabled)
+    if (!IsRestirGIDenoiserEnabled())
     {
         InvalidateRestirGiDenoiserHistory();
     }
@@ -988,26 +1027,14 @@ void FDeferredRenderer::FinalizeFrameState(const FDeferredFrameState& FrameState
     PreviousUnjitteredViewProjectionMatrix = CurrentUnjitteredViewProjectionMatrix;
     bHasPreviousUnjitteredViewProjection = true;
 
-    if (RestirGiHistoryCountATexture && RestirGiHistoryCountBTexture)
-    {
-        std::swap(RestirGiHistoryCountATexture, RestirGiHistoryCountBTexture);
-        std::swap(RestirGiHistoryCountAState, RestirGiHistoryCountBState);
-        std::swap(RestirGiHistoryCountASrvBindlessIndex, RestirGiHistoryCountBSrvBindlessIndex);
-        std::swap(RestirGiHistoryCountAUavBindlessIndex, RestirGiHistoryCountBUavBindlessIndex);
-    }
-
     if (RestirGI)
     {
         RestirGI->FinalizeFrame(*this);
     }
 
-    if (IsRestirGIEnabled() && bRestirGIDenoiserEnabled && RestirGiHistoryIrradianceTexture != nullptr)
+    if (RestirGIDenoiser)
     {
-        bRestirGIDenoiserHistoryValid = true;
-    }
-    else
-    {
-        bRestirGIDenoiserHistoryValid = false;
+        RestirGIDenoiser->FinalizeFrame(*this);
     }
 
     for (FSceneModelResource& Model : SceneModels)
@@ -1019,16 +1046,9 @@ void FDeferredRenderer::FinalizeFrameState(const FDeferredFrameState& FrameState
 
 void FDeferredRenderer::InvalidateRestirGiDenoiserHistory()
 {
-    bRestirGIDenoiserHistoryValid = false;
-
-    if (RestirGiHistoryCountASrvBindlessIndex != UINT32_MAX && RestirGiHistoryCountBSrvBindlessIndex != UINT32_MAX)
+    if (RestirGIDenoiser)
     {
-        if (RestirGiHistoryCountASrvBindlessIndex > RestirGiHistoryCountBSrvBindlessIndex)
-        {
-            std::swap(RestirGiHistoryCountASrvBindlessIndex, RestirGiHistoryCountBSrvBindlessIndex);
-            std::swap(RestirGiHistoryCountAUavBindlessIndex, RestirGiHistoryCountBUavBindlessIndex);
-            std::swap(RestirGiHistoryCountATexture, RestirGiHistoryCountBTexture);
-        }
+        RestirGIDenoiser->InvalidateHistory();
     }
 }
 

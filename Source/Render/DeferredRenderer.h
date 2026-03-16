@@ -13,6 +13,7 @@
 #include "Renderer.h"
 #include "RenderGraph.h"
 #include "Deferred/RestirGI.h"
+#include "Deferred/RestirGIDenoiser.h"
 #include "../Core/RendererConfig.h"
 #include "../Scene/GltfAnimation.h"
 
@@ -174,8 +175,8 @@ public:
     uint32_t GetRestirGIFrozenSequenceFrame() const;
     uint64_t GetRestirGIFreezeStartFrameNumber() const;
     void StepRestirGIFreezeFrame();
-    void SetRestirGIFreezeDenoiserHistoryResetPeriod(uint32_t InPeriod) { RestirGIFreezeDenoiserHistoryResetPeriod = InPeriod; }
-    uint32_t GetRestirGIFreezeDenoiserHistoryResetPeriod() const { return RestirGIFreezeDenoiserHistoryResetPeriod; }
+    void SetRestirGIFreezeDenoiserHistoryResetPeriod(uint32_t InPeriod);
+    uint32_t GetRestirGIFreezeDenoiserHistoryResetPeriod() const;
 
     void SetPathTracingAccumulationEnabled(bool bEnabled)
     {
@@ -263,17 +264,7 @@ public:
         FRGResourceHandle LinearDepthHandle{};
         FRGResourceHandle GtaoHandle{};
         FRestirGIFrameResources RestirGI;
-        FRGResourceHandle RestirGiPreBlurSHHandle{};
-        FRGResourceHandle RestirGiTemporalSHHandle{};
-        FRGResourceHandle RestirGiHistorySHHandle{};
-        FRGResourceHandle RestirGiHistoryIrradianceHandle{};
-        FRGResourceHandle RestirGiHistoryCountAHandle{};
-        FRGResourceHandle RestirGiHistoryCountBHandle{};
-        FRGResourceHandle RestirGiPrevLinearDepthHandle{};
-        FRGResourceHandle RestirGiPrevNormalHandle{};
-        FRGResourceHandle RestirGiShMipHandle{};
-        FRGResourceHandle RestirGiLinearDepthMipHandle{};
-        FRGBufferHandle RestirGiSpdAtomicCounterHandle{};
+        FRestirGIDenoiserFrameResources RestirGIDenoiser;
         FRGResourceHandle SsrHandle{};
         FRGResourceHandle SsrDenoiseHandle{};
         FRGResourceHandle SsrFallbackHandle{};
@@ -327,8 +318,6 @@ private:
     bool CreateSsrDispatchCommandSignature(FDX12Device* Device);
     bool CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     DXGI_FORMAT ResolveRestirGiRadianceFormat(FDX12Device* Device) const;
-    bool CreateRestirGiDenoiserResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
-    bool CreateRestirGiDenoiserPipelines(FDX12Device* Device);
     bool CreateHZBRootSignature(FDX12Device* Device);
     bool CreateHZBPipeline(FDX12Device* Device);
     bool CreateAutoExposureRootSignature(FDX12Device* Device);
@@ -381,12 +370,14 @@ private:
     friend class FDeferredPostProcessPasses;
     friend class FDeferredResourceImporter;
     friend class FRestirGI;
+    friend class FRestirGIDenoiser;
 
     std::unique_ptr<FDeferredFrameOrchestrator> FrameOrchestrator;
     std::unique_ptr<FDeferredVisibilityPasses> VisibilityPasses;
     std::unique_ptr<FDeferredGeometryPasses> GeometryPasses;
     std::unique_ptr<FDeferredLightingPasses> LightingPasses;
     std::unique_ptr<FRestirGI> RestirGI;
+    std::unique_ptr<FRestirGIDenoiser> RestirGIDenoiser;
     std::unique_ptr<FDeferredRayTracingPasses> RayTracingPasses;
     std::unique_ptr<FDeferredPostProcessPasses> PostProcessPasses;
     std::unique_ptr<FDeferredResourceImporter> ResourceImporter;
@@ -440,13 +431,6 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> CompositeLightingPipeline;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> VelocityPipelines;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> VelocityPipelinesSkinned;
-    Microsoft::WRL::ComPtr<ID3D12RootSignature> RestirGiDenoiserRootSignature;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGiPreBlurPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGiTemporalAccumulationPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGiGenerateShMipsPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGiGenerateLinearDepthMipsPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGiHistoryReconstructionPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGiFinalBlurPipeline;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> HZBPipelines;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> AutoExposurePipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> TaaPipeline;
@@ -467,12 +451,6 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> VelocityTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> LinearDepthTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> GtaoTexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiHistorySHTexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiHistoryIrradianceTexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiHistoryCountATexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiHistoryCountBTexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiPrevLinearDepthTexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiPrevNormalTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> SsrTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> SsrDenoiseTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> SsrFallbackTexture;
@@ -518,18 +496,6 @@ private:
     uint32_t BlueNoiseSobolSrvBindlessIndex = UINT32_MAX;
     uint32_t BlueNoiseScramblingRanking1SPPSrvBindlessIndex = UINT32_MAX;
     uint32_t GtaoBindlessIndex = UINT32_MAX;
-    uint32_t RestirGiHistoryIrradianceSrvBindlessIndex = UINT32_MAX;
-    uint32_t RestirGiHistoryIrradianceUavBindlessIndex = UINT32_MAX;
-    uint32_t RestirGiHistorySHSrvBindlessIndex = UINT32_MAX;
-    uint32_t RestirGiHistorySHUavBindlessIndex = UINT32_MAX;
-    uint32_t RestirGiHistoryCountASrvBindlessIndex = UINT32_MAX;
-    uint32_t RestirGiHistoryCountAUavBindlessIndex = UINT32_MAX;
-    uint32_t RestirGiHistoryCountBSrvBindlessIndex = UINT32_MAX;
-    uint32_t RestirGiHistoryCountBUavBindlessIndex = UINT32_MAX;
-    uint32_t RestirGiPrevLinearDepthSrvBindlessIndex = UINT32_MAX;
-    uint32_t RestirGiPrevLinearDepthUavBindlessIndex = UINT32_MAX;
-    uint32_t RestirGiPrevNormalSrvBindlessIndex = UINT32_MAX;
-    uint32_t RestirGiPrevNormalUavBindlessIndex = UINT32_MAX;
     uint32_t SsrBindlessIndex = UINT32_MAX;
     uint32_t SsrDenoiseBindlessIndex = UINT32_MAX;
     uint32_t SsrFallbackBindlessIndex = UINT32_MAX;
@@ -564,12 +530,6 @@ private:
     D3D12_RESOURCE_STATES VelocityState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES LinearDepthState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES GtaoState = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    D3D12_RESOURCE_STATES RestirGiHistoryIrradianceState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    D3D12_RESOURCE_STATES RestirGiHistorySHState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    D3D12_RESOURCE_STATES RestirGiHistoryCountAState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    D3D12_RESOURCE_STATES RestirGiHistoryCountBState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    D3D12_RESOURCE_STATES RestirGiPrevLinearDepthState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    D3D12_RESOURCE_STATES RestirGiPrevNormalState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES SsrState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES SsrDenoiseState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES SsrFallbackState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -666,15 +626,12 @@ private:
     bool bSsrHzbEnabled = false;
     bool bSsrRefineEnabled = false;
     bool bSsrDenoiseEnabled = false;
-    bool bRestirGIDenoiserEnabled = true;
 	uint32_t SsrMaxSteps = 32;
 	float SsrMaxDistance = 50.0f;
 	float SsrThickness = 1.00f;
 	float SsrStride = 1.0f;
 	float SsrRoughnessCutoff = 0.6f;
 	float SsrIntensity = 0.3f;
-    uint32_t RestirGIFreezeDenoiserHistoryResetPeriod = 3;
-    bool bRestirGIDenoiserHistoryValid = false;
     ESSRMode SsrMode = ESSRMode::PS;
     uint32_t SsrSamplesPerQuad = 1;
 

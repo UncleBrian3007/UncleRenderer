@@ -130,7 +130,10 @@ void FDeferredFrameOrchestrator::BuildFrameGraph(FDeferredPassContext& Context) 
         Owner.LightingPasses->AddExtractHalfDepthNormalPass(Context);
         Owner.LightingPasses->AddGtaoPass(Context);
         Owner.RestirGI->AddPasses(Context);
-        Owner.RayTracingPasses->AddRestirGiDenoiserPasses(Context);
+        if (Owner.RestirGIDenoiser)
+        {
+            Owner.RestirGIDenoiser->AddPasses(Context);
+        }
         if (Owner.SsrMode == ESSRMode::CS)
         {
             Owner.LightingPasses->AddSsrRayCounterClearPass(Context);

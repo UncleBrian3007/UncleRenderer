@@ -855,7 +855,7 @@ void FDeferredLightingPasses::AddCompositeLightPass(FDeferredPassContext& Contex
     const std::array<FRGResourceHandle, 4>& GBufferHandles = Context.Resources.GBufferHandles;
     const FRGResourceHandle DepthHandle = Context.Resources.DepthHandle;
     const FRGResourceHandle GtaoHandle = Context.Resources.GtaoHandle;
-    const FRGResourceHandle RestirGIInputHandle = Owner.IsRestirGIDenoiserEnabled() ? Context.Resources.RestirGiHistoryIrradianceHandle : Context.Resources.RestirGI.RestirGIHandle;
+    const FRGResourceHandle RestirGIInputHandle = Owner.IsRestirGIDenoiserEnabled() ? Context.Resources.RestirGIDenoiser.HistoryIrradianceHandle : Context.Resources.RestirGI.RestirGIHandle;
     const FRGResourceHandle SsrFallbackHandle = Context.Resources.SsrFallbackHandle;
     const FRGResourceHandle LightingHandle = Context.Resources.LightingHandle;
 
@@ -918,7 +918,7 @@ void FDeferredLightingPasses::AddCompositeLightPass(FDeferredPassContext& Contex
         const uint32_t SsrLightingBindlessIndex = Owner.bSsrDenoiseEnabled ? Owner.SsrDenoiseBindlessIndex : BaseSsrIndex;
         const uint32_t SsrFallbackIndex = Owner.SsrFallbackBindlessIndex;
         const uint32_t RestirGILightingBindlessIndex = Owner.IsRestirGIDenoiserEnabled()
-            ? Owner.RestirGiHistoryIrradianceSrvBindlessIndex
+            ? ((Owner.RestirGIDenoiser != nullptr) ? Owner.RestirGIDenoiser->GetCurrentOutputSrvBindlessIndex() : UINT32_MAX)
             : ((Owner.RestirGI != nullptr) ? Owner.RestirGI->GetCurrentOutputSrvBindlessIndex() : UINT32_MAX);
         if (DepthBindlessIndex == UINT32_MAX || Owner.GtaoBindlessIndex == UINT32_MAX || RestirGILightingBindlessIndex == UINT32_MAX || SsrLightingBindlessIndex == UINT32_MAX || SsrFallbackIndex == UINT32_MAX || Owner.ShadowMapBindlessIndex == UINT32_MAX
             || Owner.EnvironmentCubeBindlessIndex == UINT32_MAX || Owner.BrdfLutBindlessIndex == UINT32_MAX || Owner.DirectLightingBindlessIndex == UINT32_MAX
