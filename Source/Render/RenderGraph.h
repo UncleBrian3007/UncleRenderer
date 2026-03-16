@@ -71,6 +71,8 @@ public:
         D3D12_RESOURCE_STATES* StatePtr,
         const FRGTextureDesc& Desc);
     ID3D12Resource* GetTextureResource(const FRGResourceHandle& Handle) const;
+    uint32 GetTextureSrvBindlessIndex(const FRGResourceHandle& Handle);
+    uint32 GetTextureUavBindlessIndex(const FRGResourceHandle& Handle);
     FRGBufferHandle ImportBuffer(
         const std::string& Name,
         ID3D12Resource* Resource,
@@ -133,6 +135,10 @@ private:
         int32 FirstUsePass = -1;
         int32 LastUsePass = -1;
         int32 PoolIndex = -1;
+        uint32 DefaultSrvBindlessIndex = UINT32_MAX;
+        uint32 DefaultUavBindlessIndex = UINT32_MAX;
+        ID3D12Resource* DefaultSrvViewResource = nullptr;
+        ID3D12Resource* DefaultUavViewResource = nullptr;
         bool bExternal = false;
     };
 
@@ -170,6 +176,7 @@ private:
     void AccumulateResourceFlags(const FRGResourceHandle& Handle, D3D12_RESOURCE_STATES RequiredState, ERGResourceAccess Access);
     bool AcquireTransientTexture(FRGTextureResource& Texture, D3D12_RESOURCE_STATES InitialState);
     void ReleaseTransientTexture(FRGTextureResource& Texture);
+    uint32 GetTextureViewBindlessIndex(FRGTextureResource& Texture, bool bUav);
     void DumpDebugInfo(const std::vector<bool>& PassRequired, const std::vector<bool>& ResourceRequired);
     void LogTimingSummary();
 

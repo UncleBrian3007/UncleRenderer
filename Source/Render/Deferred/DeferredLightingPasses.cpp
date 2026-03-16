@@ -705,7 +705,7 @@ void FDeferredLightingPasses::AddExtractHalfDepthNormalPass(FDeferredPassContext
         }
 
         const uint32_t DepthBindlessIndex = Owner.DepthBindlessIndices.empty() ? UINT32_MAX : Owner.DepthBindlessIndices[Owner.GetFrameIndex() % static_cast<uint32_t>(Owner.DepthBindlessIndices.size())];
-        if (DepthBindlessIndex == UINT32_MAX || Owner.GBufferBindlessIndices[0] == UINT32_MAX || Owner.RestirGIHalfDepthNormalUavBindlessIndex == UINT32_MAX)
+        if (DepthBindlessIndex == UINT32_MAX || Owner.GBufferBindlessIndices[0] == UINT32_MAX || Owner.RestirGIHalfDepthNormalBindless.Uav == UINT32_MAX)
         {
             return;
         }
@@ -728,7 +728,7 @@ void FDeferredLightingPasses::AddExtractHalfDepthNormalPass(FDeferredPassContext
         {
             DepthBindlessIndex,
             Owner.GBufferBindlessIndices[0],
-            Owner.RestirGIHalfDepthNormalUavBindlessIndex,
+            Owner.RestirGIHalfDepthNormalBindless.Uav,
             SequenceFrame
         };
         CommandList->SetComputeRoot32BitConstants(0, _countof(Constants), Constants, 0);

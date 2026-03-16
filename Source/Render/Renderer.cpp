@@ -115,33 +115,17 @@ D3D12_GPU_DESCRIPTOR_HANDLE FRenderer::GetBindlessGpuHandle(uint32_t Index) cons
 
 void FRenderer::WriteBindlessSrv(uint32_t Index, ID3D12Resource* Resource, const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc) const
 {
-    if (!Device || !Device->GetBindlessDescriptorHeap())
+    if (Device)
     {
-        return;
-    }
-
-    const D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle = GetBindlessCpuHandle(Index);
-    Device->GetDevice()->CreateShaderResourceView(Resource, &Desc, CpuHandle);
-    const D3D12_CPU_DESCRIPTOR_HANDLE CpuClearHandle = GetBindlessCpuClearHandle(Index);
-    if (CpuClearHandle.ptr != 0)
-    {
-        Device->GetDevice()->CreateShaderResourceView(Resource, &Desc, CpuClearHandle);
+        Device->WriteBindlessSrv(Index, Resource, Desc);
     }
 }
 
 void FRenderer::WriteBindlessUav(uint32_t Index, ID3D12Resource* Resource, ID3D12Resource* Counter, const D3D12_UNORDERED_ACCESS_VIEW_DESC& Desc) const
 {
-    if (!Device || !Device->GetBindlessDescriptorHeap())
+    if (Device)
     {
-        return;
-    }
-
-    const D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle = GetBindlessCpuHandle(Index);
-    Device->GetDevice()->CreateUnorderedAccessView(Resource, Counter, &Desc, CpuHandle);
-    const D3D12_CPU_DESCRIPTOR_HANDLE CpuClearHandle = GetBindlessCpuClearHandle(Index);
-    if (CpuClearHandle.ptr != 0)
-    {
-        Device->GetDevice()->CreateUnorderedAccessView(Resource, Counter, &Desc, CpuClearHandle);
+        Device->WriteBindlessUav(Index, Resource, Counter, Desc);
     }
 }
 

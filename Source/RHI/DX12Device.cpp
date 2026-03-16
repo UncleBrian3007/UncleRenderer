@@ -222,6 +222,11 @@ bool FDX12Device::CreateBindlessDescriptorHeap()
     BindlessDescriptorCount = HeapDesc.NumDescriptors;
     BindlessDescriptorStride = Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     BindlessDescriptorNextIndex.store(0);
+    {
+        std::lock_guard<std::mutex> Lock(TransientBindlessDescriptorMutex);
+        FreeTransientBindlessDescriptorIndices.clear();
+        RetiredTransientBindlessDescriptorIndices.clear();
+    }
 
     return true;
 }
@@ -409,15 +414,7 @@ uint32_t FDX12Device::CreateBindlessSrv(ID3D12Resource* Resource, const D3D12_SH
         return UINT32_MAX;
     }
 
-    D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle = BindlessDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
-    CpuHandle.ptr += static_cast<SIZE_T>(Index) * BindlessDescriptorStride;
-    Device->CreateShaderResourceView(Resource, &Desc, CpuHandle);
-    if (BindlessCpuDescriptorHeap)
-    {
-        D3D12_CPU_DESCRIPTOR_HANDLE CpuOnlyHandle = BindlessCpuDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
-        CpuOnlyHandle.ptr += static_cast<SIZE_T>(Index) * BindlessDescriptorStride;
-        Device->CreateShaderResourceView(Resource, &Desc, CpuOnlyHandle);
-    }
+    WriteBindlessSrv(Index, Resource, Desc);
     return Index;
 }
 
@@ -434,6 +431,75 @@ uint32_t FDX12Device::CreateBindlessUav(ID3D12Resource* Resource, ID3D12Resource
         return UINT32_MAX;
     }
 
+    WriteBindlessUav(Index, Resource, Counter, Desc);
+    return Index;
+}
+
+uint32_t FDX12Device::AllocateTransientBindlessDescriptorIndex()
+{
+    if (!BindlessDescriptorHeap || !Device)
+    {
+        return UINT32_MAX;
+    }
+
+    const FDX12CommandQueue* Queue = GetGraphicsQueue();
+    const uint64 CompletedFenceValue = Queue ? Queue->GetCompletedFenceValue() : 0;
+
+    std::lock_guard<std::mutex> Lock(TransientBindlessDescriptorMutex);
+    ReclaimTransientBindlessDescriptorIndicesLocked(CompletedFenceValue);
+
+    if (!FreeTransientBindlessDescriptorIndices.empty())
+    {
+        const uint32_t Index = FreeTransientBindlessDescriptorIndices.back();
+        FreeTransientBindlessDescriptorIndices.pop_back();
+        return Index;
+    }
+
+    return AllocateBindlessDescriptorIndex();
+}
+
+void FDX12Device::RetireTransientBindlessDescriptorIndex(uint32_t Index, uint64_t FenceValue)
+{
+    if (Index == UINT32_MAX)
+    {
+        return;
+    }
+
+    std::lock_guard<std::mutex> Lock(TransientBindlessDescriptorMutex);
+    if (FenceValue == 0)
+    {
+        FreeTransientBindlessDescriptorIndices.push_back(Index);
+        return;
+    }
+
+    RetiredTransientBindlessDescriptorIndices.push_back({ Index, FenceValue });
+}
+
+void FDX12Device::WriteBindlessSrv(uint32_t Index, ID3D12Resource* Resource, const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc) const
+{
+    if (!BindlessDescriptorHeap || !Device || Index == UINT32_MAX)
+    {
+        return;
+    }
+
+    D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle = BindlessDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
+    CpuHandle.ptr += static_cast<SIZE_T>(Index) * BindlessDescriptorStride;
+    Device->CreateShaderResourceView(Resource, &Desc, CpuHandle);
+    if (BindlessCpuDescriptorHeap)
+    {
+        D3D12_CPU_DESCRIPTOR_HANDLE CpuOnlyHandle = BindlessCpuDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
+        CpuOnlyHandle.ptr += static_cast<SIZE_T>(Index) * BindlessDescriptorStride;
+        Device->CreateShaderResourceView(Resource, &Desc, CpuOnlyHandle);
+    }
+}
+
+void FDX12Device::WriteBindlessUav(uint32_t Index, ID3D12Resource* Resource, ID3D12Resource* Counter, const D3D12_UNORDERED_ACCESS_VIEW_DESC& Desc) const
+{
+    if (!BindlessDescriptorHeap || !Device || Index == UINT32_MAX)
+    {
+        return;
+    }
+
     D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle = BindlessDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
     CpuHandle.ptr += static_cast<SIZE_T>(Index) * BindlessDescriptorStride;
     Device->CreateUnorderedAccessView(Resource, Counter, &Desc, CpuHandle);
@@ -443,7 +509,21 @@ uint32_t FDX12Device::CreateBindlessUav(ID3D12Resource* Resource, ID3D12Resource
         CpuOnlyHandle.ptr += static_cast<SIZE_T>(Index) * BindlessDescriptorStride;
         Device->CreateUnorderedAccessView(Resource, Counter, &Desc, CpuOnlyHandle);
     }
-    return Index;
+}
+
+void FDX12Device::ReclaimTransientBindlessDescriptorIndicesLocked(uint64_t CompletedFenceValue)
+{
+    while (!RetiredTransientBindlessDescriptorIndices.empty())
+    {
+        const FRetiredBindlessDescriptor& Retired = RetiredTransientBindlessDescriptorIndices.front();
+        if (Retired.FenceValue > CompletedFenceValue)
+        {
+            break;
+        }
+
+        FreeTransientBindlessDescriptorIndices.push_back(Retired.Index);
+        RetiredTransientBindlessDescriptorIndices.pop_front();
+    }
 }
 
 bool FDX12Device::DetermineShaderModel()

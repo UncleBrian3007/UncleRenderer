@@ -3,6 +3,9 @@
 #include "DX12CommandQueue.h"
 #include <memory>
 #include <atomic>
+#include <deque>
+#include <mutex>
+#include <vector>
 
 class FDX12Device
 {
@@ -21,6 +24,10 @@ public:
     uint32_t             GetBindlessDescriptorCount() const { return BindlessDescriptorCount; }
     uint32_t             CreateBindlessSrv(ID3D12Resource* Resource, const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc);
     uint32_t             CreateBindlessUav(ID3D12Resource* Resource, ID3D12Resource* Counter, const D3D12_UNORDERED_ACCESS_VIEW_DESC& Desc);
+    uint32_t             AllocateTransientBindlessDescriptorIndex();
+    void                 RetireTransientBindlessDescriptorIndex(uint32_t Index, uint64_t FenceValue);
+    void                 WriteBindlessSrv(uint32_t Index, ID3D12Resource* Resource, const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc) const;
+    void                 WriteBindlessUav(uint32_t Index, ID3D12Resource* Resource, ID3D12Resource* Counter, const D3D12_UNORDERED_ACCESS_VIEW_DESC& Desc) const;
     ID3D12DescriptorHeap* GetSamplerDescriptorHeap() const { return SamplerDescriptorHeap.Get(); }
     uint32_t             GetLinearClampSamplerIndex() const { return LinearClampSamplerIndex; }
     uint32_t             GetLinearWrapSamplerIndex() const { return LinearWrapSamplerIndex; }
@@ -52,6 +59,13 @@ private:
     bool CheckTearingSupport();
     bool DetermineShaderModel();
     uint32_t AllocateBindlessDescriptorIndex();
+    void ReclaimTransientBindlessDescriptorIndicesLocked(uint64_t CompletedFenceValue);
+
+    struct FRetiredBindlessDescriptor
+    {
+        uint32_t Index = UINT32_MAX;
+        uint64_t FenceValue = 0;
+    };
 
 private:
     ComPtr<IDXGIFactory6> Factory;
@@ -62,6 +76,9 @@ private:
     std::atomic<uint32_t> BindlessDescriptorNextIndex{ 0 };
     uint32_t BindlessDescriptorCount = 0;
     uint32_t BindlessDescriptorStride = 0;
+    mutable std::mutex TransientBindlessDescriptorMutex;
+    std::vector<uint32_t> FreeTransientBindlessDescriptorIndices;
+    std::deque<FRetiredBindlessDescriptor> RetiredTransientBindlessDescriptorIndices;
     ComPtr<ID3D12DescriptorHeap> SamplerDescriptorHeap;
     uint32_t LinearClampSamplerIndex = 0;
     uint32_t LinearWrapSamplerIndex = 0;

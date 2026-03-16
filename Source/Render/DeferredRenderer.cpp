@@ -694,19 +694,6 @@ void FDeferredRenderer::FinalizeFrameState(const FDeferredFrameState& FrameState
         std::swap(RestirGiHistoryCountAUavBindlessIndex, RestirGiHistoryCountBUavBindlessIndex);
     }
 
-    if (RestirGITemporalReservoirBuffer && RestirGIReservoirHistoryBuffer)
-    {
-        std::swap(RestirGITemporalReservoirBuffer, RestirGIReservoirHistoryBuffer);
-        std::swap(RestirGITemporalReservoirState, RestirGIReservoirHistoryState);
-
-        const uint32_t CurrentReservoirSrv = RestirGITemporalReservoirSrvBindlessIndex;
-        const uint32_t CurrentReservoirUav = RestirGITemporalReservoirUavBindlessIndex;
-        RestirGITemporalReservoirSrvBindlessIndex = RestirGIReservoirHistorySrvBindlessIndex;
-        RestirGITemporalReservoirUavBindlessIndex = RestirGIReservoirHistoryUavBindlessIndex;
-        RestirGIReservoirHistorySrvBindlessIndex = CurrentReservoirSrv;
-        RestirGIReservoirHistoryUavBindlessIndex = CurrentReservoirUav;
-    }
-
     if (RestirGIReservoirDepthNormalATexture && RestirGIReservoirDepthNormalBTexture)
     {
         std::swap(RestirGIReservoirDepthNormalATexture, RestirGIReservoirDepthNormalBTexture);

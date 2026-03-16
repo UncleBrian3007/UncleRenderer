@@ -242,6 +242,18 @@ ID3D12Resource* FRenderGraph::GetTextureResource(const FRGResourceHandle& Handle
     return Resource.Resource;
 }
 
+uint32 FRenderGraph::GetTextureSrvBindlessIndex(const FRGResourceHandle& Handle)
+{
+    FRGTextureResource* Resource = ResolveResource(Handle);
+    return Resource ? GetTextureViewBindlessIndex(*Resource, false) : UINT32_MAX;
+}
+
+uint32 FRenderGraph::GetTextureUavBindlessIndex(const FRGResourceHandle& Handle)
+{
+    FRGTextureResource* Resource = ResolveResource(Handle);
+    return Resource ? GetTextureViewBindlessIndex(*Resource, true) : UINT32_MAX;
+}
+
 void FRenderGraph::RegisterUsage(PassEntry& Entry, const FRGResourceHandle& Handle, D3D12_RESOURCE_STATES RequiredState, ERGResourceAccess Access)
 {
     if (!Handle)
@@ -319,7 +331,8 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
     }
 
     CurrentFrameIndex = CmdContext.GetCurrentFrameIndex();
-    CurrentFrameFenceValue = CmdContext.GetFrameFenceValue(CurrentFrameIndex);
+    const FDX12CommandQueue* Queue = Device->GetGraphicsQueue();
+    CurrentFrameFenceValue = Queue ? (Queue->GetLastSignaledFenceValue() + 1u) : 0;
 
     ProcessPendingGpuTimings(CmdContext, CmdContext.GetCurrentFrameIndex());
 
@@ -881,8 +894,82 @@ void FRenderGraph::ReleaseTransientTexture(FRGTextureResource& Texture)
     Pooled.bInUse = false;
     Pooled.LastUseFrame = CurrentFrameIndex;
     Pooled.LastFenceValue = CurrentFrameFenceValue;
+    if (Device)
+    {
+        Device->RetireTransientBindlessDescriptorIndex(Texture.DefaultSrvBindlessIndex, CurrentFrameFenceValue);
+        Device->RetireTransientBindlessDescriptorIndex(Texture.DefaultUavBindlessIndex, CurrentFrameFenceValue);
+    }
+    Texture.DefaultSrvBindlessIndex = UINT32_MAX;
+    Texture.DefaultUavBindlessIndex = UINT32_MAX;
+    Texture.DefaultSrvViewResource = nullptr;
+    Texture.DefaultUavViewResource = nullptr;
     Texture.Resource = nullptr;
     Texture.PoolIndex = -1;
+}
+
+uint32 FRenderGraph::GetTextureViewBindlessIndex(FRGTextureResource& Texture, bool bUav)
+{
+    if (!Device)
+    {
+        return UINT32_MAX;
+    }
+
+    if (Texture.bExternal)
+    {
+        std::ostringstream Stream;
+        Stream << "RenderGraph bindless view requested for imported texture '"
+            << (Texture.Name.empty() ? "<Unnamed>" : Texture.Name)
+            << "'";
+        LogWarning(Stream.str());
+        return UINT32_MAX;
+    }
+
+    if (!Texture.Resource)
+    {
+        return UINT32_MAX;
+    }
+
+    uint32& BindlessIndex = bUav ? Texture.DefaultUavBindlessIndex : Texture.DefaultSrvBindlessIndex;
+    ID3D12Resource*& ViewResource = bUav ? Texture.DefaultUavViewResource : Texture.DefaultSrvViewResource;
+
+    if (bUav && (Texture.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) == 0)
+    {
+        return UINT32_MAX;
+    }
+
+    if (BindlessIndex == UINT32_MAX)
+    {
+        BindlessIndex = Device->AllocateTransientBindlessDescriptorIndex();
+        if (BindlessIndex == UINT32_MAX)
+        {
+            return UINT32_MAX;
+        }
+    }
+
+    if (ViewResource != Texture.Resource)
+    {
+        if (bUav)
+        {
+            D3D12_UNORDERED_ACCESS_VIEW_DESC UavDesc = {};
+            UavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+            UavDesc.Format = Texture.Resource->GetDesc().Format;
+            UavDesc.Texture2D.MipSlice = 0;
+            Device->WriteBindlessUav(BindlessIndex, Texture.Resource, nullptr, UavDesc);
+        }
+        else
+        {
+            D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc = {};
+            SrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            SrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            SrvDesc.Format = Texture.Resource->GetDesc().Format;
+            SrvDesc.Texture2D.MipLevels = 1;
+            Device->WriteBindlessSrv(BindlessIndex, Texture.Resource, SrvDesc);
+        }
+
+        ViewResource = Texture.Resource;
+    }
+
+    return BindlessIndex;
 }
 
 void FRenderGraph::DumpDebugInfo(const std::vector<bool>& PassRequired, const std::vector<bool>& ResourceRequired)

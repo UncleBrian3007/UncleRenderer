@@ -288,9 +288,6 @@ public:
         FRGResourceHandle GtaoHandle{};
         FRGResourceHandle RestirGIHandle{};
         FRGResourceHandle RestirGIHistoryHandle{};
-        FRGBufferHandle RestirGITemporalReservoirHandle{};
-        FRGBufferHandle RestirGISpatialReservoirHandle{};
-        FRGBufferHandle RestirGIReservoirHistoryHandle{};
         FRGResourceHandle RestirGIInitialRadianceHandle{};
         FRGResourceHandle RestirGIInitialRayDirectionHandle{};
         FRGResourceHandle RestirGIReservoirDepthNormalAHandle{};
@@ -519,11 +516,6 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> GtaoTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGITexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIHistoryTexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGITemporalReservoirBuffer;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGISpatialReservoirBuffer;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIReservoirHistoryBuffer;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIInitialRadianceTexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIInitialRayDirectionTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIReservoirDepthNormalATexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIReservoirDepthNormalBTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIReservoirSampleRadianceATexture;
@@ -581,12 +573,16 @@ private:
     D3D12_CPU_DESCRIPTOR_HANDLE SsrDenoiseRtvHandle{};
     D3D12_CPU_DESCRIPTOR_HANDLE TonemapOutputRtvHandle{};
     std::array<uint32_t, 4> GBufferBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX } };
+    struct FBindlessTextureIndices
+    {
+        uint32_t Srv = UINT32_MAX;
+        uint32_t Uav = UINT32_MAX;
+    };
     uint32_t ShadowMapBindlessIndex = UINT32_MAX;
     uint32_t EnvironmentCubeBindlessIndex = UINT32_MAX;
     uint32_t BrdfLutBindlessIndex = UINT32_MAX;
     uint32_t LinearDepthBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIHalfDepthNormalSrvBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIHalfDepthNormalUavBindlessIndex = UINT32_MAX;
+    FBindlessTextureIndices RestirGIHalfDepthNormalBindless;
     uint32_t VelocityBindlessIndex = UINT32_MAX;
     uint32_t HilbertLutBindlessIndex = UINT32_MAX;
     uint32_t BlueNoiseSobolSrvBindlessIndex = UINT32_MAX;
@@ -596,16 +592,6 @@ private:
     uint32_t RestirGIUavBindlessIndex = UINT32_MAX;
     uint32_t RestirGIHistorySrvBindlessIndex = UINT32_MAX;
     uint32_t RestirGIHistoryUavBindlessIndex = UINT32_MAX;
-    uint32_t RestirGITemporalReservoirSrvBindlessIndex = UINT32_MAX;
-    uint32_t RestirGITemporalReservoirUavBindlessIndex = UINT32_MAX;
-    uint32_t RestirGISpatialReservoirSrvBindlessIndex = UINT32_MAX;
-    uint32_t RestirGISpatialReservoirUavBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirHistorySrvBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirHistoryUavBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIInitialRadianceSrvBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIInitialRadianceUavBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIInitialRayDirectionSrvBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIInitialRayDirectionUavBindlessIndex = UINT32_MAX;
     uint32_t RestirGIReservoirDepthNormalASrvBindlessIndex = UINT32_MAX;
     uint32_t RestirGIReservoirDepthNormalAUavBindlessIndex = UINT32_MAX;
     uint32_t RestirGIReservoirDepthNormalBSrvBindlessIndex = UINT32_MAX;
@@ -686,11 +672,6 @@ private:
     D3D12_RESOURCE_STATES GtaoState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES RestirGIState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES RestirGIHistoryState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    D3D12_RESOURCE_STATES RestirGITemporalReservoirState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    D3D12_RESOURCE_STATES RestirGISpatialReservoirState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    D3D12_RESOURCE_STATES RestirGIReservoirHistoryState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-    D3D12_RESOURCE_STATES RestirGIInitialRadianceState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    D3D12_RESOURCE_STATES RestirGIInitialRayDirectionState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES RestirGIReservoirDepthNormalAState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES RestirGIReservoirDepthNormalBState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES RestirGIReservoirSampleRadianceAState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
