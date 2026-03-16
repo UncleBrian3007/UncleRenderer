@@ -162,8 +162,8 @@ void FDeferredRayTracingPasses::AddRestirGiDenoiserPasses(FDeferredPassContext& 
     const FRGResourceHandle DepthHandle = Context.Resources.DepthHandle;
     const FRGResourceHandle VelocityHandle = Context.Resources.VelocityHandle;
     const FRGResourceHandle LinearDepthHandle = Context.Resources.LinearDepthHandle;
-    const FRGResourceHandle InputSHHandle = Context.Resources.RestirGiInputSHHandle;
-    const FRGResourceHandle VarianceHandle = Context.Resources.RestirGiVarianceHandle;
+    const FRGResourceHandle InputSHHandle = Context.Resources.RestirGI.RestirGiInputSHHandle;
+    const FRGResourceHandle VarianceHandle = Context.Resources.RestirGI.RestirGiVarianceHandle;
     const FRGResourceHandle HistorySHHandle = Context.Resources.RestirGiHistorySHHandle;
     const FRGResourceHandle HistoryIrradianceHandle = Context.Resources.RestirGiHistoryIrradianceHandle;
     const FRGResourceHandle HistoryCountAHandle = Context.Resources.RestirGiHistoryCountAHandle;
@@ -254,7 +254,7 @@ void FDeferredRayTracingPasses::AddRestirGiShMipGenPass(FDeferredRenderer& Owner
     Graph.AddPass<FPassData>("Denoiser SH Mip SPD", [&Owner, SourceHandle, &DestinationHandle, &AtomicCounterHandle](FPassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("RestirGI Denoiser");
-        Data.bEnabled = Owner.bRestirGIEnabled && Owner.RestirGiDenoiserRootSignature && Owner.RestirGiGenerateShMipsPipeline;
+        Data.bEnabled = Owner.IsRestirGIEnabled() && Owner.RestirGiDenoiserRootSignature && Owner.RestirGiGenerateShMipsPipeline;
         if (!Data.bEnabled) { return; }
         const uint32_t HalfWidth = (static_cast<uint32_t>(Owner.Viewport.Width) + 1u) / 2u;
         const uint32_t HalfHeight = (static_cast<uint32_t>(Owner.Viewport.Height) + 1u) / 2u;
@@ -326,7 +326,7 @@ void FDeferredRayTracingPasses::AddRestirGiLinearDepthMipGenPass(FDeferredRender
     Graph.AddPass<FPassData>("Denoiser Depth Mip SPD", [&Owner, SourceHandle, &DestinationHandle, &AtomicCounterHandle](FPassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("RestirGI Denoiser");
-        Data.bEnabled = Owner.bRestirGIEnabled && Owner.RestirGiDenoiserRootSignature && Owner.RestirGiGenerateLinearDepthMipsPipeline;
+        Data.bEnabled = Owner.IsRestirGIEnabled() && Owner.RestirGiDenoiserRootSignature && Owner.RestirGiGenerateLinearDepthMipsPipeline;
         if (!Data.bEnabled) { return; }
         const uint32_t HalfWidth = (static_cast<uint32_t>(Owner.Viewport.Width) + 1u) / 2u;
         const uint32_t HalfHeight = (static_cast<uint32_t>(Owner.Viewport.Height) + 1u) / 2u;
@@ -390,7 +390,7 @@ void FDeferredRayTracingPasses::AddRestirGiHistoryReconstructionPass(FDeferredRe
     Graph.AddPass<FPassData>("Denoiser HistoryBlur", [&Owner, GBufferHandles, LinearDepthHandle, InputSHHandle, VarianceHandle, HistorySHHandle, HistoryCountHandle, TemporalSHHandle, ShMipHandle, DepthMipHandle](FPassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("RestirGI Denoiser");
-        Data.bEnabled = Owner.bRestirGIEnabled && Owner.RestirGiDenoiserRootSignature && Owner.RestirGiHistoryReconstructionPipeline;
+        Data.bEnabled = Owner.IsRestirGIEnabled() && Owner.RestirGiDenoiserRootSignature && Owner.RestirGiHistoryReconstructionPipeline;
         if (!Data.bEnabled) { return; }
         Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(LinearDepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -473,7 +473,7 @@ void FDeferredRayTracingPasses::AddRestirGiFinalBlurPass(FDeferredRenderer& Owne
     Graph.AddPass<FPassData>("Denoiser FinalBlur", [&Owner, GBufferHandles, LinearDepthHandle, InputSHHandle, VarianceHandle, TemporalSHHandle, HistoryIrradianceHandle, HistorySHHandle, HistoryCountHandle](FPassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("RestirGI Denoiser");
-        Data.bEnabled = Owner.bRestirGIEnabled && Owner.RestirGiDenoiserRootSignature && Owner.RestirGiFinalBlurPipeline;
+        Data.bEnabled = Owner.IsRestirGIEnabled() && Owner.RestirGiDenoiserRootSignature && Owner.RestirGiFinalBlurPipeline;
         if (!Data.bEnabled) { return; }
         Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(LinearDepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -534,7 +534,7 @@ void FDeferredRayTracingPasses::AddRestirGiDenoiserPreBlurPass(FDeferredRenderer
     Graph.AddPass<FPassData>("Denoiser PreBlur", [&Owner, GBufferHandles, LinearDepthHandle, InputSHHandle, VarianceHandle, &PreBlurSHHandle](FPassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("RestirGI Denoiser");
-        Data.bEnabled = Owner.bRestirGIEnabled && Owner.RestirGiDenoiserRootSignature && Owner.RestirGiPreBlurPipeline;
+        Data.bEnabled = Owner.IsRestirGIEnabled() && Owner.RestirGiDenoiserRootSignature && Owner.RestirGiPreBlurPipeline;
         if (!Data.bEnabled) { return; }
         const uint32_t FullWidth = static_cast<uint32_t>(Owner.Viewport.Width);
         const uint32_t FullHeight = static_cast<uint32_t>(Owner.Viewport.Height);
@@ -620,7 +620,7 @@ void FDeferredRayTracingPasses::AddRestirGiDenoiserTemporalAccumulationPass(FDef
     Graph.AddPass<FPassData>("Denoiser TemporalAccum", [&Owner, GBufferHandles, DepthHandle, VelocityHandle, LinearDepthHandle, InputSHHandle, VarianceHandle, PreBlurSHHandle, HistorySHHandle, HistoryCountAHandle, &TemporalSHHandle, HistoryCountBHandle, PrevLinearDepthHandle, PrevNormalHandle](FPassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("RestirGI Denoiser");
-        Data.bEnabled = Owner.bRestirGIEnabled && Owner.RestirGiDenoiserRootSignature && Owner.RestirGiTemporalAccumulationPipeline;
+        Data.bEnabled = Owner.IsRestirGIEnabled() && Owner.RestirGiDenoiserRootSignature && Owner.RestirGiTemporalAccumulationPipeline;
         if (!Data.bEnabled) { return; }
         const uint32_t FullWidth = static_cast<uint32_t>(Owner.Viewport.Width);
         const uint32_t FullHeight = static_cast<uint32_t>(Owner.Viewport.Height);
@@ -647,7 +647,9 @@ void FDeferredRayTracingPasses::AddRestirGiDenoiserTemporalAccumulationPass(FDef
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
         if (!LocalCommandList) { return; }
 
-        const uint32_t DepthBindlessIndex = GetDepthBindlessIndexForRestir(Owner);
+        const uint32_t DepthBindlessIndex = Owner.DepthBindlessIndices.empty()
+            ? UINT32_MAX
+            : Owner.DepthBindlessIndices[Owner.GetFrameIndex() % static_cast<uint32_t>(Owner.DepthBindlessIndices.size())];
         const uint32_t InputSHSrvBindlessIndex = Graph.GetTextureSrvBindlessIndex(InputSHHandle);
         const uint32_t VarianceSrvBindlessIndex = Graph.GetTextureSrvBindlessIndex(VarianceHandle);
         const uint32_t PreBlurShSrvBindlessIndex = Graph.GetTextureSrvBindlessIndex(PreBlurSHHandle);

@@ -13,19 +13,9 @@ public:
     void AddRayTracingShadowPass(FDeferredPassContext& Context) const;
     void AddPathTracingPass(FDeferredPassContext& Context) const;
     void AddPathTracingAccumulationPass(FDeferredPassContext& Context) const;
-    void AddRestirGIPass(FDeferredPassContext& Context) const;
     void AddRestirGiDenoiserPasses(FDeferredPassContext& Context) const;
 
 private:
-    void AddRestirGIPassImpl(FDeferredPassContext& Context) const;
-    void AddInitialSamplingPass(FDeferredPassContext& Context) const;
-    void AddTemporalResamplingPass(FDeferredPassContext& Context) const;
-    void AddReservoirBootstrapPass(FDeferredPassContext& Context) const;
-    void AddSpatialResampling0Pass(FDeferredPassContext& Context) const;
-    void AddSpatialResampling1Pass(FDeferredPassContext& Context) const;
-    void AddResolvePass(FDeferredPassContext& Context) const;
-    uint32_t GetDepthBindlessIndexForRestir(FDeferredRenderer& Owner) const;
-    void DispatchRestirPass(FDeferredPassContext& Context, FDX12CommandContext& Cmd, ID3D12PipelineState* PipelineState, const wchar_t* EventName, uint32_t SpatialPassIndex, const uint32_t BindlessIndices[30], uint32_t DispatchWidth, uint32_t DispatchHeight, bool bEnabled) const;
     void AddRestirGiDenoiserFreezeResetPass(FDeferredRenderer& Owner, FRenderGraph& Graph, FRGResourceHandle HistorySHHandle, FRGResourceHandle HistoryCountAHandle, FRGResourceHandle HistoryCountBHandle) const;
     void AddRestirGiDenoiserPreBlurPass(FDeferredRenderer& Owner, FRenderGraph& Graph, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle InputSHHandle, FRGResourceHandle VarianceHandle, FRGResourceHandle& PreBlurSHHandle) const;
     void AddRestirGiDenoiserTemporalAccumulationPass(FDeferredRenderer& Owner, FRenderGraph& Graph, const FDeferredRenderer::FDeferredFrameState& FrameState, const std::array<FRGResourceHandle, 4>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle VelocityHandle, FRGResourceHandle LinearDepthHandle, FRGResourceHandle InputSHHandle, FRGResourceHandle VarianceHandle, FRGResourceHandle PreBlurSHHandle, FRGResourceHandle& TemporalSHHandle, FRGResourceHandle HistorySHHandle, FRGResourceHandle HistoryCountAHandle, FRGResourceHandle HistoryCountBHandle, FRGResourceHandle PrevLinearDepthHandle, FRGResourceHandle PrevNormalHandle) const;

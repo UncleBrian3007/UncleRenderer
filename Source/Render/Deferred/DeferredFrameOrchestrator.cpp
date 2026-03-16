@@ -5,6 +5,7 @@
 #include "DeferredGeometryPasses.h"
 #include "DeferredLightingPasses.h"
 #include "DeferredPostProcessPasses.h"
+#include "RestirGI.h"
 #include "DeferredRayTracingPasses.h"
 
 void FDeferredFrameOrchestrator::BuildFrameGraph(FDeferredPassContext& Context) const
@@ -128,7 +129,7 @@ void FDeferredFrameOrchestrator::BuildFrameGraph(FDeferredPassContext& Context) 
         Owner.LightingPasses->AddLinearDepthPass(Context);
         Owner.LightingPasses->AddExtractHalfDepthNormalPass(Context);
         Owner.LightingPasses->AddGtaoPass(Context);
-        Owner.RayTracingPasses->AddRestirGIPass(Context);
+        Owner.RestirGI->AddPasses(Context);
         Owner.RayTracingPasses->AddRestirGiDenoiserPasses(Context);
         if (Owner.SsrMode == ESSRMode::CS)
         {

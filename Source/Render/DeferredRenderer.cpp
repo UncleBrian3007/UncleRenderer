@@ -9,6 +9,7 @@
 #include "Deferred/DeferredVisibilityPasses.h"
 #include "Deferred/DeferredGeometryPasses.h"
 #include "Deferred/DeferredLightingPasses.h"
+#include "Deferred/RestirGI.h"
 #include "Deferred/DeferredRayTracingPasses.h"
 #include "Deferred/DeferredPostProcessPasses.h"
 #include "Deferred/DeferredResourceImporter.h"
@@ -37,6 +38,7 @@ FDeferredRenderer::FDeferredRenderer()
     , VisibilityPasses(std::make_unique<FDeferredVisibilityPasses>())
     , GeometryPasses(std::make_unique<FDeferredGeometryPasses>())
     , LightingPasses(std::make_unique<FDeferredLightingPasses>())
+    , RestirGI(std::make_unique<FRestirGI>())
     , RayTracingPasses(std::make_unique<FDeferredRayTracingPasses>())
     , PostProcessPasses(std::make_unique<FDeferredPostProcessPasses>())
     , ResourceImporter(std::make_unique<FDeferredResourceImporter>())
@@ -75,6 +77,292 @@ namespace
         return DirectX::XMFLOAT2(JitterX, JitterY);
     }
 
+}
+
+void FDeferredRenderer::SetRestirGIEnabled(bool bEnabled)
+{
+    if (RestirGI)
+    {
+        RestirGI->SetEnabled(bEnabled);
+    }
+}
+
+bool FDeferredRenderer::IsRestirGIEnabled() const
+{
+    return RestirGI && RestirGI->IsEnabled();
+}
+
+void FDeferredRenderer::SetRestirGIDenoiserEnabled(bool bEnabled)
+{
+    if (bRestirGIDenoiserEnabled != bEnabled)
+    {
+        bRestirGIDenoiserEnabled = bEnabled;
+        InvalidateRestirGiDenoiserHistory();
+    }
+}
+
+bool FDeferredRenderer::IsRestirGIDenoiserEnabled() const
+{
+    return bRestirGIDenoiserEnabled;
+}
+
+void FDeferredRenderer::SetRestirGISamplesPerPixel(uint32_t Samples)
+{
+    if (RestirGI)
+    {
+        RestirGI->SetSamplesPerPixel(Samples);
+    }
+}
+
+uint32_t FDeferredRenderer::GetRestirGISamplesPerPixel() const
+{
+    return RestirGI ? RestirGI->GetSamplesPerPixel() : 0u;
+}
+
+void FDeferredRenderer::SetRestirGIIntensity(float Intensity)
+{
+    if (RestirGI)
+    {
+        RestirGI->SetIntensity(Intensity);
+    }
+}
+
+float FDeferredRenderer::GetRestirGIIntensity() const
+{
+    return RestirGI ? RestirGI->GetIntensity() : 0.0f;
+}
+
+void FDeferredRenderer::SetRestirGIShowOnly(bool bEnabled)
+{
+    if (RestirGI)
+    {
+        RestirGI->SetShowOnly(bEnabled);
+    }
+}
+
+bool FDeferredRenderer::IsRestirGIShowOnly() const
+{
+    return RestirGI && RestirGI->IsShowOnly();
+}
+
+void FDeferredRenderer::SetRestirGITemporalReuseEnabled(bool bEnabled)
+{
+    if (RestirGI)
+    {
+        RestirGI->SetTemporalReuseEnabled(bEnabled);
+    }
+}
+
+bool FDeferredRenderer::IsRestirGITemporalReuseEnabled() const
+{
+    return RestirGI && RestirGI->IsTemporalReuseEnabled();
+}
+
+void FDeferredRenderer::SetRestirGISpatialReuseEnabled(bool bEnabled)
+{
+    if (RestirGI)
+    {
+        RestirGI->SetSpatialReuseEnabled(bEnabled);
+    }
+}
+
+bool FDeferredRenderer::IsRestirGISpatialReuseEnabled() const
+{
+    return RestirGI && RestirGI->IsSpatialReuseEnabled();
+}
+
+void FDeferredRenderer::SetRestirGITemporalAdditionalScale(float Value)
+{
+    if (RestirGI)
+    {
+        RestirGI->SetTemporalAdditionalScale(Value);
+    }
+}
+
+float FDeferredRenderer::GetRestirGITemporalAdditionalScale() const
+{
+    return RestirGI ? RestirGI->GetTemporalAdditionalScale() : 0.0f;
+}
+
+void FDeferredRenderer::SetRestirGISpatialAdditionalScale(float Value)
+{
+    if (RestirGI)
+    {
+        RestirGI->SetSpatialAdditionalScale(Value);
+    }
+}
+
+float FDeferredRenderer::GetRestirGISpatialAdditionalScale() const
+{
+    return RestirGI ? RestirGI->GetSpatialAdditionalScale() : 0.0f;
+}
+
+void FDeferredRenderer::SetRestirGIResolveMinDenominator(float Value)
+{
+    if (RestirGI)
+    {
+        RestirGI->SetResolveMinDenominator(Value);
+    }
+}
+
+float FDeferredRenderer::GetRestirGIResolveMinDenominator() const
+{
+    return RestirGI ? RestirGI->GetResolveMinDenominator() : 0.0f;
+}
+
+void FDeferredRenderer::SetRestirGIResolveMaxNormalization(float Value)
+{
+    if (RestirGI)
+    {
+        RestirGI->SetResolveMaxNormalization(Value);
+    }
+}
+
+float FDeferredRenderer::GetRestirGIResolveMaxNormalization() const
+{
+    return RestirGI ? RestirGI->GetResolveMaxNormalization() : 0.0f;
+}
+
+void FDeferredRenderer::SetRestirGIResolveLowSampleBoostGuard(float Value)
+{
+    if (RestirGI)
+    {
+        RestirGI->SetResolveLowSampleBoostGuard(Value);
+    }
+}
+
+float FDeferredRenderer::GetRestirGIResolveLowSampleBoostGuard() const
+{
+    return RestirGI ? RestirGI->GetResolveLowSampleBoostGuard() : 0.0f;
+}
+
+void FDeferredRenderer::SetRestirGIResolveUseConfidence(bool bEnabled)
+{
+    if (RestirGI)
+    {
+        RestirGI->SetResolveUseConfidence(bEnabled);
+    }
+}
+
+bool FDeferredRenderer::IsRestirGIResolveUseConfidence() const
+{
+    return RestirGI && RestirGI->IsResolveUseConfidence();
+}
+
+void FDeferredRenderer::SetRestirGIUseVisibility(bool bEnabled)
+{
+    if (RestirGI)
+    {
+        RestirGI->SetUseVisibility(bEnabled);
+    }
+}
+
+bool FDeferredRenderer::IsRestirGIUseVisibility() const
+{
+    return RestirGI && RestirGI->IsUseVisibility();
+}
+
+void FDeferredRenderer::SetRestirGIUseBrdf(bool bEnabled)
+{
+    if (RestirGI)
+    {
+        RestirGI->SetUseBrdf(bEnabled);
+    }
+}
+
+bool FDeferredRenderer::IsRestirGIUseBrdf() const
+{
+    return RestirGI && RestirGI->IsUseBrdf();
+}
+
+void FDeferredRenderer::SetRestirGIUseHistoryIndirect(bool bEnabled)
+{
+    if (RestirGI)
+    {
+        RestirGI->SetUseHistoryIndirect(bEnabled);
+    }
+}
+
+bool FDeferredRenderer::IsRestirGIUseHistoryIndirect() const
+{
+    return RestirGI && RestirGI->IsUseHistoryIndirect();
+}
+
+void FDeferredRenderer::SetRestirGIRandomMode(ERestirGIRandomMode Mode)
+{
+    if (!RestirGI)
+    {
+        return;
+    }
+
+    if (RestirGI->GetRandomMode() != Mode)
+    {
+        RestirGI->SetRandomMode(Mode);
+        RestirGI->InvalidateReservoirHistory();
+        InvalidateRestirGiDenoiserHistory();
+    }
+}
+
+ERestirGIRandomMode FDeferredRenderer::GetRestirGIRandomMode() const
+{
+    return RestirGI ? RestirGI->GetRandomMode() : ERestirGIRandomMode::BlueNoiseSobol;
+}
+
+void FDeferredRenderer::SetRestirGIDebugRayEnabled(bool bEnabled)
+{
+    if (RestirGI)
+    {
+        RestirGI->SetDebugRayEnabled(bEnabled);
+    }
+}
+
+bool FDeferredRenderer::IsRestirGIDebugRayEnabled() const
+{
+    return RestirGI && RestirGI->IsDebugRayEnabled();
+}
+
+void FDeferredRenderer::SetRestirGIDebugPixel(uint32_t X, uint32_t Y)
+{
+    if (RestirGI)
+    {
+        RestirGI->SetDebugPixel(X, Y);
+    }
+}
+
+void FDeferredRenderer::SetRestirGIFreezeFrame(bool bEnabled)
+{
+    if (RestirGI)
+    {
+        RestirGI->SetFreezeFrame(bEnabled, GetFrameNumber());
+    }
+}
+
+bool FDeferredRenderer::IsRestirGIFreezeFrame() const
+{
+    return RestirGI && RestirGI->IsFreezeFrame();
+}
+
+uint32_t FDeferredRenderer::GetRestirGIFrozenSequenceFrame() const
+{
+    return RestirGI ? RestirGI->GetFrozenSequenceFrame() : 0u;
+}
+
+uint64_t FDeferredRenderer::GetRestirGIFreezeStartFrameNumber() const
+{
+    return RestirGI ? RestirGI->GetFreezeStartFrameNumber() : 0u;
+}
+
+void FDeferredRenderer::StepRestirGIFreezeFrame()
+{
+    if (RestirGI)
+    {
+        RestirGI->StepFreezeFrame();
+    }
+}
+
+DXGI_FORMAT FDeferredRenderer::ResolveRestirGiRadianceFormat(FDX12Device* Device) const
+{
+    return RestirGI ? RestirGI->ResolveRadianceFormat(Device) : DXGI_FORMAT_R16G16B16A16_FLOAT;
 }
 
 bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT BackBufferFormat, const FRendererConfig& Config)
@@ -145,7 +433,6 @@ void FDeferredRenderer::ApplyRendererConfig(const FRendererConfig& Config)
     bSsrHzbEnabled = Config.bEnableSsrHzb;
     bSsrRefineEnabled = Config.bEnableSsrRefine;
     bSsrDenoiseEnabled = Config.bEnableSsrDenoise;
-    bRestirGIEnabled = Config.bEnableRestirGI;
     bRestirGIDenoiserEnabled = Config.bEnableRestirGIDenoiser;
     SsrMaxSteps = Config.SsrMaxSteps;
     SsrMaxDistance = Config.SsrMaxDistance;
@@ -153,23 +440,27 @@ void FDeferredRenderer::ApplyRendererConfig(const FRendererConfig& Config)
     SsrStride = Config.SsrStride;
     SsrRoughnessCutoff = Config.SsrRoughnessCutoff;
     SsrIntensity = Config.SsrIntensity;
-    RestirGISamplesPerPixel = std::clamp(Config.RestirGISamplesPerPixel, 1u, 32u);
-    RestirGIIntensity = (std::max)(0.0f, Config.RestirGIIntensity);
-    RestirGIRayLength = (std::max)(0.1f, Config.RestirGIRayLength);
-    RestirGIClamp = (std::max)(0.1f, Config.RestirGIClamp);
-    bRestirGITemporalReuse = Config.bEnableRestirGITemporalReuse;
-    bRestirGISpatialReuse = Config.bEnableRestirGISpatialReuse;
-    RestirGITemporalAdditionalScale = std::clamp(Config.RestirGITemporalAdditionalScale, 0.0f, 1.0f);
-    RestirGISpatialAdditionalScale = std::clamp(Config.RestirGISpatialAdditionalScale, 0.0f, 1.0f);
-    RestirGIResolveMinDenominator = (std::max)(Config.RestirGIResolveMinDenominator, 1e-6f);
-    RestirGIResolveMaxNormalization = (std::max)(Config.RestirGIResolveMaxNormalization, 1.0f);
-    RestirGIResolveLowSampleBoostGuard = std::clamp(Config.RestirGIResolveLowSampleBoostGuard, 0.0f, 1.0f);
-    bRestirGIResolveUseConfidence = Config.bRestirGIResolveUseConfidence;
-    RestirGIMaxHistoryFrames = std::clamp(Config.RestirGIMaxHistoryFrames, 1u, 16u);
-    bRestirGIUseVisibility = Config.bRestirGIUseVisibility;
-    bRestirGIUseBrdf = Config.bRestirGIUseBrdf;
-    bRestirGIUseHistoryIndirect = Config.bRestirGIUseHistoryIndirect;
-    RestirGIRandomMode = Config.RestirGIRandomMode;
+    if (RestirGI)
+    {
+        RestirGI->SetEnabled(Config.bEnableRestirGI);
+        RestirGI->SetSamplesPerPixel(std::clamp(Config.RestirGISamplesPerPixel, 1u, 32u));
+        RestirGI->SetIntensity((std::max)(0.0f, Config.RestirGIIntensity));
+        RestirGI->SetRayLength((std::max)(0.1f, Config.RestirGIRayLength));
+        RestirGI->SetClampThreshold((std::max)(0.1f, Config.RestirGIClamp));
+        RestirGI->SetTemporalReuseEnabled(Config.bEnableRestirGITemporalReuse);
+        RestirGI->SetSpatialReuseEnabled(Config.bEnableRestirGISpatialReuse);
+        RestirGI->SetTemporalAdditionalScale(std::clamp(Config.RestirGITemporalAdditionalScale, 0.0f, 1.0f));
+        RestirGI->SetSpatialAdditionalScale(std::clamp(Config.RestirGISpatialAdditionalScale, 0.0f, 1.0f));
+        RestirGI->SetResolveMinDenominator((std::max)(Config.RestirGIResolveMinDenominator, 1e-6f));
+        RestirGI->SetResolveMaxNormalization((std::max)(Config.RestirGIResolveMaxNormalization, 1.0f));
+        RestirGI->SetResolveLowSampleBoostGuard(std::clamp(Config.RestirGIResolveLowSampleBoostGuard, 0.0f, 1.0f));
+        RestirGI->SetResolveUseConfidence(Config.bRestirGIResolveUseConfidence);
+        RestirGI->SetMaxHistoryFrames(std::clamp(Config.RestirGIMaxHistoryFrames, 1u, 16u));
+        RestirGI->SetUseVisibility(Config.bRestirGIUseVisibility);
+        RestirGI->SetUseBrdf(Config.bRestirGIUseBrdf);
+        RestirGI->SetUseHistoryIndirect(Config.bRestirGIUseHistoryIndirect);
+        RestirGI->SetRandomMode(Config.RestirGIRandomMode);
+    }
     SsrMode = Config.SsrMode;
     SsrSamplesPerQuad = Config.SsrSamplesPerQuad;
 }
@@ -213,6 +504,12 @@ bool FDeferredRenderer::InitializePipelineDomains(FDX12Device* Device, DXGI_FORM
         return false;
     }
 
+    if (RestirGI && !RestirGI->InitializePipelines(*this, Device))
+    {
+        LogError("Deferred renderer initialization failed: ReSTIR GI pipeline creation failed");
+        return false;
+    }
+
     LogInfo("Creating deferred renderer post-process pipelines...");
     if (!PostProcessPasses->InitializePipelines(*this, Device, BackBufferFormat))
     {
@@ -253,6 +550,12 @@ bool FDeferredRenderer::InitializeFrameResources(FDX12Device* Device, uint32_t W
     if (!RayTracingPasses->InitializeResources(*this, Device, Width, Height, Config.FramesInFlight))
     {
         LogError("Deferred renderer initialization failed: ray tracing domain resource creation failed");
+        return false;
+    }
+
+    if (RestirGI && !RestirGI->InitializeResources(*this, Device, Width, Height, Config.FramesInFlight))
+    {
+        LogError("Deferred renderer initialization failed: ReSTIR GI resource creation failed");
         return false;
     }
 
@@ -401,6 +704,12 @@ bool FDeferredRenderer::InitializeEnvironmentAndDescriptorResources(FDX12Device*
         return false;
     }
 
+    if (RestirGI && !RestirGI->CreatePersistentDescriptors(*this, Device))
+    {
+        LogError("Deferred renderer initialization failed: ReSTIR GI descriptor creation failed");
+        return false;
+    }
+
     return true;
 }
 
@@ -545,13 +854,19 @@ void FDeferredRenderer::PrepareFrameState(const FCamera& Camera, bool bAnySkinni
 
     if (!bHasPreviousViewProjection)
     {
-        InvalidateRestirGIReservoirHistory();
+        if (RestirGI)
+        {
+            RestirGI->InvalidateReservoirHistory();
+        }
         InvalidateRestirGiDenoiserHistory();
     }
 
-    if (!bRestirGIEnabled)
+    if (!IsRestirGIEnabled())
     {
-        InvalidateRestirGIReservoirHistory();
+        if (RestirGI)
+        {
+            RestirGI->InvalidateReservoirHistory();
+        }
         InvalidateRestirGiDenoiserHistory();
     }
 
@@ -673,19 +988,6 @@ void FDeferredRenderer::FinalizeFrameState(const FDeferredFrameState& FrameState
     PreviousUnjitteredViewProjectionMatrix = CurrentUnjitteredViewProjectionMatrix;
     bHasPreviousUnjitteredViewProjection = true;
 
-    if (RestirGITexture && RestirGIHistoryTexture)
-    {
-        std::swap(RestirGITexture, RestirGIHistoryTexture);
-        std::swap(RestirGIState, RestirGIHistoryState);
-
-        const uint32_t CurrentSrv = RestirGIBindlessIndex;
-        const uint32_t CurrentUav = RestirGIUavBindlessIndex;
-        RestirGIBindlessIndex = RestirGIHistorySrvBindlessIndex;
-        RestirGIUavBindlessIndex = RestirGIHistoryUavBindlessIndex;
-        RestirGIHistorySrvBindlessIndex = CurrentSrv;
-        RestirGIHistoryUavBindlessIndex = CurrentUav;
-    }
-
     if (RestirGiHistoryCountATexture && RestirGiHistoryCountBTexture)
     {
         std::swap(RestirGiHistoryCountATexture, RestirGiHistoryCountBTexture);
@@ -694,51 +996,12 @@ void FDeferredRenderer::FinalizeFrameState(const FDeferredFrameState& FrameState
         std::swap(RestirGiHistoryCountAUavBindlessIndex, RestirGiHistoryCountBUavBindlessIndex);
     }
 
-    if (RestirGIReservoirDepthNormalATexture && RestirGIReservoirDepthNormalBTexture)
+    if (RestirGI)
     {
-        std::swap(RestirGIReservoirDepthNormalATexture, RestirGIReservoirDepthNormalBTexture);
-        std::swap(RestirGIReservoirDepthNormalAState, RestirGIReservoirDepthNormalBState);
-        std::swap(RestirGIReservoirDepthNormalASrvBindlessIndex, RestirGIReservoirDepthNormalBSrvBindlessIndex);
-        std::swap(RestirGIReservoirDepthNormalAUavBindlessIndex, RestirGIReservoirDepthNormalBUavBindlessIndex);
+        RestirGI->FinalizeFrame(*this);
     }
 
-    if (RestirGIReservoirSampleRadianceATexture && RestirGIReservoirSampleRadianceBTexture)
-    {
-        std::swap(RestirGIReservoirSampleRadianceATexture, RestirGIReservoirSampleRadianceBTexture);
-        std::swap(RestirGIReservoirSampleRadianceAState, RestirGIReservoirSampleRadianceBState);
-        std::swap(RestirGIReservoirSampleRadianceASrvBindlessIndex, RestirGIReservoirSampleRadianceBSrvBindlessIndex);
-        std::swap(RestirGIReservoirSampleRadianceAUavBindlessIndex, RestirGIReservoirSampleRadianceBUavBindlessIndex);
-    }
-
-    if (RestirGIReservoirRayDirectionATexture && RestirGIReservoirRayDirectionBTexture)
-    {
-        std::swap(RestirGIReservoirRayDirectionATexture, RestirGIReservoirRayDirectionBTexture);
-        std::swap(RestirGIReservoirRayDirectionAState, RestirGIReservoirRayDirectionBState);
-        std::swap(RestirGIReservoirRayDirectionASrvBindlessIndex, RestirGIReservoirRayDirectionBSrvBindlessIndex);
-        std::swap(RestirGIReservoirRayDirectionAUavBindlessIndex, RestirGIReservoirRayDirectionBUavBindlessIndex);
-    }
-
-    if (RestirGIReservoirMWATexture && RestirGIReservoirMWBTexture)
-    {
-        std::swap(RestirGIReservoirMWATexture, RestirGIReservoirMWBTexture);
-        std::swap(RestirGIReservoirMWAState, RestirGIReservoirMWBState);
-        std::swap(RestirGIReservoirMWASrvBindlessIndex, RestirGIReservoirMWBSrvBindlessIndex);
-        std::swap(RestirGIReservoirMWAUavBindlessIndex, RestirGIReservoirMWBUavBindlessIndex);
-    }
-
-    if (bRestirGIEnabled && RestirGIHistoryTexture != nullptr)
-    {
-        const uint32_t MaxHistoryFrames = (std::max)(1u, RestirGIMaxHistoryFrames);
-        RestirGIReservoirHistoryFrameCount = (std::min)(RestirGIReservoirHistoryFrameCount + 1u, MaxHistoryFrames);
-        bRestirGIReservoirHistoryValid = RestirGIReservoirHistoryFrameCount > 0u;
-    }
-    else
-    {
-        RestirGIReservoirHistoryFrameCount = 0u;
-        bRestirGIReservoirHistoryValid = false;
-    }
-
-    if (bRestirGIEnabled && bRestirGIDenoiserEnabled && RestirGiHistoryIrradianceTexture != nullptr)
+    if (IsRestirGIEnabled() && bRestirGIDenoiserEnabled && RestirGiHistoryIrradianceTexture != nullptr)
     {
         bRestirGIDenoiserHistoryValid = true;
     }
@@ -767,12 +1030,6 @@ void FDeferredRenderer::InvalidateRestirGiDenoiserHistory()
             std::swap(RestirGiHistoryCountATexture, RestirGiHistoryCountBTexture);
         }
     }
-}
-
-void FDeferredRenderer::InvalidateRestirGIReservoirHistory()
-{
-    bRestirGIReservoirHistoryValid = false;
-    RestirGIReservoirHistoryFrameCount = 0;
 }
 
 void FDeferredRenderer::OnFrameFenceSignaled(uint32_t FrameIndex, uint64_t FenceValue)

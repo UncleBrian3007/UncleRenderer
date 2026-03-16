@@ -207,6 +207,7 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <ClInclude Include="Source\Render\Deferred\DeferredRayTracingPasses.h" />
     <ClInclude Include="Source\Render\Deferred\DeferredResourceImporter.h" />
     <ClInclude Include="Source\Render\Deferred\DeferredVisibilityPasses.h" />
+    <ClInclude Include="Source\Render\Deferred\RestirGI.h" />
     <ClInclude Include="Source\Render\DebugPrintFont.h" />
     <ClInclude Include="Source\Render\RendererUtils.h" />
     <ClInclude Include="Source\Render\TextureLoader.h" />

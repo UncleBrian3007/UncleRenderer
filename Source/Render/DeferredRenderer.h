@@ -12,6 +12,7 @@
 #include <string>
 #include "Renderer.h"
 #include "RenderGraph.h"
+#include "Deferred/RestirGI.h"
 #include "../Core/RendererConfig.h"
 #include "../Scene/GltfAnimation.h"
 
@@ -131,72 +132,48 @@ public:
     float GetSsrRoughnessCutoff() const { return SsrRoughnessCutoff; }
     void SetSsrIntensity(float Intensity) { SsrIntensity = Intensity; }
     float GetSsrIntensity() const { return SsrIntensity; }
-    void SetRestirGIEnabled(bool bEnabled) { bRestirGIEnabled = bEnabled; }
-    bool IsRestirGIEnabled() const { return bRestirGIEnabled; }
-    void SetRestirGIDenoiserEnabled(bool bEnabled)
-    {
-        if (bRestirGIDenoiserEnabled != bEnabled)
-        {
-            bRestirGIDenoiserEnabled = bEnabled;
-            InvalidateRestirGiDenoiserHistory();
-        }
-    }
-    bool IsRestirGIDenoiserEnabled() const { return bRestirGIDenoiserEnabled; }
-    void SetRestirGISamplesPerPixel(uint32_t Samples) { RestirGISamplesPerPixel = Samples; }
-    uint32_t GetRestirGISamplesPerPixel() const { return RestirGISamplesPerPixel; }
-    void SetRestirGIIntensity(float Intensity) { RestirGIIntensity = Intensity; }
-    float GetRestirGIIntensity() const { return RestirGIIntensity; }
-    void SetRestirGIShowOnly(bool bEnabled) { bRestirGIShowOnly = bEnabled; }
-    bool IsRestirGIShowOnly() const { return bRestirGIShowOnly; }
-    void SetRestirGITemporalReuseEnabled(bool bEnabled) { bRestirGITemporalReuse = bEnabled; }
-    bool IsRestirGITemporalReuseEnabled() const { return bRestirGITemporalReuse; }
-    void SetRestirGISpatialReuseEnabled(bool bEnabled) { bRestirGISpatialReuse = bEnabled; }
-    bool IsRestirGISpatialReuseEnabled() const { return bRestirGISpatialReuse; }
-    void SetRestirGITemporalAdditionalScale(float Value) { RestirGITemporalAdditionalScale = Value; }
-    float GetRestirGITemporalAdditionalScale() const { return RestirGITemporalAdditionalScale; }
-    void SetRestirGISpatialAdditionalScale(float Value) { RestirGISpatialAdditionalScale = Value; }
-    float GetRestirGISpatialAdditionalScale() const { return RestirGISpatialAdditionalScale; }
-    void SetRestirGIResolveMinDenominator(float Value) { RestirGIResolveMinDenominator = Value; }
-    float GetRestirGIResolveMinDenominator() const { return RestirGIResolveMinDenominator; }
-    void SetRestirGIResolveMaxNormalization(float Value) { RestirGIResolveMaxNormalization = Value; }
-    float GetRestirGIResolveMaxNormalization() const { return RestirGIResolveMaxNormalization; }
-    void SetRestirGIResolveLowSampleBoostGuard(float Value) { RestirGIResolveLowSampleBoostGuard = Value; }
-    float GetRestirGIResolveLowSampleBoostGuard() const { return RestirGIResolveLowSampleBoostGuard; }
-    void SetRestirGIResolveUseConfidence(bool bEnabled) { bRestirGIResolveUseConfidence = bEnabled; }
-    bool IsRestirGIResolveUseConfidence() const { return bRestirGIResolveUseConfidence; }
-
-    void SetRestirGIUseVisibility(bool bEnabled) { bRestirGIUseVisibility = bEnabled; }
-    bool IsRestirGIUseVisibility() const { return bRestirGIUseVisibility; }
-    void SetRestirGIUseBrdf(bool bEnabled) { bRestirGIUseBrdf = bEnabled; }
-    bool IsRestirGIUseBrdf() const { return bRestirGIUseBrdf; }
-    void SetRestirGIUseHistoryIndirect(bool bEnabled) { bRestirGIUseHistoryIndirect = bEnabled; }
-    bool IsRestirGIUseHistoryIndirect() const { return bRestirGIUseHistoryIndirect; }
-    void SetRestirGIRandomMode(ERestirGIRandomMode Mode)
-    {
-        if (RestirGIRandomMode != Mode)
-        {
-            RestirGIRandomMode = Mode;
-            InvalidateRestirGIReservoirHistory();
-            InvalidateRestirGiDenoiserHistory();
-        }
-    }
-    ERestirGIRandomMode GetRestirGIRandomMode() const { return RestirGIRandomMode; }
-    void SetRestirGIDebugRayEnabled(bool bEnabled) { bRestirGIDebugRayEnabled = bEnabled; }
-    bool IsRestirGIDebugRayEnabled() const { return bRestirGIDebugRayEnabled; }
-    void SetRestirGIDebugPixel(uint32_t X, uint32_t Y) { RestirGIDebugPixelX = X; RestirGIDebugPixelY = Y; }
-    void SetRestirGIFreezeFrame(bool bEnabled)
-    {
-        if (bEnabled && !bRestirGIFreezeFrame)
-        {
-            RestirGIFrozenSequenceFrame = 0;
-            RestirGIFreezeStartFrameNumber = GetFrameNumber();
-        }
-        bRestirGIFreezeFrame = bEnabled;
-    }
-    bool IsRestirGIFreezeFrame() const { return bRestirGIFreezeFrame; }
-    uint32_t GetRestirGIFrozenSequenceFrame() const { return RestirGIFrozenSequenceFrame; }
-    uint64_t GetRestirGIFreezeStartFrameNumber() const { return RestirGIFreezeStartFrameNumber; }
-    void StepRestirGIFreezeFrame() { ++RestirGIFrozenSequenceFrame; }
+    void SetRestirGIEnabled(bool bEnabled);
+    bool IsRestirGIEnabled() const;
+    void SetRestirGIDenoiserEnabled(bool bEnabled);
+    bool IsRestirGIDenoiserEnabled() const;
+    void SetRestirGISamplesPerPixel(uint32_t Samples);
+    uint32_t GetRestirGISamplesPerPixel() const;
+    void SetRestirGIIntensity(float Intensity);
+    float GetRestirGIIntensity() const;
+    void SetRestirGIShowOnly(bool bEnabled);
+    bool IsRestirGIShowOnly() const;
+    void SetRestirGITemporalReuseEnabled(bool bEnabled);
+    bool IsRestirGITemporalReuseEnabled() const;
+    void SetRestirGISpatialReuseEnabled(bool bEnabled);
+    bool IsRestirGISpatialReuseEnabled() const;
+    void SetRestirGITemporalAdditionalScale(float Value);
+    float GetRestirGITemporalAdditionalScale() const;
+    void SetRestirGISpatialAdditionalScale(float Value);
+    float GetRestirGISpatialAdditionalScale() const;
+    void SetRestirGIResolveMinDenominator(float Value);
+    float GetRestirGIResolveMinDenominator() const;
+    void SetRestirGIResolveMaxNormalization(float Value);
+    float GetRestirGIResolveMaxNormalization() const;
+    void SetRestirGIResolveLowSampleBoostGuard(float Value);
+    float GetRestirGIResolveLowSampleBoostGuard() const;
+    void SetRestirGIResolveUseConfidence(bool bEnabled);
+    bool IsRestirGIResolveUseConfidence() const;
+    void SetRestirGIUseVisibility(bool bEnabled);
+    bool IsRestirGIUseVisibility() const;
+    void SetRestirGIUseBrdf(bool bEnabled);
+    bool IsRestirGIUseBrdf() const;
+    void SetRestirGIUseHistoryIndirect(bool bEnabled);
+    bool IsRestirGIUseHistoryIndirect() const;
+    void SetRestirGIRandomMode(ERestirGIRandomMode Mode);
+    ERestirGIRandomMode GetRestirGIRandomMode() const;
+    void SetRestirGIDebugRayEnabled(bool bEnabled);
+    bool IsRestirGIDebugRayEnabled() const;
+    void SetRestirGIDebugPixel(uint32_t X, uint32_t Y);
+    void SetRestirGIFreezeFrame(bool bEnabled);
+    bool IsRestirGIFreezeFrame() const;
+    uint32_t GetRestirGIFrozenSequenceFrame() const;
+    uint64_t GetRestirGIFreezeStartFrameNumber() const;
+    void StepRestirGIFreezeFrame();
     void SetRestirGIFreezeDenoiserHistoryResetPeriod(uint32_t InPeriod) { RestirGIFreezeDenoiserHistoryResetPeriod = InPeriod; }
     uint32_t GetRestirGIFreezeDenoiserHistoryResetPeriod() const { return RestirGIFreezeDenoiserHistoryResetPeriod; }
 
@@ -284,22 +261,8 @@ public:
         FRGResourceHandle VelocityHandle{};
         std::array<FRGResourceHandle, 4> GBufferHandles{};
         FRGResourceHandle LinearDepthHandle{};
-        FRGResourceHandle RestirGIHalfDepthNormalHandle{};
         FRGResourceHandle GtaoHandle{};
-        FRGResourceHandle RestirGIHandle{};
-        FRGResourceHandle RestirGIHistoryHandle{};
-        FRGResourceHandle RestirGIInitialRadianceHandle{};
-        FRGResourceHandle RestirGIInitialRayDirectionHandle{};
-        FRGResourceHandle RestirGIReservoirDepthNormalAHandle{};
-        FRGResourceHandle RestirGIReservoirDepthNormalBHandle{};
-        FRGResourceHandle RestirGIReservoirSampleRadianceAHandle{};
-        FRGResourceHandle RestirGIReservoirSampleRadianceBHandle{};
-        FRGResourceHandle RestirGIReservoirRayDirectionAHandle{};
-        FRGResourceHandle RestirGIReservoirRayDirectionBHandle{};
-        FRGResourceHandle RestirGIReservoirMWAHandle{};
-        FRGResourceHandle RestirGIReservoirMWBHandle{};
-        FRGResourceHandle RestirGiInputSHHandle{};
-        FRGResourceHandle RestirGiVarianceHandle{};
+        FRestirGIFrameResources RestirGI;
         FRGResourceHandle RestirGiPreBlurSHHandle{};
         FRGResourceHandle RestirGiTemporalSHHandle{};
         FRGResourceHandle RestirGiHistorySHHandle{};
@@ -328,7 +291,6 @@ private:
 
     bool CreateBasePassRootSignature(FDX12Device* Device);
     bool CreateLightingRootSignature(FDX12Device* Device);
-    bool CreateRestirGIRootSignature(FDX12Device* Device);
     bool CreateVelocityRootSignature(FDX12Device* Device);
     bool CreateBasePassPipeline(FDX12Device* Device, DXGI_FORMAT LightingFormat);
     bool EnsureBasePassPipeline(uint32_t PipelineKey, bool bUseSkinning);
@@ -364,7 +326,6 @@ private:
     bool CreateSsrResolvePipeline(FDX12Device* Device);
     bool CreateSsrDispatchCommandSignature(FDX12Device* Device);
     bool CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
-    bool CreateRestirGIPipeline(FDX12Device* Device);
     DXGI_FORMAT ResolveRestirGiRadianceFormat(FDX12Device* Device) const;
     bool CreateRestirGiDenoiserResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateRestirGiDenoiserPipelines(FDX12Device* Device);
@@ -381,7 +342,6 @@ private:
     bool CreateGBufferResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateLinearDepthResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateGtaoResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
-    bool CreateRestirGIResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateVelocityResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateSsrResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     bool CreateHilbertLutResources(FDX12Device* Device);
@@ -403,7 +363,6 @@ private:
     void ConfigureFrameGraph(FRenderGraph& Graph) const;
     void FinalizeFrameState(const FDeferredFrameState& FrameState);
     void InvalidateRestirGiDenoiserHistory();
-    void InvalidateRestirGIReservoirHistory();
     void ApplyRendererConfig(const FRendererConfig& Config);
     bool InitializePipelineDomains(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool InitializeFrameResources(FDX12Device* Device, uint32_t Width, uint32_t Height, const FRendererConfig& Config);
@@ -421,18 +380,19 @@ private:
     friend class FDeferredRayTracingPasses;
     friend class FDeferredPostProcessPasses;
     friend class FDeferredResourceImporter;
+    friend class FRestirGI;
 
     std::unique_ptr<FDeferredFrameOrchestrator> FrameOrchestrator;
     std::unique_ptr<FDeferredVisibilityPasses> VisibilityPasses;
     std::unique_ptr<FDeferredGeometryPasses> GeometryPasses;
     std::unique_ptr<FDeferredLightingPasses> LightingPasses;
+    std::unique_ptr<FRestirGI> RestirGI;
     std::unique_ptr<FDeferredRayTracingPasses> RayTracingPasses;
     std::unique_ptr<FDeferredPostProcessPasses> PostProcessPasses;
     std::unique_ptr<FDeferredResourceImporter> ResourceImporter;
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> BasePassRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> LightingRootSignature;
-    Microsoft::WRL::ComPtr<ID3D12RootSignature> RestirGIRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> VelocityRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> HZBRootSignature;
     // Base pass pipelines indexed by permutation key (bit 0: Normal, bit 1: MR, bit 2: BaseColor, bit 3: Emissive, bit 4: AlphaMask, bit 5: SheenModel, bit 6: ClearcoatModel, bit 7: AnisotropyModel, bit 8: DoubleSided)
@@ -480,11 +440,6 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> CompositeLightingPipeline;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> VelocityPipelines;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> VelocityPipelinesSkinned;
-    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2> RestirGIInitialPipelines;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGIReservoirBootstrapPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGITemporalPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGISpatialPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGIResolvePipeline;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> RestirGiDenoiserRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGiPreBlurPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGiTemporalAccumulationPipeline;
@@ -512,16 +467,6 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> VelocityTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> LinearDepthTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> GtaoTexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGITexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIHistoryTexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIReservoirDepthNormalATexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIReservoirDepthNormalBTexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIReservoirSampleRadianceATexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIReservoirSampleRadianceBTexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIReservoirRayDirectionATexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIReservoirRayDirectionBTexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIReservoirMWATexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIReservoirMWBTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiHistorySHTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiHistoryIrradianceTexture;
     Microsoft::WRL::ComPtr<ID3D12Resource> RestirGiHistoryCountATexture;
@@ -573,26 +518,6 @@ private:
     uint32_t BlueNoiseSobolSrvBindlessIndex = UINT32_MAX;
     uint32_t BlueNoiseScramblingRanking1SPPSrvBindlessIndex = UINT32_MAX;
     uint32_t GtaoBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIUavBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIHistorySrvBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIHistoryUavBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirDepthNormalASrvBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirDepthNormalAUavBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirDepthNormalBSrvBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirDepthNormalBUavBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirSampleRadianceASrvBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirSampleRadianceAUavBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirSampleRadianceBSrvBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirSampleRadianceBUavBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirRayDirectionASrvBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirRayDirectionAUavBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirRayDirectionBSrvBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirRayDirectionBUavBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirMWASrvBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirMWAUavBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirMWBSrvBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirMWBUavBindlessIndex = UINT32_MAX;
     uint32_t RestirGiHistoryIrradianceSrvBindlessIndex = UINT32_MAX;
     uint32_t RestirGiHistoryIrradianceUavBindlessIndex = UINT32_MAX;
     uint32_t RestirGiHistorySHSrvBindlessIndex = UINT32_MAX;
@@ -639,16 +564,6 @@ private:
     D3D12_RESOURCE_STATES VelocityState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES LinearDepthState = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES GtaoState = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    D3D12_RESOURCE_STATES RestirGIState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    D3D12_RESOURCE_STATES RestirGIHistoryState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    D3D12_RESOURCE_STATES RestirGIReservoirDepthNormalAState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    D3D12_RESOURCE_STATES RestirGIReservoirDepthNormalBState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    D3D12_RESOURCE_STATES RestirGIReservoirSampleRadianceAState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    D3D12_RESOURCE_STATES RestirGIReservoirSampleRadianceBState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    D3D12_RESOURCE_STATES RestirGIReservoirRayDirectionAState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    D3D12_RESOURCE_STATES RestirGIReservoirRayDirectionBState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    D3D12_RESOURCE_STATES RestirGIReservoirMWAState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    D3D12_RESOURCE_STATES RestirGIReservoirMWBState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES RestirGiHistoryIrradianceState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES RestirGiHistorySHState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     D3D12_RESOURCE_STATES RestirGiHistoryCountAState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -751,7 +666,6 @@ private:
     bool bSsrHzbEnabled = false;
     bool bSsrRefineEnabled = false;
     bool bSsrDenoiseEnabled = false;
-    bool bRestirGIEnabled = false;
     bool bRestirGIDenoiserEnabled = true;
 	uint32_t SsrMaxSteps = 32;
 	float SsrMaxDistance = 50.0f;
@@ -759,33 +673,7 @@ private:
 	float SsrStride = 1.0f;
 	float SsrRoughnessCutoff = 0.6f;
 	float SsrIntensity = 0.3f;
-    uint32_t RestirGISamplesPerPixel = 2;
-    float RestirGIIntensity = 1.0f;
-    bool bRestirGIShowOnly = false;
-    float RestirGIRayLength = 1000.0f;
-    float RestirGIClamp = 10.0f;
-    bool bRestirGITemporalReuse = true;
-    bool bRestirGISpatialReuse = true;
-    float RestirGITemporalAdditionalScale = 0.2f;
-    float RestirGISpatialAdditionalScale = 0.15f;
-    float RestirGIResolveMinDenominator = 1e-5f;
-    float RestirGIResolveMaxNormalization = 32.0f;
-    float RestirGIResolveLowSampleBoostGuard = 0.6f;
-    bool bRestirGIResolveUseConfidence = true;
-    uint32_t RestirGIMaxHistoryFrames = 1;
-    bool bRestirGIUseVisibility = true;
-    bool bRestirGIUseBrdf = true;
-    bool bRestirGIUseHistoryIndirect = true;
-    ERestirGIRandomMode RestirGIRandomMode = ERestirGIRandomMode::BlueNoiseSobol;
-    bool bRestirGIDebugRayEnabled = false;
-    uint32_t RestirGIDebugPixelX = 0;
-    uint32_t RestirGIDebugPixelY = 0;
-    bool bRestirGIFreezeFrame = false;
-    uint32_t RestirGIFrozenSequenceFrame = 0;
-    uint64_t RestirGIFreezeStartFrameNumber = 0;
     uint32_t RestirGIFreezeDenoiserHistoryResetPeriod = 3;
-    uint32_t RestirGIReservoirHistoryFrameCount = 0;
-    bool bRestirGIReservoirHistoryValid = false;
     bool bRestirGIDenoiserHistoryValid = false;
     ESSRMode SsrMode = ESSRMode::PS;
     uint32_t SsrSamplesPerQuad = 1;

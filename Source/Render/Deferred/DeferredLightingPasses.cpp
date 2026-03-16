@@ -640,7 +640,7 @@ void FDeferredLightingPasses::AddExtractHalfDepthNormalPass(FDeferredPassContext
     FRenderGraph& Graph = Context.Graph;
     const FRGResourceHandle DepthHandle = Context.Resources.DepthHandle;
     const FRGResourceHandle GBufferAHandle = Context.Resources.GBufferHandles[0];
-    FRGResourceHandle& HalfDepthNormalHandle = Context.Resources.RestirGIHalfDepthNormalHandle;
+    FRGResourceHandle& HalfDepthNormalHandle = Context.Resources.RestirGI.RestirGIHalfDepthNormalHandle;
 
     struct FExtractHalfDepthNormalPassData
     {
@@ -692,7 +692,7 @@ void FDeferredLightingPasses::AddExtractHalfDepthNormalPass(FDeferredPassContext
         CommandList->SetPipelineState(Owner.ExtractHalfDepthNormalPipeline.Get());
 
 		const uint32_t GlobalFrameNumber = static_cast<uint32_t>(Owner.GetFrameNumber());
-		const uint32_t SequenceFrame = Owner.bRestirGIFreezeFrame ? Owner.RestirGIFrozenSequenceFrame : GlobalFrameNumber;
+		const uint32_t SequenceFrame = Owner.IsRestirGIFreezeFrame() ? Owner.GetRestirGIFrozenSequenceFrame() : GlobalFrameNumber;
         const uint32_t Constants[4] =
         {
             DepthBindlessIndex,
@@ -831,14 +831,14 @@ void FDeferredLightingPasses::AddDirectLightingPass(FDeferredPassContext& Contex
             uint32_t Padding = 0;
         };
 
-        const float EffectiveRestirGIIntensity = (std::max)(0.0f, Owner.RestirGIIntensity);
+        const float EffectiveRestirGIIntensity = (std::max)(0.0f, Owner.GetRestirGIIntensity());
 
         const FRestirGIConstants RestirGIConstants =
         {
             1.0f,
-            Owner.bRestirGIEnabled ? 1u : 0u,
+            Owner.IsRestirGIEnabled() ? 1u : 0u,
             Owner.SsrRoughnessCutoff,
-            Owner.bRestirGIShowOnly ? 1u : 0u,
+            Owner.IsRestirGIShowOnly() ? 1u : 0u,
             0u
         };
         (void)EffectiveRestirGIIntensity;
@@ -855,7 +855,7 @@ void FDeferredLightingPasses::AddCompositeLightPass(FDeferredPassContext& Contex
     const std::array<FRGResourceHandle, 4>& GBufferHandles = Context.Resources.GBufferHandles;
     const FRGResourceHandle DepthHandle = Context.Resources.DepthHandle;
     const FRGResourceHandle GtaoHandle = Context.Resources.GtaoHandle;
-    const FRGResourceHandle RestirGIInputHandle = Owner.bRestirGIDenoiserEnabled ? Context.Resources.RestirGiHistoryIrradianceHandle : Context.Resources.RestirGIHandle;
+    const FRGResourceHandle RestirGIInputHandle = Owner.IsRestirGIDenoiserEnabled() ? Context.Resources.RestirGiHistoryIrradianceHandle : Context.Resources.RestirGI.RestirGIHandle;
     const FRGResourceHandle SsrFallbackHandle = Context.Resources.SsrFallbackHandle;
     const FRGResourceHandle LightingHandle = Context.Resources.LightingHandle;
 
@@ -917,7 +917,9 @@ void FDeferredLightingPasses::AddCompositeLightPass(FDeferredPassContext& Contex
         const uint32_t BaseSsrIndex = (Owner.SsrMode == ESSRMode::CS) ? Owner.SsrResolveBindlessIndex : Owner.SsrBindlessIndex;
         const uint32_t SsrLightingBindlessIndex = Owner.bSsrDenoiseEnabled ? Owner.SsrDenoiseBindlessIndex : BaseSsrIndex;
         const uint32_t SsrFallbackIndex = Owner.SsrFallbackBindlessIndex;
-        const uint32_t RestirGILightingBindlessIndex = Owner.bRestirGIDenoiserEnabled ? Owner.RestirGiHistoryIrradianceSrvBindlessIndex : Owner.RestirGIBindlessIndex;
+        const uint32_t RestirGILightingBindlessIndex = Owner.IsRestirGIDenoiserEnabled()
+            ? Owner.RestirGiHistoryIrradianceSrvBindlessIndex
+            : ((Owner.RestirGI != nullptr) ? Owner.RestirGI->GetCurrentOutputSrvBindlessIndex() : UINT32_MAX);
         if (DepthBindlessIndex == UINT32_MAX || Owner.GtaoBindlessIndex == UINT32_MAX || RestirGILightingBindlessIndex == UINT32_MAX || SsrLightingBindlessIndex == UINT32_MAX || SsrFallbackIndex == UINT32_MAX || Owner.ShadowMapBindlessIndex == UINT32_MAX
             || Owner.EnvironmentCubeBindlessIndex == UINT32_MAX || Owner.BrdfLutBindlessIndex == UINT32_MAX || Owner.DirectLightingBindlessIndex == UINT32_MAX
             || Owner.GBufferBindlessIndices[0] == UINT32_MAX || Owner.GBufferBindlessIndices[1] == UINT32_MAX || Owner.GBufferBindlessIndices[2] == UINT32_MAX)
@@ -965,14 +967,14 @@ void FDeferredLightingPasses::AddCompositeLightPass(FDeferredPassContext& Contex
             uint32_t Padding = 0;
         };
 
-        const float EffectiveRestirGIIntensity = (std::max)(0.0f, Owner.RestirGIIntensity);
+        const float EffectiveRestirGIIntensity = (std::max)(0.0f, Owner.GetRestirGIIntensity());
 
         const FRestirGIConstants RestirGIConstants =
         {
             1.0f,
-            Owner.bRestirGIEnabled ? 1u : 0u,
+            Owner.IsRestirGIEnabled() ? 1u : 0u,
             Owner.SsrRoughnessCutoff,
-            Owner.bRestirGIShowOnly ? 1u : 0u,
+            Owner.IsRestirGIShowOnly() ? 1u : 0u,
             0u
         };
         (void)EffectiveRestirGIIntensity;
