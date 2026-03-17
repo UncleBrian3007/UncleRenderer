@@ -1,7 +1,14 @@
 #include "DeferredResourceImporter.h"
 
 #include "../DeferredRenderer.h"
+#include "Gtao.h"
+#include "Ssr.h"
 #include "RestirGI.h"
+#include "AutoExposure.h"
+#include "Cas.h"
+#include "Taa.h"
+#include "Tonemap.h"
+#include "PathTracing.h"
 #include "../../RHI/DX12Device.h"
 #include <algorithm>
 #include <string>
@@ -51,11 +58,10 @@ void FDeferredResourceImporter::ImportFrameResources(FDeferredPassContext& Conte
         &Owner.LinearDepthState,
         { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), DXGI_FORMAT_R16_FLOAT });
 
-    OutResources.GtaoHandle = Graph.ImportTexture(
-        "GTAO",
-        Owner.GtaoTexture.Get(),
-        &Owner.GtaoState,
-        { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), DXGI_FORMAT_R8_UNORM });
+    if (Owner.Gtao)
+    {
+        Owner.Gtao->ImportPersistentResources(Context);
+    }
 
     if (Owner.RestirGI)
     {
@@ -67,29 +73,10 @@ void FDeferredResourceImporter::ImportFrameResources(FDeferredPassContext& Conte
         Owner.RestirGIDenoiser->ImportPersistentResources(Context);
     }
 
-    OutResources.SsrHandle = Graph.ImportTexture(
-        "SSR",
-        Owner.SsrTexture.Get(),
-        &Owner.SsrState,
-        { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), DXGI_FORMAT_R16G16B16A16_FLOAT });
-
-    OutResources.SsrDenoiseHandle = Graph.ImportTexture(
-        "SSR Denoise",
-        Owner.SsrDenoiseTexture.Get(),
-        &Owner.SsrDenoiseState,
-        { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), DXGI_FORMAT_R16G16B16A16_FLOAT });
-
-    OutResources.SsrFallbackHandle = Graph.ImportTexture(
-        "SSR Fallback",
-        Owner.SsrFallbackTexture.Get(),
-        &Owner.SsrFallbackState,
-        { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), DXGI_FORMAT_R16G16B16A16_FLOAT });
-
-    OutResources.SsrResolveHandle = Graph.ImportTexture(
-        "SSR Resolve",
-        Owner.SsrResolveTexture.Get(),
-        &Owner.SsrResolveState,
-        { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), DXGI_FORMAT_R16G16B16A16_FLOAT });
+    if (Owner.Ssr)
+    {
+        Owner.Ssr->ImportPersistentResources(Context);
+    }
 
     OutResources.LightingHandle = Graph.ImportTexture(
         "Lighting",
@@ -97,52 +84,29 @@ void FDeferredResourceImporter::ImportFrameResources(FDeferredPassContext& Conte
         &Owner.LightingBufferState,
         { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), FDeferredRenderer::LightingBufferFormat });
 
-    OutResources.TonemapOutputResource = Graph.ImportTexture(
-        "TonemapOutput",
-        Owner.TonemapOutput.Get(),
-        &Owner.TonemapOutputState,
-        { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), Owner.BackBufferFormat });
-
-    OutResources.LuminanceHandles =
+    if (Owner.AutoExposure)
     {
-        Graph.ImportTexture(
-            "LuminanceA",
-            Owner.LuminanceTextures[0].Get(),
-            &Owner.LuminanceStates[0],
-            { 1u, 1u, DXGI_FORMAT_R32_FLOAT }),
-        Graph.ImportTexture(
-            "LuminanceB",
-            Owner.LuminanceTextures[1].Get(),
-            &Owner.LuminanceStates[1],
-            { 1u, 1u, DXGI_FORMAT_R32_FLOAT })
-    };
-
-    OutResources.TaaHandles.reserve(Owner.TaaHistoryTextures.size());
-    for (size_t Index = 0; Index < Owner.TaaHistoryTextures.size(); ++Index)
-    {
-        const std::string HandleName = "TaaHistory_" + std::to_string(Index);
-        OutResources.TaaHandles.push_back(Graph.ImportTexture(
-            HandleName,
-            Owner.TaaHistoryTextures[Index].Get(),
-            &Owner.TaaStates[Index],
-            { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), FDeferredRenderer::LightingBufferFormat }));
+        Owner.AutoExposure->ImportPersistentResources(Context);
     }
 
-    OutResources.PathTracingTempHandle = Graph.ImportTexture(
-        "PathTracingTemp",
-        Owner.PathTracingTempTexture.Get(),
-        &Owner.PathTracingTempState,
-        { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), FDeferredRenderer::PathTracingBufferFormat });
-
-    OutResources.PathTracingAccumulationHandles.reserve(Owner.PathTracingAccumulationTextures.size());
-    for (size_t Index = 0; Index < Owner.PathTracingAccumulationTextures.size(); ++Index)
+    if (Owner.Cas)
     {
-        const std::string HandleName = "PathTracingAccumulation_" + std::to_string(Index);
-        OutResources.PathTracingAccumulationHandles.push_back(Graph.ImportTexture(
-            HandleName,
-            Owner.PathTracingAccumulationTextures[Index].Get(),
-            &Owner.PathTracingAccumulationStates[Index],
-            { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), FDeferredRenderer::PathTracingBufferFormat }));
+        Owner.Cas->ImportPersistentResources(Context);
+    }
+
+    if (Owner.Tonemap)
+    {
+        Owner.Tonemap->ImportPersistentResources(Context);
+    }
+
+    if (Owner.Taa)
+    {
+        Owner.Taa->ImportPersistentResources(Context);
+    }
+
+    if (Owner.PathTracing)
+    {
+        Owner.PathTracing->ImportPersistentResources(Context);
     }
 
     OutResources.HZBHandle = Graph.ImportTexture(
@@ -260,15 +224,6 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
     }
 
     {
-        D3D12_SHADER_RESOURCE_VIEW_DESC HilbertSrvDesc = {};
-        HilbertSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        HilbertSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        HilbertSrvDesc.Format = DXGI_FORMAT_R16_UINT;
-        HilbertSrvDesc.Texture2D.MipLevels = 1;
-        HilbertLutBindlessIndex = Device->CreateBindlessSrv(HilbertLutTexture.Get(), HilbertSrvDesc);
-    }
-
-    {
         D3D12_SHADER_RESOURCE_VIEW_DESC SobolSrvDesc = {};
         SobolSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         SobolSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -290,43 +245,9 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         BlueNoiseScramblingRanking1SPPSrvBindlessIndex = Device->CreateBindlessSrv(BlueNoiseScramblingRanking1SPPTexture.Get(), ScramblingSrvDesc);
     }
 
+    if (Ssr && !Ssr->CreatePersistentDescriptors(*this, Device))
     {
-        D3D12_SHADER_RESOURCE_VIEW_DESC GtaoSrvDesc = {};
-        GtaoSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        GtaoSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        GtaoSrvDesc.Format = DXGI_FORMAT_R8_UNORM;
-        GtaoSrvDesc.Texture2D.MipLevels = 1;
-        GtaoBindlessIndex = Device->CreateBindlessSrv(GtaoTexture.Get(), GtaoSrvDesc);
-    }
-
-    {
-        D3D12_SHADER_RESOURCE_VIEW_DESC SsrSrvDesc = {};
-        SsrSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        SsrSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        SsrSrvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-        SsrSrvDesc.Texture2D.MipLevels = 1;
-        SsrBindlessIndex = Device->CreateBindlessSrv(SsrTexture.Get(), SsrSrvDesc);
-        SsrDenoiseBindlessIndex = Device->CreateBindlessSrv(SsrDenoiseTexture.Get(), SsrSrvDesc);
-        SsrFallbackBindlessIndex = Device->CreateBindlessSrv(SsrFallbackTexture.Get(), SsrSrvDesc);
-        SsrResolveBindlessIndex = Device->CreateBindlessSrv(SsrResolveTexture.Get(), SsrSrvDesc);
-
-        D3D12_UNORDERED_ACCESS_VIEW_DESC SsrUavDesc = {};
-        SsrUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-        SsrUavDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-        SsrUavDesc.Texture2D.MipSlice = 0;
-        SsrUavBindlessIndex = Device->CreateBindlessUav(SsrTexture.Get(), nullptr, SsrUavDesc);
-
-        D3D12_UNORDERED_ACCESS_VIEW_DESC SsrResolveUavDesc = {};
-        SsrResolveUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-        SsrResolveUavDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-        SsrResolveUavDesc.Texture2D.MipSlice = 0;
-        SsrResolveUavBindlessIndex = Device->CreateBindlessUav(SsrResolveTexture.Get(), nullptr, SsrResolveUavDesc);
-
-        D3D12_UNORDERED_ACCESS_VIEW_DESC SsrFallbackUavDesc = {};
-        SsrFallbackUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-        SsrFallbackUavDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-        SsrFallbackUavDesc.Texture2D.MipSlice = 0;
-        SsrFallbackUavBindlessIndex = Device->CreateBindlessUav(SsrFallbackTexture.Get(), nullptr, SsrFallbackUavDesc);
+        return false;
     }
 
     {
@@ -338,87 +259,8 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         LightingBufferBindlessIndex = Device->CreateBindlessSrv(LightingBuffer.Get(), LightingSrvDesc);
     }
 
-    {
-        D3D12_SHADER_RESOURCE_VIEW_DESC TonemapSrvDesc = {};
-        TonemapSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        TonemapSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        TonemapSrvDesc.Format = BackBufferFormat;
-        TonemapSrvDesc.Texture2D.MipLevels = 1;
-        TonemapOutputBindlessIndex = Device->CreateBindlessSrv(TonemapOutput.Get(), TonemapSrvDesc);
-    }
-
     const auto CreateTemporalAndHzbDescriptors = [&]() -> bool
     {
-        for (uint32_t Index = 0; Index < LuminanceTextures.size(); ++Index)
-        {
-            D3D12_SHADER_RESOURCE_VIEW_DESC LuminanceSrvDesc = {};
-            LuminanceSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-            LuminanceSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            LuminanceSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
-            LuminanceSrvDesc.Texture2D.MipLevels = 1;
-            LuminanceSrvBindlessIndices[Index] = Device->CreateBindlessSrv(LuminanceTextures[Index].Get(), LuminanceSrvDesc);
-
-            D3D12_UNORDERED_ACCESS_VIEW_DESC LuminanceUavDesc = {};
-            LuminanceUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-            LuminanceUavDesc.Format = DXGI_FORMAT_R32_FLOAT;
-            LuminanceUavDesc.Texture2D.MipSlice = 0;
-            LuminanceUavDesc.Texture2D.PlaneSlice = 0;
-            LuminanceUavBindlessIndices[Index] = Device->CreateBindlessUav(LuminanceTextures[Index].Get(), nullptr, LuminanceUavDesc);
-        }
-
-        TaaSrvBindlessIndices.clear();
-        TaaUavBindlessIndices.clear();
-        TaaSrvBindlessIndices.resize(TaaHistoryTextures.size(), UINT32_MAX);
-        TaaUavBindlessIndices.resize(TaaHistoryTextures.size(), UINT32_MAX);
-
-        for (uint32_t Index = 0; Index < TaaHistoryTextures.size(); ++Index)
-        {
-            D3D12_SHADER_RESOURCE_VIEW_DESC TaaSrvDesc = {};
-            TaaSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-            TaaSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            TaaSrvDesc.Format = FDeferredRenderer::LightingBufferFormat;
-            TaaSrvDesc.Texture2D.MipLevels = 1;
-            TaaSrvBindlessIndices[Index] = Device->CreateBindlessSrv(TaaHistoryTextures[Index].Get(), TaaSrvDesc);
-
-            D3D12_UNORDERED_ACCESS_VIEW_DESC TaaUavDesc = {};
-            TaaUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-            TaaUavDesc.Format = FDeferredRenderer::LightingBufferFormat;
-            TaaUavDesc.Texture2D.MipSlice = 0;
-            TaaUavDesc.Texture2D.PlaneSlice = 0;
-            TaaUavBindlessIndices[Index] = Device->CreateBindlessUav(TaaHistoryTextures[Index].Get(), nullptr, TaaUavDesc);
-        }
-
-        if (PathTracingTempTexture)
-        {
-            D3D12_UNORDERED_ACCESS_VIEW_DESC PathTracingTempUavDesc = {};
-            PathTracingTempUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-            PathTracingTempUavDesc.Format = FDeferredRenderer::PathTracingBufferFormat;
-            PathTracingTempUavDesc.Texture2D.MipSlice = 0;
-            PathTracingTempBindlessIndex = Device->CreateBindlessUav(PathTracingTempTexture.Get(), nullptr, PathTracingTempUavDesc);
-        }
-
-        PathTracingAccumulationSrvBindlessIndices.clear();
-        PathTracingAccumulationUavBindlessIndices.clear();
-        PathTracingAccumulationSrvBindlessIndices.resize(PathTracingAccumulationTextures.size(), UINT32_MAX);
-        PathTracingAccumulationUavBindlessIndices.resize(PathTracingAccumulationTextures.size(), UINT32_MAX);
-
-        for (uint32_t Index = 0; Index < PathTracingAccumulationTextures.size(); ++Index)
-        {
-            D3D12_SHADER_RESOURCE_VIEW_DESC AccumSrvDesc = {};
-            AccumSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-            AccumSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            AccumSrvDesc.Format = FDeferredRenderer::PathTracingBufferFormat;
-            AccumSrvDesc.Texture2D.MipLevels = 1;
-            PathTracingAccumulationSrvBindlessIndices[Index] = Device->CreateBindlessSrv(PathTracingAccumulationTextures[Index].Get(), AccumSrvDesc);
-
-            D3D12_UNORDERED_ACCESS_VIEW_DESC AccumUavDesc = {};
-            AccumUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-            AccumUavDesc.Format = FDeferredRenderer::PathTracingBufferFormat;
-            AccumUavDesc.Texture2D.MipSlice = 0;
-            AccumUavDesc.Texture2D.PlaneSlice = 0;
-            PathTracingAccumulationUavBindlessIndices[Index] = Device->CreateBindlessUav(PathTracingAccumulationTextures[Index].Get(), nullptr, AccumUavDesc);
-        }
-
         DepthBindlessIndices.clear();
         DepthBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
         for (uint32_t Index = 0; Index < DepthBindlessIndices.size(); ++Index)

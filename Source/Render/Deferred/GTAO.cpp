@@ -1,4 +1,6 @@
-﻿#include "DeferredLightingPasses.h"
+#include "Gtao.h"
+
+#include "DeferredPassContext.h"
 #include "../DeferredRenderer.h"
 #include "../RendererUtils.h"
 #include "../ShaderCompiler.h"
@@ -8,6 +10,8 @@
 #include <array>
 #include <cstring>
 #include <d3dx12.h>
+
+using Microsoft::WRL::ComPtr;
 
 namespace
 {
@@ -39,17 +43,129 @@ namespace
     }
 }
 
-bool FDeferredRenderer::CreateGtaoRootSignature(FDX12Device* Device)
+bool FGtao::InitializePipelines(FDeferredRenderer& Owner, FDX12Device* Device)
+{
+    (void)Owner;
+    return CreateRootSignature(Device) && CreatePipeline(Device);
+}
+
+bool FGtao::InitializeResources(FDeferredRenderer& Owner, FDX12Device* Device, uint32_t Width, uint32_t Height)
+{
+    (void)Owner;
+    return CreateResources(Device, Width, Height) && CreateHilbertLutResources(Device);
+}
+
+void FGtao::ImportPersistentResources(FDeferredPassContext& Context)
+{
+    FDeferredRenderer& Owner = Context.Owner;
+    FRenderGraph& Graph = Context.Graph;
+    FGtaoFrameResources& OutResources = Context.Resources.Gtao;
+
+    OutResources.GtaoHandle = Graph.ImportTexture(
+        "GTAO",
+        GtaoTexture.Get(),
+        &GtaoState,
+        { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), DXGI_FORMAT_R8_UNORM });
+}
+
+bool FGtao::CreatePersistentDescriptors(FDeferredRenderer& Owner, FDX12Device* Device)
+{
+    (void)Owner;
+    if (!Device)
+    {
+        return false;
+    }
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC HilbertSrvDesc = {};
+    HilbertSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    HilbertSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    HilbertSrvDesc.Format = DXGI_FORMAT_R16_UINT;
+    HilbertSrvDesc.Texture2D.MipLevels = 1;
+    HilbertLutBindlessIndex = Device->CreateBindlessSrv(HilbertLutTexture.Get(), HilbertSrvDesc);
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC GtaoSrvDesc = {};
+    GtaoSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    GtaoSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    GtaoSrvDesc.Format = DXGI_FORMAT_R8_UNORM;
+    GtaoSrvDesc.Texture2D.MipLevels = 1;
+    GtaoBindlessIndex = Device->CreateBindlessSrv(GtaoTexture.Get(), GtaoSrvDesc);
+    return true;
+}
+
+void FGtao::AddPass(FDeferredPassContext& Context) const
+{
+    FDeferredRenderer& Owner = Context.Owner;
+    FRenderGraph& Graph = Context.Graph;
+    FDeferredRenderer* OwnerPtr = &Context.Owner;
+    const std::array<FRGResourceHandle, 4>& GBufferHandles = Context.Resources.GBufferHandles;
+    const FRGResourceHandle LinearDepthHandle = Context.Resources.LinearDepthHandle;
+    const FRGResourceHandle GtaoHandle = Context.Resources.Gtao.GtaoHandle;
+
+    struct FGtaoPassData
+    {
+        bool bEnabled = false;
+        uint32_t PipelineIndex = 0;
+    };
+
+    Graph.AddPass<FGtaoPassData>("GTAO", [&, GBufferHandles, LinearDepthHandle, GtaoHandle](FGtaoPassData& Data, FRGPassBuilder& Builder)
+    {
+        Data.PipelineIndex = Owner.bGtaoJitterEnabled ? 1u : 0u;
+        Data.bEnabled = Owner.bGtaoEnabled && GtaoRootSignature && GtaoPipelines[Data.PipelineIndex];
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(LinearDepthHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Builder.WriteTexture(GtaoHandle, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    }, [OwnerPtr, this](const FGtaoPassData& Data, FDX12CommandContext& Cmd)
+    {
+        FDeferredRenderer& Owner = *OwnerPtr;
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
+        FScopedPixEvent GtaoEvent(LocalCommandList, L"GTAO");
+
+        ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
+        LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        Cmd.SetRenderTarget(GtaoRtvHandle, nullptr);
+
+        const float ClearColor[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+        LocalCommandList->ClearRenderTargetView(GtaoRtvHandle, ClearColor, 0, nullptr);
+
+        LocalCommandList->SetPipelineState(GtaoPipelines[Data.PipelineIndex].Get());
+        LocalCommandList->SetGraphicsRootSignature(GtaoRootSignature.Get());
+
+        LocalCommandList->RSSetViewports(1, &Owner.Viewport);
+        LocalCommandList->RSSetScissorRects(1, &Owner.ScissorRect);
+
+        LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        LocalCommandList->SetGraphicsRootConstantBufferView(0, Owner.GetSceneConstantBufferAddress());
+        const uint32_t GtaoBindlessIndices[] =
+        {
+            Owner.GBufferBindlessIndices[0],
+            Owner.LinearDepthBindlessIndex,
+            HilbertLutBindlessIndex
+        };
+        LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(GtaoBindlessIndices), GtaoBindlessIndices, 0);
+
+        LocalCommandList->DrawInstanced(3, 1, 0, 0);
+    });
+}
+
+bool FGtao::CreateRootSignature(FDX12Device* Device)
 {
     D3D12_ROOT_PARAMETER1 RootParams[2] = {};
-    // RootParams[0]: Scene constants (b0) used in Gtao.hlsl.
     RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
     RootParams[0].Descriptor.ShaderRegister = 0;
     RootParams[0].Descriptor.RegisterSpace = 0;
     RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
 
-    // RootParams[1]: GTAO bindless indices (b1) used in Gtao.hlsl.
     RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     RootParams[1].Constants.Num32BitValues = 3;
@@ -92,7 +208,7 @@ bool FDeferredRenderer::CreateGtaoRootSignature(FDX12Device* Device)
     return true;
 }
 
-bool FDeferredRenderer::CreateGtaoPipeline(FDX12Device* Device)
+bool FGtao::CreatePipeline(FDX12Device* Device)
 {
     FShaderCompiler Compiler;
     std::vector<uint8_t> VSByteCode;
@@ -149,7 +265,7 @@ bool FDeferredRenderer::CreateGtaoPipeline(FDX12Device* Device)
     return true;
 }
 
-bool FDeferredRenderer::CreateGtaoResources(FDX12Device* Device, uint32_t Width, uint32_t Height)
+bool FGtao::CreateResources(FDX12Device* Device, uint32_t Width, uint32_t Height)
 {
     if (Device == nullptr)
     {
@@ -208,7 +324,7 @@ bool FDeferredRenderer::CreateGtaoResources(FDX12Device* Device, uint32_t Width,
     return true;
 }
 
-bool FDeferredRenderer::CreateHilbertLutResources(FDX12Device* Device)
+bool FGtao::CreateHilbertLutResources(FDX12Device* Device)
 {
     if (Device == nullptr)
     {
@@ -309,67 +425,4 @@ bool FDeferredRenderer::CreateHilbertLutResources(FDX12Device* Device)
     Device->GetGraphicsQueue()->Flush();
 
     return true;
-}
-
-void FDeferredLightingPasses::AddGtaoPass(FDeferredPassContext& Context) const
-{
-    FDeferredRenderer& Owner = Context.Owner;
-    FRenderGraph& Graph = Context.Graph;
-    const std::array<FRGResourceHandle, 4>& GBufferHandles = Context.Resources.GBufferHandles;
-    const FRGResourceHandle LinearDepthHandle = Context.Resources.LinearDepthHandle;
-    const FRGResourceHandle GtaoHandle = Context.Resources.GtaoHandle;
-
-    struct FGtaoPassData
-    {
-        bool bEnabled = false;
-        uint32_t PipelineIndex = 0;
-    };
-
-    Graph.AddPass<FGtaoPassData>("GTAO", [&Owner, GBufferHandles, LinearDepthHandle, GtaoHandle](FGtaoPassData& Data, FRGPassBuilder& Builder)
-    {
-        Data.PipelineIndex = Owner.bGtaoJitterEnabled ? 1u : 0u;
-        Data.bEnabled = Owner.bGtaoEnabled && Owner.GtaoRootSignature && Owner.GtaoPipelines[Data.PipelineIndex];
-        if (!Data.bEnabled)
-        {
-            return;
-        }
-
-        Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        Builder.ReadTexture(LinearDepthHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        Builder.WriteTexture(GtaoHandle, D3D12_RESOURCE_STATE_RENDER_TARGET);
-    }, [&Owner](const FGtaoPassData& Data, FDX12CommandContext& Cmd)
-    {
-        if (!Data.bEnabled)
-        {
-            return;
-        }
-
-        ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
-        FScopedPixEvent GtaoEvent(LocalCommandList, L"GTAO");
-
-        ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
-        LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
-        Cmd.SetRenderTarget(Owner.GtaoRtvHandle, nullptr);
-
-        const float ClearColor[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
-        LocalCommandList->ClearRenderTargetView(Owner.GtaoRtvHandle, ClearColor, 0, nullptr);
-
-        LocalCommandList->SetPipelineState(Owner.GtaoPipelines[Data.PipelineIndex].Get());
-        LocalCommandList->SetGraphicsRootSignature(Owner.GtaoRootSignature.Get());
-
-        LocalCommandList->RSSetViewports(1, &Owner.Viewport);
-        LocalCommandList->RSSetScissorRects(1, &Owner.ScissorRect);
-
-        LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        LocalCommandList->SetGraphicsRootConstantBufferView(0, Owner.GetSceneConstantBufferAddress());
-        const uint32_t GtaoBindlessIndices[] =
-        {
-            Owner.GBufferBindlessIndices[0],
-            Owner.LinearDepthBindlessIndex,
-            Owner.HilbertLutBindlessIndex
-        };
-        LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(GtaoBindlessIndices), GtaoBindlessIndices, 0);
-
-        LocalCommandList->DrawInstanced(3, 1, 0, 0);
-    });
 }

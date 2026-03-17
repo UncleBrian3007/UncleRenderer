@@ -116,10 +116,16 @@
     <ClCompile Include="Source\Render\Deferred\GTAO.cpp">
       <Filter>Source Files\Render</Filter>
     </ClCompile>
+    <ClCompile Include="Source\Render\Deferred\AutoExposure.cpp">
+      <Filter>Source Files\Render</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Render\Deferred\Cas.cpp">
+      <Filter>Source Files\Render</Filter>
+    </ClCompile>
     <ClCompile Include="Source\Render\Deferred\DeferredPostProcessPasses.cpp">
       <Filter>Source Files\Render</Filter>
     </ClCompile>
-    <ClCompile Include="Source\Render\Deferred\DeferredRayTracingPasses.cpp">
+    <ClCompile Include="Source\Render\Deferred\Taa.cpp">
       <Filter>Source Files\Render</Filter>
     </ClCompile>
     <ClCompile Include="Source\Render\Deferred\Ssr.cpp">
@@ -135,6 +141,9 @@
       <Filter>Source Files\Render</Filter>
     </ClCompile>
     <ClCompile Include="Source\Render\Deferred\RestirGIDenoiser.cpp">
+      <Filter>Source Files\Render</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Render\Deferred\Tonemap.cpp">
       <Filter>Source Files\Render</Filter>
     </ClCompile>
     <ClCompile Include="Source\Render\Deferred\DeferredResourceImporter.cpp">
@@ -209,56 +218,56 @@
     <ClCompile Include="ThirdParty\imgui\imgui_widgets.cpp">
       <Filter>Source Files\ThirdParty\imgui</Filter>
     </ClCompile>
-    <ClCompile Include="ThirdParty\meshoptimizer\allocator.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="ThirdParty\meshoptimizer\clusterizer.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="ThirdParty\meshoptimizer\indexcodec.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="ThirdParty\meshoptimizer\indexgenerator.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="ThirdParty\meshoptimizer\overdrawanalyzer.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="ThirdParty\meshoptimizer\overdrawoptimizer.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="ThirdParty\meshoptimizer\simplifier.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="ThirdParty\meshoptimizer\spatialorder.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="ThirdParty\meshoptimizer\stripifier.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="ThirdParty\meshoptimizer\vcacheanalyzer.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="ThirdParty\meshoptimizer\vcacheoptimizer.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="ThirdParty\meshoptimizer\vertexcodec.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="ThirdParty\meshoptimizer\vertexfilter.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="ThirdParty\meshoptimizer\vfetchanalyzer.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="ThirdParty\meshoptimizer\vfetchoptimizer.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="Source\Scene\GltfAnimation.cpp">
       <Filter>Source Files\Scene</Filter>
     </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\allocator.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\clusterizer.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\indexcodec.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\indexgenerator.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\overdrawanalyzer.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\overdrawoptimizer.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\simplifier.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\spatialorder.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\stripifier.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\vcacheanalyzer.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\vcacheoptimizer.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\vertexcodec.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\vertexfilter.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\vfetchanalyzer.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\vfetchoptimizer.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
     <ClCompile Include="Source\RHI\DX12DeviceRemoved.cpp">
-      <Filter>Source Files</Filter>
+      <Filter>Source Files\RHI</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -319,13 +328,19 @@
     <ClInclude Include="Source\Render\Deferred\DeferredLightingPasses.h">
       <Filter>Header Files\Render</Filter>
     </ClInclude>
+    <ClInclude Include="Source\Render\Deferred\AutoExposure.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Render\Deferred\Cas.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
     <ClInclude Include="Source\Render\Deferred\DeferredPostProcessPasses.h">
       <Filter>Header Files\Render</Filter>
     </ClInclude>
-    <ClInclude Include="Source\Render\Deferred\DeferredPassContext.h">
+    <ClInclude Include="Source\Render\Deferred\Taa.h">
       <Filter>Header Files\Render</Filter>
     </ClInclude>
-    <ClInclude Include="Source\Render\Deferred\DeferredRayTracingPasses.h">
+    <ClInclude Include="Source\Render\Deferred\DeferredPassContext.h">
       <Filter>Header Files\Render</Filter>
     </ClInclude>
     <ClInclude Include="Source\Render\Deferred\DeferredResourceImporter.h">
@@ -334,10 +349,25 @@
     <ClInclude Include="Source\Render\Deferred\DeferredVisibilityPasses.h">
       <Filter>Header Files\Render</Filter>
     </ClInclude>
+    <ClInclude Include="Source\Render\Deferred\Gtao.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Render\Deferred\RayTracingShadow.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Render\Deferred\Ssr.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
     <ClInclude Include="Source\Render\Deferred\RestirGI.h">
       <Filter>Header Files\Render</Filter>
     </ClInclude>
     <ClInclude Include="Source\Render\Deferred\RestirGIDenoiser.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Render\Deferred\PathTracing.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Render\Deferred\Tonemap.h">
       <Filter>Header Files\Render</Filter>
     </ClInclude>
     <ClInclude Include="Source\Render\DebugPrintFont.h">
@@ -418,9 +448,6 @@
     <ClInclude Include="Source\Core\GpuDebugMarkers.h">
       <Filter>Header Files\Core</Filter>
     </ClInclude>
-    <ClInclude Include="ThirdParty\meshoptimizer\meshoptimizer.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="Source\Scene\GltfAnimation.h">
       <Filter>Header Files\Scene</Filter>
     </ClInclude>
@@ -431,7 +458,10 @@
       <Filter>Source Files\ThirdParty\cgltf</Filter>
     </ClInclude>
     <ClInclude Include="Source\RHI\DX12DeviceRemoved.h">
-      <Filter>Header Files</Filter>
+      <Filter>Header Files\RHI</Filter>
+    </ClInclude>
+    <ClInclude Include="ThirdParty\meshoptimizer\meshoptimizer.h">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -621,6 +651,18 @@
       <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\ffx_spd.h">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\ExtractHalfDepthNormal.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\RestirGIDenoiser.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\RestirGiLinearDepthMipGenSpd.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\RestirGiMipGenSpd.hlsl">
       <Filter>Shaders</Filter>
     </None>
   </ItemGroup>

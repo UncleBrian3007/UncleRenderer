@@ -9,8 +9,15 @@
 #include "Deferred/DeferredVisibilityPasses.h"
 #include "Deferred/DeferredGeometryPasses.h"
 #include "Deferred/DeferredLightingPasses.h"
+#include "Deferred/Gtao.h"
+#include "Deferred/RayTracingShadow.h"
+#include "Deferred/Ssr.h"
 #include "Deferred/RestirGI.h"
-#include "Deferred/DeferredRayTracingPasses.h"
+#include "Deferred/AutoExposure.h"
+#include "Deferred/Cas.h"
+#include "Deferred/Taa.h"
+#include "Deferred/Tonemap.h"
+#include "Deferred/PathTracing.h"
 #include "Deferred/DeferredPostProcessPasses.h"
 #include "Deferred/DeferredResourceImporter.h"
 #include "../Scene/GltfLoader.h"
@@ -38,9 +45,16 @@ FDeferredRenderer::FDeferredRenderer()
     , VisibilityPasses(std::make_unique<FDeferredVisibilityPasses>())
     , GeometryPasses(std::make_unique<FDeferredGeometryPasses>())
     , LightingPasses(std::make_unique<FDeferredLightingPasses>())
+    , Gtao(std::make_unique<FGtao>())
+    , RayTracingShadow(std::make_unique<FRayTracingShadow>())
+    , Ssr(std::make_unique<FSsr>())
     , RestirGI(std::make_unique<FRestirGI>())
     , RestirGIDenoiser(std::make_unique<FRestirGIDenoiser>())
-    , RayTracingPasses(std::make_unique<FDeferredRayTracingPasses>())
+    , PathTracing(std::make_unique<FPathTracing>())
+    , AutoExposure(std::make_unique<FAutoExposure>())
+    , Cas(std::make_unique<FCas>())
+    , Taa(std::make_unique<FTaa>())
+    , Tonemap(std::make_unique<FTonemap>())
     , PostProcessPasses(std::make_unique<FDeferredPostProcessPasses>())
     , ResourceImporter(std::make_unique<FDeferredResourceImporter>())
 {
@@ -54,30 +68,330 @@ const DXGI_FORMAT FDeferredRenderer::GBufferFormats[4] =
     DXGI_FORMAT_R16G16B16A16_FLOAT,
 };
 
-namespace
+void FDeferredRenderer::SetTonemapEnabled(bool bEnabled)
 {
-    float HaltonSequence(uint32_t Index, uint32_t Base)
+    if (Tonemap)
     {
-        float Result = 0.0f;
-        float Fraction = 1.0f / static_cast<float>(Base);
-        uint32_t Current = Index;
-        while (Current > 0)
-        {
-            Result += static_cast<float>(Current % Base) * Fraction;
-            Current /= Base;
-            Fraction /= static_cast<float>(Base);
-        }
-        return Result;
+        Tonemap->SetTonemapEnabled(bEnabled);
     }
+}
 
-    DirectX::XMFLOAT2 BuildTaaJitter(uint32_t SampleIndex)
+bool FDeferredRenderer::IsTonemapEnabled() const
+{
+    return Tonemap && Tonemap->IsTonemapEnabled();
+}
+
+void FDeferredRenderer::SetTonemapExposure(float Exposure)
+{
+    if (Tonemap)
     {
-        const uint32_t Index = SampleIndex + 1;
-        const float JitterX = HaltonSequence(Index, 2) - 0.5f;
-        const float JitterY = HaltonSequence(Index, 3) - 0.5f;
-        return DirectX::XMFLOAT2(JitterX, JitterY);
+        Tonemap->SetTonemapExposure(Exposure);
     }
+}
 
+float FDeferredRenderer::GetTonemapExposure() const
+{
+    return Tonemap ? Tonemap->GetTonemapExposure() : 0.0f;
+}
+
+void FDeferredRenderer::SetTonemapWhitePoint(float WhitePoint)
+{
+    if (Tonemap)
+    {
+        Tonemap->SetTonemapWhitePoint(WhitePoint);
+    }
+}
+
+float FDeferredRenderer::GetTonemapWhitePoint() const
+{
+    return Tonemap ? Tonemap->GetTonemapWhitePoint() : 0.0f;
+}
+
+void FDeferredRenderer::SetTonemapGamma(float Gamma)
+{
+    if (Tonemap)
+    {
+        Tonemap->SetTonemapGamma(Gamma);
+    }
+}
+
+float FDeferredRenderer::GetTonemapGamma() const
+{
+    return Tonemap ? Tonemap->GetTonemapGamma() : 0.0f;
+}
+
+void FDeferredRenderer::SetCasEnabled(bool bEnabled)
+{
+    if (Cas)
+    {
+        Cas->SetEnabled(bEnabled);
+    }
+}
+
+bool FDeferredRenderer::IsCasEnabled() const
+{
+    return Cas && Cas->IsEnabled();
+}
+
+void FDeferredRenderer::SetCasSharpness(float Sharpness)
+{
+    if (Cas)
+    {
+        Cas->SetSharpness(Sharpness);
+    }
+}
+
+float FDeferredRenderer::GetCasSharpness() const
+{
+    return Cas ? Cas->GetSharpness() : 0.0f;
+}
+
+void FDeferredRenderer::SetAutoExposureEnabled(bool bEnabled)
+{
+    if (AutoExposure)
+    {
+        AutoExposure->SetEnabled(bEnabled);
+    }
+}
+
+bool FDeferredRenderer::IsAutoExposureEnabled() const
+{
+    return AutoExposure && AutoExposure->IsEnabled();
+}
+
+void FDeferredRenderer::SetAutoExposureKey(float Key)
+{
+    if (AutoExposure)
+    {
+        AutoExposure->SetKey(Key);
+    }
+}
+
+float FDeferredRenderer::GetAutoExposureKey() const
+{
+    return AutoExposure ? AutoExposure->GetKey() : 0.0f;
+}
+
+void FDeferredRenderer::SetAutoExposureMin(float MinExposure)
+{
+    if (AutoExposure)
+    {
+        AutoExposure->SetMinExposure(MinExposure);
+    }
+}
+
+float FDeferredRenderer::GetAutoExposureMin() const
+{
+    return AutoExposure ? AutoExposure->GetMinExposure() : 0.0f;
+}
+
+void FDeferredRenderer::SetAutoExposureMax(float MaxExposure)
+{
+    if (AutoExposure)
+    {
+        AutoExposure->SetMaxExposure(MaxExposure);
+    }
+}
+
+float FDeferredRenderer::GetAutoExposureMax() const
+{
+    return AutoExposure ? AutoExposure->GetMaxExposure() : 0.0f;
+}
+
+void FDeferredRenderer::SetAutoExposureSpeedUp(float Speed)
+{
+    if (AutoExposure)
+    {
+        AutoExposure->SetSpeedUp(Speed);
+    }
+}
+
+float FDeferredRenderer::GetAutoExposureSpeedUp() const
+{
+    return AutoExposure ? AutoExposure->GetSpeedUp() : 0.0f;
+}
+
+void FDeferredRenderer::SetAutoExposureSpeedDown(float Speed)
+{
+    if (AutoExposure)
+    {
+        AutoExposure->SetSpeedDown(Speed);
+    }
+}
+
+float FDeferredRenderer::GetAutoExposureSpeedDown() const
+{
+    return AutoExposure ? AutoExposure->GetSpeedDown() : 0.0f;
+}
+
+void FDeferredRenderer::SetTaaEnabled(bool bEnabled)
+{
+    if (Taa)
+    {
+        Taa->SetEnabled(bEnabled);
+    }
+}
+
+bool FDeferredRenderer::IsTaaEnabled() const
+{
+    return Taa && Taa->IsEnabled();
+}
+
+void FDeferredRenderer::SetTaaHistoryWeight(float Weight)
+{
+    if (Taa)
+    {
+        Taa->SetHistoryWeight(Weight);
+    }
+}
+
+float FDeferredRenderer::GetTaaHistoryWeight() const
+{
+    return Taa ? Taa->GetHistoryWeight() : 0.0f;
+}
+
+void FDeferredRenderer::SetSsrSwEnabled(bool bEnabled)
+{
+    if (Ssr)
+    {
+        Ssr->SetSwEnabled(bEnabled);
+    }
+}
+
+void FDeferredRenderer::SetSsrHwEnabled(bool bEnabled)
+{
+    if (Ssr)
+    {
+        Ssr->SetHwEnabled(bEnabled);
+    }
+}
+
+void FDeferredRenderer::SetSsrHzbEnabled(bool bEnabled)
+{
+    if (Ssr)
+    {
+        Ssr->SetHzbEnabled(bEnabled);
+    }
+}
+
+void FDeferredRenderer::SetSsrRefineEnabled(bool bEnabled)
+{
+    if (Ssr)
+    {
+        Ssr->SetRefineEnabled(bEnabled);
+    }
+}
+
+void FDeferredRenderer::SetSsrDenoiseEnabled(bool bEnabled)
+{
+    if (Ssr)
+    {
+        Ssr->SetDenoiseEnabled(bEnabled);
+    }
+}
+
+void FDeferredRenderer::SetSsrMode(ESSRMode Mode)
+{
+    if (Ssr)
+    {
+        Ssr->SetMode(Mode);
+    }
+}
+
+void FDeferredRenderer::SetSsrSamplesPerQuad(uint32_t Samples)
+{
+    if (Ssr)
+    {
+        Ssr->SetSamplesPerQuad(Samples);
+    }
+}
+
+bool FDeferredRenderer::IsSsrSwEnabled() const
+{
+    return Ssr && Ssr->IsSwEnabled();
+}
+
+bool FDeferredRenderer::IsSsrHwEnabled() const
+{
+    return Ssr && Ssr->IsHwEnabled();
+}
+
+void FDeferredRenderer::SetSsrMaxSteps(uint32_t Steps)
+{
+    if (Ssr)
+    {
+        Ssr->SetMaxSteps(Steps);
+    }
+}
+
+uint32_t FDeferredRenderer::GetSsrMaxSteps() const
+{
+    return Ssr ? Ssr->GetMaxSteps() : 0u;
+}
+
+void FDeferredRenderer::SetSsrMaxDistance(float Distance)
+{
+    if (Ssr)
+    {
+        Ssr->SetMaxDistance(Distance);
+    }
+}
+
+float FDeferredRenderer::GetSsrMaxDistance() const
+{
+    return Ssr ? Ssr->GetMaxDistance() : 0.0f;
+}
+
+void FDeferredRenderer::SetSsrThickness(float Thickness)
+{
+    if (Ssr)
+    {
+        Ssr->SetThickness(Thickness);
+    }
+}
+
+float FDeferredRenderer::GetSsrThickness() const
+{
+    return Ssr ? Ssr->GetThickness() : 0.0f;
+}
+
+void FDeferredRenderer::SetSsrStride(float Stride)
+{
+    if (Ssr)
+    {
+        Ssr->SetStride(Stride);
+    }
+}
+
+float FDeferredRenderer::GetSsrStride() const
+{
+    return Ssr ? Ssr->GetStride() : 0.0f;
+}
+
+void FDeferredRenderer::SetSsrRoughnessCutoff(float Cutoff)
+{
+    if (Ssr)
+    {
+        Ssr->SetRoughnessCutoff(Cutoff);
+    }
+}
+
+float FDeferredRenderer::GetSsrRoughnessCutoff() const
+{
+    return Ssr ? Ssr->GetRoughnessCutoff() : 0.0f;
+}
+
+void FDeferredRenderer::SetSsrIntensity(float Intensity)
+{
+    if (Ssr)
+    {
+        Ssr->SetIntensity(Intensity);
+    }
+}
+
+float FDeferredRenderer::GetSsrIntensity() const
+{
+    return Ssr ? Ssr->GetIntensity() : 0.0f;
 }
 
 void FDeferredRenderer::SetRestirGIEnabled(bool bEnabled)
@@ -378,6 +692,54 @@ void FDeferredRenderer::StepRestirGIFreezeFrame()
     }
 }
 
+void FDeferredRenderer::SetPathTracingAccumulationEnabled(bool bEnabled)
+{
+    if (PathTracing)
+    {
+        PathTracing->SetAccumulationEnabled(bEnabled);
+    }
+}
+
+bool FDeferredRenderer::IsPathTracingAccumulationEnabled() const
+{
+    return PathTracing && PathTracing->IsAccumulationEnabled();
+}
+
+void FDeferredRenderer::SetPathTracingMaxBounces(uint32_t MaxBounces)
+{
+    if (PathTracing)
+    {
+        PathTracing->SetMaxBounces(MaxBounces);
+    }
+}
+
+uint32_t FDeferredRenderer::GetPathTracingMaxBounces() const
+{
+    return PathTracing ? PathTracing->GetMaxBounces() : 0u;
+}
+
+void FDeferredRenderer::SetPathTracingVndfEnabled(bool bEnabled)
+{
+    bPathTracingUseVndf = bEnabled;
+    if (PathTracing)
+    {
+        PathTracing->ResetAccumulation();
+    }
+}
+
+void FDeferredRenderer::SetPathTracingDebugMode(int Mode)
+{
+    if (PathTracing)
+    {
+        PathTracing->SetDebugMode(Mode);
+    }
+}
+
+int FDeferredRenderer::GetPathTracingDebugMode() const
+{
+    return PathTracing ? PathTracing->GetDebugMode() : 0;
+}
+
 DXGI_FORMAT FDeferredRenderer::ResolveRestirGiRadianceFormat(FDX12Device* Device) const
 {
     return RestirGI ? RestirGI->ResolveRadianceFormat(Device) : DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -422,45 +784,49 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
 
 void FDeferredRenderer::ApplyRendererConfig(const FRendererConfig& Config)
 {
-    bTonemapEnabled = Config.bEnableTonemap;
-    TonemapExposure = Config.TonemapExposure;
-    TonemapWhitePoint = Config.TonemapWhitePoint;
-    TonemapGamma = Config.TonemapGamma;
-    bCasEnabled = Config.bEnableCas;
-    CasSharpness = Config.CasSharpness;
-    bAutoExposureEnabled = Config.bEnableAutoExposure;
-    AutoExposureKey = Config.AutoExposureKey;
-    AutoExposureMin = Config.AutoExposureMin;
-    AutoExposureMax = Config.AutoExposureMax;
-    AutoExposureSpeedUp = Config.AutoExposureSpeedUp;
-    AutoExposureSpeedDown = Config.AutoExposureSpeedDown;
-    bTaaEnabled = Config.bEnableTAA;
-    TaaHistoryWeight = Config.TaaHistoryWeight;
-    TaaFrameCount = Config.FramesInFlight;
-    TaaHistoryValid.assign(TaaFrameCount, false);
-    TaaSampleIndex = 0;
-    bPathTracingAccumulationEnabled = Config.bEnablePathTracingAccumulation;
-    PathTracingAccumulationFrameCount = Config.FramesInFlight;
-    PathTracingAccumulationHistoryValid.assign(PathTracingAccumulationFrameCount, false);
-    PathTracingAccumulatedFrames = 0;
+    SetTonemapEnabled(Config.bEnableTonemap);
+    SetTonemapExposure(Config.TonemapExposure);
+    SetTonemapWhitePoint(Config.TonemapWhitePoint);
+    SetTonemapGamma(Config.TonemapGamma);
+    SetCasEnabled(Config.bEnableCas);
+    SetCasSharpness(Config.CasSharpness);
+    SetAutoExposureEnabled(Config.bEnableAutoExposure);
+    SetAutoExposureKey(Config.AutoExposureKey);
+    SetAutoExposureMin(Config.AutoExposureMin);
+    SetAutoExposureMax(Config.AutoExposureMax);
+    SetAutoExposureSpeedUp(Config.AutoExposureSpeedUp);
+    SetAutoExposureSpeedDown(Config.AutoExposureSpeedDown);
+    SetTaaEnabled(Config.bEnableTAA);
+    SetTaaHistoryWeight(Config.TaaHistoryWeight);
     bHZBEnabled = Config.bEnableHZB;
     bHZBReady = false;
     bEnablePbrResearch = Config.bEnablePbrResearch;
-    bSsrSwEnabled = Config.bEnableSsrSw;
-    bSsrHwEnabled = Config.bEnableSsrHw;
-    bSsrHzbEnabled = Config.bEnableSsrHzb;
-    bSsrRefineEnabled = Config.bEnableSsrRefine;
-    bSsrDenoiseEnabled = Config.bEnableSsrDenoise;
+    if (PathTracing)
+    {
+        PathTracing->SetAccumulationEnabled(Config.bEnablePathTracingAccumulation);
+        PathTracing->SetMaxBounces(Config.PathTracingMaxBounces);
+    }
+    if (Ssr)
+    {
+        Ssr->SetSwEnabled(Config.bEnableSsrSw);
+        Ssr->SetHwEnabled(Config.bEnableSsrHw);
+        Ssr->SetHzbEnabled(Config.bEnableSsrHzb);
+        Ssr->SetRefineEnabled(Config.bEnableSsrRefine);
+        Ssr->SetDenoiseEnabled(Config.bEnableSsrDenoise);
+    }
     if (RestirGIDenoiser)
     {
         RestirGIDenoiser->SetEnabled(Config.bEnableRestirGIDenoiser);
     }
-    SsrMaxSteps = Config.SsrMaxSteps;
-    SsrMaxDistance = Config.SsrMaxDistance;
-    SsrThickness = Config.SsrThickness;
-    SsrStride = Config.SsrStride;
-    SsrRoughnessCutoff = Config.SsrRoughnessCutoff;
-    SsrIntensity = Config.SsrIntensity;
+    if (Ssr)
+    {
+        Ssr->SetMaxSteps(Config.SsrMaxSteps);
+        Ssr->SetMaxDistance(Config.SsrMaxDistance);
+        Ssr->SetThickness(Config.SsrThickness);
+        Ssr->SetStride(Config.SsrStride);
+        Ssr->SetRoughnessCutoff(Config.SsrRoughnessCutoff);
+        Ssr->SetIntensity(Config.SsrIntensity);
+    }
     if (RestirGI)
     {
         RestirGI->SetEnabled(Config.bEnableRestirGI);
@@ -482,8 +848,11 @@ void FDeferredRenderer::ApplyRendererConfig(const FRendererConfig& Config)
         RestirGI->SetUseHistoryIndirect(Config.bRestirGIUseHistoryIndirect);
         RestirGI->SetRandomMode(Config.RestirGIRandomMode);
     }
-    SsrMode = Config.SsrMode;
-    SsrSamplesPerQuad = Config.SsrSamplesPerQuad;
+    if (Ssr)
+    {
+        Ssr->SetMode(Config.SsrMode);
+        Ssr->SetSamplesPerQuad(Config.SsrSamplesPerQuad);
+    }
 }
 
 bool FDeferredRenderer::InitializePipelineDomains(FDX12Device* Device, DXGI_FORMAT BackBufferFormat)
@@ -518,10 +887,16 @@ bool FDeferredRenderer::InitializePipelineDomains(FDX12Device* Device, DXGI_FORM
         return false;
     }
 
-    LogInfo("Creating deferred renderer ray tracing domain pipelines...");
-    if (!RayTracingPasses->InitializePipelines(*this, Device))
+    if (Gtao && !Gtao->InitializePipelines(*this, Device))
     {
-        LogError("Deferred renderer initialization failed: ray tracing domain pipeline creation failed");
+        LogError("Deferred renderer initialization failed: GTAO pipeline creation failed");
+        return false;
+    }
+
+    LogInfo("Creating deferred renderer path tracing pipelines...");
+    if (PathTracing && !PathTracing->InitializePipelines(*this, Device))
+    {
+        LogError("Deferred renderer initialization failed: path tracing pipeline creation failed");
         return false;
     }
 
@@ -534,6 +909,36 @@ bool FDeferredRenderer::InitializePipelineDomains(FDX12Device* Device, DXGI_FORM
     if (RestirGIDenoiser && !RestirGIDenoiser->InitializePipelines(*this, Device))
     {
         LogError("Deferred renderer initialization failed: ReSTIR GI denoiser pipeline creation failed");
+        return false;
+    }
+
+    if (Ssr && !Ssr->InitializePipelines(*this, Device))
+    {
+        LogError("Deferred renderer initialization failed: SSR pipeline creation failed");
+        return false;
+    }
+
+    if (AutoExposure && !AutoExposure->InitializePipelines(*this, Device))
+    {
+        LogError("Deferred renderer initialization failed: auto exposure pipeline creation failed");
+        return false;
+    }
+
+    if (Cas && !Cas->InitializePipelines(*this, Device, BackBufferFormat))
+    {
+        LogError("Deferred renderer initialization failed: CAS pipeline creation failed");
+        return false;
+    }
+
+    if (Tonemap && !Tonemap->InitializePipelines(*this, Device, BackBufferFormat))
+    {
+        LogError("Deferred renderer initialization failed: tonemap pipeline creation failed");
+        return false;
+    }
+
+    if (Taa && !Taa->InitializePipelines(*this, Device, BackBufferFormat))
+    {
+        LogError("Deferred renderer initialization failed: TAA pipeline creation failed");
         return false;
     }
 
@@ -574,9 +979,33 @@ bool FDeferredRenderer::InitializeFrameResources(FDX12Device* Device, uint32_t W
         return false;
     }
 
-    if (!RayTracingPasses->InitializeResources(*this, Device, Width, Height, Config.FramesInFlight))
+    if (Taa && !Taa->InitializeResources(*this, Device, Width, Height, Config.FramesInFlight))
     {
-        LogError("Deferred renderer initialization failed: ray tracing domain resource creation failed");
+        LogError("Deferred renderer initialization failed: TAA resource creation failed");
+        return false;
+    }
+
+    if (AutoExposure && !AutoExposure->InitializeResources(*this, Device))
+    {
+        LogError("Deferred renderer initialization failed: auto exposure resource creation failed");
+        return false;
+    }
+
+    if (Cas && !Cas->InitializeResources(*this, Device))
+    {
+        LogError("Deferred renderer initialization failed: CAS resource creation failed");
+        return false;
+    }
+
+    if (Tonemap && !Tonemap->InitializeResources(*this, Device))
+    {
+        LogError("Deferred renderer initialization failed: tonemap resource creation failed");
+        return false;
+    }
+
+    if (PathTracing && !PathTracing->InitializeResources(*this, Device, Width, Height, Config.FramesInFlight))
+    {
+        LogError("Deferred renderer initialization failed: path tracing resource creation failed");
         return false;
     }
 
@@ -592,9 +1021,21 @@ bool FDeferredRenderer::InitializeFrameResources(FDX12Device* Device, uint32_t W
         return false;
     }
 
+    if (Ssr && !Ssr->InitializeResources(*this, Device, Width, Height))
+    {
+        LogError("Deferred renderer initialization failed: SSR resource creation failed");
+        return false;
+    }
+
     if (!LightingPasses->InitializeResources(*this, Device, Width, Height))
     {
         LogError("Deferred renderer initialization failed: lighting domain resource creation failed");
+        return false;
+    }
+
+    if (Gtao && !Gtao->InitializeResources(*this, Device, Width, Height))
+    {
+        LogError("Deferred renderer initialization failed: GTAO resource creation failed");
         return false;
     }
 
@@ -737,6 +1178,18 @@ bool FDeferredRenderer::InitializeEnvironmentAndDescriptorResources(FDX12Device*
         return false;
     }
 
+    if (Gtao && !Gtao->CreatePersistentDescriptors(*this, Device))
+    {
+        LogError("Deferred renderer initialization failed: GTAO descriptor creation failed");
+        return false;
+    }
+
+    if (PathTracing && !PathTracing->CreatePersistentDescriptors(*this, Device))
+    {
+        LogError("Deferred renderer initialization failed: path tracing descriptor creation failed");
+        return false;
+    }
+
     if (RestirGI && !RestirGI->CreatePersistentDescriptors(*this, Device))
     {
         LogError("Deferred renderer initialization failed: ReSTIR GI descriptor creation failed");
@@ -746,6 +1199,30 @@ bool FDeferredRenderer::InitializeEnvironmentAndDescriptorResources(FDX12Device*
     if (RestirGIDenoiser && !RestirGIDenoiser->CreatePersistentDescriptors(*this, Device))
     {
         LogError("Deferred renderer initialization failed: ReSTIR GI denoiser descriptor creation failed");
+        return false;
+    }
+
+    if (AutoExposure && !AutoExposure->CreatePersistentDescriptors(*this, Device))
+    {
+        LogError("Deferred renderer initialization failed: auto exposure descriptor creation failed");
+        return false;
+    }
+
+    if (Cas && !Cas->CreatePersistentDescriptors(*this, Device))
+    {
+        LogError("Deferred renderer initialization failed: CAS descriptor creation failed");
+        return false;
+    }
+
+    if (Taa && !Taa->CreatePersistentDescriptors(*this, Device))
+    {
+        LogError("Deferred renderer initialization failed: TAA descriptor creation failed");
+        return false;
+    }
+
+    if (Tonemap && !Tonemap->CreatePersistentDescriptors(*this, Device))
+    {
+        LogError("Deferred renderer initialization failed: tonemap descriptor creation failed");
         return false;
     }
 
@@ -914,58 +1391,33 @@ void FDeferredRenderer::PrepareFrameState(const FCamera& Camera, bool bAnySkinni
         InvalidateRestirGiDenoiserHistory();
     }
 
-    OutState.bTaaActive = bTaaEnabled && TaaPipeline && TaaRootSignature && !TaaHistoryTextures.empty();
-    OutState.TaaFrameIndex = GetFrameIndex();
-    OutState.TaaReadIndex = TaaFrameCount > 0 ? (OutState.TaaFrameIndex + TaaFrameCount - 1u) % TaaFrameCount : 0u;
-    OutState.TaaWriteIndex = TaaFrameCount > 0 ? OutState.TaaFrameIndex % TaaFrameCount : 0u;
-    OutState.bTaaHistoryReady = OutState.bTaaActive && OutState.TaaReadIndex < TaaHistoryValid.size()
-        ? TaaHistoryValid[OutState.TaaReadIndex]
-        : false;
-
-    OutState.bPathTracingAccumulationActive = bPathTracingAccumulationEnabled && PathTracingAccumulationPipeline && PathTracingAccumulationRootSignature && !PathTracingAccumulationTextures.empty();
-    OutState.PathTracingAccumulationReadIndex = PathTracingAccumulationFrameCount > 0 ? (OutState.TaaFrameIndex + PathTracingAccumulationFrameCount - 1u) % PathTracingAccumulationFrameCount : 0u;
-    OutState.PathTracingAccumulationWriteIndex = PathTracingAccumulationFrameCount > 0 ? OutState.TaaFrameIndex % PathTracingAccumulationFrameCount : 0u;
-    
-    if (bCameraMoved)
-    {
-        std::fill(PathTracingAccumulationHistoryValid.begin(), PathTracingAccumulationHistoryValid.end(), false);
-        PathTracingAccumulatedFrames = 0;
-    }
-    
-    OutState.bPathTracingAccumulationHistoryReady = OutState.bPathTracingAccumulationActive && OutState.PathTracingAccumulationReadIndex < PathTracingAccumulationHistoryValid.size()
-        ? PathTracingAccumulationHistoryValid[OutState.PathTracingAccumulationReadIndex]
-        : false;
-    
-    if (!OutState.bPathTracingAccumulationHistoryReady)
-    {
-        PathTracingAccumulatedFrames = 0;
-    }
-
-    bUseTaaJitter = OutState.bTaaActive && OutState.bTaaHistoryReady;
     OutState.bGtaoJitterActive = bGtaoEnabled && bGtaoJitterEnabled;
-    const bool bUseGtaoJitter = OutState.bGtaoJitterActive;
-    const bool bNeedJitter = bUseTaaJitter || bUseGtaoJitter;
-    if (bNeedJitter)
+    if (Taa)
     {
-        TaaJitter = BuildTaaJitter(TaaSampleIndex);
-    }
-    else
-    {
-        TaaJitter = DirectX::XMFLOAT2(0.0f, 0.0f);
+        Taa->PrepareFrameState(
+            *this,
+            Camera,
+            OutState.bGtaoJitterActive,
+            OutState.bTaaActive,
+            OutState.bTaaHistoryReady,
+            OutState.TaaFrameIndex,
+            OutState.TaaReadIndex,
+            OutState.TaaWriteIndex);
     }
 
-    DirectX::XMFLOAT4X4 ProjectionMatrix = {};
-    DirectX::XMStoreFloat4x4(&ProjectionMatrix, Camera.GetProjectionMatrix());
-    if (bUseTaaJitter && Viewport.Width > 0.0f && Viewport.Height > 0.0f)
+    if (PathTracing)
     {
-        const float JitterX = (2.0f * TaaJitter.x) / Viewport.Width;
-        const float JitterY = (2.0f * TaaJitter.y) / Viewport.Height;
-        ProjectionMatrix._31 += JitterX;
-        ProjectionMatrix._32 += JitterY;
+        PathTracing->PrepareFrameState(
+            OutState.TaaFrameIndex,
+            bCameraMoved,
+            OutState.bPathTracingAccumulationActive,
+            OutState.bPathTracingAccumulationHistoryReady,
+            OutState.PathTracingAccumulationReadIndex,
+            OutState.PathTracingAccumulationWriteIndex);
     }
-    TaaProjection = DirectX::XMLoadFloat4x4(&ProjectionMatrix);
 
-    const DirectX::XMMATRIX CurrentProjection = bUseTaaJitter ? TaaProjection : Camera.GetProjectionMatrix();
+    const bool bUseTaaJitter = Taa && Taa->UsesJitter();
+    const DirectX::XMMATRIX CurrentProjection = bUseTaaJitter ? Taa->GetProjection() : Camera.GetProjectionMatrix();
     const DirectX::XMMATRIX CurrentViewProjection = Camera.GetViewMatrix() * CurrentProjection;
     DirectX::XMStoreFloat4x4(&CurrentViewProjectionMatrix, CurrentViewProjection);
 
@@ -988,7 +1440,7 @@ void FDeferredRenderer::PrepareFrameState(const FCamera& Camera, bool bAnySkinni
         OutState.bDoDepthPrepass = false;
     }
     OutState.bBuildHZB = bHZBEnabled;
-    OutState.bCasActive = bCasEnabled && CasPipeline && CasRootSignature;
+    OutState.bCasActive = Cas && Cas->IsReady();
     OutState.LightViewProjection = RendererUtils::BuildDirectionalLightViewProjection(SceneCenter, SceneRadius, LightDirection);
 }
 
@@ -1002,24 +1454,14 @@ void FDeferredRenderer::ConfigureFrameGraph(FRenderGraph& Graph) const
 
 void FDeferredRenderer::FinalizeFrameState(const FDeferredFrameState& FrameState)
 {
-    if (FrameState.bTaaActive || FrameState.bGtaoJitterActive)
+    if (Taa)
     {
-        TaaSampleIndex = (TaaSampleIndex + 1u) % 8u;
-    }
-    else
-    {
-        std::fill(TaaHistoryValid.begin(), TaaHistoryValid.end(), false);
-        TaaSampleIndex = 0;
+        Taa->FinalizeFrameState(FrameState.bTaaActive, FrameState.bGtaoJitterActive);
     }
 
-    if (bAutoExposureEnabled)
+    if (AutoExposure)
     {
-        bLuminanceHistoryValid = true;
-        LuminanceWriteIndex = 1u - LuminanceWriteIndex;
-    }
-    else
-    {
-        bLuminanceHistoryValid = false;
+        AutoExposure->FinalizeFrame();
     }
 
     PreviousViewProjectionMatrix = CurrentViewProjectionMatrix;
@@ -1054,22 +1496,16 @@ void FDeferredRenderer::InvalidateRestirGiDenoiserHistory()
 
 void FDeferredRenderer::OnFrameFenceSignaled(uint32_t FrameIndex, uint64_t FenceValue)
 {
-    if (bTaaEnabled && TaaFrameCount > 0)
+    (void)FenceValue;
+
+    if (Taa)
     {
-        const uint32_t TaaWriteIndex = FrameIndex % static_cast<uint32_t>(TaaHistoryValid.size());
-        if (TaaWriteIndex < TaaHistoryValid.size())
-        {
-            TaaHistoryValid[TaaWriteIndex] = true;
-        }
+        Taa->OnFrameFenceSignaled(FrameIndex);
     }
 
-    if (bPathTracingAccumulationEnabled && PathTracingAccumulationFrameCount > 0)
+    if (PathTracing)
     {
-        const uint32_t AccumWriteIndex = FrameIndex % static_cast<uint32_t>(PathTracingAccumulationHistoryValid.size());
-        if (AccumWriteIndex < PathTracingAccumulationHistoryValid.size())
-        {
-            PathTracingAccumulationHistoryValid[AccumWriteIndex] = true;
-        }
+        PathTracing->OnFrameFenceSignaled(FrameIndex);
     }
 }
 
@@ -1081,8 +1517,10 @@ void FDeferredRenderer::UpdateSceneConstants(const FCamera& Camera, const FScene
     const DirectX::XMVECTOR LightDir = DirectX::XMLoadFloat3(&LightDirection);
     const DirectX::XMMATRIX LightVP = RendererUtils::BuildDirectionalLightViewProjection(SceneCenter, SceneRadius, LightDirection);
     DirectX::XMStoreFloat4x4(&LightViewProjection, LightVP);
-    const DirectX::XMMATRIX Projection = bUseTaaJitter ? TaaProjection : Camera.GetProjectionMatrix();
-    const DirectX::XMFLOAT2 Jitter = bUseTaaJitter ? TaaJitter : DirectX::XMFLOAT2(0.0f, 0.0f);
+    const bool bUseTaaJitter = Taa && Taa->UsesJitter();
+    const DirectX::XMMATRIX Projection = bUseTaaJitter ? Taa->GetProjection() : Camera.GetProjectionMatrix();
+    const DirectX::XMFLOAT2 Jitter = bUseTaaJitter ? Taa->GetJitter() : DirectX::XMFLOAT2(0.0f, 0.0f);
+    const uint32_t TaaSampleIndex = Taa ? Taa->GetSampleIndex() : 0u;
     const uint32_t GtaoTemporalIndex = (bGtaoEnabled && bGtaoJitterEnabled) ? TaaSampleIndex : 0u;
 
     const DirectX::XMMATRIX PreviousWorld = Model.bHasPreviousWorldMatrix
@@ -1144,7 +1582,8 @@ void FDeferredRenderer::UpdateSkyConstants(const FCamera& Camera)
     const XMMATRIX World = Scale * Translation;
 
     const XMVECTOR LightDir = XMLoadFloat3(&LightDirection);
-    const DirectX::XMMATRIX Projection = bUseTaaJitter ? TaaProjection : Camera.GetProjectionMatrix();
+    const bool bUseTaaJitter = Taa && Taa->UsesJitter();
+    const DirectX::XMMATRIX Projection = bUseTaaJitter ? Taa->GetProjection() : Camera.GetProjectionMatrix();
     RendererUtils::UpdateSkyConstants(Camera, World, Projection, LightDir, LightColor, SkyConstantBufferMapped);
 }
 

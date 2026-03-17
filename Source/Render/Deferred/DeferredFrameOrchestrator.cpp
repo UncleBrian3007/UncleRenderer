@@ -5,8 +5,15 @@
 #include "DeferredGeometryPasses.h"
 #include "DeferredLightingPasses.h"
 #include "DeferredPostProcessPasses.h"
+#include "Gtao.h"
+#include "RayTracingShadow.h"
+#include "Ssr.h"
 #include "RestirGI.h"
-#include "DeferredRayTracingPasses.h"
+#include "PathTracing.h"
+#include "AutoExposure.h"
+#include "Cas.h"
+#include "Taa.h"
+#include "Tonemap.h"
 
 void FDeferredFrameOrchestrator::BuildFrameGraph(FDeferredPassContext& Context) const
 {
@@ -120,51 +127,54 @@ void FDeferredFrameOrchestrator::BuildFrameGraph(FDeferredPassContext& Context) 
 
     if (Context.bUsePathTracing)
     {
-        Owner.RayTracingPasses->AddPathTracingPass(Context);
-        Owner.RayTracingPasses->AddPathTracingAccumulationPass(Context);
+        if (Owner.PathTracing)
+        {
+            Owner.PathTracing->AddPasses(Context);
+        }
     }
     else
     {
-        Owner.RayTracingPasses->AddRayTracingShadowPass(Context);
+        if (Owner.RayTracingShadow)
+        {
+            Owner.RayTracingShadow->AddPass(Context);
+        }
         Owner.LightingPasses->AddLinearDepthPass(Context);
         Owner.LightingPasses->AddExtractHalfDepthNormalPass(Context);
-        Owner.LightingPasses->AddGtaoPass(Context);
+        if (Owner.Gtao)
+        {
+            Owner.Gtao->AddPass(Context);
+        }
         Owner.RestirGI->AddPasses(Context);
         if (Owner.RestirGIDenoiser)
         {
             Owner.RestirGIDenoiser->AddPasses(Context);
         }
-        if (Owner.SsrMode == ESSRMode::CS)
+        if (Owner.Ssr)
         {
-            Owner.LightingPasses->AddSsrRayCounterClearPass(Context);
-            Owner.LightingPasses->AddSsrRayGatherPass(Context);
-            Owner.LightingPasses->AddSsrBuildIndirectArgsPass(Context, false);
-            Owner.LightingPasses->AddSsrSwTracePass(Context);
-            Owner.LightingPasses->AddSsrBuildIndirectArgsPass(Context, true);
-            Owner.LightingPasses->AddSsrHwTracePass(Context);
-            Owner.LightingPasses->AddSsrResolvePass(Context);
+            Owner.Ssr->AddPasses(Context);
         }
-        else
-        {
-            Owner.LightingPasses->AddSsrPass(Context);
-            Owner.LightingPasses->AddSsrFallbackPass(Context);
-        }
-        const FRGResourceHandle SsrBaseHandle = (Owner.SsrMode == ESSRMode::CS) ? Resources.SsrResolveHandle : Resources.SsrHandle;
-        if (Owner.bSsrDenoiseEnabled)
-        {
-            Owner.LightingPasses->AddSsrDenoisePass(Context, SsrBaseHandle);
-        }
-        const FRGResourceHandle SsrOutputHandle = Owner.bSsrDenoiseEnabled ? Resources.SsrDenoiseHandle : SsrBaseHandle;
         FRGResourceHandle DirectLightingHandle{};
         Owner.LightingPasses->AddDirectLightingPass(Context, DirectLightingHandle);
-        Owner.LightingPasses->AddCompositeLightPass(Context, SsrOutputHandle, DirectLightingHandle);
+        Owner.LightingPasses->AddCompositeLightPass(Context, DirectLightingHandle);
     }
 
     Owner.LightingPasses->AddSkyPass(Context);
     Owner.GeometryPasses->AddObjectIdPass(Context);
-    Owner.PostProcessPasses->AddTemporalAAPass(Context);
-    Owner.PostProcessPasses->AddAutoExposurePass(Context);
-    Owner.PostProcessPasses->AddTonemapPass(Context);
-    Owner.PostProcessPasses->AddCasPass(Context);
+    if (Owner.Taa)
+    {
+        Owner.Taa->AddPass(Context);
+    }
+    if (Owner.AutoExposure)
+    {
+        Owner.AutoExposure->AddPass(Context);
+    }
+    if (Owner.Tonemap)
+    {
+        Owner.Tonemap->AddPasses(Context);
+    }
+    if (Owner.Cas)
+    {
+        Owner.Cas->AddPass(Context);
+    }
     Owner.PostProcessPasses->AddDebugPrintPass(Context);
 }

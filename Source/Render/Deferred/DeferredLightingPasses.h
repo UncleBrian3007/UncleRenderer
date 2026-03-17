@@ -12,17 +12,7 @@ public:
 
     void AddLinearDepthPass(FDeferredPassContext& Context) const;
     void AddExtractHalfDepthNormalPass(FDeferredPassContext& Context) const;
-    void AddGtaoPass(FDeferredPassContext& Context) const;
-    void AddSsrRayCounterClearPass(FDeferredPassContext& Context) const;
-    void AddSsrRayGatherPass(FDeferredPassContext& Context) const;
-    void AddSsrBuildIndirectArgsPass(FDeferredPassContext& Context, bool bHwMiss) const;
-    void AddSsrSwTracePass(FDeferredPassContext& Context) const;
-    void AddSsrHwTracePass(FDeferredPassContext& Context) const;
-    void AddSsrResolvePass(FDeferredPassContext& Context) const;
-    void AddSsrPass(FDeferredPassContext& Context) const;
-    void AddSsrFallbackPass(FDeferredPassContext& Context) const;
-    void AddSsrDenoisePass(FDeferredPassContext& Context, FRGResourceHandle InputHandle) const;
     void AddDirectLightingPass(FDeferredPassContext& Context, FRGResourceHandle& OutDirectHandle) const;
-    void AddCompositeLightPass(FDeferredPassContext& Context, FRGResourceHandle SsrHandle, FRGResourceHandle DirectHandle) const;
+    void AddCompositeLightPass(FDeferredPassContext& Context, FRGResourceHandle DirectHandle) const;
     void AddSkyPass(FDeferredPassContext& Context) const;
 };

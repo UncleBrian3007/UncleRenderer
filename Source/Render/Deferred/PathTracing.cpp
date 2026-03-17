@@ -1,5 +1,8 @@
-#include "DeferredRayTracingPasses.h"
+#include "PathTracing.h"
+
+#include "DeferredPassContext.h"
 #include "../DeferredRenderer.h"
+#include "../RendererUtils.h"
 #include "../../Core/GpuDebugMarkers.h"
 #include "../../RHI/DX12Device.h"
 #include "../ShaderCompiler.h"
@@ -7,7 +10,173 @@
 #include <algorithm>
 #include <string>
 
-bool FDeferredRenderer::CreatePathTracingAccumulationRootSignature(FDX12Device* Device)
+using Microsoft::WRL::ComPtr;
+
+bool FPathTracing::InitializePipelines(FDeferredRenderer& Owner, FDX12Device* Device)
+{
+    (void)Owner;
+    return CreateAccumulationRootSignature(Device) && CreateAccumulationPipeline(Device);
+}
+
+bool FPathTracing::InitializeResources(FDeferredRenderer& Owner, FDX12Device* Device, uint32_t Width, uint32_t Height, uint32_t FrameCount)
+{
+    (void)Owner;
+    return CreateAccumulationResources(Device, Width, Height, FrameCount);
+}
+
+void FPathTracing::ImportPersistentResources(FDeferredPassContext& Context)
+{
+    FDeferredRenderer& Owner = Context.Owner;
+    FRenderGraph& Graph = Context.Graph;
+    FPathTracingFrameResources& OutResources = Context.Resources.PathTracing;
+
+    OutResources.TempHandle = Graph.ImportTexture(
+        "PathTracingTemp",
+        PathTracingTempTexture.Get(),
+        &PathTracingTempState,
+        { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), FDeferredRenderer::PathTracingBufferFormat });
+
+    OutResources.AccumulationHandles.reserve(PathTracingAccumulationTextures.size());
+    for (size_t Index = 0; Index < PathTracingAccumulationTextures.size(); ++Index)
+    {
+        const std::string HandleName = "PathTracingAccumulation_" + std::to_string(Index);
+        OutResources.AccumulationHandles.push_back(Graph.ImportTexture(
+            HandleName,
+            PathTracingAccumulationTextures[Index].Get(),
+            &PathTracingAccumulationStates[Index],
+            { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), FDeferredRenderer::PathTracingBufferFormat }));
+    }
+}
+
+bool FPathTracing::CreatePersistentDescriptors(FDeferredRenderer& Owner, FDX12Device* Device)
+{
+    (void)Owner;
+    if (!Device)
+    {
+        return false;
+    }
+
+    if (PathTracingTempTexture)
+    {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC PathTracingTempUavDesc = {};
+        PathTracingTempUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        PathTracingTempUavDesc.Format = FDeferredRenderer::PathTracingBufferFormat;
+        PathTracingTempUavDesc.Texture2D.MipSlice = 0;
+        PathTracingTempBindlessIndex = Device->CreateBindlessUav(PathTracingTempTexture.Get(), nullptr, PathTracingTempUavDesc);
+    }
+
+    PathTracingAccumulationSrvBindlessIndices.clear();
+    PathTracingAccumulationUavBindlessIndices.clear();
+    PathTracingAccumulationSrvBindlessIndices.resize(PathTracingAccumulationTextures.size(), UINT32_MAX);
+    PathTracingAccumulationUavBindlessIndices.resize(PathTracingAccumulationTextures.size(), UINT32_MAX);
+
+    for (uint32_t Index = 0; Index < PathTracingAccumulationTextures.size(); ++Index)
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC AccumSrvDesc = {};
+        AccumSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        AccumSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        AccumSrvDesc.Format = FDeferredRenderer::PathTracingBufferFormat;
+        AccumSrvDesc.Texture2D.MipLevels = 1;
+        PathTracingAccumulationSrvBindlessIndices[Index] = Device->CreateBindlessSrv(PathTracingAccumulationTextures[Index].Get(), AccumSrvDesc);
+
+        D3D12_UNORDERED_ACCESS_VIEW_DESC AccumUavDesc = {};
+        AccumUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        AccumUavDesc.Format = FDeferredRenderer::PathTracingBufferFormat;
+        AccumUavDesc.Texture2D.MipSlice = 0;
+        AccumUavDesc.Texture2D.PlaneSlice = 0;
+        PathTracingAccumulationUavBindlessIndices[Index] = Device->CreateBindlessUav(PathTracingAccumulationTextures[Index].Get(), nullptr, AccumUavDesc);
+    }
+
+    return true;
+}
+
+void FPathTracing::AddPasses(FDeferredPassContext& Context)
+{
+    AddPathTracingPass(Context);
+    AddPathTracingAccumulationPass(Context);
+}
+
+void FPathTracing::PrepareFrameState(uint32_t FrameIndex, bool bCameraMoved, bool& bAccumulationActive, bool& bHistoryReady, uint32_t& ReadIndex, uint32_t& WriteIndex)
+{
+    bAccumulationActive = bPathTracingAccumulationEnabled
+        && PathTracingAccumulationPipeline
+        && PathTracingAccumulationRootSignature
+        && !PathTracingAccumulationTextures.empty();
+
+    ReadIndex = PathTracingAccumulationFrameCount > 0 ? (FrameIndex + PathTracingAccumulationFrameCount - 1u) % PathTracingAccumulationFrameCount : 0u;
+    WriteIndex = PathTracingAccumulationFrameCount > 0 ? FrameIndex % PathTracingAccumulationFrameCount : 0u;
+
+    if (bCameraMoved)
+    {
+        ResetAccumulation();
+    }
+
+    bHistoryReady = bAccumulationActive && ReadIndex < PathTracingAccumulationHistoryValid.size()
+        ? PathTracingAccumulationHistoryValid[ReadIndex]
+        : false;
+
+    if (!bHistoryReady)
+    {
+        PathTracingAccumulatedFrames = 0;
+    }
+}
+
+void FPathTracing::OnFrameFenceSignaled(uint32_t FrameIndex)
+{
+    if (!bPathTracingAccumulationEnabled || PathTracingAccumulationFrameCount == 0)
+    {
+        return;
+    }
+
+    const uint32_t AccumWriteIndex = FrameIndex % static_cast<uint32_t>(PathTracingAccumulationHistoryValid.size());
+    if (AccumWriteIndex < PathTracingAccumulationHistoryValid.size())
+    {
+        PathTracingAccumulationHistoryValid[AccumWriteIndex] = true;
+    }
+}
+
+void FPathTracing::ResetAccumulation()
+{
+    std::fill(PathTracingAccumulationHistoryValid.begin(), PathTracingAccumulationHistoryValid.end(), false);
+    PathTracingAccumulatedFrames = 0;
+}
+
+void FPathTracing::SetAccumulationEnabled(bool bEnabled)
+{
+    bPathTracingAccumulationEnabled = bEnabled;
+    if (PathTracingDebugMode == 0)
+    {
+        bPathTracingAccumulationUserPreference = bEnabled;
+    }
+    ResetAccumulation();
+}
+
+void FPathTracing::SetDebugMode(int Mode)
+{
+    if (PathTracingDebugMode == Mode)
+    {
+        return;
+    }
+
+    if (PathTracingDebugMode == 0 && Mode >= 1 && Mode <= 12)
+    {
+        bPathTracingAccumulationUserPreference = bPathTracingAccumulationEnabled;
+    }
+
+    PathTracingDebugMode = Mode;
+    ResetAccumulation();
+
+    if (Mode >= 1 && Mode <= 12)
+    {
+        bPathTracingAccumulationEnabled = false;
+    }
+    else if (Mode == 0)
+    {
+        bPathTracingAccumulationEnabled = bPathTracingAccumulationUserPreference;
+    }
+}
+
+bool FPathTracing::CreateAccumulationRootSignature(FDX12Device* Device)
 {
     D3D12_ROOT_PARAMETER1 RootParams[2] = {};
 
@@ -44,7 +213,7 @@ bool FDeferredRenderer::CreatePathTracingAccumulationRootSignature(FDX12Device* 
     return true;
 }
 
-bool FDeferredRenderer::CreatePathTracingAccumulationPipeline(FDX12Device* Device)
+bool FPathTracing::CreateAccumulationPipeline(FDX12Device* Device)
 {
     FShaderCompiler Compiler;
     const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
@@ -63,7 +232,7 @@ bool FDeferredRenderer::CreatePathTracingAccumulationPipeline(FDX12Device* Devic
     return true;
 }
 
-bool FDeferredRenderer::CreatePathTracingAccumulationResources(FDX12Device* Device, uint32_t Width, uint32_t Height, uint32_t FrameCount)
+bool FPathTracing::CreateAccumulationResources(FDX12Device* Device, uint32_t Width, uint32_t Height, uint32_t FrameCount)
 {
     if (Device == nullptr)
     {
@@ -121,19 +290,22 @@ bool FDeferredRenderer::CreatePathTracingAccumulationResources(FDX12Device* Devi
     PathTracingAccumulationStates.assign(EffectiveFrameCount, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     PathTracingAccumulationHistoryValid.assign(EffectiveFrameCount, false);
     PathTracingTempState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    PathTracingAccumulatedFrames = 0;
     return true;
 }
 
-void FDeferredRayTracingPasses::AddPathTracingPass(FDeferredPassContext& Context) const
+void FPathTracing::AddPathTracingPass(FDeferredPassContext& Context)
 {
     FDeferredRenderer& Owner = Context.Owner;
     FRenderGraph& Graph = Context.Graph;
+    FDeferredRenderer* OwnerPtr = &Context.Owner;
+    FRenderGraph* GraphPtr = &Context.Graph;
     const FCamera& Camera = Context.Camera;
     const FRGResourceHandle DepthHandle = Context.Resources.DepthHandle;
     const FRGResourceHandle GBufferAHandle = Context.Resources.GBufferHandles[0];
     const FRGResourceHandle GBufferBHandle = Context.Resources.GBufferHandles[1];
     const FRGResourceHandle GBufferCHandle = Context.Resources.GBufferHandles[2];
-    const FRGResourceHandle OutputHandle = Context.Resources.PathTracingTempHandle;
+    const FRGResourceHandle OutputHandle = Context.Resources.PathTracing.TempHandle;
 
     struct FPathTracingPassData
     {
@@ -146,7 +318,7 @@ void FDeferredRayTracingPasses::AddPathTracingPass(FDeferredPassContext& Context
         uint32_t FrameIndex = 0;
     };
 
-    Graph.AddPass<FPathTracingPassData>("PathTracing", [&, DepthHandle, GBufferAHandle, GBufferBHandle, GBufferCHandle, OutputHandle](FPathTracingPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FPathTracingPassData>("PathTracing", [&, DepthHandle, GBufferAHandle, GBufferBHandle, GBufferCHandle, OutputHandle, this](FPathTracingPassData& Data, FRGPassBuilder& Builder)
     {
         if (!Owner.bPathTracingEnabled || !Owner.bRayTracingPipelineReady || !DepthHandle || !GBufferAHandle || !GBufferBHandle || !GBufferCHandle || !OutputHandle)
         {
@@ -159,15 +331,17 @@ void FDeferredRayTracingPasses::AddPathTracingPass(FDeferredPassContext& Context
         Data.GBufferBHandle = GBufferBHandle;
         Data.GBufferCHandle = GBufferCHandle;
         Data.Camera = &Camera;
-        Data.FrameIndex = Owner.PathTracingAccumulatedFrames;
+        Data.FrameIndex = PathTracingAccumulatedFrames;
         Builder.WriteTexture(Data.OutputHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         Builder.ReadTexture(Data.DepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(Data.GBufferAHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(Data.GBufferBHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(Data.GBufferCHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.KeepAlive();
-    }, [&Owner, &Graph](const FPathTracingPassData& Data, FDX12CommandContext& CmdContext)
+    }, [OwnerPtr, GraphPtr, this](const FPathTracingPassData& Data, FDX12CommandContext& CmdContext)
     {
+        FDeferredRenderer& Owner = *OwnerPtr;
+        FRenderGraph& Graph = *GraphPtr;
         if (!Owner.bRayTracingPipelineReady || !Owner.RayQueryRootSignature || !Owner.Device || !Owner.Device->GetBindlessDescriptorHeap())
         {
             return;
@@ -323,20 +497,20 @@ void FDeferredRayTracingPasses::AddPathTracingPass(FDeferredPassContext& Context
         const uint32_t GroupCountX = (DispatchWidth + RayQueryThreadGroupSize - 1u) / RayQueryThreadGroupSize;
         const uint32_t GroupCountY = (DispatchHeight + RayQueryThreadGroupSize - 1u) / RayQueryThreadGroupSize;
 
-        ID3D12PipelineState* PathTracingPipeline = nullptr;
-        if (Owner.PathTracingDebugMode > 0)
+        ID3D12PipelineState* PathTracingPipelineState = nullptr;
+        if (PathTracingDebugMode > 0)
         {
-            PathTracingPipeline = Owner.bPathTracingUseVndf ? Owner.RayQueryPathDebugVndfPipeline.Get() : Owner.RayQueryPathDebugPipeline.Get();
+            PathTracingPipelineState = Owner.bPathTracingUseVndf ? Owner.RayQueryPathDebugVndfPipeline.Get() : Owner.RayQueryPathDebugPipeline.Get();
         }
         else
         {
-            PathTracingPipeline = Owner.bPathTracingUseVndf ? Owner.RayQueryPathVndfPipeline.Get() : Owner.RayQueryPathPipeline.Get();
+            PathTracingPipelineState = Owner.bPathTracingUseVndf ? Owner.RayQueryPathVndfPipeline.Get() : Owner.RayQueryPathPipeline.Get();
         }
-        if (!PathTracingPipeline)
+        if (!PathTracingPipelineState)
         {
             return;
         }
-        CommandList4->SetPipelineState(PathTracingPipeline);
+        CommandList4->SetPipelineState(PathTracingPipelineState);
         CommandList4->SetComputeRootSignature(Owner.RayQueryRootSignature.Get());
         CommandList4->SetComputeRootShaderResourceView(0, Owner.TlasResultBuffers[FrameIndex]->GetGPUVirtualAddress());
         const uint64_t ConstantBufferOffset = 0;
@@ -366,10 +540,10 @@ void FDeferredRayTracingPasses::AddPathTracingPass(FDeferredPassContext& Context
             DispatchHeight,
             Data.FrameIndex,
             PathTracingInstanceDataBindlessIndex,
-            Owner.PathTracingMaxBounces,
+            PathTracingMaxBounces,
             Owner.Device->GetLinearClampSamplerIndex(),
             Owner.EnvironmentCubeBindlessIndex,
-            static_cast<uint32_t>(Owner.PathTracingDebugMode)
+            static_cast<uint32_t>(PathTracingDebugMode)
         };
         CommandList4->SetComputeRoot32BitConstants(2, _countof(BindlessIndices), BindlessIndices, 0);
 
@@ -377,18 +551,19 @@ void FDeferredRayTracingPasses::AddPathTracingPass(FDeferredPassContext& Context
     });
 }
 
-void FDeferredRayTracingPasses::AddPathTracingAccumulationPass(FDeferredPassContext& Context) const
+void FPathTracing::AddPathTracingAccumulationPass(FDeferredPassContext& Context)
 {
     FDeferredRenderer& Owner = Context.Owner;
     FRenderGraph& Graph = Context.Graph;
     const FDeferredRenderer::FDeferredFrameState& FrameState = Context.FrameState;
-    const FRGResourceHandle PathTracingTempHandle = Context.Resources.PathTracingTempHandle;
+    const FRGResourceHandle PathTracingTempHandle = Context.Resources.PathTracing.TempHandle;
     const FRGResourceHandle LightingHandle = Context.Resources.LightingHandle;
-    const std::vector<FRGResourceHandle>& AccumulationHandles = Context.Resources.PathTracingAccumulationHandles;
+    const std::vector<FRGResourceHandle> AccumulationHandles = Context.Resources.PathTracing.AccumulationHandles;
 
     struct FPathTracingAccumulationPassData
     {
         bool bEnabled = false;
+        bool bAccumulationActive = false;
         DirectX::XMFLOAT2 OutputSize{};
         uint32_t FrameIndex = 0;
         uint32_t UseHistory = 0;
@@ -396,17 +571,16 @@ void FDeferredRayTracingPasses::AddPathTracingAccumulationPass(FDeferredPassCont
         uint32_t WriteIndex = 0;
     };
 
-    Graph.AddPass<FPathTracingAccumulationPassData>("PTAccumulation", [&](FPathTracingAccumulationPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FPathTracingAccumulationPassData>("PTAccumulation", [&, PathTracingTempHandle, LightingHandle, AccumulationHandles, this](FPathTracingAccumulationPassData& Data, FRGPassBuilder& Builder)
     {
-        // Always enable if we have PathTracingTemp and LightingHandle, even if accumulation is disabled
-        // When disabled, we'll just copy temp to lighting without accumulation
         Data.bEnabled = PathTracingTempHandle && LightingHandle;
         if (Data.bEnabled)
         {
             Data.ReadIndex = FrameState.PathTracingAccumulationReadIndex;
             Data.WriteIndex = FrameState.PathTracingAccumulationWriteIndex;
+            Data.bAccumulationActive = FrameState.bPathTracingAccumulationActive;
             Data.OutputSize = DirectX::XMFLOAT2(Owner.Viewport.Width, Owner.Viewport.Height);
-            Data.FrameIndex = Owner.PathTracingAccumulatedFrames;
+            Data.FrameIndex = PathTracingAccumulatedFrames;
             Data.UseHistory = (FrameState.bPathTracingAccumulationActive && FrameState.bPathTracingAccumulationHistoryReady) ? 1u : 0u;
             Builder.ReadTexture(PathTracingTempHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             if (FrameState.bPathTracingAccumulationActive && !AccumulationHandles.empty())
@@ -416,8 +590,9 @@ void FDeferredRayTracingPasses::AddPathTracingAccumulationPass(FDeferredPassCont
             }
             Builder.WriteTexture(LightingHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         }
-    }, [&Owner, &FrameState, &AccumulationHandles](const FPathTracingAccumulationPassData& Data, FDX12CommandContext& Cmd)
+    }, [OwnerPtr = &Context.Owner, this](const FPathTracingAccumulationPassData& Data, FDX12CommandContext& Cmd)
     {
+        FDeferredRenderer& Owner = *OwnerPtr;
         if (!Data.bEnabled)
         {
             return;
@@ -444,25 +619,24 @@ void FDeferredRayTracingPasses::AddPathTracingAccumulationPass(FDeferredPassCont
         };
 
         ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap() };
-        LocalCommandList->SetPipelineState(Owner.PathTracingAccumulationPipeline.Get());
-        LocalCommandList->SetComputeRootSignature(Owner.PathTracingAccumulationRootSignature.Get());
+        LocalCommandList->SetPipelineState(PathTracingAccumulationPipeline.Get());
+        LocalCommandList->SetComputeRootSignature(PathTracingAccumulationRootSignature.Get());
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(Constants) / sizeof(uint32_t), &Constants, 0);
 
-        // When accumulation is disabled, use index 0 for both read/write (doesn't matter since UseHistory=0)
-        const bool bAccumulationActive = FrameState.bPathTracingAccumulationActive && !AccumulationHandles.empty();
+        const bool bAccumulationActive = Data.bAccumulationActive && !PathTracingAccumulationSrvBindlessIndices.empty();
         const uint32_t ReadIdx = bAccumulationActive ? Data.ReadIndex : 0;
         const uint32_t WriteIdx = bAccumulationActive ? Data.WriteIndex : 0;
-        const uint32_t HistorySrv = bAccumulationActive && ReadIdx < Owner.PathTracingAccumulationSrvBindlessIndices.size()
-            ? Owner.PathTracingAccumulationSrvBindlessIndices[ReadIdx]
-            : Owner.PathTracingTempBindlessIndex; // Use temp as dummy when disabled
-        const uint32_t HistoryUav = bAccumulationActive && WriteIdx < Owner.PathTracingAccumulationUavBindlessIndices.size()
-            ? Owner.PathTracingAccumulationUavBindlessIndices[WriteIdx]
-            : Owner.PathTracingTempBindlessIndex; // Use temp as dummy when disabled
+        const uint32_t HistorySrv = bAccumulationActive && ReadIdx < PathTracingAccumulationSrvBindlessIndices.size()
+            ? PathTracingAccumulationSrvBindlessIndices[ReadIdx]
+            : PathTracingTempBindlessIndex;
+        const uint32_t HistoryUav = bAccumulationActive && WriteIdx < PathTracingAccumulationUavBindlessIndices.size()
+            ? PathTracingAccumulationUavBindlessIndices[WriteIdx]
+            : PathTracingTempBindlessIndex;
 
         const uint32_t AccumBindlessIndices[] =
         {
-            Owner.PathTracingTempBindlessIndex,
+            PathTracingTempBindlessIndex,
             HistorySrv,
             HistoryUav,
             Owner.LightingBufferBindlessIndex
@@ -473,10 +647,9 @@ void FDeferredRayTracingPasses::AddPathTracingAccumulationPass(FDeferredPassCont
         const uint32_t GroupY = (static_cast<uint32_t>(Data.OutputSize.y) + 7u) / 8u;
         LocalCommandList->Dispatch(GroupX, GroupY, 1);
 
-        // Increment accumulated frame count after dispatch (only when accumulation is active)
         if (bAccumulationActive)
         {
-            Owner.PathTracingAccumulatedFrames++;
+            ++PathTracingAccumulatedFrames;
         }
     });
 }

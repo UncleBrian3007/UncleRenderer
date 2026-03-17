@@ -1,16 +1,20 @@
-#include "DeferredRayTracingPasses.h"
+#include "RayTracingShadow.h"
+
+#include "DeferredPassContext.h"
 #include "../DeferredRenderer.h"
 #include "../../Core/GpuDebugMarkers.h"
 #include "../../RHI/DX12Device.h"
 
-void FDeferredRayTracingPasses::AddRayTracingShadowPass(FDeferredPassContext& Context) const
+void FRayTracingShadow::AddPass(FDeferredPassContext& Context) const
 {
     FDeferredRenderer& Owner = Context.Owner;
     FRenderGraph& Graph = Context.Graph;
+    FDeferredRenderer* OwnerPtr = &Context.Owner;
+    FRenderGraph* GraphPtr = &Context.Graph;
     const FCamera& Camera = Context.Camera;
     const FRGResourceHandle DepthHandle = Context.Resources.DepthHandle;
     const FRGResourceHandle GBufferHandle = Context.Resources.GBufferHandles[0];
-    FRGResourceHandle& ShadowMaskHandle = Context.Resources.ShadowMaskHandle;
+    FRGResourceHandle& ShadowMaskHandle = Context.Resources.RayTracingShadow.ShadowMaskHandle;
 
     struct FRayTracingShadowPassData
     {
@@ -43,8 +47,10 @@ void FDeferredRayTracingPasses::AddRayTracingShadowPass(FDeferredPassContext& Co
         Builder.ReadTexture(Data.GBufferHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.KeepAlive();
         ShadowMaskHandle = Data.ShadowMaskHandle;
-    }, [&Owner, &Graph](const FRayTracingShadowPassData& Data, FDX12CommandContext& CmdContext)
+    }, [OwnerPtr, GraphPtr](const FRayTracingShadowPassData& Data, FDX12CommandContext& CmdContext)
     {
+        FDeferredRenderer& Owner = *OwnerPtr;
+        FRenderGraph& Graph = *GraphPtr;
         if (!Owner.bRayTracingPipelineReady || !Owner.RayQueryShadowPipeline || !Owner.RayQueryRootSignature || !Owner.Device || !Owner.Device->GetBindlessDescriptorHeap())
         {
             return;
@@ -212,7 +218,7 @@ void FDeferredRayTracingPasses::AddRayTracingShadowPass(FDeferredPassContext& Co
         CommandList4->Dispatch(GroupCountX, GroupCountY, 1);
     });
 
-    Graph.AddPass<FRayTracingShadowPassData>("ShadowMaskSRV", [&, ShadowMaskDesc](FRayTracingShadowPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FRayTracingShadowPassData>("ShadowMaskSRV", [&, ShadowMaskDesc, ShadowMaskHandle](FRayTracingShadowPassData& Data, FRGPassBuilder& Builder)
     {
         Data.ShadowMaskHandle = ShadowMaskHandle;
         if (Data.ShadowMaskHandle)

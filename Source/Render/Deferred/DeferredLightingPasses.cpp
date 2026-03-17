@@ -19,21 +19,6 @@ bool FDeferredLightingPasses::InitializePipelines(FDeferredRenderer& Owner, FDX1
         && Owner.CreateLinearDepthPipeline(Device)
         && Owner.CreateExtractHalfDepthNormalRootSignature(Device)
         && Owner.CreateExtractHalfDepthNormalPipeline(Device)
-        && Owner.CreateGtaoRootSignature(Device)
-        && Owner.CreateGtaoPipeline(Device)
-        && Owner.CreateSsrRootSignature(Device)
-        && Owner.CreateSsrPipeline(Device)
-        && Owner.CreateSsrDenoiseRootSignature(Device)
-        && Owner.CreateSsrDenoisePipeline(Device)
-        && Owner.CreateSsrRayGatherRootSignature(Device)
-        && Owner.CreateSsrRayGatherPipeline(Device)
-        && Owner.CreateSsrSwTraceRootSignature(Device)
-        && Owner.CreateSsrSwTracePipeline(Device)
-        && Owner.CreateSsrBuildIndirectArgsRootSignature(Device)
-        && Owner.CreateSsrBuildIndirectArgsPipeline(Device)
-        && Owner.CreateSsrResolveRootSignature(Device)
-        && Owner.CreateSsrResolvePipeline(Device)
-        && Owner.CreateSsrDispatchCommandSignature(Device)
         && Owner.CreateHZBRootSignature(Device)
         && Owner.CreateHZBPipeline(Device);
 }
@@ -41,9 +26,6 @@ bool FDeferredLightingPasses::InitializePipelines(FDeferredRenderer& Owner, FDX1
 bool FDeferredLightingPasses::InitializeResources(FDeferredRenderer& Owner, FDX12Device* Device, uint32_t Width, uint32_t Height) const
 {
     return Owner.CreateLinearDepthResources(Device, Width, Height)
-        && Owner.CreateGtaoResources(Device, Width, Height)
-        && Owner.CreateSsrResources(Device, Width, Height)
-        && Owner.CreateHilbertLutResources(Device)
         && Owner.CreateHZBResources(Device, Width, Height);
 }
 
@@ -837,7 +819,7 @@ void FDeferredLightingPasses::AddDirectLightingPass(FDeferredPassContext& Contex
         {
             1.0f,
             Owner.IsRestirGIEnabled() ? 1u : 0u,
-            Owner.SsrRoughnessCutoff,
+            (Owner.Ssr != nullptr) ? Owner.Ssr->GetRoughnessCutoff() : 0.0f,
             Owner.IsRestirGIShowOnly() ? 1u : 0u,
             0u
         };
@@ -848,15 +830,16 @@ void FDeferredLightingPasses::AddDirectLightingPass(FDeferredPassContext& Contex
     });
 }
 
-void FDeferredLightingPasses::AddCompositeLightPass(FDeferredPassContext& Context, FRGResourceHandle SsrHandle, FRGResourceHandle DirectHandle) const
+void FDeferredLightingPasses::AddCompositeLightPass(FDeferredPassContext& Context, FRGResourceHandle DirectHandle) const
 {
     FDeferredRenderer& Owner = Context.Owner;
     FRenderGraph& Graph = Context.Graph;
     const std::array<FRGResourceHandle, 4>& GBufferHandles = Context.Resources.GBufferHandles;
     const FRGResourceHandle DepthHandle = Context.Resources.DepthHandle;
-    const FRGResourceHandle GtaoHandle = Context.Resources.GtaoHandle;
+    const FRGResourceHandle GtaoHandle = Context.Resources.Gtao.GtaoHandle;
     const FRGResourceHandle RestirGIInputHandle = Owner.IsRestirGIDenoiserEnabled() ? Context.Resources.RestirGIDenoiser.HistoryIrradianceHandle : Context.Resources.RestirGI.RestirGIHandle;
-    const FRGResourceHandle SsrFallbackHandle = Context.Resources.SsrFallbackHandle;
+    const FRGResourceHandle SsrHandle = (Owner.Ssr != nullptr) ? Context.Resources.Ssr.GetLightingHandle(Owner.Ssr->GetMode(), Owner.Ssr->IsDenoiseEnabled()) : FRGResourceHandle{};
+    const FRGResourceHandle SsrFallbackHandle = Context.Resources.Ssr.SsrFallbackHandle;
     const FRGResourceHandle LightingHandle = Context.Resources.LightingHandle;
 
     struct FCompositeLightPassData
@@ -914,13 +897,13 @@ void FDeferredLightingPasses::AddCompositeLightPass(FDeferredPassContext& Contex
 
         const uint32_t DepthIndex = Owner.GetFrameIndex() % static_cast<uint32_t>(Owner.DepthBindlessIndices.size());
         const uint32_t DepthBindlessIndex = Owner.DepthBindlessIndices.empty() ? UINT32_MAX : Owner.DepthBindlessIndices[DepthIndex];
-        const uint32_t BaseSsrIndex = (Owner.SsrMode == ESSRMode::CS) ? Owner.SsrResolveBindlessIndex : Owner.SsrBindlessIndex;
-        const uint32_t SsrLightingBindlessIndex = Owner.bSsrDenoiseEnabled ? Owner.SsrDenoiseBindlessIndex : BaseSsrIndex;
-        const uint32_t SsrFallbackIndex = Owner.SsrFallbackBindlessIndex;
+        const uint32_t SsrLightingBindlessIndex = (Owner.Ssr != nullptr) ? Owner.Ssr->GetLightingSrvBindlessIndex() : UINT32_MAX;
+        const uint32_t SsrFallbackIndex = (Owner.Ssr != nullptr) ? Owner.Ssr->GetFallbackSrvBindlessIndex() : UINT32_MAX;
         const uint32_t RestirGILightingBindlessIndex = Owner.IsRestirGIDenoiserEnabled()
             ? ((Owner.RestirGIDenoiser != nullptr) ? Owner.RestirGIDenoiser->GetCurrentOutputSrvBindlessIndex() : UINT32_MAX)
             : ((Owner.RestirGI != nullptr) ? Owner.RestirGI->GetCurrentOutputSrvBindlessIndex() : UINT32_MAX);
-        if (DepthBindlessIndex == UINT32_MAX || Owner.GtaoBindlessIndex == UINT32_MAX || RestirGILightingBindlessIndex == UINT32_MAX || SsrLightingBindlessIndex == UINT32_MAX || SsrFallbackIndex == UINT32_MAX || Owner.ShadowMapBindlessIndex == UINT32_MAX
+        const uint32_t GtaoBindlessIndex = (Owner.Gtao != nullptr) ? Owner.Gtao->GetSrvBindlessIndex() : UINT32_MAX;
+        if (DepthBindlessIndex == UINT32_MAX || GtaoBindlessIndex == UINT32_MAX || RestirGILightingBindlessIndex == UINT32_MAX || SsrLightingBindlessIndex == UINT32_MAX || SsrFallbackIndex == UINT32_MAX || Owner.ShadowMapBindlessIndex == UINT32_MAX
             || Owner.EnvironmentCubeBindlessIndex == UINT32_MAX || Owner.BrdfLutBindlessIndex == UINT32_MAX || Owner.DirectLightingBindlessIndex == UINT32_MAX
             || Owner.GBufferBindlessIndices[0] == UINT32_MAX || Owner.GBufferBindlessIndices[1] == UINT32_MAX || Owner.GBufferBindlessIndices[2] == UINT32_MAX)
         {
@@ -950,7 +933,7 @@ void FDeferredLightingPasses::AddCompositeLightPass(FDeferredPassContext& Contex
             Owner.EnvironmentCubeBindlessIndex,
             Owner.BrdfLutBindlessIndex,
             DepthBindlessIndex,
-            Owner.GtaoBindlessIndex,
+            GtaoBindlessIndex,
             RestirGILightingBindlessIndex,
             SsrLightingBindlessIndex,
             SsrFallbackIndex,
@@ -973,7 +956,7 @@ void FDeferredLightingPasses::AddCompositeLightPass(FDeferredPassContext& Contex
         {
             1.0f,
             Owner.IsRestirGIEnabled() ? 1u : 0u,
-            Owner.SsrRoughnessCutoff,
+            (Owner.Ssr != nullptr) ? Owner.Ssr->GetRoughnessCutoff() : 0.0f,
             Owner.IsRestirGIShowOnly() ? 1u : 0u,
             0u
         };
