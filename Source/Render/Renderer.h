@@ -8,10 +8,17 @@
 #include <string>
 #include <vector>
 
+#include "GpuDrivenCulling.h"
+#include "GpuDebug.h"
+#include "GpuResource.h"
+#include "ObjectId.h"
+#include "RayTracingRuntime.h"
 #include "RendererUtils.h"
-#include "../RHI/RayTracing.h"
+#include "../Core/RendererConfig.h"
 
 struct FSceneModelResource;
+class FEnvironmentMap;
+class FHzb;
 class FTextureLoader;
 struct FRendererConfig;
 
@@ -22,111 +29,228 @@ class FCamera;
 class FRenderer
 {
 public:
-    enum class ECullingMode : uint32_t
+    // Type Aliases
+    using ECullingMode = FGpuDrivenCulling::ECullingMode;
+    using FGpuDebugPrintEntry = GpuDebug::FGpuDebugPrintEntry;
+    static constexpr uint32_t GpuDebugPrintMaxEntries = GpuDebug::GpuDebugPrintMaxEntries;
+    static constexpr uint32_t GpuDebugPrintHeaderSize = GpuDebug::GpuDebugPrintHeaderSize;
+    static constexpr uint32_t GpuDebugPrintEntryStride = GpuDebug::GpuDebugPrintEntryStride;
+    static constexpr uint64_t GpuDebugPrintBufferSize = GpuDebug::GpuDebugPrintBufferSize;
+    static constexpr uint32_t GpuDebugPrintStatsCount = GpuDebug::GpuDebugPrintStatsCount;
+
+    using FGpuDebugLineEntry = GpuDebug::FGpuDebugLineEntry;
+    static constexpr uint32_t GpuDebugLineMaxEntries = GpuDebug::GpuDebugLineMaxEntries;
+    static constexpr uint32_t GpuDebugLineHeaderCount = GpuDebug::GpuDebugLineHeaderCount;
+    static constexpr uint32_t GpuDebugLineHeaderSize = GpuDebug::GpuDebugLineHeaderSize;
+    static constexpr uint32_t GpuDebugLineEntryStride = GpuDebug::GpuDebugLineEntryStride;
+    static constexpr uint64_t GpuDebugLineBufferSize = GpuDebug::GpuDebugLineBufferSize;
+
+    using FGpuDebugBoxEntry = GpuDebug::FGpuDebugBoxEntry;
+    static constexpr uint32_t GpuDebugBoxMaxEntries = GpuDebug::GpuDebugBoxMaxEntries;
+    static constexpr uint32_t GpuDebugBoxHeaderCount = GpuDebug::GpuDebugBoxHeaderCount;
+    static constexpr uint32_t GpuDebugBoxHeaderSize = GpuDebug::GpuDebugBoxHeaderSize;
+    static constexpr uint32_t GpuDebugBoxEntryStride = GpuDebug::GpuDebugBoxEntryStride;
+    static constexpr uint64_t GpuDebugBoxBufferSize = GpuDebug::GpuDebugBoxBufferSize;
+
+    using FMeshletVisibilityFrameData = FGpuDrivenCulling::FMeshletVisibilityFrameData;
+    using FVisibilityListBuildIndices = FGpuDrivenCulling::FVisibilityListBuildIndices;
+    using FEarlyRejectListIndices = FGpuDrivenCulling::FEarlyRejectListIndices;
+    using FLateMergeVisibilityListIndices = FGpuDrivenCulling::FLateMergeVisibilityListIndices;
+    using FVisibilityListFrameSrvIndices = FGpuDrivenCulling::FVisibilityListFrameSrvIndices;
+    using FMappedConstantBuffer = FMappedUploadBuffer;
+
+    // Nested Types
+    struct FDepthResources
     {
-        All = 0,
-        EarlyVisible = 1,
-        LateAfterEarly = 2
+        Microsoft::WRL::ComPtr<ID3D12Resource> DepthBuffer;
+        Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> DSVHeap;
+        D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilHandle{};
     };
-    struct FGpuDebugPrintEntry
+
+    struct FIndirectDrawRange
     {
-        uint32_t X = 0;
-        uint32_t Y = 0;
-        uint32_t Code = 0;
-        uint32_t Color = 0;
+        uint32_t Start = 0;
+        uint32_t Count = 0;
+        uint32_t PipelineKey = 0;
+        std::array<uint32_t, 10> MaterialBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX } };
+        std::wstring Name;
     };
 
-    static constexpr uint32_t GpuDebugPrintMaxEntries = 4096;
-    static constexpr uint32_t GpuDebugPrintHeaderSize = sizeof(uint32_t);
-    static constexpr uint32_t GpuDebugPrintEntryStride = sizeof(FGpuDebugPrintEntry);
-    static constexpr uint64_t GpuDebugPrintBufferSize = GpuDebugPrintHeaderSize + static_cast<uint64_t>(GpuDebugPrintMaxEntries) * GpuDebugPrintEntryStride;
-    static constexpr uint32_t GpuDebugPrintStatsCount = 5;
-
-    struct FGpuDebugLineEntry
+    struct FGpuDrivenCullingProvider
     {
-        DirectX::XMFLOAT3 P0{ 0.0f, 0.0f, 0.0f };
-        float Padding0 = 0.0f;
-        DirectX::XMFLOAT3 P1{ 0.0f, 0.0f, 0.0f };
-        uint32_t PackedColor = 0;
+        ID3D12DescriptorHeap* BindlessDescriptorHeap = nullptr;
+        ID3D12DescriptorHeap* BindlessCpuClearDescriptorHeap = nullptr;
+        UINT BindlessDescriptorStride = 0;
+        ID3D12RootSignature* CullingRootSignature = nullptr;
+        ID3D12RootSignature* MeshletRunRootSignature = nullptr;
+        D3D12_GPU_VIRTUAL_ADDRESS CullingConstantBufferAddress = 0;
+        uint8_t* CullingConstantBufferMapped = nullptr;
+        bool bClusterDagDebugEnabled = false;
+        bool bClusterDagFastShaderEnabled = false;
+        bool bClusterDagGpuDebugEnabled = false;
+        float ClusterDagTargetErrorPixels = 0.0f;
+        float ViewportHeightPixels = 0.0f;
+        uint32_t ClusterDagVisibleRootCount = 0;
+        uint32_t ClusterDagClusterCount = 0;
+        bool bClusterDagForceMipEnabled = false;
+        uint32_t ClusterDagForceMipLevel = 0;
+        bool bClusterDagForceMipSkipFrustumCull = false;
+        uint32_t GpuDebugPrintStatsUavBindlessIndex = UINT32_MAX;
+        uint32_t GpuDebugLineBufferUavBindlessIndex = UINT32_MAX;
+
+        D3D12_GPU_DESCRIPTOR_HANDLE GetBindlessGpuHandle(uint32_t Index) const
+        {
+            D3D12_GPU_DESCRIPTOR_HANDLE Handle{};
+            if (!BindlessDescriptorHeap || BindlessDescriptorStride == 0)
+            {
+                return Handle;
+            }
+
+            Handle = BindlessDescriptorHeap->GetGPUDescriptorHandleForHeapStart();
+            Handle.ptr += static_cast<UINT64>(Index) * BindlessDescriptorStride;
+            return Handle;
+        }
+
+        D3D12_CPU_DESCRIPTOR_HANDLE GetBindlessCpuClearHandle(uint32_t Index) const
+        {
+            D3D12_CPU_DESCRIPTOR_HANDLE Handle{};
+            if (!BindlessCpuClearDescriptorHeap || BindlessDescriptorStride == 0)
+            {
+                return Handle;
+            }
+
+            Handle = BindlessCpuClearDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
+            Handle.ptr += static_cast<SIZE_T>(Index) * BindlessDescriptorStride;
+            return Handle;
+        }
     };
 
-    static constexpr uint32_t GpuDebugLineMaxEntries = 8192;
-    static constexpr uint32_t GpuDebugLineHeaderCount = 2;
-    static constexpr uint32_t GpuDebugLineHeaderSize = sizeof(uint32_t) * GpuDebugLineHeaderCount;
-    static constexpr uint32_t GpuDebugLineEntryStride = sizeof(FGpuDebugLineEntry);
-    static constexpr uint64_t GpuDebugLineBufferSize = GpuDebugLineHeaderSize + static_cast<uint64_t>(GpuDebugLineMaxEntries) * GpuDebugLineEntryStride;
-
+    // Lifecycle
     virtual ~FRenderer();
-
     virtual bool Initialize(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT BackBufferFormat, const FRendererConfig& Config) = 0;
     virtual void RenderFrame(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle, const FCamera& Camera, float DeltaTime) = 0;
     virtual void OnFrameFenceSignaled(uint32_t FrameIndex, uint64_t FenceValue) {}
 
-    virtual void SetDepthPrepassEnabled(bool bEnabled) { bDepthPrepassEnabled = bEnabled; }
-    virtual bool IsDepthPrepassEnabled() const { return bDepthPrepassEnabled; }
+    // Configuration
+    virtual void ApplyGtaoConfig(const FRendererConfig& Config) {}
+    virtual void ApplyPathTracingConfig(const FRendererConfig& Config);
 
-    virtual void SetRayTracedShadowsEnabled(bool bEnabled) { bRayTracedShadowsEnabled = bEnabled; }
-    virtual bool IsRayTracedShadowsEnabled() const { return bRayTracedShadowsEnabled; }
-    virtual void SetPathTracingEnabled(bool bEnabled) { bPathTracingEnabled = bEnabled; }
-    virtual bool IsPathTracingEnabled() const { return bPathTracingEnabled; }
-    virtual void SetPathTracingAccumulationEnabled(bool bEnabled) { }
-    virtual void SetPathTracingVndfEnabled(bool bEnabled) { bPathTracingUseVndf = bEnabled; }
-    bool IsPathTracingVndfEnabled() const { return bPathTracingUseVndf; }
-
+    // Frame State
     void SetFrameIndex(uint32_t FrameIndex);
     uint32_t GetFrameIndex() const { return CurrentFrameIndex; }
     void SetFrameNumber(uint64_t InFrameNumber) { CurrentFrameNumber = InFrameNumber; }
     uint64_t GetFrameNumber() const { return CurrentFrameNumber; }
+    uint32_t GetFramesInFlight() const { return FramesInFlight; }
 
+    // Depth Prepass
+    virtual void SetDepthPrepassEnabled(bool bEnabled) { bDepthPrepassEnabled = bEnabled; }
+    virtual bool IsDepthPrepassEnabled() const { return bDepthPrepassEnabled; }
+
+    // Shadows
+    void SetShadowsEnabled(bool bEnabled) { bShadowsEnabled = bEnabled; }
+    bool IsShadowsEnabled() const { return bShadowsEnabled; }
+    void SetShadowBias(float Bias) { ShadowBias = Bias; }
+    float GetShadowBias() const { return ShadowBias; }
+    virtual void SetRayTracedShadowsEnabled(bool bEnabled) { bRayTracedShadowsEnabled = bEnabled; }
+    virtual bool IsRayTracedShadowsEnabled() const { return bRayTracedShadowsEnabled; }
+
+    // Lighting
+    void SetLightDirection(const DirectX::XMFLOAT3& Direction) { LightDirection = Direction; }
+    DirectX::XMFLOAT3 GetLightDirection() const { return LightDirection; }
+    void SetLightIntensity(float Intensity) { LightIntensity = Intensity; }
+    float GetLightIntensity() const { return LightIntensity; }
+    void SetLightColor(const DirectX::XMFLOAT3& Color) { LightColor = Color; }
+    DirectX::XMFLOAT3 GetLightColor() const { return LightColor; }
+
+    // Scene Bounds
+    DirectX::XMFLOAT3 GetSceneCenter() const { return SceneCenter; }
+    float GetSceneRadius() const { return SceneRadius; }
+
+    // Scene Models
+    virtual const std::vector<FSceneModelResource>* GetSceneModels() const { return &SceneModels; }
+    std::vector<FSceneModelResource>& GetSceneModelsMutable() { return SceneModels; }
+    virtual bool GetSceneModelStats(size_t& OutTotal, size_t& OutCulled) const;
+
+    // Object ID
+    virtual void RequestObjectIdReadback(uint32_t X, uint32_t Y) { ObjectId->RequestReadback(X, Y); }
+    virtual bool ConsumeObjectIdReadback(uint32_t& OutObjectId) { return ObjectId->ConsumeReadback(OutObjectId); }
+
+    // Camera
+    void SetCullingCameraOverride(const FCamera* Camera) { CullingCameraOverride = Camera; }
+    const FCamera* GetCullingCameraOverride() const { return CullingCameraOverride; }
+
+    // Indirect Draw
+    void SetIndirectDrawEnabled(bool bEnabled) { bEnableIndirectDraw = bEnabled; }
+    bool IsIndirectDrawEnabled() const { return bEnableIndirectDraw; }
+    void SetSkinningIndirectDrawEnabled(bool bEnabled) { bEnableSkinningIndirectDraw = bEnabled; }
+    bool IsSkinningIndirectDrawEnabled() const { return bEnableSkinningIndirectDraw; }
+    bool CanDispatchGpuCulling() const { return bEnableIndirectDraw && bGpuDrivenCullingPersistentInputsValid; }
+    uint32_t GetIndirectCommandCount() const { return IndirectCommandCount; }
+
+    // Cluster DAG
+    virtual bool IsClusterDagEnabled() const { return false; }
+    virtual bool IsClusterDagFastShaderEnabled() const { return false; }
+    virtual bool IsClusterDagDebugEnabled() const { return false; }
+    virtual EClusterDAGTraversalMode GetClusterDagTraversalMode() const { return EClusterDAGTraversalMode::Legacy; }
+    virtual float GetClusterDagTargetErrorPixels() const { return 1.0f; }
+    virtual bool IsClusterDagForceMipEnabled() const { return false; }
+    virtual uint32_t GetClusterDagForceMipLevel() const { return 0; }
+    virtual bool IsClusterDagForceMipSkipFrustumCull() const { return false; }
+    virtual uint32_t GetClusterDagVisibleRootCount() const { return 0; }
+    virtual uint32_t GetClusterDagClusterCount() const { return 0; }
+
+    // Path Tracing
+    virtual bool IsPathTracingPreferred() const { return false; }
+    virtual bool IsPathTracingVndfEnabled() const { return false; }
+    virtual void ForceDisablePathTracing() {}
+
+    // GPU Debug
+    FGpuDebug& GetGpuDebugState() { return GpuDebugState; }
+    const FGpuDebug& GetGpuDebugState() const { return GpuDebugState; }
+
+    // GPU Driven Culling
+    FGpuDrivenCulling& GetGpuDrivenCullingState() { return GpuDrivenCullingState; }
+    const FGpuDrivenCulling& GetGpuDrivenCullingState() const { return GpuDrivenCullingState; }
+    FGpuDrivenCullingProvider GetGpuDrivenCullingProvider(bool bLatePass = false) const;
+
+    // Scene Resources
     const D3D12_CPU_DESCRIPTOR_HANDLE& GetDSVHandle() const;
     ID3D12Resource* GetDepthBuffer() const;
     D3D12_RESOURCE_STATES& GetDepthBufferState();
     ID3D12Resource* GetSceneConstantBuffer() const;
     D3D12_GPU_VIRTUAL_ADDRESS GetSceneConstantBufferAddress() const;
     uint8_t* GetSceneConstantBufferMapped() const;
-    ID3D12Resource* GetCullingConstantBuffer(bool bLatePass = false) const;
-    D3D12_GPU_VIRTUAL_ADDRESS GetCullingConstantBufferAddress(bool bLatePass = false) const;
-    uint8_t* GetCullingConstantBufferMapped(bool bLatePass = false) const;
+    uint64_t GetSceneConstantBufferStride() const { return SceneConstantBufferStride; }
     ID3D12Resource* GetIndirectCommandBuffer() const;
     D3D12_RESOURCE_STATES& GetIndirectCommandState();
     ID3D12Resource* GetMeshletRunCountBuffer() const;
     D3D12_RESOURCE_STATES& GetMeshletRunCountState();
-    uint32_t GetFramesInFlight() const { return FramesInFlight; }
+    ID3D12Resource* GetEnvironmentCubeTexture() const;
+    ID3D12Resource* GetBrdfLutTexture() const;
+    float GetEnvironmentMipCount() const;
+    const FRayTracingRuntime& GetRayTracingRuntime() const;
+    FRayTracingRuntime& GetRayTracingRuntime();
 
-    DirectX::XMFLOAT3 GetSceneCenter() const { return SceneCenter; }
-    float GetSceneRadius() const { return SceneRadius; }
+    // Device
+    FDX12Device* GetDevice() const { return Device; }
 
-    void SetLightDirection(const DirectX::XMFLOAT3& Direction) { LightDirection = Direction; }
-    DirectX::XMFLOAT3 GetLightDirection() const { return LightDirection; }
-
-    void SetLightIntensity(float Intensity) { LightIntensity = Intensity; }
-    float GetLightIntensity() const { return LightIntensity; }
-
-    void SetLightColor(const DirectX::XMFLOAT3& Color) { LightColor = Color; }
-    DirectX::XMFLOAT3 GetLightColor() const { return LightColor; }
-
-    void SetCullingCameraOverride(const FCamera* Camera) { CullingCameraOverride = Camera; }
-    const FCamera* GetCullingCameraOverride() const { return CullingCameraOverride; }
-    void SetIndirectDrawEnabled(bool bEnabled) { bEnableIndirectDraw = bEnabled; }
-    bool IsIndirectDrawEnabled() const { return bEnableIndirectDraw; }
-    void SetSkinningIndirectDrawEnabled(bool bEnabled) { bEnableSkinningIndirectDraw = bEnabled; }
-    bool IsSkinningIndirectDrawEnabled() const { return bEnableSkinningIndirectDraw; }
-    void SetGtaoRadius(float Radius) { GtaoRadius = Radius; }
-    float GetGtaoRadius() const { return GtaoRadius; }
-    void SetGtaoThickness(float Thickness) { GtaoThickness = Thickness; }
-    float GetGtaoThickness() const { return GtaoThickness; }
-    void SetGtaoJitterEnabled(bool bEnabled) { bGtaoJitterEnabled = bEnabled; }
-    bool IsGtaoJitterEnabled() const { return bGtaoJitterEnabled; }
-    virtual const std::vector<FSceneModelResource>* GetSceneModels() const { return &SceneModels; }
-    virtual bool GetSceneModelStats(size_t& OutTotal, size_t& OutCulled) const;
-    virtual void RequestObjectIdReadback(uint32_t X, uint32_t Y);
-    virtual bool ConsumeObjectIdReadback(uint32_t& OutObjectId);
-
+    // Fatal Error
     void SetRenderFatalError(const std::string& Reason);
     bool HasRenderFatalError() const;
 
 protected:
+    // Friends
+    friend class FEnvironmentMap;
+    friend class FGpuDebug;
+    friend class FGpuDrivenCulling;
+    friend class FHzb;
+    friend class FObjectId;
+    friend class FRayTracingRuntime;
+
+    // Initialization
     void InitializeCommonSettings(uint32_t Width, uint32_t Height, const FRendererConfig& Config);
+
+    // Shadow Pipeline
     bool CreateShadowPipeline(
         FDX12Device* Device,
         ID3D12RootSignature* RootSignature,
@@ -137,10 +261,11 @@ protected:
         FDX12Device* Device,
         uint32_t& InOutWidth,
         uint32_t& InOutHeight,
-        Microsoft::WRL::ComPtr<ID3D12Resource>& OutShadowMap,
+        FBindlessTexture& OutShadowMap,
         Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>& OutShadowDsvHeap,
-        D3D12_CPU_DESCRIPTOR_HANDLE& OutShadowDsvHandle,
-        D3D12_RESOURCE_STATES& OutShadowState);
+        D3D12_CPU_DESCRIPTOR_HANDLE& OutShadowDsvHandle);
+
+    // GPU Driven Culling
     void DispatchGpuCulling(
         FDX12CommandContext& CmdContext,
         const FCamera& Camera,
@@ -151,66 +276,30 @@ protected:
         uint32_t CullingListIndex,
         uint32_t CullingListCountIndex,
         bool bUseLateVisibility);
-    void DispatchBuildVisibilityLists(
-        FDX12CommandContext& CmdContext,
-        uint32_t VisibilityIndex,
-        uint32_t VisibleListIndex,
-        uint32_t InvisibleListIndex,
-        uint32_t VisibleCountIndex,
-        uint32_t InvisibleCountIndex,
-        uint32_t VisibilityFrameIndex,
-        uint32_t FrameIndex);
-    void DispatchBuildEarlyRejectList(
-        FDX12CommandContext& CmdContext,
-        uint32_t VisibilityIndex,
-        uint32_t RejectListIndex,
-        uint32_t RejectCountIndex,
-        uint32_t FrameIndex);
-    void DispatchMergeVisibilityLists(
-        FDX12CommandContext& CmdContext,
-        uint32_t ListAIndex,
-        uint32_t ListBIndex,
-        uint32_t CountAIndex,
-        uint32_t CountBIndex,
-        uint32_t OutputListIndex,
-        uint32_t OutputCountIndex,
-        uint32_t FlagsIndex,
-        uint32_t FrameIndex);
     void ConfigureHZBOcclusion(bool bEnabled, uint32_t HZBBindlessIndex, uint32_t Width, uint32_t Height, uint32_t MipCount);
-    void PrepareGpuDebugPrint(FDX12CommandContext& CmdContext);
-    void PrepareGpuDebugLine(FDX12CommandContext& CmdContext);
-    void DispatchGpuDebugPrintStats(FDX12CommandContext& CmdContext);
+    void RefreshGpuDrivenPersistentValidation();
+    D3D12_RESOURCE_STATES* GetMeshletVisibilityState(uint32_t FrameIndex, bool bLatePass = false) { return GpuDrivenCullingState.GetMeshletVisibilityState(FrameIndex, bLatePass); }
+
+    // Skinning
     void DispatchSkinning(FDX12CommandContext& CmdContext, const DirectX::XMMATRIX& LightViewProjection);
     bool CreateSkinnedPositionBuffers();
-    void UpdateRayTracingBlasRefit(FDX12CommandContext& CmdContext);
-    void BuildRayTracingTlas(FDX12CommandContext& CmdContext);
-    bool CreateRayTracingPipeline(FDX12Device* Device);
     bool CreateSkinningPipeline(FDX12Device* Device);
+
+    // Descriptor Handles
     D3D12_CPU_DESCRIPTOR_HANDLE GetBindlessCpuHandle(uint32_t Index) const;
     D3D12_CPU_DESCRIPTOR_HANDLE GetBindlessCpuClearHandle(uint32_t Index) const;
     D3D12_GPU_DESCRIPTOR_HANDLE GetBindlessGpuHandle(uint32_t Index) const;
-    void WriteBindlessSrv(uint32_t Index, ID3D12Resource* Resource, const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc) const;
-    void WriteBindlessUav(uint32_t Index, ID3D12Resource* Resource, ID3D12Resource* Counter, const D3D12_UNORDERED_ACCESS_VIEW_DESC& Desc) const;
-    bool CreateGpuDebugPrintResources(FDX12Device* Device);
-    bool CreateGpuDebugLineResources(FDX12Device* Device);
-    bool CreateGpuDebugPrintPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
-    bool CreateGpuDebugLinePipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
-    bool CreateGpuDebugPrintStatsPipeline(FDX12Device* Device);
-    void RenderGpuDebugPrint(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& OutputHandle);
-    void RenderGpuDebugLine(FDX12CommandContext& CmdContext, const D3D12_CPU_DESCRIPTOR_HANDLE& OutputHandle);
+
+    // Per-Frame Resource Creation
+    bool CreateDepthResources(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT Format, FDepthResources& OutDepthResources);
     bool CreateDepthResourcesPerFrame(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT Format);
     bool CreateSceneConstantBuffersPerFrame(FDX12Device* Device, uint64_t BufferSize);
     bool CreateCullingConstantBuffersPerFrame(FDX12Device* Device);
-    bool CreateVisibilityListPipelines(FDX12Device* Device);
-    bool CreateEnvironmentBuildPipelines(FDX12Device* Device);
-    DXGI_FORMAT ResolveEnvironmentBuildFormat() const;
-    bool BuildEnvironmentFromEquirect(const FRendererConfig& Config);
 
-    // GPU-driven rendering helper methods
-
+    // GPU Driven Data Preparation
     // Number of shared buffers transitioned during GPU-driven resource upload
-    // (DrawData, RangeOffset, Bounds, ConeAxis, ConeApex, DebugPrint, DebugPrintStats, DebugLine)
-    static constexpr uint32_t GpuDrivenSharedBufferCount = 8;
+    // (DrawData, RangeOffset, Bounds, ConeAxis, ConeApex, DebugPrint, DebugPrintStats, DebugLine, DebugBox)
+    static constexpr uint32_t GpuDrivenSharedBufferCount = 9;
 
     // Container for GPU-driven rendering data prepared for upload to GPU.
     // Holds indirect draw commands, meshlet data, bounds, and culling cone information.
@@ -231,249 +320,93 @@ protected:
     bool CreateCullingPipelines(FDX12Device* Device);
     bool CreateIndirectCommandSignature(FDX12Device* Device, ID3D12RootSignature* RootSignature);
 
+    // Depth Resources
     std::vector<FDepthResources> DepthResourcesPerFrame;
     std::vector<D3D12_RESOURCE_STATES> DepthBufferStates;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SceneConstantBuffers;
-    std::vector<uint8_t*> SceneConstantBufferMapped;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> CullingConstantBuffers;
-    std::vector<uint8_t*> CullingConstantBufferMapped;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> CullingConstantBuffersLate;
-    std::vector<uint8_t*> CullingConstantBufferMappedLate;
     D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilHandle{};
-    D3D12_CPU_DESCRIPTOR_HANDLE ShadowDSVHandle{};
-    D3D12_CPU_DESCRIPTOR_HANDLE ObjectIdRtvHandle{};
-    DirectX::XMFLOAT3 SceneCenter{ 0.0f, 0.0f, 0.0f };
-    float SceneRadius = 1.0f;
+    DXGI_FORMAT SceneDepthFormat = DXGI_FORMAT_UNKNOWN;
 
-    DirectX::XMFLOAT3 LightDirection{ -0.5f, -1.0f, 0.2f };
-    float LightIntensity = 1.0f;
-    DirectX::XMFLOAT3 LightColor{ 1.0f, 1.0f, 1.0f };
-
-    bool bDepthPrepassEnabled = false;
-    const FCamera* CullingCameraOverride = nullptr;
-
-    std::vector<FSceneModelResource> SceneModels;
-    std::vector<bool> SceneModelVisibility;
-    std::vector<bool> SceneModelSkinningVisibility;
-    struct FIndirectDrawRange
-    {
-        uint32_t Start = 0;
-        uint32_t Count = 0;
-        uint32_t PipelineKey = 0;
-        std::array<uint32_t, 10> MaterialBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX } };
-        std::wstring Name;
-    };
-
-    Microsoft::WRL::ComPtr<ID3D12Resource> SkyConstantBuffer;
-    Microsoft::WRL::ComPtr<ID3D12Resource> ShadowMap;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> IndirectCommandBuffers;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> IndirectCommandTemplateBuffers;
-    Microsoft::WRL::ComPtr<ID3D12Resource> MeshletDrawDataBuffer;
-    Microsoft::WRL::ComPtr<ID3D12Resource> MeshletDrawDataUpload;
-    Microsoft::WRL::ComPtr<ID3D12Resource> MeshletRangeOffsetBuffer;
-    Microsoft::WRL::ComPtr<ID3D12Resource> MeshletRangeOffsetUpload;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> MeshletVisibilityBuffers;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> MeshletVisibilityLateBuffers;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> PrevVisibleListBuffers;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> PrevInvisibleListBuffers;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> EarlyRejectListBuffers;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> LateListBuffers;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> LateListFlagBuffers;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> PrevVisibleCountBuffers;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> PrevInvisibleCountBuffers;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> EarlyRejectCountBuffers;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> LateListCountBuffers;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> MeshletRunCountBuffers;
-    Microsoft::WRL::ComPtr<ID3D12Resource> ModelBoundsBuffer;
-    Microsoft::WRL::ComPtr<ID3D12Resource> ModelBoundsUpload;
-    Microsoft::WRL::ComPtr<ID3D12Resource> MeshletConeAxisBuffer;
-    Microsoft::WRL::ComPtr<ID3D12Resource> MeshletConeAxisUpload;
-    Microsoft::WRL::ComPtr<ID3D12Resource> MeshletConeApexBuffer;
-    Microsoft::WRL::ComPtr<ID3D12Resource> MeshletConeApexUpload;
-    Microsoft::WRL::ComPtr<ID3D12Resource> GpuDebugPrintBuffer;
-    Microsoft::WRL::ComPtr<ID3D12Resource> GpuDebugPrintUpload;
-    Microsoft::WRL::ComPtr<ID3D12Resource> GpuDebugPrintStatsBuffer;
-    Microsoft::WRL::ComPtr<ID3D12Resource> GpuDebugPrintStatsUpload;
-    Microsoft::WRL::ComPtr<ID3D12Resource> GpuDebugLineBuffer;
-    Microsoft::WRL::ComPtr<ID3D12Resource> GpuDebugLineUpload;
-    Microsoft::WRL::ComPtr<ID3D12Resource> ObjectIdTexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> ObjectIdReadback;
-    Microsoft::WRL::ComPtr<ID3D12Resource> NullTexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> EnvironmentCubeTexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> BrdfLutTexture;
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> ShadowDSVHeap;
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> ObjectIdRtvHeap;
-    std::unique_ptr<FTextureLoader> TextureLoader;
-    Microsoft::WRL::ComPtr<ID3D12RootSignature> CullingRootSignature;
-    Microsoft::WRL::ComPtr<ID3D12RootSignature> VisibilityListRootSignature;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> CullingPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> CullingListPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> BuildVisibilityListsPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> BuildEarlyRejectListPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> MergeVisibilityListsPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> ClearVisibilityCountsPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> ClearVisibilityFlagsPipeline;
-    Microsoft::WRL::ComPtr<ID3D12RootSignature> MeshletRunRootSignature;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> MeshletRunClearPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> MeshletRunAppendPipeline;
-    Microsoft::WRL::ComPtr<ID3D12CommandSignature> IndirectCommandSignature;
-    Microsoft::WRL::ComPtr<ID3D12RootSignature> SkinningRootSignature;
-    Microsoft::WRL::ComPtr<ID3D12RootSignature> EnvironmentBuildRootSignature;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> SkinningPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> EnvEquirectToCubePipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> EnvCubeMipGenPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> EnvSpecularPrefilterPipeline;
-    Microsoft::WRL::ComPtr<ID3D12RootSignature> GpuDebugPrintRootSignature;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> GpuDebugPrintPipeline;
-    Microsoft::WRL::ComPtr<ID3D12RootSignature> GpuDebugPrintStatsRootSignature;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> GpuDebugPrintStatsPipeline;
-    Microsoft::WRL::ComPtr<ID3D12RootSignature> GpuDebugLineRootSignature;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> GpuDebugLinePipeline;
-    Microsoft::WRL::ComPtr<ID3D12Resource> GpuDebugPrintFontTexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> GpuDebugPrintGlyphBuffer;
-    uint32_t GpuDebugPrintGlyphBindlessIndex = UINT32_MAX;
-    uint32_t GpuDebugPrintFontBindlessIndex = UINT32_MAX;
-    uint32_t GpuDebugPrintBufferBindlessIndex = UINT32_MAX;
-    uint32_t GpuDebugPrintStatsBindlessIndex = UINT32_MAX;
-    uint32_t GpuDebugPrintBufferUavBindlessIndex = UINT32_MAX;
-    uint32_t GpuDebugPrintStatsUavBindlessIndex = UINT32_MAX;
-    uint32_t GpuDebugLineBufferBindlessIndex = UINT32_MAX;
-    uint32_t GpuDebugLineBufferUavBindlessIndex = UINT32_MAX;
-    uint32_t ModelBoundsBindlessIndex = UINT32_MAX;
-    uint32_t MeshletDrawDataBindlessIndex = UINT32_MAX;
-    uint32_t MeshletRangeOffsetBindlessIndex = UINT32_MAX;
-    uint32_t MeshletConeAxisBindlessIndex = UINT32_MAX;
-    uint32_t MeshletConeApexBindlessIndex = UINT32_MAX;
-    uint32_t HZBCullingBindlessIndex = UINT32_MAX;
-    std::vector<uint32_t> IndirectCommandUavBindlessIndices;
-    std::vector<uint32_t> IndirectCommandTemplateBindlessIndices;
-    std::vector<uint32_t> MeshletVisibilitySrvBindlessIndices;
-    std::vector<uint32_t> MeshletVisibilityUavBindlessIndices;
-    std::vector<uint32_t> MeshletVisibilityLateSrvBindlessIndices;
-    std::vector<uint32_t> MeshletVisibilityLateUavBindlessIndices;
-    std::vector<uint32_t> PrevVisibleListSrvBindlessIndices;
-    std::vector<uint32_t> PrevVisibleListUavBindlessIndices;
-    std::vector<uint32_t> PrevInvisibleListSrvBindlessIndices;
-    std::vector<uint32_t> PrevInvisibleListUavBindlessIndices;
-    std::vector<uint32_t> EarlyRejectListSrvBindlessIndices;
-    std::vector<uint32_t> EarlyRejectListUavBindlessIndices;
-    std::vector<uint32_t> LateListSrvBindlessIndices;
-    std::vector<uint32_t> LateListUavBindlessIndices;
-    std::vector<uint32_t> LateListFlagSrvBindlessIndices;
-    std::vector<uint32_t> LateListFlagUavBindlessIndices;
-    std::vector<uint32_t> PrevVisibleCountSrvBindlessIndices;
-    std::vector<uint32_t> PrevVisibleCountUavBindlessIndices;
-    std::vector<uint32_t> PrevInvisibleCountSrvBindlessIndices;
-    std::vector<uint32_t> PrevInvisibleCountUavBindlessIndices;
-    std::vector<uint32_t> EarlyRejectCountSrvBindlessIndices;
-    std::vector<uint32_t> EarlyRejectCountUavBindlessIndices;
-    std::vector<uint32_t> LateListCountSrvBindlessIndices;
-    std::vector<uint32_t> LateListCountUavBindlessIndices;
-    std::vector<uint32_t> MeshletRunCountUavBindlessIndices;
-    uint32_t GpuDebugPrintAtlasWidth = 0;
-    uint32_t GpuDebugPrintAtlasHeight = 0;
-    uint32_t GpuDebugPrintFirstChar = 32;
-    uint32_t GpuDebugPrintCharCount = 96;
-    float GpuDebugPrintFontSize = 16.0f;
-
+    // Viewport
     D3D12_VIEWPORT Viewport{};
     D3D12_RECT ScissorRect{};
     D3D12_VIEWPORT ShadowViewport{};
     D3D12_RECT ShadowScissor{};
 
-    D3D12_RESOURCE_STATES ShadowMapState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
-    D3D12_RESOURCE_STATES ObjectIdState = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    std::vector<D3D12_RESOURCE_STATES> IndirectCommandStates;
-    std::vector<D3D12_RESOURCE_STATES> MeshletVisibilityStates;
-    std::vector<D3D12_RESOURCE_STATES> MeshletVisibilityLateStates;
-    std::vector<D3D12_RESOURCE_STATES> PrevVisibleListStates;
-    std::vector<D3D12_RESOURCE_STATES> PrevInvisibleListStates;
-    std::vector<D3D12_RESOURCE_STATES> EarlyRejectListStates;
-    std::vector<D3D12_RESOURCE_STATES> LateListStates;
-    std::vector<D3D12_RESOURCE_STATES> LateListFlagStates;
-    std::vector<D3D12_RESOURCE_STATES> PrevVisibleCountStates;
-    std::vector<D3D12_RESOURCE_STATES> PrevInvisibleCountStates;
-    std::vector<D3D12_RESOURCE_STATES> EarlyRejectCountStates;
-    std::vector<D3D12_RESOURCE_STATES> LateListCountStates;
-    std::vector<D3D12_RESOURCE_STATES> MeshletRunCountStates;
-    FRayTracingDevice RayTracingDevice;
-    Microsoft::WRL::ComPtr<ID3D12RootSignature> RayQueryRootSignature;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> RayQueryShadowPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> RayQuerySsrFallbackPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> RayQuerySsrHwPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> RayQueryPathPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> RayQueryPathDebugPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> RayQueryPathVndfPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> RayQueryPathDebugVndfPipeline;
-    bool bRayTracingPipelineReady = false;
-    std::vector<uint32_t> RayTracingDepthSrvBindlessIndices;
-    std::vector<ID3D12Resource*> RayTracingDepthResources;
-    uint32_t RayTracingGBufferASrvBindlessIndex = UINT32_MAX;
-    uint32_t RayTracingGBufferBSrvBindlessIndex = UINT32_MAX;
-    uint32_t RayTracingGBufferCSrvBindlessIndex = UINT32_MAX;
-    uint32_t RayTracingLightingUavBindlessIndex = UINT32_MAX;
-    uint32_t RayTracingShadowMaskUavBindlessIndex = UINT32_MAX;
-    ID3D12Resource* RayTracingGBufferAResource = nullptr;
-    ID3D12Resource* RayTracingGBufferBResource = nullptr;
-    ID3D12Resource* RayTracingGBufferCResource = nullptr;
-    ID3D12Resource* RayTracingLightingResource = nullptr;
-    ID3D12Resource* RayTracingShadowMaskUavResource = nullptr;
-    uint32_t ShadowMaskBindlessIndex = UINT32_MAX;
-    ID3D12Resource* ShadowMaskResource = nullptr;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> TlasScratchBuffers;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> TlasResultBuffers;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> TlasInstanceBuffers;
-    std::vector<bool> TlasBuilt;
-    std::vector<uint32_t> TlasPrevInstanceCount;
-    std::vector<uint64_t> TlasPrevInstanceHash;
-    uint32_t TlasInstanceCapacity = 0;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> PathTracingInstanceDataBuffers;
-    std::vector<uint32_t> PathTracingInstanceDataBindlessIndices;
-    D3D12_RESOURCE_STATES GpuDebugPrintState = D3D12_RESOURCE_STATE_COMMON;
-    D3D12_RESOURCE_STATES GpuDebugPrintStatsState = D3D12_RESOURCE_STATE_COMMON;
-    D3D12_RESOURCE_STATES GpuDebugLineState = D3D12_RESOURCE_STATE_COMMON;
-
-    uint8_t* SkyConstantBufferMapped = nullptr;
+    // Scene Constants
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SceneConstantBuffers;
+    std::vector<uint8_t*> SceneConstantBufferMapped;
     uint64_t SceneConstantBufferStride = 0;
+
+    // Scene Bounds
+    DirectX::XMFLOAT3 SceneCenter{ 0.0f, 0.0f, 0.0f };
+    float SceneRadius = 1.0f;
+
+    // Lighting
+    DirectX::XMFLOAT3 LightDirection{ -0.5f, -1.0f, 0.2f };
+    float LightIntensity = 1.0f;
+    DirectX::XMFLOAT3 LightColor{ 1.0f, 1.0f, 1.0f };
+
+    // Scene Models
+    std::vector<FSceneModelResource> SceneModels;
+    std::vector<bool> SceneModelVisibility;
+    std::vector<bool> SceneModelSkinningVisibility;
+
+    // Shadows
+    FBindlessTexture ShadowMap;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> ShadowDSVHeap;
+    D3D12_CPU_DESCRIPTOR_HANDLE ShadowDSVHandle{};
     float ShadowBias = 0.0f;
     float ShadowStrength = 1.0f;
     uint32_t ShadowMapWidth = 0;
     uint32_t ShadowMapHeight = 0;
     bool bShadowsEnabled = true;
     bool bRayTracedShadowsEnabled = false;
-    bool bPathTracingEnabled = false;
-    bool bPathTracingUseVndf = true;
+
+    // Ray Tracing
+    std::unique_ptr<FRayTracingRuntime> RayTracingRuntime;
+    uint32_t ShadowMaskBindlessIndex = UINT32_MAX;
+    ID3D12Resource* ShadowMaskResource = nullptr;
+
+    // Environment
+    std::unique_ptr<FEnvironmentMap> EnvironmentMap;
+    Microsoft::WRL::ComPtr<ID3D12Resource> NullTexture;
+
+    // Object ID / Texture Loading
+    std::unique_ptr<FObjectId> ObjectId{ std::make_unique<FObjectId>() };
+    std::unique_ptr<FTextureLoader> TextureLoader;
+
+    // Indirect Draw
+    Microsoft::WRL::ComPtr<ID3D12CommandSignature> IndirectCommandSignature;
+    uint32_t IndirectCommandCount = 0;
+    std::vector<FIndirectDrawRange> IndirectDrawRanges;
+    bool bEnableIndirectDraw = false;
+
+    // Skinning
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> SkinningRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> SkinningPipeline;
+    bool bEnableSkinningIndirectDraw = false;
+
+    // GPU Driven Culling
+    FGpuDrivenCulling GpuDrivenCullingState;
+    bool bGpuDrivenCullingPersistentInputsValid = false;
+
+    // GPU Debug
+    FGpuDebug GpuDebugState;
+
+    // Render State
+    bool bDepthPrepassEnabled = false;
+    const FCamera* CullingCameraOverride = nullptr;
+
+    // Debug / Timing
     bool bLogResourceBarriers = false;
     bool bEnableGraphDump = false;
     bool bEnableGpuTiming = false;
-    bool bEnableIndirectDraw = false;
-    bool bEnableSkinningIndirectDraw = false;
-    bool bEnableGpuDebugPrint = false;
-    bool bGtaoEnabled = true;
-    bool bGtaoJitterEnabled = true;
-    float EnvironmentMipCount = 1.0f;
-    float GtaoRadius = 0.75f;
-    float GtaoIntensity = 1.0f;
-    float GtaoPower = 1.5f;
-    float GtaoThickness = 0.1f;
-    uint32_t GtaoDirectionCount = 6;
-    uint32_t GtaoStepCount = 4;
-    bool bObjectIdReadbackRequested = false;
-    bool bObjectIdReadbackRecorded = false;
-    uint32_t ObjectIdReadbackX = 0;
-    uint32_t ObjectIdReadbackY = 0;
-    D3D12_PLACED_SUBRESOURCE_FOOTPRINT ObjectIdFootprint{};
-    uint32_t ObjectIdRowPitch = 0;
-    uint32_t IndirectCommandCount = 0;
-    std::vector<FIndirectDrawRange> IndirectDrawRanges;
-    uint32_t HZBCullingWidth = 0;
-    uint32_t HZBCullingHeight = 0;
-    uint32_t HZBCullingMipCount = 0;
-    bool bHZBOcclusionEnabled = false;
 
+    // Fatal Error
     bool bRenderFatalError = false;
     std::string RenderFatalReason;
 
+    // Device / Frame State
     FDX12Device* Device = nullptr;
     uint32_t FramesInFlight = 1;
     uint32_t CurrentFrameIndex = 0;

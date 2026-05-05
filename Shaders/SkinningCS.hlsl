@@ -11,7 +11,7 @@ cbuffer SkinningConstants : register(b0)
 }
 
 [numthreads(64, 1, 1)]
-void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
+void SkinningCS(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
     const uint vertexIndex = dispatchThreadId.x;
     if (vertexIndex >= VertexCount)

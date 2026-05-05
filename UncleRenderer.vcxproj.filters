@@ -45,6 +45,27 @@
     <Filter Include="Shaders">
       <UniqueIdentifier>{679FC732-2C38-4DA1-BE90-4C0E19B9B0BA}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Shaders\RestirGI">
+      <UniqueIdentifier>{E1D9F2F5-5E8A-47E9-A7DE-C12A438BB3D4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Shaders\ClusterDag">
+      <UniqueIdentifier>{86DB5A7A-A0CD-4A41-80CB-7E2DFDEB2B8E}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Shaders\Ssr">
+      <UniqueIdentifier>{D1B9A37A-D6A2-42D1-9F56-96CDDC4A22AD}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Shaders\GpuDrivenCulling">
+      <UniqueIdentifier>{C07BC67A-948A-4600-9A78-6DC2DB71DE61}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Shaders\GpuDebug">
+      <UniqueIdentifier>{B3CC09D9-6B3C-4C67-BA96-094D6A4D1026}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Shaders\EnvironmentMap">
+      <UniqueIdentifier>{AE8A8E72-8B1E-4B79-B2D6-67EF018086A6}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Shaders\PathTracing">
+      <UniqueIdentifier>{5CD6BDF8-3445-447D-BE9C-A4CD2E04B0DB}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Assets">
       <UniqueIdentifier>{0E6DA4B1-EB6C-4F9A-9E95-3B9B68CDAE46}</UniqueIdentifier>
     </Filter>
@@ -107,10 +128,13 @@
     <ClCompile Include="Source\Render\Deferred\DeferredFrameOrchestrator.cpp">
       <Filter>Source Files\Render</Filter>
     </ClCompile>
-    <ClCompile Include="Source\Render\Deferred\DeferredGeometryPasses.cpp">
+    <ClCompile Include="Source\Render\Deferred\DeferredBasePass.cpp">
       <Filter>Source Files\Render</Filter>
     </ClCompile>
-    <ClCompile Include="Source\Render\Deferred\DeferredLightingPasses.cpp">
+    <ClCompile Include="Source\Render\Deferred\DeferredLightingPass.cpp">
+      <Filter>Source Files\Render</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Render\Deferred\Hzb.cpp">
       <Filter>Source Files\Render</Filter>
     </ClCompile>
     <ClCompile Include="Source\Render\Deferred\GTAO.cpp">
@@ -120,9 +144,6 @@
       <Filter>Source Files\Render</Filter>
     </ClCompile>
     <ClCompile Include="Source\Render\Deferred\Cas.cpp">
-      <Filter>Source Files\Render</Filter>
-    </ClCompile>
-    <ClCompile Include="Source\Render\Deferred\DeferredPostProcessPasses.cpp">
       <Filter>Source Files\Render</Filter>
     </ClCompile>
     <ClCompile Include="Source\Render\Deferred\Taa.cpp">
@@ -143,22 +164,40 @@
     <ClCompile Include="Source\Render\Deferred\RestirGIDenoiser.cpp">
       <Filter>Source Files\Render</Filter>
     </ClCompile>
+    <ClCompile Include="Source\Render\Deferred\ClusterDagRuntime.cpp">
+      <Filter>Source Files\Render</Filter>
+    </ClCompile>
     <ClCompile Include="Source\Render\Deferred\Tonemap.cpp">
       <Filter>Source Files\Render</Filter>
     </ClCompile>
     <ClCompile Include="Source\Render\Deferred\DeferredResourceImporter.cpp">
       <Filter>Source Files\Render</Filter>
     </ClCompile>
-    <ClCompile Include="Source\Render\Deferred\DeferredVisibilityPasses.cpp">
+    <ClCompile Include="Source\Render\DebugPrintFont.cpp">
       <Filter>Source Files\Render</Filter>
     </ClCompile>
-    <ClCompile Include="Source\Render\DebugPrintFont.cpp">
+    <ClCompile Include="Source\Render\GpuDebug.cpp">
+      <Filter>Source Files\Render</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Render\GpuDrivenCulling.cpp">
       <Filter>Source Files\Render</Filter>
     </ClCompile>
     <ClCompile Include="Source\Render\Renderer.cpp">
       <Filter>Source Files\Render</Filter>
     </ClCompile>
+    <ClCompile Include="Source\Render\SceneModelResourceLoader.cpp">
+      <Filter>Source Files\Render</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Render\EnvironmentMap.cpp">
+      <Filter>Source Files\Render</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Render\RayTracingRuntime.cpp">
+      <Filter>Source Files\Render</Filter>
+    </ClCompile>
     <ClCompile Include="Source\Render\RendererUtils.cpp">
+      <Filter>Source Files\Render</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Render\SkyAtmosphere.cpp">
       <Filter>Source Files\Render</Filter>
     </ClCompile>
     <ClCompile Include="Source\Render\TextureLoader.cpp">
@@ -168,9 +207,6 @@
       <Filter>Source Files\Render</Filter>
     </ClCompile>
     <ClCompile Include="Source\Render\RenderGraph.cpp">
-      <Filter>Source Files\Render</Filter>
-    </ClCompile>
-    <ClCompile Include="Source\Render\RenderPass.cpp">
       <Filter>Source Files\Render</Filter>
     </ClCompile>
     <ClCompile Include="Source\Render\ShaderCompiler.cpp">
@@ -233,9 +269,6 @@
     <ClCompile Include="ThirdParty\meshoptimizer\indexgenerator.cpp">
       <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
     </ClCompile>
-    <ClCompile Include="ThirdParty\meshoptimizer\overdrawanalyzer.cpp">
-      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
-    </ClCompile>
     <ClCompile Include="ThirdParty\meshoptimizer\overdrawoptimizer.cpp">
       <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
     </ClCompile>
@@ -248,9 +281,6 @@
     <ClCompile Include="ThirdParty\meshoptimizer\stripifier.cpp">
       <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
     </ClCompile>
-    <ClCompile Include="ThirdParty\meshoptimizer\vcacheanalyzer.cpp">
-      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
-    </ClCompile>
     <ClCompile Include="ThirdParty\meshoptimizer\vcacheoptimizer.cpp">
       <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
     </ClCompile>
@@ -260,14 +290,41 @@
     <ClCompile Include="ThirdParty\meshoptimizer\vertexfilter.cpp">
       <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
     </ClCompile>
-    <ClCompile Include="ThirdParty\meshoptimizer\vfetchanalyzer.cpp">
-      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
-    </ClCompile>
     <ClCompile Include="ThirdParty\meshoptimizer\vfetchoptimizer.cpp">
       <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
     </ClCompile>
     <ClCompile Include="Source\RHI\DX12DeviceRemoved.cpp">
       <Filter>Source Files\RHI</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\indexanalyzer.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\meshletcodec.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\meshletutils.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\opacitymap.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\partition.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\quantization.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="ThirdParty\meshoptimizer\rasterizer.cpp">
+      <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Scene\ClusterDAGBuilder.cpp">
+      <Filter>Source Files\Scene</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Scene\PositionQemReducer.cpp">
+      <Filter>Source Files\Scene</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Render\ObjectId.cpp">
+      <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
@@ -284,6 +341,9 @@
       <Filter>Header Files\Core</Filter>
     </ClInclude>
     <ClInclude Include="Source\Core\RendererConfig.h">
+      <Filter>Header Files\Core</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Core\LightingVisualizationShared.h">
       <Filter>Header Files\Core</Filter>
     </ClInclude>
     <ClInclude Include="Source\Core\Window.h">
@@ -322,10 +382,13 @@
     <ClInclude Include="Source\Render\Deferred\DeferredFrameOrchestrator.h">
       <Filter>Header Files\Render</Filter>
     </ClInclude>
-    <ClInclude Include="Source\Render\Deferred\DeferredGeometryPasses.h">
+    <ClInclude Include="Source\Render\Deferred\DeferredBasePass.h">
       <Filter>Header Files\Render</Filter>
     </ClInclude>
-    <ClInclude Include="Source\Render\Deferred\DeferredLightingPasses.h">
+    <ClInclude Include="Source\Render\Deferred\DeferredLightingPass.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Render\Deferred\Hzb.h">
       <Filter>Header Files\Render</Filter>
     </ClInclude>
     <ClInclude Include="Source\Render\Deferred\AutoExposure.h">
@@ -334,7 +397,7 @@
     <ClInclude Include="Source\Render\Deferred\Cas.h">
       <Filter>Header Files\Render</Filter>
     </ClInclude>
-    <ClInclude Include="Source\Render\Deferred\DeferredPostProcessPasses.h">
+    <ClInclude Include="Source\Render\Deferred\ClusterDagRuntime.h">
       <Filter>Header Files\Render</Filter>
     </ClInclude>
     <ClInclude Include="Source\Render\Deferred\Taa.h">
@@ -344,9 +407,6 @@
       <Filter>Header Files\Render</Filter>
     </ClInclude>
     <ClInclude Include="Source\Render\Deferred\DeferredResourceImporter.h">
-      <Filter>Header Files\Render</Filter>
-    </ClInclude>
-    <ClInclude Include="Source\Render\Deferred\DeferredVisibilityPasses.h">
       <Filter>Header Files\Render</Filter>
     </ClInclude>
     <ClInclude Include="Source\Render\Deferred\Gtao.h">
@@ -373,7 +433,25 @@
     <ClInclude Include="Source\Render\DebugPrintFont.h">
       <Filter>Header Files\Render</Filter>
     </ClInclude>
+    <ClInclude Include="Source\Render\GpuDebug.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Render\GpuDrivenCulling.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
     <ClInclude Include="Source\Render\RendererUtils.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Render\SceneModelResource.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Render\SceneModelResourceLoader.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Render\RayTracingRuntime.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Render\SkyAtmosphere.h">
       <Filter>Header Files\Render</Filter>
     </ClInclude>
     <ClInclude Include="Source\Render\TextureLoader.h">
@@ -382,13 +460,13 @@
     <ClInclude Include="Source\Render\Renderer.h">
       <Filter>Header Files\Render</Filter>
     </ClInclude>
+    <ClInclude Include="Source\Render\EnvironmentMap.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
     <ClInclude Include="Source\Render\ForwardRenderer.h">
       <Filter>Header Files\Render</Filter>
     </ClInclude>
     <ClInclude Include="Source\Render\RenderGraph.h">
-      <Filter>Header Files\Render</Filter>
-    </ClInclude>
-    <ClInclude Include="Source\Render\RenderPass.h">
       <Filter>Header Files\Render</Filter>
     </ClInclude>
     <ClInclude Include="Source\Render\ShaderCompiler.h">
@@ -463,6 +541,15 @@
     <ClInclude Include="ThirdParty\meshoptimizer\meshoptimizer.h">
       <Filter>Source Files\ThirdParty\meshoptimizer</Filter>
     </ClInclude>
+    <ClInclude Include="Source\Scene\ClusterDAG.h">
+      <Filter>Header Files\Scene</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Scene\PositionQemReducer.h">
+      <Filter>Header Files\Scene</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Render\ObjectId.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\DeferredBasePass.hlsl">
@@ -505,8 +592,8 @@
     <None Include="Shaders\TemporalAA.hlsl">
       <Filter>Shaders</Filter>
     </None>
-    <None Include="Shaders\PathTracingAccumulation.hlsl">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\PathTracing\PathTracingAccumulation.hlsl">
+      <Filter>Shaders\PathTracing</Filter>
     </None>
     <None Include="Shaders\BuildHZB.hlsl">
       <Filter>Shaders</Filter>
@@ -520,14 +607,14 @@
     <None Include="Shaders\SceneConstants.hlsl">
       <Filter>Shaders</Filter>
     </None>
-    <None Include="Shaders\GpuDebugPrintCommon.hlsl">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\GpuDebug\GpuDebugPrintCommon.hlsl">
+      <Filter>Shaders\GpuDebug</Filter>
     </None>
-    <None Include="Shaders\GpuDebugPrint.hlsl">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\GpuDebug\GpuDebugPrint.hlsl">
+      <Filter>Shaders\GpuDebug</Filter>
     </None>
-    <None Include="Shaders\GpuDebugPrintStats.hlsl">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\GpuDebug\GpuDebugPrintStats.hlsl">
+      <Filter>Shaders\GpuDebug</Filter>
     </None>
     <None Include="Assets\Scenes\sponza.json">
       <Filter>Assets</Filter>
@@ -551,14 +638,14 @@
     <None Include="Shaders\LinearDepth.hlsl">
       <Filter>Shaders</Filter>
     </None>
-    <None Include="Shaders\BuildMeshletRunsAppend.hlsl">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\GpuDrivenCulling\BuildMeshletRunsAppend.hlsl">
+      <Filter>Shaders\GpuDrivenCulling</Filter>
     </None>
-    <None Include="Shaders\ClearMeshletRunCounts.hlsl">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\GpuDrivenCulling\ClearMeshletRunCounts.hlsl">
+      <Filter>Shaders\GpuDrivenCulling</Filter>
     </None>
-    <None Include="Shaders\CullMeshletVisibility.hlsl">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\GpuDrivenCulling\CullMeshletVisibility.hlsl">
+      <Filter>Shaders\GpuDrivenCulling</Filter>
     </None>
     <None Include="Shaders\ShadowRays.hlsl">
       <Filter>Shaders</Filter>
@@ -566,17 +653,17 @@
     <None Include="Shaders\SkinningCS.hlsl">
       <Filter>Shaders</Filter>
     </None>
-    <None Include="Shaders\BuildEarlyRejectList.hlsl">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\GpuDrivenCulling\BuildEarlyRejectList.hlsl">
+      <Filter>Shaders\GpuDrivenCulling</Filter>
     </None>
-    <None Include="Shaders\BuildVisibilityLists.hlsl">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\GpuDrivenCulling\BuildVisibilityLists.hlsl">
+      <Filter>Shaders\GpuDrivenCulling</Filter>
     </None>
-    <None Include="Shaders\ClearVisibilityCounts.hlsl">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\GpuDrivenCulling\ClearVisibilityCounts.hlsl">
+      <Filter>Shaders\GpuDrivenCulling</Filter>
     </None>
-    <None Include="Shaders\ClearVisibilityFlags.hlsl">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\GpuDrivenCulling\ClearVisibilityFlags.hlsl">
+      <Filter>Shaders\GpuDrivenCulling</Filter>
     </None>
     <None Include="Shaders\CullingConstants.hlsl">
       <Filter>Shaders</Filter>
@@ -584,65 +671,65 @@
     <None Include="Shaders\CullMeshletCommon.hlsl">
       <Filter>Shaders</Filter>
     </None>
-    <None Include="Shaders\CullMeshletVisibilityList.hlsl">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\GpuDrivenCulling\CullMeshletVisibilityList.hlsl">
+      <Filter>Shaders\GpuDrivenCulling</Filter>
     </None>
-    <None Include="Shaders\MergeVisibilityLists.hlsl">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\GpuDrivenCulling\MergeVisibilityLists.hlsl">
+      <Filter>Shaders\GpuDrivenCulling</Filter>
     </None>
-    <None Include="Shaders\PathTracing.hlsl">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\PathTracing\PathTracing.hlsl">
+      <Filter>Shaders\PathTracing</Filter>
     </None>
-    <None Include="Shaders\SsrBuildIndirectArgs.hlsl">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\Ssr\SsrBuildIndirectArgs.hlsl">
+      <Filter>Shaders\Ssr</Filter>
     </None>
-    <None Include="Shaders\SsrHWTraceCS.hlsl">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\Ssr\SsrHWTraceCS.hlsl">
+      <Filter>Shaders\Ssr</Filter>
     </None>
-    <None Include="Shaders\SsrRayGather.hlsl">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\Ssr\SsrRayGather.hlsl">
+      <Filter>Shaders\Ssr</Filter>
     </None>
-    <None Include="Shaders\SsrResolve.hlsl">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\Ssr\SsrResolve.hlsl">
+      <Filter>Shaders\Ssr</Filter>
     </None>
-    <None Include="Shaders\SsrShared.hlsl">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\Ssr\SsrShared.hlsl">
+      <Filter>Shaders\Ssr</Filter>
     </None>
-    <None Include="Shaders\SsrSWTraceCS.hlsl">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\Ssr\SsrSWTraceCS.hlsl">
+      <Filter>Shaders\Ssr</Filter>
     </None>
-    <None Include="Shaders\SsrSWTracePS.hlsl">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\Ssr\SsrSWTracePS.hlsl">
+      <Filter>Shaders\Ssr</Filter>
     </None>
-    <None Include="Shaders\SsrRayFallback.hlsl">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\Ssr\SsrRayFallback.hlsl">
+      <Filter>Shaders\Ssr</Filter>
     </None>
-    <None Include="Shaders\RestirGIReservoir.hlsli">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\RestirGI\RestirGIReservoir.hlsli">
+      <Filter>Shaders\RestirGI</Filter>
     </None>
-    <None Include="Shaders\RestirGI.hlsl">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\RestirGI\RestirGI.hlsl">
+      <Filter>Shaders\RestirGI</Filter>
     </None>
-    <None Include="Shaders\GpuDebugLine.hlsl">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\GpuDebug\GpuDebugLine.hlsl">
+      <Filter>Shaders\GpuDebug</Filter>
     </None>
-    <None Include="Shaders\GpuDebugLineCommon.hlsl">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\GpuDebug\GpuDebugLineCommon.hlsl">
+      <Filter>Shaders\GpuDebug</Filter>
     </None>
     <None Include="Shaders\PathBrdfCommon.hlsli">
       <Filter>Shaders</Filter>
     </None>
-    <None Include="Shaders\EnvCubemapBasis.hlsli">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\EnvironmentMap\EnvCubemapBasis.hlsli">
+      <Filter>Shaders\EnvironmentMap</Filter>
     </None>
-    <None Include="Shaders\EnvEquirectToCubeCS.hlsl">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\EnvironmentMap\EnvEquirectToCubeCS.hlsl">
+      <Filter>Shaders\EnvironmentMap</Filter>
     </None>
-    <None Include="Shaders\EnvCubeMipGenCS.hlsl">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\EnvironmentMap\EnvCubeMipGenCS.hlsl">
+      <Filter>Shaders\EnvironmentMap</Filter>
     </None>
-    <None Include="Shaders\EnvSpecularPrefilterCS.hlsl">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\EnvironmentMap\EnvSpecularPrefilterCS.hlsl">
+      <Filter>Shaders\EnvironmentMap</Filter>
     </None>
     <None Include="Shaders\RestirGISamplingCommon.hlsli">
       <Filter>Shaders</Filter>
@@ -656,14 +743,68 @@
     <None Include="Shaders\ExtractHalfDepthNormal.hlsl">
       <Filter>Shaders</Filter>
     </None>
-    <None Include="Shaders\RestirGIDenoiser.hlsl">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\RestirGI\RestirGIDenoiser.hlsl">
+      <Filter>Shaders\RestirGI</Filter>
     </None>
-    <None Include="Shaders\RestirGiLinearDepthMipGenSpd.hlsl">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\RestirGI\RestirGiLinearDepthMipGenSpd.hlsl">
+      <Filter>Shaders\RestirGI</Filter>
     </None>
-    <None Include="Shaders\RestirGiMipGenSpd.hlsl">
-      <Filter>Shaders</Filter>
+    <None Include="Shaders\RestirGI\RestirGiMipGenSpd.hlsl">
+      <Filter>Shaders\RestirGI</Filter>
+    </None>
+    <None Include="Shaders\ClusterDag\ClusterDagLevelSplitClusterCull.hlsl">
+      <Filter>Shaders\ClusterDag</Filter>
+    </None>
+    <None Include="Shaders\ClusterDag\ClusterDagLevelSplitNodeCull.hlsl">
+      <Filter>Shaders\ClusterDag</Filter>
+    </None>
+    <None Include="Shaders\ClusterDag\InitClusterDagLevelSplitQueues.hlsl">
+      <Filter>Shaders\ClusterDag</Filter>
+    </None>
+    <None Include="Shaders\ClusterDag\PrepareClusterDagLevelSplitClusterArgs.hlsl">
+      <Filter>Shaders\ClusterDag</Filter>
+    </None>
+    <None Include="Shaders\ClusterDag\PrepareClusterDagLevelSplitNodeArgs.hlsl">
+      <Filter>Shaders\ClusterDag</Filter>
+    </None>
+    <None Include="Shaders\ClusterDag\BuildClusterDagRunsAppend.hlsl">
+      <Filter>Shaders\ClusterDag</Filter>
+    </None>
+    <None Include="Shaders\ClusterDag\ClusterDagClusterCull.hlsl">
+      <Filter>Shaders\ClusterDag</Filter>
+    </None>
+    <None Include="Shaders\ClusterDag\ClusterDagCommon.hlsl">
+      <Filter>Shaders\ClusterDag</Filter>
+    </None>
+    <None Include="Shaders\ClusterDag\ClusterDagNodeCull.hlsl">
+      <Filter>Shaders\ClusterDag</Filter>
+    </None>
+    <None Include="Shaders\ClusterDag\ClusterDagTraversalCommon.hlsl">
+      <Filter>Shaders\ClusterDag</Filter>
+    </None>
+    <None Include="Shaders\ClusterDag\InitClusterDagQueues.hlsl">
+      <Filter>Shaders\ClusterDag</Filter>
+    </None>
+    <None Include="Shaders\ClusterDag\PersistentClusterDagCull.hlsl">
+      <Filter>Shaders\ClusterDag</Filter>
+    </None>
+    <None Include="Shaders\ClusterDag\SelectClusterLOD.hlsl">
+      <Filter>Shaders\ClusterDag</Filter>
+    </None>
+    <None Include="Assets\Scenes\BoxTextured.json">
+      <Filter>Assets</Filter>
+    </None>
+    <None Include="Assets\Scenes\CompareBaseColor.json">
+      <Filter>Assets</Filter>
+    </None>
+    <None Include="Assets\Scenes\CompareNormal.json">
+      <Filter>Assets</Filter>
+    </None>
+    <None Include="Assets\Scenes\Duck.json">
+      <Filter>Assets</Filter>
+    </None>
+    <None Include="Assets\Scenes\metal_spheres.json">
+      <Filter>Assets</Filter>
     </None>
   </ItemGroup>
 </Project>

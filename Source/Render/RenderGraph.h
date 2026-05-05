@@ -33,11 +33,13 @@ struct FRGBufferDesc
     D3D12_BUFFER_UAV_FLAGS UavFlags = D3D12_BUFFER_UAV_FLAG_NONE;
 };
 
-struct FRGResourceHandle
+struct FRGTextureHandle
 {
     uint32 Id = UINT32_MAX;
     explicit operator bool() const { return Id != UINT32_MAX; }
 };
+
+using FRGResourceHandle = FRGTextureHandle;
 
 struct FRGBufferHandle
 {
@@ -71,22 +73,27 @@ public:
 
     friend class FRGPassBuilder;
 
-    FRGResourceHandle ImportTexture(
+    FRGTextureHandle ImportTexture(
         const std::string& Name,
         ID3D12Resource* Resource,
         D3D12_RESOURCE_STATES* StatePtr,
-        const FRGTextureDesc& Desc);
-    ID3D12Resource* GetTextureResource(const FRGResourceHandle& Handle) const;
-    uint32 GetTextureSrvBindlessIndex(const FRGResourceHandle& Handle);
-    uint32 GetTextureUavBindlessIndex(const FRGResourceHandle& Handle);
-    uint32 GetTextureMipSrvBindlessIndex(const FRGResourceHandle& Handle, uint32 MipIndex);
-    uint32 GetTextureMipUavBindlessIndex(const FRGResourceHandle& Handle, uint32 MipIndex);
+        const FRGTextureDesc& Desc,
+        uint32 ImportedSrvBindlessIndex = UINT32_MAX,
+        uint32 ImportedUavBindlessIndex = UINT32_MAX);
+    ID3D12Resource* GetTextureResource(const FRGTextureHandle& Handle) const;
+    uint32 GetTextureSrvBindlessIndex(const FRGTextureHandle& Handle);
+    uint32 GetTextureUavBindlessIndex(const FRGTextureHandle& Handle);
+    uint32 GetTextureMipSrvBindlessIndex(const FRGTextureHandle& Handle, uint32 MipIndex);
+    uint32 GetTextureMipUavBindlessIndex(const FRGTextureHandle& Handle, uint32 MipIndex);
     FRGBufferHandle ImportBuffer(
         const std::string& Name,
         ID3D12Resource* Resource,
         D3D12_RESOURCE_STATES* StatePtr,
-        const FRGBufferDesc& Desc);
+        const FRGBufferDesc& Desc,
+        uint32 ImportedSrvBindlessIndex = UINT32_MAX,
+        uint32 ImportedUavBindlessIndex = UINT32_MAX);
     ID3D12Resource* GetBufferResource(const FRGBufferHandle& Handle) const;
+    uint32 GetBufferSrvBindlessIndex(const FRGBufferHandle& Handle);
     uint32 GetBufferUavBindlessIndex(const FRGBufferHandle& Handle);
 
     template <typename PassData, typename SetupFunc, typename ExecuteFunc>
@@ -94,6 +101,7 @@ public:
     {
         PassEntry Entry;
         Entry.Name = Name;
+        Entry.PixEventName.assign(Name.begin(), Name.end());
         Entry.DataStorage.resize(sizeof(PassData));
         new (Entry.DataStorage.data()) PassData();
 
@@ -126,12 +134,16 @@ public:
     static void AddExternalGpuTimingSample(const std::string& Name, double Milliseconds);
 
 private:
-    struct FRGResourceUsage
+    template <typename HandleType>
+    struct TRGUsage
     {
-        FRGResourceHandle Handle;
+        HandleType Handle;
         D3D12_RESOURCE_STATES RequiredState = D3D12_RESOURCE_STATE_COMMON;
         ERGResourceAccess Access = ERGResourceAccess::Read;
     };
+
+    using FRGTextureUsage = TRGUsage<FRGTextureHandle>;
+    using FRGBufferUsage = TRGUsage<FRGBufferHandle>;
 
     struct FRGTextureResource
     {
@@ -141,8 +153,8 @@ private:
         ID3D12Resource* Resource = nullptr;
         D3D12_RESOURCE_STATES* ExternalState = nullptr;
         D3D12_RESOURCE_STATES CurrentState = D3D12_RESOURCE_STATE_COMMON;
-        int32 FirstUsePass = -1;
-        int32 LastUsePass = -1;
+        uint32 ReferenceCount = 0;
+        uint32 InitialReferenceCount = 0;
         int32 PoolIndex = -1;
         uint32 DefaultSrvBindlessIndex = UINT32_MAX;
         uint32 DefaultUavBindlessIndex = UINT32_MAX;
@@ -162,10 +174,12 @@ private:
         ID3D12Resource* Resource = nullptr;
         D3D12_RESOURCE_STATES* ExternalState = nullptr;
         D3D12_RESOURCE_STATES CurrentState = D3D12_RESOURCE_STATE_COMMON;
-        int32 FirstUsePass = -1;
-        int32 LastUsePass = -1;
+        uint32 ReferenceCount = 0;
+        uint32 InitialReferenceCount = 0;
         int32 PoolIndex = -1;
+        uint32 DefaultSrvBindlessIndex = UINT32_MAX;
         uint32 DefaultUavBindlessIndex = UINT32_MAX;
+        ID3D12Resource* DefaultSrvViewResource = nullptr;
         ID3D12Resource* DefaultUavViewResource = nullptr;
         bool bExternal = false;
     };
@@ -173,10 +187,13 @@ private:
     struct PassEntry
     {
         std::string Name;
+        std::wstring PixEventName;
         std::vector<uint8_t> DataStorage;
         std::function<void(const std::vector<uint8_t>&, FDX12CommandContext&)> ExecuteFunc;
-        std::vector<FRGResourceUsage> ResourceUsages;
-        std::vector<FRGResourceUsage> BufferUsages;
+        std::vector<FRGTextureUsage> TextureUsages;
+        std::vector<FRGBufferUsage> BufferUsages;
+        std::vector<FRGTextureHandle> TextureUavBarriers;
+        std::vector<FRGBufferHandle> BufferUavBarriers;
         bool bCulled = false;
         std::string PixGroupName;
         bool bForceExecute = false;
@@ -184,23 +201,29 @@ private:
         double GpuElapsedMs = 0.0;
     };
 
-    FRGResourceHandle RegisterTexture(const std::string& Name, const FRGTextureDesc& Desc);
+    FRGTextureHandle RegisterTexture(const std::string& Name, const FRGTextureDesc& Desc);
     FRGBufferHandle RegisterBuffer(const std::string& Name, const FRGBufferDesc& Desc);
-    void RegisterUsage(PassEntry& Entry, const FRGResourceHandle& Handle, D3D12_RESOURCE_STATES RequiredState, ERGResourceAccess Access);
+    void RegisterUsage(PassEntry& Entry, const FRGTextureHandle& Handle, D3D12_RESOURCE_STATES RequiredState, ERGResourceAccess Access);
     void RegisterUsage(PassEntry& Entry, const FRGBufferHandle& Handle, D3D12_RESOURCE_STATES RequiredState, ERGResourceAccess Access);
+    void RegisterUavBarrier(PassEntry& Entry, const FRGTextureHandle& Handle);
+    void RegisterUavBarrier(PassEntry& Entry, const FRGBufferHandle& Handle);
 
-    void AccumulateResourceFlags(const FRGResourceHandle& Handle, D3D12_RESOURCE_STATES RequiredState, ERGResourceAccess Access);
+    void AccumulateTextureFlags(const FRGTextureHandle& Handle, D3D12_RESOURCE_STATES RequiredState, ERGResourceAccess Access);
     bool AcquireTransientTexture(FRGTextureResource& Texture, D3D12_RESOURCE_STATES InitialState);
     bool AcquireTransientBuffer(FRGBufferResource& Buffer, D3D12_RESOURCE_STATES InitialState);
     void ReleaseTransientTexture(FRGTextureResource& Texture);
     void ReleaseTransientBuffer(FRGBufferResource& Buffer);
+    std::string BuildTextureViewOwnerLabel(const FRGTextureResource& Texture, bool bUav, int32 MipIndex) const;
+    std::string BuildBufferSrvOwnerLabel(const FRGBufferResource& Buffer) const;
+    std::string BuildBufferUavOwnerLabel(const FRGBufferResource& Buffer) const;
     uint32 GetTextureViewBindlessIndex(FRGTextureResource& Texture, bool bUav);
     uint32 GetTextureMipViewBindlessIndex(FRGTextureResource& Texture, bool bUav, uint32 MipIndex);
+    uint32 GetBufferSrvBindlessIndex(FRGBufferResource& Buffer);
     uint32 GetBufferUavBindlessIndex(FRGBufferResource& Buffer);
-    void DumpDebugInfo(const std::vector<bool>& PassRequired, const std::vector<bool>& ResourceRequired);
+    void DumpDebugInfo(const std::vector<bool>& PassRequired, const std::vector<bool>& ResourceRequired, const std::vector<bool>& BufferRequired);
     void LogTimingSummary();
 
-    FRGTextureResource* ResolveResource(const FRGResourceHandle& Handle);
+    FRGTextureResource* ResolveTexture(const FRGTextureHandle& Handle);
     FRGBufferResource* ResolveBuffer(const FRGBufferHandle& Handle);
 
     FDX12Device* Device = nullptr;
@@ -242,6 +265,7 @@ private:
         uint32 QueryCount = 0;
         uint64 Frequency = 0;
         std::vector<std::string> PassNames;
+        std::vector<std::string> PixGroupNames;
         bool bPending = false;
     };
 
@@ -277,6 +301,7 @@ private:
     bool bEnableGpuTiming = false;
     uint32 CurrentFrameIndex = 0;
     uint64 CurrentFrameFenceValue = 0;
+    std::string CurrentExecutingPassName;
 };
 
 class FRGPassBuilder
@@ -284,12 +309,14 @@ class FRGPassBuilder
 public:
     FRGPassBuilder(FRenderGraph& InGraph, FRenderGraph::PassEntry& InEntry);
 
-    FRGResourceHandle CreateTexture(const std::string& Name, const FRGTextureDesc& Desc);
+    FRGTextureHandle CreateTexture(const std::string& Name, const FRGTextureDesc& Desc);
     FRGBufferHandle CreateBuffer(const std::string& Name, const FRGBufferDesc& Desc);
-    FRGResourceHandle ReadTexture(const FRGResourceHandle& Handle, D3D12_RESOURCE_STATES RequiredState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    FRGResourceHandle WriteTexture(const FRGResourceHandle& Handle, D3D12_RESOURCE_STATES RequiredState = D3D12_RESOURCE_STATE_RENDER_TARGET);
+    FRGTextureHandle ReadTexture(const FRGTextureHandle& Handle, D3D12_RESOURCE_STATES RequiredState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    FRGTextureHandle WriteTexture(const FRGTextureHandle& Handle, D3D12_RESOURCE_STATES RequiredState = D3D12_RESOURCE_STATE_RENDER_TARGET);
     FRGBufferHandle ReadBuffer(const FRGBufferHandle& Handle, D3D12_RESOURCE_STATES RequiredState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     FRGBufferHandle WriteBuffer(const FRGBufferHandle& Handle, D3D12_RESOURCE_STATES RequiredState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    FRGTextureHandle UavBarrier(const FRGTextureHandle& Handle);
+    FRGBufferHandle UavBarrier(const FRGBufferHandle& Handle);
     void KeepAlive();
     void SetPixGroup(const char* GroupName);
 

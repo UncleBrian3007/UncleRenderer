@@ -13,6 +13,7 @@
 #include <vector>
 #include "../Scene/Camera.h"
 #include "../RHI/DX12Commons.h"
+#include "../RHI/DX12Device.h"
 #include "RendererConfig.h"
 
 // ImGui availability is determined in ImGuiSupport.h to avoid build failures
@@ -43,133 +44,120 @@ public:
     int32_t Run();
 
 private:
+    // Frame loop
     bool RenderFrame();
+
+    // Camera
     void HandleCameraInput(float DeltaSeconds);
     void PositionCameraForScene();
     void ApplySceneCameraFromJson(const std::wstring& ScenePath);
-    void ApplySceneLightingFromJson(const std::wstring& ScenePath);
-    void UpdateSelectionFromMouseClick();
-    void DrawSelectionBounds(float DisplayWidth, float DisplayHeight);
+
+    // Scene
     bool ReloadScene(const std::wstring& ScenePath);
     void StartAsyncSceneReload(const std::wstring& ScenePath);
     void CompleteAsyncSceneReload();
     std::wstring OpenSceneFileDialog(const std::wstring& InitialDirectory) const;
+
+    // Lighting
+    void ApplySceneLightingFromJson(const std::wstring& ScenePath);
+    void UpdateRendererLighting() const;
+    DirectX::XMVECTOR GetLightDirectionVector() const;
+
+    // Selection
+    void UpdateSelectionFromMouseClick();
+
+    // Debug primitives
+    void UpdateDebugPrimitives();
+
+    // ImGui
     bool InitializeImGui(int32_t Width, int32_t Height);
     void ShutdownImGui();
     void RenderUI();
     bool EnsureImGuiFontAtlas();
-    void UpdateRendererLighting() const;
-    DirectX::XMVECTOR GetLightDirectionVector() const;
 
-private:
-    std::unique_ptr<FWindow>           MainWindow;
-    std::unique_ptr<FDX12Device>       Device;
-    std::unique_ptr<FDX12SwapChain>    SwapChain;
-    std::unique_ptr<FDX12CommandContext> CommandContext;
-    std::unique_ptr<FTime>             Time;
-    std::unique_ptr<FForwardRenderer>  ForwardRenderer;
-    std::unique_ptr<FDeferredRenderer> DeferredRenderer;
-    FRenderer*                         ActiveRenderer = nullptr;
-    std::unique_ptr<FCamera>           Camera;
-    FRendererConfig                    RendererConfig;
-
-    ComPtr<ID3D12DescriptorHeap>       ImGuiDescriptorHeap;
-#if WITH_IMGUI
-    ImGuiContext*                      ImGuiCtx = nullptr;
+    // Renderer config sync
+    void SyncRendererDepthPrepassConfig();
+    void SyncDeferredLightingPassConfig();
+    void SyncDeferredHzbConfig();
+    void SyncRendererGtaoConfig();
+    void SyncRendererPathTracingConfig();
+    void SyncDeferredClusterDagConfig();
+    void SyncDeferredPostProcessConfig();
+    void SyncDeferredSsrConfig();
+    void SyncDeferredRestirGIConfig();
+    void SyncDeferredRestirGITransientState();
+#if WITH_BINDLESS_DESCRIPTOR_STATS
+    void UpdateBindlessDescriptorStatsSnapshot();
 #endif
 
+private:
+    // Core subsystems
+    std::unique_ptr<FWindow>             MainWindow;
+    std::unique_ptr<FDX12Device>         Device;
+    std::unique_ptr<FDX12SwapChain>      SwapChain;
+    std::unique_ptr<FDX12CommandContext> CommandContext;
+    std::unique_ptr<FTime>               Time;
+
+    // Renderers
+    std::unique_ptr<FForwardRenderer>    ForwardRenderer;
+    std::unique_ptr<FDeferredRenderer>   DeferredRenderer;
+    FRenderer*                           ActiveRenderer = nullptr;
+    std::unique_ptr<FCamera>             Camera;
+    FRendererConfig                      RendererConfig;
+
+    // ImGui
+    ComPtr<ID3D12DescriptorHeap>         ImGuiDescriptorHeap;
+#if WITH_IMGUI
+    ImGuiContext*                        ImGuiCtx = nullptr;
+#endif
+#if WITH_BINDLESS_DESCRIPTOR_STATS
+    FDX12Device::FBindlessDescriptorStats CachedBindlessDescriptorStats;
+    bool                                 bCachedBindlessDescriptorStatsValid = false;
+    bool                                 bTrackLiveTransientBindlessOwners = false;
+#endif
+
+    // App state
     bool bIsRunning;
-    bool bTaskSystemEnabled = true;
-    bool bDepthPrepassEnabled = false;
-    bool bFrameOverlapEnabled = false;
-    bool bVSyncEnabled = false;
-    bool bShadowsEnabled = true;
-    bool bRayTracedShadowsEnabled = false;
-    bool bPathTracingEnabled = false;
-    bool bPathTracingAccumulationEnabled = true;
-    bool bPathTracingVndfEnabled = true;
-    bool bHZBEnabled = true;
-    bool bHzbTwoPassEnabled = true;
-    bool bGpuTimingEnabled = false;
-    bool bGpuDebugPrintEnabled = false;
-    bool bTonemapEnabled = true;
-    bool bIndirectDrawEnabled = true;
-    bool bSkinningIndirectDrawEnabled = false;
-    bool bPbrResearchEnabled = false;
-    bool bModelPixEventsEnabled = true;
-    bool bGtaoEnabled = true;
-    bool bGtaoJitterEnabled = false;
-    float GtaoRadius = 0.75f;
-    float GtaoThickness = 0.1f;
-    bool bRestirGIEnabled = false;
-    bool bRestirGIDenoiserEnabled = true;
-    bool bRestirGIShowOnly = false;
-    bool bRestirGITemporalReuseEnabled = true;
-    bool bRestirGISpatialReuseEnabled = true;
-    float RestirGITemporalAdditionalScale = 0.2f;
-    float RestirGISpatialAdditionalScale = 0.15f;
-    bool bRestirGIUseVisibility = true;
-    bool bRestirGIUseBrdf = true;
-    bool bRestirGIUseHistoryIndirect = true;
-    ERestirGIRandomMode RestirGIRandomMode = ERestirGIRandomMode::BlueNoiseSobol;
-    bool bRestirGIFreezeFrame = false;
-    bool bRestirGIDebugRayEnabled = false;
-    int RestirGIDebugPixelX = 0;
-    int RestirGIDebugPixelY = 0;
-    bool bSsrSwEnabled = true;
-    bool bSsrHwEnabled = true;
-    bool bSsrHzbEnabled = false;
-    bool bSsrRefineEnabled = false;
-    bool bSsrDenoiseEnabled = false;
-    ESSRMode SsrMode = ESSRMode::PS;
-    uint32_t SsrSamplesPerQuad = 1;
-    uint32_t SsrMaxSteps = 32;
-    float SsrMaxDistance = 50.0f;
-    float SsrThickness = 1.00f;
-    float SsrStride = 1.0f;
-    float SsrRoughnessCutoff = 0.6f;
-    float SsrIntensity = 0.3f;
-    bool bCasEnabled = true;
-    float CasSharpness = 0.2f;
-    float TonemapExposure = 0.5f;
-    float TonemapWhitePoint = 4.0f;
-    float TonemapGamma = 1.0f;
-    bool bAutoExposureEnabled = false;
-    float AutoExposureKey = 0.18f;
-    float AutoExposureMin = 0.1f;
-    float AutoExposureMax = 5.0f;
-    float AutoExposureSpeedUp = 3.0f;
-    float AutoExposureSpeedDown = 1.0f;
-    bool bTaaEnabled = false;
-    float TaaHistoryWeight = 0.9f;
-    bool bFreezeCamera = false;
+
+    // Camera
+    bool   bFreezeCamera = false;
     FCamera FrozenCamera;
-    int32_t SelectedModelIndex = -1;
-    std::string SelectedModelName;
-    bool bPendingObjectIdReadback = false;
-    uint32_t PendingObjectIdX = 0;
-    uint32_t PendingObjectIdY = 0;
-    float CameraYaw = 0.0f;
-    float CameraPitch = 0.0f;
-    bool bIsRotatingWithMouse = false;
-    bool bWasLeftMouseDown = false;
-    POINT LastMousePosition = {};
+    float  CameraYaw = 0.0f;
+    float  CameraPitch = 0.0f;
+    bool   bIsRotatingWithMouse = false;
+    bool   bWasLeftMouseDown = false;
+    POINT  LastMousePosition = {};
+
+    // Scene
     std::wstring CurrentScenePath = L"Assets/Scenes/Scene.json";
     std::wstring PendingScenePath;
-    float LightYaw = -1.19028997f;
-    float LightPitch = -1.07681236f;
-    float LightIntensity = 1.0f;
-    DirectX::XMFLOAT3 LightColor{ 1.0f, 1.0f, 1.0f };
-    float ShadowBias = 0.0f;
-    ComPtr<ID3D12QueryHeap>            FrameTimingQueryHeap;
-    ComPtr<ID3D12Resource>             FrameTimingReadback;
-    std::vector<uint64>                FrameTimingFenceValues;
-    uint64                             FrameTimingFrequency = 0;
+
+    // Selection
+    int32_t      SelectedModelIndex = -1;
+    std::string  SelectedModelName;
+    bool         bPendingObjectIdReadback = false;
+    uint32_t     PendingObjectIdX = 0;
+    uint32_t     PendingObjectIdY = 0;
+
+    // GPU frame timing
+    ComPtr<ID3D12QueryHeap>  FrameTimingQueryHeap;
+    ComPtr<ID3D12Resource>   FrameTimingReadback;
+    std::vector<uint64>      FrameTimingFenceValues;
+    uint64                   FrameTimingFrequency = 0;
+
+    // ReSTIR GI transient debug state
+    bool bRestirGIFreezeFrame = false;
+    bool bRestirGIDebugRayEnabled = false;
+    int  RestirGIDebugPixelX = 0;
+    int  RestirGIDebugPixelY = 0;
+
+    // Screen Probe Gather transient debug state
 
     // Async scene loading
     std::unique_ptr<FForwardRenderer>  AsyncForwardRenderer;
     std::unique_ptr<FDeferredRenderer> AsyncDeferredRenderer;
     FRenderer*                         AsyncActiveRenderer = nullptr;
     std::wstring                       AsyncScenePath;
+    std::atomic<bool>                  bAsyncSceneLoadInProgress{ false };
     std::atomic<bool>                  bAsyncSceneLoadComplete{ false };
 };

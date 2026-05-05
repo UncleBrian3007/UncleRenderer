@@ -3,20 +3,6 @@
 
 #include "Common.hlsli"
 
-float3 TangentToWorld(float3 v, float3 N)
-{
-    const float3 B = normalize(GetPerpendicularVector(N));
-    const float3 T = normalize(cross(B, N));
-    return T * v.x + B * v.y + N * v.z;
-}
-
-float3 WorldToTangent(float3 w, float3 N)
-{
-    const float3 B = normalize(GetPerpendicularVector(N));
-    const float3 T = normalize(cross(B, N));
-    return float3(dot(w, T), dot(w, B), dot(w, N));
-}
-
 float3 EvaluateSky(float3 direction)
 {
     TextureCube EnvironmentMap = ResourceDescriptorHeap[EnvironmentCubeBindlessIndex];

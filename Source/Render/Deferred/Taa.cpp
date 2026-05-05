@@ -63,42 +63,16 @@ void FTaa::ImportPersistentResources(FDeferredPassContext& Context)
     for (size_t Index = 0; Index < HistoryTextures.size(); ++Index)
     {
         const std::string HandleName = "TaaHistory_" + std::to_string(Index);
-        OutResources.HistoryHandles.push_back(Graph.ImportTexture(
-            HandleName,
-            HistoryTextures[Index].Get(),
-            &HistoryStates[Index],
-            { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), FDeferredRenderer::LightingBufferFormat }));
+        OutResources.HistoryHandles.push_back(ImportBindlessTexture(Graph, HandleName, HistoryTextures[Index]));
     }
 }
 
 bool FTaa::CreatePersistentDescriptors(FDeferredRenderer& Owner, FDX12Device* Device)
 {
     (void)Owner;
-    if (!Device)
+    for (FBindlessTexture& HistoryTexture : HistoryTextures)
     {
-        return false;
-    }
-
-    HistorySrvBindlessIndices.clear();
-    HistoryUavBindlessIndices.clear();
-    HistorySrvBindlessIndices.resize(HistoryTextures.size(), UINT32_MAX);
-    HistoryUavBindlessIndices.resize(HistoryTextures.size(), UINT32_MAX);
-
-    for (uint32_t Index = 0; Index < static_cast<uint32_t>(HistoryTextures.size()); ++Index)
-    {
-        D3D12_SHADER_RESOURCE_VIEW_DESC TaaSrvDesc = {};
-        TaaSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        TaaSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        TaaSrvDesc.Format = FDeferredRenderer::LightingBufferFormat;
-        TaaSrvDesc.Texture2D.MipLevels = 1;
-        HistorySrvBindlessIndices[Index] = Device->CreateBindlessSrv(HistoryTextures[Index].Get(), TaaSrvDesc);
-
-        D3D12_UNORDERED_ACCESS_VIEW_DESC TaaUavDesc = {};
-        TaaUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-        TaaUavDesc.Format = FDeferredRenderer::LightingBufferFormat;
-        TaaUavDesc.Texture2D.MipSlice = 0;
-        TaaUavDesc.Texture2D.PlaneSlice = 0;
-        HistoryUavBindlessIndices[Index] = Device->CreateBindlessUav(HistoryTextures[Index].Get(), nullptr, TaaUavDesc);
+        WriteOrCreateBindlessTextureViews(Device, HistoryTexture, true, true);
     }
 
     return true;
@@ -142,7 +116,6 @@ void FTaa::AddPass(FDeferredPassContext& Context) const
         }
 
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
-        FScopedPixEvent TaaEvent(LocalCommandList, L"TemporalAA");
 
         struct FTemporalAAConstants
         {
@@ -167,7 +140,7 @@ void FTaa::AddPass(FDeferredPassContext& Context) const
         LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(Constants) / sizeof(uint32_t), &Constants, 0);
         const uint32_t TaaBindlessIndices[] =
         {
-            Owner.LightingBufferBindlessIndex,
+            Owner.LightingBuffer.SrvBindlessIndex,
             GetHistorySrvBindlessIndex(Data.ReadIndex),
             GetHistoryUavBindlessIndex(Data.WriteIndex)
         };
@@ -228,7 +201,7 @@ void FTaa::FinalizeFrameState(bool bTaaActive, bool bGtaoJitterActive)
 
 void FTaa::OnFrameFenceSignaled(uint32_t FrameIndex)
 {
-    if (!bEnabled_ || HistoryValid.empty())
+    if (!bEnabled || HistoryValid.empty())
     {
         return;
     }
@@ -242,72 +215,51 @@ void FTaa::OnFrameFenceSignaled(uint32_t FrameIndex)
 
 void FTaa::SetEnabled(bool bEnabled)
 {
-    if (bEnabled_ == bEnabled)
+    if (this->bEnabled == bEnabled)
     {
         return;
     }
 
-    bEnabled_ = bEnabled;
+    this->bEnabled = bEnabled;
     ResetHistoryState();
 }
 
 bool FTaa::IsReady() const
 {
-    return bEnabled_ && Pipeline && RootSignature && !HistoryTextures.empty();
+    return bEnabled && Pipeline && RootSignature && !HistoryTextures.empty();
 }
 
 uint32_t FTaa::GetHistorySrvBindlessIndex(uint32_t Index) const
 {
-    return Index < HistorySrvBindlessIndices.size() ? HistorySrvBindlessIndices[Index] : UINT32_MAX;
+    return Index < HistoryTextures.size() ? HistoryTextures[Index].SrvBindlessIndex : UINT32_MAX;
 }
 
 uint32_t FTaa::GetHistoryUavBindlessIndex(uint32_t Index) const
 {
-    return Index < HistoryUavBindlessIndices.size() ? HistoryUavBindlessIndices[Index] : UINT32_MAX;
+    return Index < HistoryTextures.size() ? HistoryTextures[Index].UavBindlessIndex : UINT32_MAX;
 }
 
 bool FTaa::CreateResources(FDX12Device* Device, uint32_t Width, uint32_t Height, uint32_t FrameCount)
 {
-    if (Device == nullptr)
-    {
-        return false;
-    }
-
     const uint32_t EffectiveFrameCount = (std::max)(1u, FrameCount);
-
-    D3D12_HEAP_PROPERTIES HeapProps = {};
-    HeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
-
-    D3D12_RESOURCE_DESC Desc = {};
-    Desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    Desc.Width = Width;
-    Desc.Height = Height;
-    Desc.DepthOrArraySize = 1;
-    Desc.MipLevels = 1;
-    Desc.Format = FDeferredRenderer::LightingBufferFormat;
-    Desc.SampleDesc.Count = 1;
-    Desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    const FRGTextureDesc HistoryDesc = { Width, Height, FDeferredRenderer::LightingBufferFormat };
 
     HistoryTextures.clear();
     HistoryTextures.resize(EffectiveFrameCount);
     for (uint32_t Index = 0; Index < EffectiveFrameCount; ++Index)
     {
-        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-            &HeapProps,
-            D3D12_HEAP_FLAG_NONE,
-            &Desc,
+        const std::wstring ResourceName = L"TaaHistory_" + std::to_wstring(Index);
+        CreateBindlessTexture(
+            Device,
+            ResourceName,
+            HistoryDesc,
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            nullptr,
-            IID_PPV_ARGS(HistoryTextures[Index].GetAddressOf())));
-
-        if (HistoryTextures[Index])
-        {
-            const std::wstring ResourceName = L"TaaHistory_" + std::to_wstring(Index);
-            HistoryTextures[Index]->SetName(ResourceName.c_str());
-        }
+            HistoryTextures[Index],
+            false,
+            false);
     }
 
-    HistoryStates.assign(EffectiveFrameCount, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     HistoryValid.assign(EffectiveFrameCount, false);
     ResetHistoryState();
     return true;
@@ -315,27 +267,12 @@ bool FTaa::CreateResources(FDX12Device* Device, uint32_t Width, uint32_t Height,
 
 bool FTaa::CreateRootSignature(FDX12Device* Device)
 {
-    D3D12_ROOT_PARAMETER1 RootParams[2] = {};
+    CD3DX12_ROOT_PARAMETER1 RootParams[2] = {};
+    RootParams[0].InitAsConstants(4, 0, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[1].InitAsConstants(3, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
 
-    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[0].Constants.Num32BitValues = 4;
-    RootParams[0].Constants.RegisterSpace = 0;
-    RootParams[0].Constants.ShaderRegister = 0;
-
-    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[1].Constants.Num32BitValues = 3;
-    RootParams[1].Constants.RegisterSpace = 0;
-    RootParams[1].Constants.ShaderRegister = 1;
-
-    D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
-    RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-    RootSigDesc.Desc_1_1.NumParameters = _countof(RootParams);
-    RootSigDesc.Desc_1_1.pParameters = RootParams;
-    RootSigDesc.Desc_1_1.NumStaticSamplers = 0;
-    RootSigDesc.Desc_1_1.pStaticSamplers = nullptr;
-    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+    CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc;
+    RootSigDesc.Init_1_1(_countof(RootParams), RootParams, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
 
     ComPtr<ID3DBlob> SerializedSig;
     ComPtr<ID3DBlob> ErrorBlob;
@@ -353,11 +290,9 @@ bool FTaa::CreateRootSignature(FDX12Device* Device)
 bool FTaa::CreatePipeline(FDX12Device* Device)
 {
     FShaderCompiler Compiler;
-    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
-    const std::wstring CSTarget = RendererUtils::BuildShaderTarget(L"cs", ShaderModel);
 
     std::vector<uint8_t> CSByteCode;
-    if (!Compiler.CompileFromFile(L"Shaders/TemporalAA.hlsl", L"CSMain", CSTarget, CSByteCode))
+    if (!RendererUtils::CompileComputeShader(Compiler, Device, L"Shaders/TemporalAA.hlsl", CSByteCode))
     {
         return false;
     }

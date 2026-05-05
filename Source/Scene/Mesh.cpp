@@ -1,9 +1,12 @@
 #include "Mesh.h"
+#include "../Core/Logger.h"
 
 #include <DirectXMath.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <iomanip>
+#include <sstream>
 #include <vector>
 
 #if __has_include("meshoptimizer.h")
@@ -15,6 +18,8 @@
 
 namespace
 {
+    bool GLogMeshOptimizationStats = false;
+
     bool IsNormalValid(const FFloat3& Normal)
     {
         using namespace DirectX;
@@ -39,6 +44,215 @@ namespace
     }
 
 #if WITH_MESHOPTIMIZER
+    constexpr unsigned int GMeshoptAnalyzeCacheSize = 16;
+    constexpr unsigned int GMeshoptAnalyzeWarpSize = 32;
+    constexpr unsigned int GMeshoptAnalyzePrimitiveGroupSize = 128;
+
+    struct FMeshOptimizationSnapshot
+    {
+        size_t VertexCount = 0;
+        size_t IndexCount = 0;
+        size_t VertexStride = 0;
+        meshopt_VertexCacheStatistics VertexCache = {};
+        meshopt_VertexFetchStatistics VertexFetch = {};
+        bool bValid = false;
+    };
+
+    struct FMeshOptimizationStats
+    {
+        FMeshOptimizationSnapshot Before;
+        FMeshOptimizationSnapshot After;
+    };
+
+    struct FMeshOptimizationTotals
+    {
+        size_t PrimitiveCount = 0;
+        uint64_t VertexCountBefore = 0;
+        uint64_t VertexCountAfter = 0;
+        uint64_t TriangleCountBefore = 0;
+        uint64_t TriangleCountAfter = 0;
+        uint64_t VertexBufferBytesBefore = 0;
+        uint64_t VertexBufferBytesAfter = 0;
+        uint64_t VerticesTransformedBefore = 0;
+        uint64_t VerticesTransformedAfter = 0;
+        uint64_t BytesFetchedBefore = 0;
+        uint64_t BytesFetchedAfter = 0;
+    };
+
+    size_t GetCombinedVertexStride(const FMesh::FVertexStreams& Streams)
+    {
+        size_t VertexStride = 0;
+        VertexStride += Streams.Positions.empty() ? 0 : sizeof(FFloat3);
+        VertexStride += Streams.Normals.empty() ? 0 : sizeof(FFloat3);
+        VertexStride += Streams.UVs.empty() ? 0 : sizeof(FFloat2);
+        VertexStride += Streams.Tangents.empty() ? 0 : sizeof(FFloat4);
+        VertexStride += Streams.Colors.empty() ? 0 : sizeof(FFloat4);
+        VertexStride += Streams.Joints.empty() ? 0 : sizeof(FUInt4);
+        VertexStride += Streams.Weights.empty() ? 0 : sizeof(FFloat4);
+        return VertexStride;
+    }
+
+    FMeshOptimizationSnapshot AnalyzeOptimizationSnapshot(const FMesh::FVertexStreams& Streams, const std::vector<uint32_t>& Indices)
+    {
+        FMeshOptimizationSnapshot Snapshot;
+        Snapshot.VertexCount = Streams.Positions.size();
+        Snapshot.IndexCount = Indices.size();
+        Snapshot.VertexStride = GetCombinedVertexStride(Streams);
+
+        if (Snapshot.VertexCount == 0 || Snapshot.IndexCount < 3 || Snapshot.VertexStride == 0 || (Snapshot.IndexCount % 3) != 0)
+        {
+            return Snapshot;
+        }
+
+        Snapshot.VertexCache = meshopt_analyzeVertexCache(
+            Indices.data(),
+            Indices.size(),
+            Snapshot.VertexCount,
+            GMeshoptAnalyzeCacheSize,
+            GMeshoptAnalyzeWarpSize,
+            GMeshoptAnalyzePrimitiveGroupSize);
+        Snapshot.VertexFetch = meshopt_analyzeVertexFetch(
+            Indices.data(),
+            Indices.size(),
+            Snapshot.VertexCount,
+            Snapshot.VertexStride);
+        Snapshot.bValid = true;
+        return Snapshot;
+    }
+
+    double SafeRatio(uint64_t Numerator, uint64_t Denominator)
+    {
+        return Denominator == 0 ? 0.0 : static_cast<double>(Numerator) / static_cast<double>(Denominator);
+    }
+
+    std::string FormatBytes(uint64_t Bytes)
+    {
+        std::ostringstream Stream;
+        Stream << std::fixed << std::setprecision(2);
+        if (Bytes >= 1024ull * 1024ull)
+        {
+            Stream << (static_cast<double>(Bytes) / (1024.0 * 1024.0)) << " MiB";
+        }
+        else if (Bytes >= 1024ull)
+        {
+            Stream << (static_cast<double>(Bytes) / 1024.0) << " KiB";
+        }
+        else
+        {
+            Stream << Bytes << " B";
+        }
+        return Stream.str();
+    }
+
+    std::string FormatOptimizationStatsMessage(const char* Prefix, const FMeshOptimizationStats& Stats)
+    {
+        std::ostringstream Stream;
+        Stream << std::fixed << std::setprecision(2);
+        Stream
+            << Prefix
+            << " vertices " << Stats.Before.VertexCount << " -> " << Stats.After.VertexCount
+            << ", cache ACMR " << Stats.Before.VertexCache.acmr << " -> " << Stats.After.VertexCache.acmr
+            << ", ATVR " << Stats.Before.VertexCache.atvr << " -> " << Stats.After.VertexCache.atvr
+            << ", transforms " << Stats.Before.VertexCache.vertices_transformed << " -> " << Stats.After.VertexCache.vertices_transformed
+            << ", fetch overfetch " << Stats.Before.VertexFetch.overfetch << " -> " << Stats.After.VertexFetch.overfetch
+            << ", fetched " << FormatBytes(Stats.Before.VertexFetch.bytes_fetched) << " -> " << FormatBytes(Stats.After.VertexFetch.bytes_fetched);
+        return Stream.str();
+    }
+
+    std::string FormatOptimizationTotalsMessage(const FMeshOptimizationTotals& Totals)
+    {
+        std::ostringstream Stream;
+        Stream << std::fixed << std::setprecision(2);
+        Stream
+            << "Mesh optimization summary: primitives=" << Totals.PrimitiveCount
+            << ", vertices " << Totals.VertexCountBefore << " -> " << Totals.VertexCountAfter
+            << ", cache ACMR " << SafeRatio(Totals.VerticesTransformedBefore, Totals.TriangleCountBefore) << " -> " << SafeRatio(Totals.VerticesTransformedAfter, Totals.TriangleCountAfter)
+            << ", ATVR " << SafeRatio(Totals.VerticesTransformedBefore, Totals.VertexCountBefore) << " -> " << SafeRatio(Totals.VerticesTransformedAfter, Totals.VertexCountAfter)
+            << ", transforms " << Totals.VerticesTransformedBefore << " -> " << Totals.VerticesTransformedAfter
+            << ", fetch overfetch " << SafeRatio(Totals.BytesFetchedBefore, Totals.VertexBufferBytesBefore) << " -> " << SafeRatio(Totals.BytesFetchedAfter, Totals.VertexBufferBytesAfter)
+            << ", fetched " << FormatBytes(Totals.BytesFetchedBefore) << " -> " << FormatBytes(Totals.BytesFetchedAfter);
+        return Stream.str();
+    }
+
+    void AccumulateOptimizationTotals(FMeshOptimizationTotals& Totals, const FMeshOptimizationStats& Stats)
+    {
+        if (!Stats.Before.bValid || !Stats.After.bValid)
+        {
+            return;
+        }
+
+        ++Totals.PrimitiveCount;
+        Totals.VertexCountBefore += Stats.Before.VertexCount;
+        Totals.VertexCountAfter += Stats.After.VertexCount;
+        Totals.TriangleCountBefore += Stats.Before.IndexCount / 3;
+        Totals.TriangleCountAfter += Stats.After.IndexCount / 3;
+        Totals.VertexBufferBytesBefore += Stats.Before.VertexCount * Stats.Before.VertexStride;
+        Totals.VertexBufferBytesAfter += Stats.After.VertexCount * Stats.After.VertexStride;
+        Totals.VerticesTransformedBefore += Stats.Before.VertexCache.vertices_transformed;
+        Totals.VerticesTransformedAfter += Stats.After.VertexCache.vertices_transformed;
+        Totals.BytesFetchedBefore += Stats.Before.VertexFetch.bytes_fetched;
+        Totals.BytesFetchedAfter += Stats.After.VertexFetch.bytes_fetched;
+    }
+
+    void RemapVertexStreams(FMesh::FVertexStreams& Streams, const std::vector<unsigned int>& Remap)
+    {
+        auto RemapStream = [&Remap](auto& Stream)
+        {
+            if (!Stream.empty())
+            {
+                meshopt_remapVertexBuffer(Stream.data(), Stream.data(), Stream.size(), sizeof(Stream[0]), Remap.data());
+            }
+        };
+
+        RemapStream(Streams.Positions);
+        RemapStream(Streams.Normals);
+        RemapStream(Streams.UVs);
+        RemapStream(Streams.Tangents);
+        RemapStream(Streams.Colors);
+        RemapStream(Streams.Joints);
+        RemapStream(Streams.Weights);
+    }
+
+    void ResizeVertexStreams(FMesh::FVertexStreams& Streams, size_t VertexCount)
+    {
+        auto ResizeStream = [VertexCount](auto& Stream)
+        {
+            Stream.resize(VertexCount);
+        };
+
+        ResizeStream(Streams.Positions);
+        ResizeStream(Streams.Normals);
+        ResizeStream(Streams.UVs);
+        ResizeStream(Streams.Tangents);
+        ResizeStream(Streams.Colors);
+        ResizeStream(Streams.Joints);
+        ResizeStream(Streams.Weights);
+    }
+
+    void OptimizeVertexCacheAndFetch(FMesh::FVertexStreams& Streams, std::vector<uint32_t>& Indices)
+    {
+        const size_t VertexCount = Streams.Positions.size();
+        if (VertexCount == 0 || Indices.size() < 3)
+        {
+            return;
+        }
+
+        std::vector<uint32_t> CacheOptimizedIndices(Indices.size());
+        meshopt_optimizeVertexCache(CacheOptimizedIndices.data(), Indices.data(), Indices.size(), VertexCount);
+        Indices.swap(CacheOptimizedIndices);
+
+        std::vector<unsigned int> FetchRemap(VertexCount);
+        const size_t OptimizedVertexCount = meshopt_optimizeVertexFetchRemap(
+            FetchRemap.data(),
+            Indices.data(),
+            Indices.size(),
+            VertexCount);
+
+        meshopt_remapIndexBuffer(Indices.data(), Indices.data(), Indices.size(), FetchRemap.data());
+        RemapVertexStreams(Streams, FetchRemap);
+        ResizeVertexStreams(Streams, OptimizedVertexCount);
+    }
+
     bool BuildMeshletGroup(
         FMesh::FVertexStreams& Streams,
         std::vector<uint32_t>& Indices,
@@ -47,9 +261,14 @@ namespace
         uint32_t MaxVertices,
         uint32_t MaxTriangles,
         float ConeWeight,
-        FMesh::FMeshletGroup& OutGroup)
+        FMesh::FMeshletGroup& OutGroup,
+        FMeshOptimizationStats* OutOptimizationStats)
     {
         OutGroup = {};
+        if (OutOptimizationStats)
+        {
+            *OutOptimizationStats = {};
+        }
 
         const size_t VertexCount = Streams.Positions.size();
         if (VertexCount == 0 || IndexCount < 3 || IndexStart + IndexCount > Indices.size())
@@ -75,6 +294,11 @@ namespace
         EnsureSize(LocalStreams.Joints, VertexCount, FUInt4{});
         EnsureSize(LocalStreams.Weights, VertexCount, FFloat4(0.0f, 0.0f, 0.0f, 0.0f));
 
+        if (OutOptimizationStats)
+        {
+            OutOptimizationStats->Before = AnalyzeOptimizationSnapshot(LocalStreams, LocalIndices);
+        }
+
         std::vector<meshopt_Stream> VertexStreams;
         VertexStreams.push_back({ LocalStreams.Positions.data(), sizeof(FFloat3), sizeof(FFloat3) });
         VertexStreams.push_back({ LocalStreams.Normals.data(), sizeof(FFloat3), sizeof(FFloat3) });
@@ -94,21 +318,15 @@ namespace
             VertexStreams.size());
 
         meshopt_remapIndexBuffer(LocalIndices.data(), LocalIndices.data(), LocalIndices.size(), Remap.data());
-        meshopt_remapVertexBuffer(LocalStreams.Positions.data(), LocalStreams.Positions.data(), LocalStreams.Positions.size(), sizeof(FFloat3), Remap.data());
-        meshopt_remapVertexBuffer(LocalStreams.Normals.data(), LocalStreams.Normals.data(), LocalStreams.Normals.size(), sizeof(FFloat3), Remap.data());
-        meshopt_remapVertexBuffer(LocalStreams.UVs.data(), LocalStreams.UVs.data(), LocalStreams.UVs.size(), sizeof(FFloat2), Remap.data());
-        meshopt_remapVertexBuffer(LocalStreams.Tangents.data(), LocalStreams.Tangents.data(), LocalStreams.Tangents.size(), sizeof(FFloat4), Remap.data());
-        meshopt_remapVertexBuffer(LocalStreams.Colors.data(), LocalStreams.Colors.data(), LocalStreams.Colors.size(), sizeof(FFloat4), Remap.data());
-        meshopt_remapVertexBuffer(LocalStreams.Joints.data(), LocalStreams.Joints.data(), LocalStreams.Joints.size(), sizeof(FUInt4), Remap.data());
-        meshopt_remapVertexBuffer(LocalStreams.Weights.data(), LocalStreams.Weights.data(), LocalStreams.Weights.size(), sizeof(FFloat4), Remap.data());
+        RemapVertexStreams(LocalStreams, Remap);
+        ResizeVertexStreams(LocalStreams, UniqueVertexCount);
 
-        LocalStreams.Positions.resize(UniqueVertexCount);
-        LocalStreams.Normals.resize(UniqueVertexCount);
-        LocalStreams.UVs.resize(UniqueVertexCount);
-        LocalStreams.Tangents.resize(UniqueVertexCount);
-        LocalStreams.Colors.resize(UniqueVertexCount);
-        LocalStreams.Joints.resize(UniqueVertexCount);
-        LocalStreams.Weights.resize(UniqueVertexCount);
+        OptimizeVertexCacheAndFetch(LocalStreams, LocalIndices);
+
+        if (OutOptimizationStats)
+        {
+            OutOptimizationStats->After = AnalyzeOptimizationSnapshot(LocalStreams, LocalIndices);
+        }
 
         const bool bCanReplaceSource = IndexStart == 0 && IndexCount == Indices.size();
         _ASSERT(bCanReplaceSource);
@@ -589,17 +807,30 @@ void FMesh::BuildMeshletGroups(const std::vector<size_t>& PrimitiveIndices, uint
 
 #if WITH_MESHOPTIMIZER
     MeshletGroups.reserve(PrimitiveIndices.size());
+    const bool bLogOptimizationStats = IsOptimizationStatsLoggingEnabled();
+    FMeshOptimizationTotals OptimizationTotals;
     for (size_t PrimitiveIndex : PrimitiveIndices)
     {
         FMeshletGroup Group;
         if (PrimitiveIndex < Primitives.size())
         {
             FPrimitive& Primitive = Primitives[PrimitiveIndex];
+            FMeshOptimizationStats OptimizationStats;
             if (!Primitive.Indices.empty() && !Primitive.VertexStreams.Positions.empty()
                 && BuildMeshletGroup(Primitive.VertexStreams, Primitive.Indices, 0, static_cast<uint32_t>(Primitive.Indices.size()),
-                    MaxVertices, MaxTriangles, ConeWeight, Group))
+                    MaxVertices, MaxTriangles, ConeWeight, Group, bLogOptimizationStats ? &OptimizationStats : nullptr))
             {
                 MeshletGroups.push_back(std::move(Group));
+                if (bLogOptimizationStats)
+                {
+                    AccumulateOptimizationTotals(OptimizationTotals, OptimizationStats);
+                    if (OptimizationStats.Before.bValid && OptimizationStats.After.bValid)
+                    {
+                        std::ostringstream Prefix;
+                        Prefix << "Primitive[" << PrimitiveIndex << "] optimization:";
+                        LogVerbose(FormatOptimizationStatsMessage(Prefix.str().c_str(), OptimizationStats));
+                    }
+                }
             }
             else
             {
@@ -612,7 +843,22 @@ void FMesh::BuildMeshletGroups(const std::vector<size_t>& PrimitiveIndices, uint
         }
     }
 
+    if (bLogOptimizationStats && OptimizationTotals.PrimitiveCount > 0)
+    {
+        LogInfo(FormatOptimizationTotalsMessage(OptimizationTotals));
+    }
+
 #endif
+}
+
+void FMesh::SetOptimizationStatsLoggingEnabled(bool bEnabled)
+{
+    GLogMeshOptimizationStats = bEnabled;
+}
+
+bool FMesh::IsOptimizationStatsLoggingEnabled()
+{
+    return GLogMeshOptimizationStats;
 }
 
 const FMesh::FMeshletGroup* FMesh::GetMeshletGroup(size_t Index) const

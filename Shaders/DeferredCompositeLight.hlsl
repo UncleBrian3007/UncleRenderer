@@ -1,5 +1,23 @@
 #include "PBRCommon.hlsl"
 #include "SceneConstants.hlsl"
+#include "Common.hlsli"
+#include "../Source/Core/LightingVisualizationShared.h"
+
+#ifndef COMPOSITE_DIFFUSE_SOURCE_ENV
+#define COMPOSITE_DIFFUSE_SOURCE_ENV 0
+#endif
+
+#ifndef COMPOSITE_DIFFUSE_SOURCE_RESTIR
+#define COMPOSITE_DIFFUSE_SOURCE_RESTIR 0
+#endif
+
+#ifndef COMPOSITE_VISUALIZATION_OFF
+#define COMPOSITE_VISUALIZATION_OFF 0
+#endif
+
+#ifndef COMPOSITE_VISUALIZATION_ON
+#define COMPOSITE_VISUALIZATION_ON 0
+#endif
 
 struct VSOutput
 {
@@ -25,19 +43,21 @@ cbuffer LightingBindlessConstants : register(b1)
     uint DirectLightingIndex;
 };
 
-cbuffer RestirGIConstants : register(b2)
+cbuffer DeferredLightingConstants : register(b2)
 {
     float RestirGIIntensity;
     uint RestirGIEnabled;
     float SsrRoughnessCutoff;
-    uint RestirGIShowOnly;
-    uint RestirGIPadding;
+    uint DeferredLightingVisualizationModeOverride;
+    uint DeferredLightingPadding0;
+    uint DeferredLightingPadding1;
+    uint DeferredLightingPadding2;
 };
 
 SamplerState GBufferSampler : register(s0);
 SamplerState IblSampler : register(s2);
 
-VSOutput VSMain(uint VertexId : SV_VertexID)
+VSOutput DeferredCompositeLightVS(uint VertexId : SV_VertexID)
 {
     float2 Positions[3] =
     {
@@ -50,20 +70,6 @@ VSOutput VSMain(uint VertexId : SV_VertexID)
     Output.Position = float4(Positions[VertexId], 0.0, 1.0);
     Output.UV = float2(Positions[VertexId].x * 0.5f + 0.5f, -Positions[VertexId].y * 0.5f + 0.5f);
     return Output;
-}
-
-float ReconstructViewZ(float depth)
-{
-    return Projection._43 / max(depth, 1e-6f);
-}
-
-float3 ReconstructViewPosition(float2 uv, float depth)
-{
-    float2 ndc = float2(uv * 2.0f - 1.0f);
-    float viewZ = ReconstructViewZ(depth);
-    float viewX = ndc.x * viewZ / Projection._11;
-    float viewY = -ndc.y * viewZ / Projection._22;
-    return float3(viewX, viewY, viewZ);
 }
 
 float3 EvaluateSpecularIBL(float3 radiance, float3 worldNormal, float3 worldView, float roughness, float3 F0, Texture2D BrdfLut)
@@ -80,7 +86,25 @@ float3 EvaluateSpecularIBLFromEnvironment(TextureCube EnvironmentMap, Texture2D 
     return EvaluateSpecularIBL(prefilteredColor, worldNormal, worldView, roughness, F0, BrdfLut);
 }
 
-float4 PSMain(VSOutput Input) : SV_Target
+float3 ClusterDagMipToColor(float mipNormalized)
+{
+    float t = saturate(mipNormalized);
+    float3 low = float3(0.08f, 0.35f, 0.95f);
+    float3 mid = float3(0.20f, 0.85f, 0.35f);
+    float3 high = float3(0.98f, 0.85f, 0.10f);
+    float3 maxv = float3(0.95f, 0.20f, 0.12f);
+    if (t < 0.33f)
+    {
+        return lerp(low, mid, t / 0.33f);
+    }
+    if (t < 0.66f)
+    {
+        return lerp(mid, high, (t - 0.33f) / 0.33f);
+    }
+    return lerp(high, maxv, (t - 0.66f) / 0.34f);
+}
+
+float4 DeferredCompositeLightPS(VSOutput Input) : SV_Target
 {
     Texture2D GBufferA = ResourceDescriptorHeap[GBufferAIndex];
     Texture2D GBufferB = ResourceDescriptorHeap[GBufferBIndex];
@@ -90,7 +114,9 @@ float4 PSMain(VSOutput Input) : SV_Target
     Texture2D BrdfLut = ResourceDescriptorHeap[BrdfLutIndex];
     Texture2D DepthBuffer = ResourceDescriptorHeap[DepthBufferIndex];
     Texture2D GtaoTexture = ResourceDescriptorHeap[GtaoTextureIndex];
+#if COMPOSITE_DIFFUSE_SOURCE_RESTIR
     Texture2D RestirGITexture = ResourceDescriptorHeap[RestirGITextureIndex];
+#endif
     Texture2D SsrTexture = ResourceDescriptorHeap[SsrTextureIndex];
     Texture2D SsrFallbackTexture = ResourceDescriptorHeap[SsrFallbackTextureIndex];
     Texture2D DirectLightingTexture = ResourceDescriptorHeap[DirectLightingIndex];
@@ -102,12 +128,24 @@ float4 PSMain(VSOutput Input) : SV_Target
     float3 albedo = GBufferC.Sample(GBufferSampler, Input.UV).rgb;
     float4 customData = GBufferD.Sample(GBufferSampler, Input.UV);
 
+#if COMPOSITE_VISUALIZATION_ON
+    if (DeferredLightingVisualizationModeOverride == LIGHTING_VISUALIZATION_CLUSTER_DAG_CLUSTERS)
+    {
+        return float4(customData.rgb, 1.0f);
+    }
+
+    if (DeferredLightingVisualizationModeOverride == LIGHTING_VISUALIZATION_CLUSTER_DAG_MIP)
+    {
+        return float4(ClusterDagMipToColor(customData.a), 1.0f);
+    }
+#endif
+
     float roughness = smr.z;
     float metallic = smr.y;
     float3 F0 = lerp(smr.x.xxx, albedo, metallic);
     uint shadingModelId = (uint)round(smr.w);
 
-    float3 viewPos = ReconstructViewPosition(Input.UV, depth);
+    float3 viewPos = ReconstructViewPositionFromDepth(Input.UV, depth, Projection);
     float3 worldPos = mul(float4(viewPos, 1.0f), ViewInverse).xyz;
 
     float3 directLighting = DirectLightingTexture.Sample(GBufferSampler, Input.UV).rgb;
@@ -144,26 +182,19 @@ float4 PSMain(VSOutput Input) : SV_Target
         specularIbl += clearcoatSpecIbl * clearcoat;
     }
 
-    float3 irradiance = EnvironmentMap.SampleLevel(IblSampler, worldNormal, maxMip).rgb;
-    float3 diffuseIbl = irradiance * albedo * (1.0f - metallic);
-
     float ao = (GtaoIntensity <= 0.0f) ? 1.0f : GtaoTexture.Sample(GBufferSampler, Input.UV).r;
-    float3 restirIrradiance = 0.0f.xxx;
-    if (RestirGIEnabled > 0 && RestirGIIntensity > 0.0f)
+    float3 indirectDiffuse = 0.0f.xxx;
+#if COMPOSITE_DIFFUSE_SOURCE_ENV
     {
-        restirIrradiance = RestirGITexture.Sample(GBufferSampler, Input.UV).rgb;
+        const float3 irradiance = EnvironmentMap.SampleLevel(IblSampler, worldNormal, maxMip).rgb;
+        indirectDiffuse = irradiance * albedo * (1.0f - metallic);
     }
-
-    if (RestirGIShowOnly > 0u)
+#elif COMPOSITE_DIFFUSE_SOURCE_RESTIR
     {
-        return float4(restirIrradiance, 1.0f);
-    }
-
-    float3 indirectDiffuse = diffuseIbl;
-    if (RestirGIEnabled > 0 && RestirGIIntensity > 0.0f)
-    {
+        const float3 restirIrradiance = RestirGITexture.Sample(GBufferSampler, Input.UV).rgb;
         indirectDiffuse = restirIrradiance * albedo * (1.0f - metallic);
     }
+#endif
 
     if (roughness < SsrRoughnessCutoff)
     {
@@ -190,5 +221,28 @@ float4 PSMain(VSOutput Input) : SV_Target
     float3 ambient = (indirectDiffuse + specularIbl) * ao;
 
     float3 color = directLighting + ambient;
+
+#if COMPOSITE_VISUALIZATION_ON
+    if (DeferredLightingVisualizationModeOverride == LIGHTING_VISUALIZATION_DIFFUSE_INDIRECT)
+    {
+        return float4(indirectDiffuse, 1.0f);
+    }
+
+    if (DeferredLightingVisualizationModeOverride == LIGHTING_VISUALIZATION_AO)
+    {
+        return float4(ao.xxx, 1.0f);
+    }
+
+    if (DeferredLightingVisualizationModeOverride == LIGHTING_VISUALIZATION_DIRECT_LIGHTING)
+    {
+        return float4(directLighting, 1.0f);
+    }
+
+    if (DeferredLightingVisualizationModeOverride == LIGHTING_VISUALIZATION_SPECULAR_INDIRECT)
+    {
+        return float4(specularIbl, 1.0f);
+    }
+#endif
+
     return float4(color, 1.0f);
 }

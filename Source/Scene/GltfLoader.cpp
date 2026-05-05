@@ -1,5 +1,7 @@
 #include "GltfLoader.h"
 #include "Mesh.h"
+#include "../Core/Logger.h"
+#include "../Core/RendererConfig.h"
 
 #ifdef _MSC_VER
 #pragma warning (disable : 4996)
@@ -70,6 +72,52 @@ namespace
                  0.0f, 1.0f, 0.0f, 0.0f,
                  0.0f, 0.0f, 1.0f, 0.0f,
                  0.0f, 0.0f, 0.0f, 1.0f };
+    }
+
+    std::wstring GetClusterDAGCachePath(const std::wstring& SourceFilePath)
+    {
+        std::filesystem::path CachePath(SourceFilePath);
+        CachePath.replace_extension(L".vmesh");
+        return CachePath.wstring();
+    }
+
+    FRendererConfig LoadRendererConfigForAssetLoad()
+    {
+        const std::filesystem::path ConfigPath = std::filesystem::current_path() / "bin/RendererConfig.ini";
+        return FRendererConfigLoader::LoadOrDefault(ConfigPath);
+    }
+
+    bool ShouldSaveClusterDAGCache(const std::vector<FMesh>& Meshes)
+    {
+        for (const FMesh& Mesh : Meshes)
+        {
+            const std::vector<FMesh::FPrimitive>& Primitives = Mesh.GetPrimitives();
+            const std::vector<FClusterDAG>& ClusterDAGs = Mesh.GetClusterDAGs();
+            if (Primitives.size() != ClusterDAGs.size())
+            {
+                return false;
+            }
+
+            for (size_t PrimitiveIndex = 0; PrimitiveIndex < Primitives.size(); ++PrimitiveIndex)
+            {
+                if (!Primitives[PrimitiveIndex].Indices.empty() && !ClusterDAGs[PrimitiveIndex].IsValid())
+                {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    void RemoveClusterDAGCacheFile(const std::wstring& CacheFilePath)
+    {
+        std::error_code ErrorCode;
+        std::filesystem::remove(std::filesystem::path(CacheFilePath), ErrorCode);
+        if (ErrorCode)
+        {
+            LogWarning("Failed to remove Cluster DAG cache: " + ToUtf8String(CacheFilePath));
+        }
     }
 
     FMatrix4 MultiplyMatrix(const FMatrix4& A, const FMatrix4& B)
@@ -897,6 +945,8 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
         }
     }
 
+    std::vector<FMesh> LoadedMeshes;
+    LoadedMeshes.reserve(MeshDatas.size());
     for (const FMeshData& MeshData : MeshDatas)
     {
         FMesh Mesh;
@@ -910,8 +960,82 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
         Mesh.SetPrimitives(MeshPrimitives);
         Mesh.GenerateNormalsIfMissing();
         Mesh.GenerateTangentsIfMissing();
-
         Mesh.SetMeshletIndexingAllowed(!MeshPrimitives.empty());
+        LoadedMeshes.push_back(std::move(Mesh));
+    }
+
+    const FRendererConfig RendererConfig = LoadRendererConfigForAssetLoad();
+    if (RendererConfig.bEnableClusterDAGRuntime)
+    {
+        const FClusterDAGBuildParams ClusterDAGParams{};
+        const std::wstring ClusterDAGCachePath = GetClusterDAGCachePath(FilePath);
+        std::vector<std::vector<FClusterDAG>> CachedClusterDAGs;
+        bool bLoadedClusterDAGCache = false;
+        if (RendererConfig.bForceRebuildClusterDAGCache)
+        {
+            LogInfo("Cluster DAG cache rebuild forced; skipping cache load for asset: " + ToUtf8String(FilePath));
+        }
+        else
+        {
+            bLoadedClusterDAGCache = LoadClusterDAGCacheFile(ClusterDAGCachePath, FilePath, ClusterDAGParams, CachedClusterDAGs);
+        }
+
+        if (bLoadedClusterDAGCache)
+        {
+            bLoadedClusterDAGCache = CachedClusterDAGs.size() == LoadedMeshes.size();
+            if (bLoadedClusterDAGCache)
+            {
+                for (size_t MeshIndex = 0; MeshIndex < LoadedMeshes.size(); ++MeshIndex)
+                {
+                    if (CachedClusterDAGs[MeshIndex].size() != LoadedMeshes[MeshIndex].GetPrimitives().size())
+                    {
+                        bLoadedClusterDAGCache = false;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (bLoadedClusterDAGCache)
+        {
+            for (size_t MeshIndex = 0; MeshIndex < LoadedMeshes.size(); ++MeshIndex)
+            {
+                LoadedMeshes[MeshIndex].SetClusterDAGs(std::move(CachedClusterDAGs[MeshIndex]));
+            }
+            LogInfo("Loaded Cluster DAG cache: " + ToUtf8String(ClusterDAGCachePath));
+        }
+        else
+        {
+            std::vector<std::vector<FClusterDAG>> BuiltClusterDAGs;
+            BuiltClusterDAGs.reserve(LoadedMeshes.size());
+            for (FMesh& Mesh : LoadedMeshes)
+            {
+                Mesh.BuildClusterDAGs(ClusterDAGParams);
+                BuiltClusterDAGs.push_back(Mesh.GetClusterDAGs());
+            }
+
+            if (!ShouldSaveClusterDAGCache(LoadedMeshes))
+            {
+                LogInfo("Skipping Cluster DAG cache save because one or more primitives fell back to the legacy meshlet path: " + ToUtf8String(ClusterDAGCachePath));
+                RemoveClusterDAGCacheFile(ClusterDAGCachePath);
+            }
+            else if (!SaveClusterDAGCacheFile(ClusterDAGCachePath, FilePath, ClusterDAGParams, BuiltClusterDAGs))
+            {
+                LogWarning("Failed to save Cluster DAG cache: " + ToUtf8String(ClusterDAGCachePath));
+            }
+            else
+            {
+                LogInfo("Saved Cluster DAG cache: " + ToUtf8String(ClusterDAGCachePath));
+            }
+        }
+    }
+    else
+    {
+        LogInfo("Cluster DAG runtime disabled; skipping Cluster DAG cache load/build for asset: " + ToUtf8String(FilePath));
+    }
+
+    for (FMesh& Mesh : LoadedMeshes)
+    {
         Mesh.BuildMeshlets();
         OutScene.Meshes.push_back(std::move(Mesh));
     }

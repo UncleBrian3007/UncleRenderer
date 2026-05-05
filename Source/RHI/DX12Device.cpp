@@ -77,6 +77,83 @@ FDX12Device::~FDX12Device()
     }
 }
 
+FDX12Device::FBindlessDescriptorStats FDX12Device::GetBindlessDescriptorStats() const
+{
+    FBindlessDescriptorStats Stats;
+#if WITH_BINDLESS_DESCRIPTOR_STATS
+    Stats.DescriptorCount = BindlessDescriptorCount;
+    Stats.NextIndex = BindlessDescriptorNextIndex.load();
+    Stats.PermanentAllocationCount = PermanentBindlessDescriptorAllocationCount.load();
+    Stats.TransientHeapAllocationCount = TransientBindlessDescriptorHeapAllocationCount.load();
+    Stats.TransientReuseCount = TransientBindlessDescriptorReuseCount.load();
+    Stats.TransientRetireCount = TransientBindlessDescriptorRetireCount.load();
+    Stats.TransientReclaimCount = TransientBindlessDescriptorReclaimCount.load();
+
+    const FDX12CommandQueue* Queue = GraphicsQueue.get();
+    Stats.CompletedFenceValue = Queue ? Queue->GetCompletedFenceValue() : 0u;
+    Stats.LastSignaledFenceValue = Queue ? Queue->GetLastSignaledFenceValue() : 0u;
+
+    {
+        std::lock_guard<std::mutex> Lock(TransientBindlessDescriptorMutex);
+        Stats.FreeTransientCount = static_cast<uint32_t>(FreeTransientBindlessDescriptorIndices.size());
+        Stats.RetiredTransientCount = static_cast<uint32_t>(RetiredTransientBindlessDescriptorIndices.size());
+        Stats.MinFreeTransientThisFrame = MinFreeTransientThisFrame;
+        Stats.PeakTransientLiveThisFrame = PeakTransientLiveThisFrame;
+        Stats.TransientHeapAllocsThisFrame = TransientHeapAllocsThisFrame;
+        if (bTrackLiveTransientBindlessOwners)
+        {
+            Stats.LiveTransientDescriptorCount = static_cast<uint32_t>(LiveTransientBindlessDescriptorOwners.size());
+
+            if (!LiveTransientBindlessDescriptorOwners.empty())
+            {
+                std::vector<std::pair<uint32_t, std::string>> SortedOwners;
+                SortedOwners.reserve(LiveTransientBindlessDescriptorOwners.size());
+                for (const auto& Entry : LiveTransientBindlessDescriptorOwners)
+                {
+                    SortedOwners.push_back(Entry);
+                }
+
+                std::sort(SortedOwners.begin(), SortedOwners.end(),
+                    [](const auto& A, const auto& B)
+                    {
+                        return A.first < B.first;
+                    });
+
+                constexpr size_t MaxOwnerSamples = 12;
+                const size_t SampleCount = (std::min)(SortedOwners.size(), MaxOwnerSamples);
+                Stats.LiveTransientOwnerSamples.reserve(SampleCount);
+                for (size_t SampleIndex = 0; SampleIndex < SampleCount; ++SampleIndex)
+                {
+                    std::ostringstream Stream;
+                    Stream << "#" << SortedOwners[SampleIndex].first << " " << SortedOwners[SampleIndex].second;
+                    Stats.LiveTransientOwnerSamples.push_back(Stream.str());
+                }
+            }
+        }
+
+        if (!RetiredTransientBindlessDescriptorIndices.empty())
+        {
+            Stats.OldestRetiredFenceValue = RetiredTransientBindlessDescriptorIndices.front().FenceValue;
+            Stats.NewestRetiredFenceValue = RetiredTransientBindlessDescriptorIndices.back().FenceValue;
+
+            for (const FRetiredBindlessDescriptor& Retired : RetiredTransientBindlessDescriptorIndices)
+            {
+                if (Retired.FenceValue <= Stats.CompletedFenceValue)
+                {
+                    Stats.ReclaimableTransientCount++;
+                }
+                else
+                {
+                    break;
+                }
+            }
+        }
+    }
+#endif
+
+    return Stats;
+}
+
 bool FDX12Device::Initialize()
 {
     LogInfo("DX12 device initialization started");
@@ -222,11 +299,22 @@ bool FDX12Device::CreateBindlessDescriptorHeap()
     BindlessDescriptorCount = HeapDesc.NumDescriptors;
     BindlessDescriptorStride = Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     BindlessDescriptorNextIndex.store(0);
+#if WITH_BINDLESS_DESCRIPTOR_STATS
+    PermanentBindlessDescriptorAllocationCount.store(0);
+    TransientBindlessDescriptorHeapAllocationCount.store(0);
+    TransientBindlessDescriptorReuseCount.store(0);
+    TransientBindlessDescriptorRetireCount.store(0);
+    TransientBindlessDescriptorReclaimCount.store(0);
+    BindlessPressureLogLevel.store(0);
     {
         std::lock_guard<std::mutex> Lock(TransientBindlessDescriptorMutex);
         FreeTransientBindlessDescriptorIndices.clear();
         RetiredTransientBindlessDescriptorIndices.clear();
+        MinFreeTransientThisFrame = 0u;
+        PeakTransientLiveThisFrame = 0u;
+        TransientHeapAllocsThisFrame = 0u;
     }
+#endif
 
     return true;
 }
@@ -396,8 +484,15 @@ uint32_t FDX12Device::AllocateBindlessDescriptorIndex()
     if (Index >= BindlessDescriptorCount)
     {
         LogError("Bindless descriptor heap overflow.");
+#if WITH_BINDLESS_DESCRIPTOR_STATS
+        LogBindlessDescriptorStats("Bindless descriptor heap overflow");
+#endif
         return UINT32_MAX;
     }
+
+#if WITH_BINDLESS_DESCRIPTOR_STATS
+    MaybeLogBindlessDescriptorPressure("bindless-descriptor-pressure", Index + 1u);
+#endif
     return Index;
 }
 
@@ -415,6 +510,9 @@ uint32_t FDX12Device::CreateBindlessSrv(ID3D12Resource* Resource, const D3D12_SH
     }
 
     WriteBindlessSrv(Index, Resource, Desc);
+#if WITH_BINDLESS_DESCRIPTOR_STATS
+    PermanentBindlessDescriptorAllocationCount.fetch_add(1);
+#endif
     return Index;
 }
 
@@ -432,6 +530,9 @@ uint32_t FDX12Device::CreateBindlessUav(ID3D12Resource* Resource, ID3D12Resource
     }
 
     WriteBindlessUav(Index, Resource, Counter, Desc);
+#if WITH_BINDLESS_DESCRIPTOR_STATS
+    PermanentBindlessDescriptorAllocationCount.fetch_add(1);
+#endif
     return Index;
 }
 
@@ -445,17 +546,40 @@ uint32_t FDX12Device::AllocateTransientBindlessDescriptorIndex()
     const FDX12CommandQueue* Queue = GetGraphicsQueue();
     const uint64 CompletedFenceValue = Queue ? Queue->GetCompletedFenceValue() : 0;
 
-    std::lock_guard<std::mutex> Lock(TransientBindlessDescriptorMutex);
-    ReclaimTransientBindlessDescriptorIndicesLocked(CompletedFenceValue);
-
-    if (!FreeTransientBindlessDescriptorIndices.empty())
     {
-        const uint32_t Index = FreeTransientBindlessDescriptorIndices.back();
-        FreeTransientBindlessDescriptorIndices.pop_back();
-        return Index;
+        std::lock_guard<std::mutex> Lock(TransientBindlessDescriptorMutex);
+        ReclaimTransientBindlessDescriptorIndicesLocked(CompletedFenceValue);
+
+        if (!FreeTransientBindlessDescriptorIndices.empty())
+        {
+            const uint32_t Index = FreeTransientBindlessDescriptorIndices.back();
+            FreeTransientBindlessDescriptorIndices.pop_back();
+#if WITH_BINDLESS_DESCRIPTOR_STATS
+            TransientBindlessDescriptorReuseCount.fetch_add(1);
+            UpdateTransientBindlessFrameStatsLocked();
+#endif
+            return Index;
+        }
     }
 
-    return AllocateBindlessDescriptorIndex();
+    const uint32_t Index = AllocateBindlessDescriptorIndex();
+    if (Index != UINT32_MAX)
+    {
+#if WITH_BINDLESS_DESCRIPTOR_STATS
+        TransientBindlessDescriptorHeapAllocationCount.fetch_add(1);
+        std::lock_guard<std::mutex> Lock(TransientBindlessDescriptorMutex);
+        TransientHeapAllocsThisFrame++;
+        UpdateTransientBindlessFrameStatsLocked();
+#endif
+    }
+    else
+    {
+#if WITH_BINDLESS_DESCRIPTOR_STATS
+        LogBindlessDescriptorStats("AllocateTransientBindlessDescriptorIndex failed");
+#endif
+    }
+
+    return Index;
 }
 
 void FDX12Device::RetireTransientBindlessDescriptorIndex(uint32_t Index, uint64_t FenceValue)
@@ -466,13 +590,87 @@ void FDX12Device::RetireTransientBindlessDescriptorIndex(uint32_t Index, uint64_
     }
 
     std::lock_guard<std::mutex> Lock(TransientBindlessDescriptorMutex);
+#if WITH_BINDLESS_DESCRIPTOR_STATS
+    LiveTransientBindlessDescriptorOwners.erase(Index);
+#endif
     if (FenceValue == 0)
     {
         FreeTransientBindlessDescriptorIndices.push_back(Index);
+#if WITH_BINDLESS_DESCRIPTOR_STATS
+        TransientBindlessDescriptorRetireCount.fetch_add(1);
+        UpdateTransientBindlessFrameStatsLocked();
+#endif
         return;
     }
 
     RetiredTransientBindlessDescriptorIndices.push_back({ Index, FenceValue });
+#if WITH_BINDLESS_DESCRIPTOR_STATS
+    TransientBindlessDescriptorRetireCount.fetch_add(1);
+    UpdateTransientBindlessFrameStatsLocked();
+#endif
+}
+
+void FDX12Device::TrackTransientBindlessDescriptorOwner(uint32_t Index, const std::string& OwnerLabel)
+{
+#if WITH_BINDLESS_DESCRIPTOR_STATS
+    if (Index == UINT32_MAX)
+    {
+        return;
+    }
+
+    std::lock_guard<std::mutex> Lock(TransientBindlessDescriptorMutex);
+    if (!bTrackLiveTransientBindlessOwners)
+    {
+        return;
+    }
+    LiveTransientBindlessDescriptorOwners[Index] = OwnerLabel;
+#else
+    (void)Index;
+    (void)OwnerLabel;
+#endif
+}
+
+void FDX12Device::SetLiveTransientBindlessOwnerTrackingEnabled(bool bEnabled)
+{
+#if WITH_BINDLESS_DESCRIPTOR_STATS
+    std::lock_guard<std::mutex> Lock(TransientBindlessDescriptorMutex);
+    bTrackLiveTransientBindlessOwners = bEnabled;
+    if (!bTrackLiveTransientBindlessOwners)
+    {
+        LiveTransientBindlessDescriptorOwners.clear();
+    }
+#else
+    (void)bEnabled;
+#endif
+}
+
+void FDX12Device::PumpTransientBindlessDescriptorReclaim()
+{
+    if (!BindlessDescriptorHeap || !Device)
+    {
+        return;
+    }
+
+    const FDX12CommandQueue* Queue = GetGraphicsQueue();
+    const uint64 CompletedFenceValue = Queue ? Queue->GetCompletedFenceValue() : 0;
+
+    std::lock_guard<std::mutex> Lock(TransientBindlessDescriptorMutex);
+    ReclaimTransientBindlessDescriptorIndicesLocked(CompletedFenceValue);
+}
+
+void FDX12Device::ResetBindlessDescriptorFrameStats()
+{
+#if WITH_BINDLESS_DESCRIPTOR_STATS
+    std::lock_guard<std::mutex> Lock(TransientBindlessDescriptorMutex);
+    const uint32_t FreeCount = static_cast<uint32_t>(FreeTransientBindlessDescriptorIndices.size());
+    const uint32_t RetiredCount = static_cast<uint32_t>(RetiredTransientBindlessDescriptorIndices.size());
+    const uint32_t HeapAllocatedCount = static_cast<uint32_t>(TransientBindlessDescriptorHeapAllocationCount.load());
+    MinFreeTransientThisFrame = FreeCount;
+    PeakTransientLiveThisFrame = (HeapAllocatedCount >= (FreeCount + RetiredCount))
+        ? (HeapAllocatedCount - FreeCount - RetiredCount)
+        : 0u;
+    TransientHeapAllocsThisFrame = 0u;
+#endif
 }
 
 void FDX12Device::WriteBindlessSrv(uint32_t Index, ID3D12Resource* Resource, const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc) const
@@ -513,6 +711,7 @@ void FDX12Device::WriteBindlessUav(uint32_t Index, ID3D12Resource* Resource, ID3
 
 void FDX12Device::ReclaimTransientBindlessDescriptorIndicesLocked(uint64_t CompletedFenceValue)
 {
+    uint64_t ReclaimedCount = 0;
     while (!RetiredTransientBindlessDescriptorIndices.empty())
     {
         const FRetiredBindlessDescriptor& Retired = RetiredTransientBindlessDescriptorIndices.front();
@@ -523,8 +722,98 @@ void FDX12Device::ReclaimTransientBindlessDescriptorIndicesLocked(uint64_t Compl
 
         FreeTransientBindlessDescriptorIndices.push_back(Retired.Index);
         RetiredTransientBindlessDescriptorIndices.pop_front();
+        ++ReclaimedCount;
+    }
+
+    if (ReclaimedCount > 0)
+    {
+#if WITH_BINDLESS_DESCRIPTOR_STATS
+        TransientBindlessDescriptorReclaimCount.fetch_add(ReclaimedCount);
+        UpdateTransientBindlessFrameStatsLocked();
+#endif
     }
 }
+
+#if WITH_BINDLESS_DESCRIPTOR_STATS
+void FDX12Device::UpdateTransientBindlessFrameStatsLocked()
+{
+    const uint32_t FreeCount = static_cast<uint32_t>(FreeTransientBindlessDescriptorIndices.size());
+    const uint32_t RetiredCount = static_cast<uint32_t>(RetiredTransientBindlessDescriptorIndices.size());
+    const uint32_t HeapAllocatedCount = static_cast<uint32_t>(TransientBindlessDescriptorHeapAllocationCount.load());
+    const uint32_t CurrentLiveCount = (HeapAllocatedCount >= (FreeCount + RetiredCount))
+        ? (HeapAllocatedCount - FreeCount - RetiredCount)
+        : 0u;
+
+    MinFreeTransientThisFrame = (std::min)(MinFreeTransientThisFrame, FreeCount);
+    PeakTransientLiveThisFrame = (std::max)(PeakTransientLiveThisFrame, CurrentLiveCount);
+}
+
+void FDX12Device::MaybeLogBindlessDescriptorPressure(const char* Reason, uint32_t UsedCount)
+{
+    if (BindlessDescriptorCount == 0)
+    {
+        return;
+    }
+
+    static constexpr uint32_t Thresholds[] = { 75u, 85u, 90u, 95u, 98u };
+    const uint32_t UsagePercent = static_cast<uint32_t>((static_cast<uint64_t>(UsedCount) * 100ull) / static_cast<uint64_t>(BindlessDescriptorCount));
+
+    uint32_t TargetLevel = 0u;
+    while (TargetLevel < _countof(Thresholds) && UsagePercent >= Thresholds[TargetLevel])
+    {
+        ++TargetLevel;
+    }
+
+    if (TargetLevel == 0u)
+    {
+        return;
+    }
+
+    uint32_t ObservedLevel = BindlessPressureLogLevel.load();
+    while (TargetLevel > ObservedLevel)
+    {
+        if (BindlessPressureLogLevel.compare_exchange_weak(ObservedLevel, TargetLevel))
+        {
+            LogBindlessDescriptorStats(Reason);
+            break;
+        }
+    }
+}
+
+void FDX12Device::LogBindlessDescriptorStats(const char* Reason) const
+{
+    uint32_t FreeTransientCount = 0u;
+    uint32_t RetiredTransientCount = 0u;
+    {
+        std::lock_guard<std::mutex> Lock(TransientBindlessDescriptorMutex);
+        FreeTransientCount = static_cast<uint32_t>(FreeTransientBindlessDescriptorIndices.size());
+        RetiredTransientCount = static_cast<uint32_t>(RetiredTransientBindlessDescriptorIndices.size());
+    }
+
+    const FDX12CommandQueue* Queue = GraphicsQueue.get();
+    const uint64_t CompletedFenceValue = Queue ? Queue->GetCompletedFenceValue() : 0u;
+    const uint64_t LastSignaledFenceValue = Queue ? Queue->GetLastSignaledFenceValue() : 0u;
+    const uint32_t NextIndex = BindlessDescriptorNextIndex.load();
+    const uint32_t UsedPercent = (BindlessDescriptorCount > 0u)
+        ? static_cast<uint32_t>((static_cast<uint64_t>((std::min)(NextIndex, BindlessDescriptorCount)) * 100ull) / static_cast<uint64_t>(BindlessDescriptorCount))
+        : 0u;
+
+    std::ostringstream Stream;
+    Stream << "Bindless descriptor stats [" << (Reason ? Reason : "unknown") << "]: "
+        << "next=" << NextIndex << "/" << BindlessDescriptorCount
+        << " (" << UsedPercent << "%)"
+        << ", permanent_allocs=" << PermanentBindlessDescriptorAllocationCount.load()
+        << ", transient_from_heap=" << TransientBindlessDescriptorHeapAllocationCount.load()
+        << ", transient_reuse=" << TransientBindlessDescriptorReuseCount.load()
+        << ", transient_retired=" << TransientBindlessDescriptorRetireCount.load()
+        << ", transient_reclaimed=" << TransientBindlessDescriptorReclaimCount.load()
+        << ", free_transient=" << FreeTransientCount
+        << ", retired_transient=" << RetiredTransientCount
+        << ", completed_fence=" << CompletedFenceValue
+        << ", last_signaled_fence=" << LastSignaledFenceValue;
+    LogWarning(Stream.str());
+}
+#endif
 
 bool FDX12Device::DetermineShaderModel()
 {

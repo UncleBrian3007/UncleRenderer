@@ -26,7 +26,7 @@ groupshared float SharedLog[256];
 #endif
 
 [numthreads(16, 16, 1)]
-void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID, uint3 GroupThreadId : SV_GroupThreadID)
+void AutoExposureCS(uint3 DispatchThreadId : SV_DispatchThreadID, uint3 GroupThreadId : SV_GroupThreadID)
 {
     float2 groupCoord = float2(GroupThreadId.xy) + 0.5f;
     float2 samplePos = groupCoord * (InputSize / 16.0f);

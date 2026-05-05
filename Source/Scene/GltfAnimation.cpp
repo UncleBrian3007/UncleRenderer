@@ -264,8 +264,8 @@ void UpdateGltfAnimationPose(const FGltfScene& Scene, float TimeSeconds, FGltfAn
         NodePoses[NodeIndex].Scale = Transform.Scale;
     }
 
-	// Sampler는 “시간에 따른 값”이라는 순수 데이터고,
-	// Channel은 “그 값을 어디에 연결할지”라는 배선 정보다.
+	// Sampler: '시간에 따른 값'이라는 순수 데이터고,
+	// Channel: '그 값을 어디에 연결할지'라는 배선 정보다.
     if (!Scene.Animations.empty())
     {
         const FGltfAnimation& Animation = Scene.Animations.front();

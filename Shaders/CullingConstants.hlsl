@@ -12,4 +12,12 @@ cbuffer CullingConstants : register(b0)
     uint CullingMode;
     float3 CameraPosition;
     float Padding1;
+    float ClusterDAGTargetErrorPixels;
+    float ViewportHeightPixels;
+    uint ClusterDagRootCount;
+    uint ClusterDAGForceMipEnabled;
+    uint ClusterDAGForceMipLevel;
+    uint ClusterDAGForceMipSkipFrustumCull;
+    uint Padding2;
+    uint Padding3;
 };

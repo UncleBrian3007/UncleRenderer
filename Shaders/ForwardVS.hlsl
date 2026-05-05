@@ -1,4 +1,5 @@
 #include "SceneConstants.hlsl"
+#include "ClusterDagPackedVertex.hlsli"
 
 #ifndef USE_SKINNING
 #define USE_SKINNING 0
@@ -19,15 +20,19 @@ struct VSOutput
     float4 Color    : COLOR0;
 };
 
+cbuffer DrawCommandConstants : register(b2)
+{
+    uint DrawIndexStart;
+};
 
-VSOutput VSMain(VSInput Input)
+
+VSOutput ForwardVS(VSInput Input)
 {
     VSOutput Output;
     StructuredBuffer<float3> PositionBuffer = ResourceDescriptorHeap[VertexBufferBindlessIndices.x];
     StructuredBuffer<float3> NormalBuffer = ResourceDescriptorHeap[VertexBufferBindlessIndices.y];
-    StructuredBuffer<float2> TexCoordBuffer = ResourceDescriptorHeap[VertexBufferBindlessIndices.z];
-    StructuredBuffer<float4> TangentBuffer = ResourceDescriptorHeap[VertexBufferBindlessIndices.w];
-    StructuredBuffer<float4> ColorBuffer = ResourceDescriptorHeap[ExtraBindlessIndices.x];
+    StructuredBuffer<ClusterDagPackedPosition> PackedPositionBuffer = ResourceDescriptorHeap[VertexBufferBindlessIndices.x];
+    StructuredBuffer<uint> PackedNormalBuffer = ResourceDescriptorHeap[VertexBufferBindlessIndices.y];
     StructuredBuffer<uint> IndexBuffer = ResourceDescriptorHeap[ExtraBindlessIndices.y];
 #if USE_SKINNING
     StructuredBuffer<uint4> JointBuffer = ResourceDescriptorHeap[SkinningBindlessIndices.x];
@@ -36,12 +41,58 @@ VSOutput VSMain(VSInput Input)
     StructuredBuffer<float3> SkinnedPositionBuffer = ResourceDescriptorHeap[SkinningBindlessIndices.w];
 #endif
 
-    uint vertexIndex = IndexBuffer[Input.VertexId];
-    float3 position = PositionBuffer[vertexIndex];
-    float3 normal = NormalBuffer[vertexIndex];
-    float2 uv = TexCoordBuffer[vertexIndex];
-    float4 tangent = TangentBuffer[vertexIndex];
-    float4 color = ColorBuffer[vertexIndex];
+    uint vertexIndex = IndexBuffer[Input.VertexId + DrawIndexStart];
+    const bool usePackedClusterDagVertices = ClusterDagVertexPackingMode != 0u;
+    float3 position = usePackedClusterDagVertices
+        ? DecodeClusterDagPackedPosition(PackedPositionBuffer[vertexIndex])
+        : PositionBuffer[vertexIndex];
+    float3 normal = usePackedClusterDagVertices
+        ? DecodeOctahedral16x2(PackedNormalBuffer[vertexIndex])
+        : NormalBuffer[vertexIndex];
+    float2 uv = 0.0f.xx;
+    float4 tangent = 0.0f.xxxx;
+    float4 color = 1.0f.xxxx;
+    if (usePackedClusterDagVertices)
+    {
+        if (VertexBufferBindlessIndices.z != 0xffffffffu)
+        {
+            StructuredBuffer<uint> PackedTexCoordBuffer = ResourceDescriptorHeap[VertexBufferBindlessIndices.z];
+            uv = DecodeClusterDagPackedUV(PackedTexCoordBuffer[vertexIndex]);
+        }
+        else
+        {
+            uv = ClusterDagPackedConstantUV.xy;
+        }
+
+        if (VertexBufferBindlessIndices.w != 0xffffffffu)
+        {
+            StructuredBuffer<uint> PackedTangentBuffer = ResourceDescriptorHeap[VertexBufferBindlessIndices.w];
+            tangent = DecodeClusterDagPackedTangent(PackedTangentBuffer[vertexIndex]);
+        }
+        else
+        {
+            tangent = BuildClusterDagFallbackTangent(normal);
+        }
+
+        if (ExtraBindlessIndices.x != 0xffffffffu)
+        {
+            StructuredBuffer<uint> PackedColorBuffer = ResourceDescriptorHeap[ExtraBindlessIndices.x];
+            color = DecodeClusterDagPackedColor(PackedColorBuffer[vertexIndex]);
+        }
+        else
+        {
+            color = ClusterDagPackedConstantColor;
+        }
+    }
+    else
+    {
+        StructuredBuffer<float2> TexCoordBuffer = ResourceDescriptorHeap[VertexBufferBindlessIndices.z];
+        StructuredBuffer<float4> TangentBuffer = ResourceDescriptorHeap[VertexBufferBindlessIndices.w];
+        StructuredBuffer<float4> ColorBuffer = ResourceDescriptorHeap[ExtraBindlessIndices.x];
+        uv = TexCoordBuffer[vertexIndex];
+        tangent = TangentBuffer[vertexIndex];
+        color = ColorBuffer[vertexIndex];
+    }
 
 #if USE_SKINNING
     uint4 joints = JointBuffer[vertexIndex];

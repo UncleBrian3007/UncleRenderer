@@ -1,3 +1,5 @@
+#include "Common.hlsli"
+
 cbuffer TemporalAAConstants : register(b0)
 {
     uint2 OutputSize;
@@ -12,13 +14,8 @@ cbuffer TemporalAABindlessConstants : register(b1)
     uint OutputTextureIndex;
 };
 
-bool BadFloat3(float3 Value)
-{
-    return any(isnan(Value)) || any(isinf(Value));
-}
-
 [numthreads(8, 8, 1)]
-void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID)
+void TemporalAACS(uint3 DispatchThreadId : SV_DispatchThreadID)
 {
     if (DispatchThreadId.x >= OutputSize.x || DispatchThreadId.y >= OutputSize.y)
     {

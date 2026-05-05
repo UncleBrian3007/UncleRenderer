@@ -1,3 +1,6 @@
+#ifndef SCENE_CONSTANTS_HLSL
+#define SCENE_CONSTANTS_HLSL
+
 cbuffer SceneConstants : register(b0)
 {
     row_major float4x4 World;
@@ -65,17 +68,17 @@ cbuffer SceneConstants : register(b0)
     uint4 VertexBufferBindlessIndices;
     uint4 ExtraBindlessIndices;
     uint4 SkinningBindlessIndices;
+    float4 ClusterDagPackedPositionOffset;
+    float4 ClusterDagPackedPositionScale;
+    float4 ClusterDagPackedConstantUV;
+    float4 ClusterDagPackedConstantColor;
+    uint ClusterDagVertexPackingMode;
+    uint3 PaddingClusterDagPacking;
     float EnvMapMipCount;
     float3 PaddingEnvMap;
-    float GtaoRadius;
     float GtaoIntensity;
-    float GtaoPower;
-    float GtaoThickness;
-    uint GtaoDirectionCount;
-    uint GtaoStepCount;
-    float2 TaaJitter;
-    uint GtaoTemporalIndex;
-    uint ObjectId;
-    float2 PaddingObjectId;
-    float2 PaddingObjectId2;
+    uint DeferredLightingVisualizationMode;
+    float SceneConstantsPad;
 };
+
+#endif

@@ -68,26 +68,37 @@ float V_SmithGGX(float NdotV, float NdotL, float a)
 	return rcp(G_V * G_L);
 }
 
+float3 DiffuseBRDF(float3 diffuse)
+{
+    return diffuse / PI;
+}
+
+float3 SpecularBRDF(float3 N, float3 V, float3 L, float3 specular, float roughness, out float3 F)
+{
+    float3 H = normalize(V + L);
+
+    float NdotV = saturate(dot(N, V));
+    float NdotL = saturate(dot(N, L));
+    float NdotH = saturate(dot(N, H));
+    float VdotH = saturate(dot(V, H));
+
+    float alpha = roughness * roughness;
+    float D = D_GGX(NdotH, alpha);
+    float V_G = V_SmithGGX(NdotV, NdotL, alpha);
+    F = FresnelSchlick(VdotH, specular);
+
+    return D * V_G * F;
+}
+
 // PBR 스펙/디퓨즈 합산 계산을 공통화한 함수
 float3 EvaluatePBR(float3 albedo, float metallic, float roughness, float3 F0, float3 N, float3 V, float3 L)
 {
-	float3 H = normalize(V + L);
-
 	float NdotL = saturate(dot(N, L));
-	float NdotV = saturate(dot(N, V));
-	float NdotH = saturate(dot(N, H));
-	float VdotH = saturate(dot(V, H));
 
 	roughness = max(roughness, 0.03f);
 
-	float alpha = roughness * roughness;
-	float D = D_GGX(NdotH, alpha);
-
-	float V_G = V_SmithGGX(NdotV, NdotL, alpha); // V_G = G / 4(N·L N·V)
-
-	float3 F = FresnelSchlick(VdotH, F0);
-
-	float3 specular = (D * V_G * F);
+	float3 F;
+	float3 specular = SpecularBRDF(N, V, L, F0, roughness, F);
 	float3 kd = (1.0f - F) * (1.0f - metallic);
 	float3 diffuse = kd * albedo / PI;
 
@@ -96,20 +107,10 @@ float3 EvaluatePBR(float3 albedo, float metallic, float roughness, float3 F0, fl
 
 float3 EvaluateSheenLobe(float3 sheenColor, float sheenRoughness, float3 N, float3 V, float3 L)
 {
-    float3 H = normalize(V + L);
-
     float NdotL = saturate(dot(N, L));
-    float NdotV = saturate(dot(N, V));
-    float NdotH = saturate(dot(N, H));
-    float VdotH = saturate(dot(V, H));
-
     float roughness = max(sheenRoughness, 0.03f);
-    float alpha = roughness * roughness;
-    float D = D_GGX(NdotH, alpha);
-    float V_G = V_SmithGGX(NdotV, NdotL, alpha);
-    float3 F = FresnelSchlick(VdotH, sheenColor);
-
-    float3 specular = D * V_G * F;
+    float3 F;
+    float3 specular = SpecularBRDF(N, V, L, sheenColor, roughness, F);
     return specular * NdotL;
 }
 
@@ -122,20 +123,10 @@ float3 EvaluatePBRWithSheen(float3 albedo, float metallic, float roughness, floa
 
 float3 EvaluateClearcoatLobe(float clearcoat, float clearcoatRoughness, float3 N, float3 V, float3 L)
 {
-    float3 H = normalize(V + L);
-
     float NdotL = saturate(dot(N, L));
-    float NdotV = saturate(dot(N, V));
-    float NdotH = saturate(dot(N, H));
-    float VdotH = saturate(dot(V, H));
-
     float roughness = max(clearcoatRoughness, 0.03f);
-    float alpha = roughness * roughness;
-    float D = D_GGX(NdotH, alpha);
-    float V_G = V_SmithGGX(NdotV, NdotL, alpha);
-    float3 F = FresnelSchlick(VdotH, 0.04.xxx);
-
-    float3 specular = D * V_G * F;
+    float3 F;
+    float3 specular = SpecularBRDF(N, V, L, 0.04.xxx, roughness, F);
     return specular * NdotL * clearcoat;
 }
 
@@ -151,4 +142,12 @@ float3 EvaluatePBRWithAnisotropy(float3 albedo, float metallic, float roughness,
     float anisotropy = saturate(anisotropyValue * anisotropyStrength);
     float anisotropicRoughness = lerp(roughness, max(0.03f, roughness * 0.5f), anisotropy);
     return EvaluatePBR(albedo, metallic, anisotropicRoughness, F0, N, V, L);
+}
+
+float3 BRDF(float3 wi, float3 wo, float3 N, float3 diffuse, float3 specular, float roughness)
+{
+    float3 F;
+    float3 specularBrdf = SpecularBRDF(N, wo, wi, specular, roughness, F);
+    float3 diffuseBrdf = DiffuseBRDF(diffuse) * (1.0f - F);
+    return diffuseBrdf + specularBrdf;
 }

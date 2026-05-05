@@ -4,7 +4,7 @@ struct VSOutput
     float2 UV       : TEXCOORD0;
 };
 
-VSOutput VSMain(uint VertexId : SV_VertexID)
+VSOutput FullscreenTriangleVS(uint VertexId : SV_VertexID)
 {
     float2 Positions[3] = {
         float2(-1.0, -1.0),
@@ -18,7 +18,7 @@ VSOutput VSMain(uint VertexId : SV_VertexID)
     return Output;
 }
 
-float4 PSMain(VSOutput Input) : SV_Target
+float4 FullscreenTrianglePS(VSOutput Input) : SV_Target
 {
     return float4(Input.UV, 0.0, 1.0);
 }

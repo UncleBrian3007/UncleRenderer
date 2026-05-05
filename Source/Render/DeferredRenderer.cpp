@@ -1,14 +1,15 @@
 #include "DeferredRenderer.h"
 
+#include "EnvironmentMap.h"
 #include "ShaderCompiler.h"
 #include "RendererUtils.h"
+#include "SceneModelResourceLoader.h"
 #include "TextureLoader.h"
 #include "RenderGraph.h"
 #include "Deferred/DeferredPassContext.h"
 #include "Deferred/DeferredFrameOrchestrator.h"
-#include "Deferred/DeferredVisibilityPasses.h"
-#include "Deferred/DeferredGeometryPasses.h"
-#include "Deferred/DeferredLightingPasses.h"
+#include "Deferred/DeferredBasePass.h"
+#include "Deferred/DeferredLightingPass.h"
 #include "Deferred/Gtao.h"
 #include "Deferred/RayTracingShadow.h"
 #include "Deferred/Ssr.h"
@@ -18,7 +19,6 @@
 #include "Deferred/Taa.h"
 #include "Deferred/Tonemap.h"
 #include "Deferred/PathTracing.h"
-#include "Deferred/DeferredPostProcessPasses.h"
 #include "Deferred/DeferredResourceImporter.h"
 #include "../Scene/GltfLoader.h"
 #include "../Scene/Camera.h"
@@ -40,22 +40,42 @@
 
 using Microsoft::WRL::ComPtr;
 
+namespace
+{
+    FRGTextureDesc BuildTextureDescFromResource(ID3D12Resource* Resource)
+    {
+        FRGTextureDesc Desc = {};
+        if (Resource == nullptr)
+        {
+            return Desc;
+        }
+
+        const D3D12_RESOURCE_DESC ResourceDesc = Resource->GetDesc();
+        Desc.Width = static_cast<uint32_t>(ResourceDesc.Width);
+        Desc.Height = ResourceDesc.Height;
+        Desc.MipLevels = static_cast<uint16_t>(ResourceDesc.MipLevels);
+        Desc.Format = ResourceDesc.Format;
+        return Desc;
+    }
+}
+
 FDeferredRenderer::FDeferredRenderer()
     : FrameOrchestrator(std::make_unique<FDeferredFrameOrchestrator>())
-    , VisibilityPasses(std::make_unique<FDeferredVisibilityPasses>())
-    , GeometryPasses(std::make_unique<FDeferredGeometryPasses>())
-    , LightingPasses(std::make_unique<FDeferredLightingPasses>())
+    , BasePass(std::make_unique<FDeferredBasePass>())
+    , LightingPass(std::make_unique<FDeferredLightingPass>())
     , Gtao(std::make_unique<FGtao>())
+    , Hzb(std::make_unique<FHzb>())
     , RayTracingShadow(std::make_unique<FRayTracingShadow>())
     , Ssr(std::make_unique<FSsr>())
-    , RestirGI(std::make_unique<FRestirGI>())
+    , SkyAtmosphere(std::make_unique<FSkyAtmosphere>())
+    , ClusterDagRuntime(std::make_unique<FClusterDagRuntime>())
+        , RestirGI(std::make_unique<FRestirGI>())
     , RestirGIDenoiser(std::make_unique<FRestirGIDenoiser>())
     , PathTracing(std::make_unique<FPathTracing>())
     , AutoExposure(std::make_unique<FAutoExposure>())
     , Cas(std::make_unique<FCas>())
     , Taa(std::make_unique<FTaa>())
     , Tonemap(std::make_unique<FTonemap>())
-    , PostProcessPasses(std::make_unique<FDeferredPostProcessPasses>())
     , ResourceImporter(std::make_unique<FDeferredResourceImporter>())
 {
 }
@@ -68,681 +88,77 @@ const DXGI_FORMAT FDeferredRenderer::GBufferFormats[4] =
     DXGI_FORMAT_R16G16B16A16_FLOAT,
 };
 
-void FDeferredRenderer::SetTonemapEnabled(bool bEnabled)
+EDeferredLightingVisualizationMode FDeferredRenderer::GetDeferredLightingVisualizationMode() const
 {
-    if (Tonemap)
-    {
-        Tonemap->SetTonemapEnabled(bEnabled);
-    }
+    return LightingPass->GetDeferredLightingVisualizationMode();
 }
 
-bool FDeferredRenderer::IsTonemapEnabled() const
+void FDeferredRenderer::ApplyGtaoConfig(const FRendererConfig& Config)
 {
-    return Tonemap && Tonemap->IsTonemapEnabled();
+    Gtao->ApplyConfig(Config);
 }
 
-void FDeferredRenderer::SetTonemapExposure(float Exposure)
+bool FDeferredRenderer::IsClusterDagEnabled() const
 {
-    if (Tonemap)
-    {
-        Tonemap->SetTonemapExposure(Exposure);
-    }
+    return ClusterDagRuntime->IsEnabled();
 }
-
-float FDeferredRenderer::GetTonemapExposure() const
-{
-    return Tonemap ? Tonemap->GetTonemapExposure() : 0.0f;
-}
-
-void FDeferredRenderer::SetTonemapWhitePoint(float WhitePoint)
-{
-    if (Tonemap)
-    {
-        Tonemap->SetTonemapWhitePoint(WhitePoint);
-    }
-}
-
-float FDeferredRenderer::GetTonemapWhitePoint() const
-{
-    return Tonemap ? Tonemap->GetTonemapWhitePoint() : 0.0f;
-}
-
-void FDeferredRenderer::SetTonemapGamma(float Gamma)
-{
-    if (Tonemap)
-    {
-        Tonemap->SetTonemapGamma(Gamma);
-    }
-}
-
-float FDeferredRenderer::GetTonemapGamma() const
-{
-    return Tonemap ? Tonemap->GetTonemapGamma() : 0.0f;
-}
-
-void FDeferredRenderer::SetCasEnabled(bool bEnabled)
-{
-    if (Cas)
-    {
-        Cas->SetEnabled(bEnabled);
-    }
-}
-
-bool FDeferredRenderer::IsCasEnabled() const
-{
-    return Cas && Cas->IsEnabled();
-}
-
-void FDeferredRenderer::SetCasSharpness(float Sharpness)
-{
-    if (Cas)
-    {
-        Cas->SetSharpness(Sharpness);
-    }
-}
-
-float FDeferredRenderer::GetCasSharpness() const
-{
-    return Cas ? Cas->GetSharpness() : 0.0f;
-}
-
-void FDeferredRenderer::SetAutoExposureEnabled(bool bEnabled)
-{
-    if (AutoExposure)
-    {
-        AutoExposure->SetEnabled(bEnabled);
-    }
-}
-
-bool FDeferredRenderer::IsAutoExposureEnabled() const
-{
-    return AutoExposure && AutoExposure->IsEnabled();
-}
-
-void FDeferredRenderer::SetAutoExposureKey(float Key)
-{
-    if (AutoExposure)
-    {
-        AutoExposure->SetKey(Key);
-    }
-}
-
-float FDeferredRenderer::GetAutoExposureKey() const
-{
-    return AutoExposure ? AutoExposure->GetKey() : 0.0f;
-}
-
-void FDeferredRenderer::SetAutoExposureMin(float MinExposure)
-{
-    if (AutoExposure)
-    {
-        AutoExposure->SetMinExposure(MinExposure);
-    }
-}
-
-float FDeferredRenderer::GetAutoExposureMin() const
-{
-    return AutoExposure ? AutoExposure->GetMinExposure() : 0.0f;
-}
-
-void FDeferredRenderer::SetAutoExposureMax(float MaxExposure)
-{
-    if (AutoExposure)
-    {
-        AutoExposure->SetMaxExposure(MaxExposure);
-    }
-}
-
-float FDeferredRenderer::GetAutoExposureMax() const
-{
-    return AutoExposure ? AutoExposure->GetMaxExposure() : 0.0f;
-}
-
-void FDeferredRenderer::SetAutoExposureSpeedUp(float Speed)
-{
-    if (AutoExposure)
-    {
-        AutoExposure->SetSpeedUp(Speed);
-    }
-}
-
-float FDeferredRenderer::GetAutoExposureSpeedUp() const
-{
-    return AutoExposure ? AutoExposure->GetSpeedUp() : 0.0f;
-}
-
-void FDeferredRenderer::SetAutoExposureSpeedDown(float Speed)
-{
-    if (AutoExposure)
-    {
-        AutoExposure->SetSpeedDown(Speed);
-    }
-}
-
-float FDeferredRenderer::GetAutoExposureSpeedDown() const
-{
-    return AutoExposure ? AutoExposure->GetSpeedDown() : 0.0f;
-}
-
-void FDeferredRenderer::SetTaaEnabled(bool bEnabled)
-{
-    if (Taa)
-    {
-        Taa->SetEnabled(bEnabled);
-    }
-}
-
-bool FDeferredRenderer::IsTaaEnabled() const
-{
-    return Taa && Taa->IsEnabled();
-}
-
-void FDeferredRenderer::SetTaaHistoryWeight(float Weight)
-{
-    if (Taa)
-    {
-        Taa->SetHistoryWeight(Weight);
-    }
-}
-
-float FDeferredRenderer::GetTaaHistoryWeight() const
-{
-    return Taa ? Taa->GetHistoryWeight() : 0.0f;
-}
-
-void FDeferredRenderer::SetSsrSwEnabled(bool bEnabled)
-{
-    if (Ssr)
-    {
-        Ssr->SetSwEnabled(bEnabled);
-    }
-}
-
-void FDeferredRenderer::SetSsrHwEnabled(bool bEnabled)
-{
-    if (Ssr)
-    {
-        Ssr->SetHwEnabled(bEnabled);
-    }
-}
-
-void FDeferredRenderer::SetSsrHzbEnabled(bool bEnabled)
-{
-    if (Ssr)
-    {
-        Ssr->SetHzbEnabled(bEnabled);
-    }
-}
-
-void FDeferredRenderer::SetSsrRefineEnabled(bool bEnabled)
-{
-    if (Ssr)
-    {
-        Ssr->SetRefineEnabled(bEnabled);
-    }
-}
-
-void FDeferredRenderer::SetSsrDenoiseEnabled(bool bEnabled)
-{
-    if (Ssr)
-    {
-        Ssr->SetDenoiseEnabled(bEnabled);
-    }
-}
-
-void FDeferredRenderer::SetSsrMode(ESSRMode Mode)
-{
-    if (Ssr)
-    {
-        Ssr->SetMode(Mode);
-    }
-}
-
-void FDeferredRenderer::SetSsrSamplesPerQuad(uint32_t Samples)
-{
-    if (Ssr)
-    {
-        Ssr->SetSamplesPerQuad(Samples);
-    }
-}
-
-bool FDeferredRenderer::IsSsrSwEnabled() const
-{
-    return Ssr && Ssr->IsSwEnabled();
-}
-
-bool FDeferredRenderer::IsSsrHwEnabled() const
-{
-    return Ssr && Ssr->IsHwEnabled();
-}
-
-void FDeferredRenderer::SetSsrMaxSteps(uint32_t Steps)
-{
-    if (Ssr)
-    {
-        Ssr->SetMaxSteps(Steps);
-    }
-}
-
-uint32_t FDeferredRenderer::GetSsrMaxSteps() const
-{
-    return Ssr ? Ssr->GetMaxSteps() : 0u;
-}
-
-void FDeferredRenderer::SetSsrMaxDistance(float Distance)
-{
-    if (Ssr)
-    {
-        Ssr->SetMaxDistance(Distance);
-    }
-}
-
-float FDeferredRenderer::GetSsrMaxDistance() const
-{
-    return Ssr ? Ssr->GetMaxDistance() : 0.0f;
-}
-
-void FDeferredRenderer::SetSsrThickness(float Thickness)
-{
-    if (Ssr)
-    {
-        Ssr->SetThickness(Thickness);
-    }
-}
-
-float FDeferredRenderer::GetSsrThickness() const
-{
-    return Ssr ? Ssr->GetThickness() : 0.0f;
-}
-
-void FDeferredRenderer::SetSsrStride(float Stride)
-{
-    if (Ssr)
-    {
-        Ssr->SetStride(Stride);
-    }
-}
-
-float FDeferredRenderer::GetSsrStride() const
-{
-    return Ssr ? Ssr->GetStride() : 0.0f;
-}
-
-void FDeferredRenderer::SetSsrRoughnessCutoff(float Cutoff)
-{
-    if (Ssr)
-    {
-        Ssr->SetRoughnessCutoff(Cutoff);
-    }
-}
-
-float FDeferredRenderer::GetSsrRoughnessCutoff() const
-{
-    return Ssr ? Ssr->GetRoughnessCutoff() : 0.0f;
-}
-
-void FDeferredRenderer::SetSsrIntensity(float Intensity)
-{
-    if (Ssr)
-    {
-        Ssr->SetIntensity(Intensity);
-    }
-}
-
-float FDeferredRenderer::GetSsrIntensity() const
-{
-    return Ssr ? Ssr->GetIntensity() : 0.0f;
-}
-
-void FDeferredRenderer::SetRestirGIEnabled(bool bEnabled)
-{
-    if (RestirGI)
-    {
-        RestirGI->SetEnabled(bEnabled);
-    }
-}
-
-bool FDeferredRenderer::IsRestirGIEnabled() const
-{
-    return RestirGI && RestirGI->IsEnabled();
-}
-
-void FDeferredRenderer::SetRestirGIDenoiserEnabled(bool bEnabled)
-{
-    const bool bCurrentEnabled = RestirGIDenoiser && RestirGIDenoiser->IsEnabled();
-    if (bCurrentEnabled != bEnabled)
-    {
-        if (RestirGIDenoiser)
-        {
-            RestirGIDenoiser->SetEnabled(bEnabled);
-        }
-        InvalidateRestirGiDenoiserHistory();
-    }
-}
-
-bool FDeferredRenderer::IsRestirGIDenoiserEnabled() const
-{
-    return RestirGIDenoiser && RestirGIDenoiser->IsEnabled();
-}
-
-void FDeferredRenderer::SetRestirGIFreezeDenoiserHistoryResetPeriod(uint32_t InPeriod)
-{
-    if (RestirGIDenoiser)
-    {
-        RestirGIDenoiser->SetFreezeHistoryResetPeriod(InPeriod);
-    }
-}
-
-uint32_t FDeferredRenderer::GetRestirGIFreezeDenoiserHistoryResetPeriod() const
-{
-    return RestirGIDenoiser ? RestirGIDenoiser->GetFreezeHistoryResetPeriod() : 0u;
-}
-
-void FDeferredRenderer::SetRestirGISamplesPerPixel(uint32_t Samples)
-{
-    if (RestirGI)
-    {
-        RestirGI->SetSamplesPerPixel(Samples);
-    }
-}
-
-uint32_t FDeferredRenderer::GetRestirGISamplesPerPixel() const
-{
-    return RestirGI ? RestirGI->GetSamplesPerPixel() : 0u;
-}
-
-void FDeferredRenderer::SetRestirGIIntensity(float Intensity)
-{
-    if (RestirGI)
-    {
-        RestirGI->SetIntensity(Intensity);
-    }
-}
-
-float FDeferredRenderer::GetRestirGIIntensity() const
-{
-    return RestirGI ? RestirGI->GetIntensity() : 0.0f;
-}
-
-void FDeferredRenderer::SetRestirGIShowOnly(bool bEnabled)
-{
-    if (RestirGI)
-    {
-        RestirGI->SetShowOnly(bEnabled);
-    }
-}
-
-bool FDeferredRenderer::IsRestirGIShowOnly() const
-{
-    return RestirGI && RestirGI->IsShowOnly();
-}
-
-void FDeferredRenderer::SetRestirGITemporalReuseEnabled(bool bEnabled)
-{
-    if (RestirGI)
-    {
-        RestirGI->SetTemporalReuseEnabled(bEnabled);
-    }
-}
-
-bool FDeferredRenderer::IsRestirGITemporalReuseEnabled() const
-{
-    return RestirGI && RestirGI->IsTemporalReuseEnabled();
-}
-
-void FDeferredRenderer::SetRestirGISpatialReuseEnabled(bool bEnabled)
-{
-    if (RestirGI)
-    {
-        RestirGI->SetSpatialReuseEnabled(bEnabled);
-    }
-}
-
-bool FDeferredRenderer::IsRestirGISpatialReuseEnabled() const
-{
-    return RestirGI && RestirGI->IsSpatialReuseEnabled();
-}
-
-void FDeferredRenderer::SetRestirGITemporalAdditionalScale(float Value)
-{
-    if (RestirGI)
-    {
-        RestirGI->SetTemporalAdditionalScale(Value);
-    }
-}
-
-float FDeferredRenderer::GetRestirGITemporalAdditionalScale() const
-{
-    return RestirGI ? RestirGI->GetTemporalAdditionalScale() : 0.0f;
-}
-
-void FDeferredRenderer::SetRestirGISpatialAdditionalScale(float Value)
-{
-    if (RestirGI)
-    {
-        RestirGI->SetSpatialAdditionalScale(Value);
-    }
-}
-
-float FDeferredRenderer::GetRestirGISpatialAdditionalScale() const
-{
-    return RestirGI ? RestirGI->GetSpatialAdditionalScale() : 0.0f;
-}
-
-void FDeferredRenderer::SetRestirGIResolveMinDenominator(float Value)
-{
-    if (RestirGI)
-    {
-        RestirGI->SetResolveMinDenominator(Value);
-    }
-}
-
-float FDeferredRenderer::GetRestirGIResolveMinDenominator() const
-{
-    return RestirGI ? RestirGI->GetResolveMinDenominator() : 0.0f;
-}
-
-void FDeferredRenderer::SetRestirGIResolveMaxNormalization(float Value)
-{
-    if (RestirGI)
-    {
-        RestirGI->SetResolveMaxNormalization(Value);
-    }
-}
-
-float FDeferredRenderer::GetRestirGIResolveMaxNormalization() const
-{
-    return RestirGI ? RestirGI->GetResolveMaxNormalization() : 0.0f;
-}
-
-void FDeferredRenderer::SetRestirGIResolveLowSampleBoostGuard(float Value)
-{
-    if (RestirGI)
-    {
-        RestirGI->SetResolveLowSampleBoostGuard(Value);
-    }
-}
-
-float FDeferredRenderer::GetRestirGIResolveLowSampleBoostGuard() const
-{
-    return RestirGI ? RestirGI->GetResolveLowSampleBoostGuard() : 0.0f;
-}
-
-void FDeferredRenderer::SetRestirGIResolveUseConfidence(bool bEnabled)
-{
-    if (RestirGI)
-    {
-        RestirGI->SetResolveUseConfidence(bEnabled);
-    }
-}
-
-bool FDeferredRenderer::IsRestirGIResolveUseConfidence() const
-{
-    return RestirGI && RestirGI->IsResolveUseConfidence();
-}
-
-void FDeferredRenderer::SetRestirGIUseVisibility(bool bEnabled)
-{
-    if (RestirGI)
-    {
-        RestirGI->SetUseVisibility(bEnabled);
-    }
-}
-
-bool FDeferredRenderer::IsRestirGIUseVisibility() const
-{
-    return RestirGI && RestirGI->IsUseVisibility();
-}
-
-void FDeferredRenderer::SetRestirGIUseBrdf(bool bEnabled)
-{
-    if (RestirGI)
-    {
-        RestirGI->SetUseBrdf(bEnabled);
-    }
-}
-
-bool FDeferredRenderer::IsRestirGIUseBrdf() const
-{
-    return RestirGI && RestirGI->IsUseBrdf();
-}
-
-void FDeferredRenderer::SetRestirGIUseHistoryIndirect(bool bEnabled)
-{
-    if (RestirGI)
-    {
-        RestirGI->SetUseHistoryIndirect(bEnabled);
-    }
-}
-
-bool FDeferredRenderer::IsRestirGIUseHistoryIndirect() const
-{
-    return RestirGI && RestirGI->IsUseHistoryIndirect();
-}
-
-void FDeferredRenderer::SetRestirGIRandomMode(ERestirGIRandomMode Mode)
-{
-    if (!RestirGI)
-    {
-        return;
-    }
-
-    if (RestirGI->GetRandomMode() != Mode)
-    {
-        RestirGI->SetRandomMode(Mode);
-        RestirGI->InvalidateReservoirHistory();
-        InvalidateRestirGiDenoiserHistory();
-    }
-}
-
-ERestirGIRandomMode FDeferredRenderer::GetRestirGIRandomMode() const
-{
-    return RestirGI ? RestirGI->GetRandomMode() : ERestirGIRandomMode::BlueNoiseSobol;
-}
-
-void FDeferredRenderer::SetRestirGIDebugRayEnabled(bool bEnabled)
+bool FDeferredRenderer::IsClusterDagFastShaderEnabled() const
 {
-    if (RestirGI)
-    {
-        RestirGI->SetDebugRayEnabled(bEnabled);
-    }
+    return ClusterDagRuntime->IsFastShaderEnabled();
 }
-
-bool FDeferredRenderer::IsRestirGIDebugRayEnabled() const
-{
-    return RestirGI && RestirGI->IsDebugRayEnabled();
-}
-
-void FDeferredRenderer::SetRestirGIDebugPixel(uint32_t X, uint32_t Y)
+bool FDeferredRenderer::IsClusterDagDebugEnabled() const
 {
-    if (RestirGI)
-    {
-        RestirGI->SetDebugPixel(X, Y);
-    }
+    return ClusterDagRuntime->IsDebugEnabled();
 }
-
-void FDeferredRenderer::SetRestirGIFreezeFrame(bool bEnabled)
-{
-    if (RestirGI)
-    {
-        RestirGI->SetFreezeFrame(bEnabled, GetFrameNumber());
-    }
-}
-
-bool FDeferredRenderer::IsRestirGIFreezeFrame() const
+EClusterDAGTraversalMode FDeferredRenderer::GetClusterDagTraversalMode() const
 {
-    return RestirGI && RestirGI->IsFreezeFrame();
+    return ClusterDagRuntime->GetTraversalMode();
 }
-
-uint32_t FDeferredRenderer::GetRestirGIFrozenSequenceFrame() const
+float FDeferredRenderer::GetClusterDagTargetErrorPixels() const
 {
-    return RestirGI ? RestirGI->GetFrozenSequenceFrame() : 0u;
+    return ClusterDagRuntime->GetTargetErrorPixels();
 }
-
-uint64_t FDeferredRenderer::GetRestirGIFreezeStartFrameNumber() const
+bool FDeferredRenderer::IsClusterDagForceMipEnabled() const
 {
-    return RestirGI ? RestirGI->GetFreezeStartFrameNumber() : 0u;
+    return ClusterDagRuntime->IsForceMipEnabled();
 }
-
-void FDeferredRenderer::StepRestirGIFreezeFrame()
+uint32_t FDeferredRenderer::GetClusterDagForceMipLevel() const
 {
-    if (RestirGI)
-    {
-        RestirGI->StepFreezeFrame();
-    }
+    return ClusterDagRuntime->GetForceMipLevel();
 }
-
-void FDeferredRenderer::SetPathTracingAccumulationEnabled(bool bEnabled)
+bool FDeferredRenderer::IsClusterDagForceMipSkipFrustumCull() const
 {
-    if (PathTracing)
-    {
-        PathTracing->SetAccumulationEnabled(bEnabled);
-    }
+    return ClusterDagRuntime->IsForceMipSkipFrustumCull();
 }
-
-bool FDeferredRenderer::IsPathTracingAccumulationEnabled() const
+uint32_t FDeferredRenderer::GetClusterDagVisibleRootCount() const
 {
-    return PathTracing && PathTracing->IsAccumulationEnabled();
+    return ClusterDagRuntime->GetVisibleRootCount();
 }
-
-void FDeferredRenderer::SetPathTracingMaxBounces(uint32_t MaxBounces)
+uint32_t FDeferredRenderer::GetClusterDagClusterCount() const
 {
-    if (PathTracing)
-    {
-        PathTracing->SetMaxBounces(MaxBounces);
-    }
+    return ClusterDagRuntime->GetClusterCount();
 }
-
-uint32_t FDeferredRenderer::GetPathTracingMaxBounces() const
+bool FDeferredRenderer::IsPathTracingPreferred() const
 {
-    return PathTracing ? PathTracing->GetMaxBounces() : 0u;
+    return PathTracing->IsPreferred();
 }
-
-void FDeferredRenderer::SetPathTracingVndfEnabled(bool bEnabled)
+bool FDeferredRenderer::IsPathTracingVndfEnabled() const
 {
-    bPathTracingUseVndf = bEnabled;
-    if (PathTracing)
-    {
-        PathTracing->ResetAccumulation();
-    }
+    return PathTracing->IsVndfEnabled();
 }
-
-void FDeferredRenderer::SetPathTracingDebugMode(int Mode)
+void FDeferredRenderer::ForceDisablePathTracing()
 {
-    if (PathTracing)
-    {
-        PathTracing->SetDebugMode(Mode);
-    }
+    PathTracing->SetEnabled(false);
 }
 
-int FDeferredRenderer::GetPathTracingDebugMode() const
+void FDeferredRenderer::ApplyPathTracingConfig(const FRendererConfig& Config)
 {
-    return PathTracing ? PathTracing->GetDebugMode() : 0;
+    PathTracing->ApplyConfig(Config);
 }
 
 DXGI_FORMAT FDeferredRenderer::ResolveRestirGiRadianceFormat(FDX12Device* Device) const
 {
-    return RestirGI ? RestirGI->ResolveRadianceFormat(Device) : DXGI_FORMAT_R16G16B16A16_FLOAT;
+    return RestirGI->ResolveRadianceFormat(Device);
 }
 
 bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT BackBufferFormat, const FRendererConfig& Config)
@@ -760,6 +176,7 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     this->BackBufferFormat = BackBufferFormat;
 
     ApplyRendererConfig(Config);
+    FMesh::SetOptimizationStatsLoggingEnabled(Config.bLogMeshOptimizationStats);
 
     InitializeCommonSettings(Width, Height, Config);
 
@@ -782,82 +199,113 @@ bool FDeferredRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t
     return true;
 }
 
-void FDeferredRenderer::ApplyRendererConfig(const FRendererConfig& Config)
+void FDeferredRenderer::ApplyPostProcessConfig(const FRendererConfig& Config)
 {
-    SetTonemapEnabled(Config.bEnableTonemap);
-    SetTonemapExposure(Config.TonemapExposure);
-    SetTonemapWhitePoint(Config.TonemapWhitePoint);
-    SetTonemapGamma(Config.TonemapGamma);
-    SetCasEnabled(Config.bEnableCas);
-    SetCasSharpness(Config.CasSharpness);
-    SetAutoExposureEnabled(Config.bEnableAutoExposure);
-    SetAutoExposureKey(Config.AutoExposureKey);
-    SetAutoExposureMin(Config.AutoExposureMin);
-    SetAutoExposureMax(Config.AutoExposureMax);
-    SetAutoExposureSpeedUp(Config.AutoExposureSpeedUp);
-    SetAutoExposureSpeedDown(Config.AutoExposureSpeedDown);
-    SetTaaEnabled(Config.bEnableTAA);
-    SetTaaHistoryWeight(Config.TaaHistoryWeight);
-    bHZBEnabled = Config.bEnableHZB;
-    bHZBReady = false;
-    bEnablePbrResearch = Config.bEnablePbrResearch;
-    if (PathTracing)
-    {
-        PathTracing->SetAccumulationEnabled(Config.bEnablePathTracingAccumulation);
-        PathTracing->SetMaxBounces(Config.PathTracingMaxBounces);
-    }
-    if (Ssr)
-    {
-        Ssr->SetSwEnabled(Config.bEnableSsrSw);
-        Ssr->SetHwEnabled(Config.bEnableSsrHw);
-        Ssr->SetHzbEnabled(Config.bEnableSsrHzb);
-        Ssr->SetRefineEnabled(Config.bEnableSsrRefine);
-        Ssr->SetDenoiseEnabled(Config.bEnableSsrDenoise);
-    }
-    if (RestirGIDenoiser)
+    Tonemap->SetTonemapEnabled(Config.bEnableTonemap);
+    Tonemap->SetTonemapExposure(Config.TonemapExposure);
+    Tonemap->SetTonemapWhitePoint(Config.TonemapWhitePoint);
+    Tonemap->SetTonemapGamma(Config.TonemapGamma);
+
+    Cas->SetEnabled(Config.bEnableCas);
+    Cas->SetSharpness(Config.CasSharpness);
+
+    AutoExposure->SetEnabled(Config.bEnableAutoExposure);
+    AutoExposure->SetKey(Config.AutoExposureKey);
+    AutoExposure->SetMinExposure(Config.AutoExposureMin);
+    AutoExposure->SetMaxExposure(Config.AutoExposureMax);
+    AutoExposure->SetSpeedUp(Config.AutoExposureSpeedUp);
+    AutoExposure->SetSpeedDown(Config.AutoExposureSpeedDown);
+
+    Taa->SetEnabled(Config.bEnableTAA);
+    Taa->SetHistoryWeight(Config.TaaHistoryWeight);
+}
+
+void FDeferredRenderer::ApplyLightingPassConfig(const FRendererConfig& Config)
+{
+    LightingPass->ApplyLightingPassConfig(Config);
+}
+
+void FDeferredRenderer::ApplySsrConfig(const FRendererConfig& Config)
+{
+    Ssr->SetSwEnabled(Config.bEnableSsrSw);
+    Ssr->SetHwEnabled(Config.bEnableSsrHw);
+    Ssr->SetHzbEnabled(Config.bEnableSsrHzb);
+    Ssr->SetHzbFullResDepthEnabled(Config.bEnableSsrHzbFullResDepth);
+    Ssr->SetRefineEnabled(Config.bEnableSsrRefine);
+    Ssr->SetDenoiseEnabled(Config.bEnableSsrDenoise);
+    Ssr->SetMode(Config.SsrMode);
+    Ssr->SetSamplesPerQuad(Config.SsrSamplesPerQuad);
+    Ssr->SetMaxSteps(Config.SsrMaxSteps);
+    Ssr->SetMaxDistance(Config.SsrMaxDistance);
+    Ssr->SetThickness(Config.SsrThickness);
+    Ssr->SetStride(Config.SsrStride);
+    Ssr->SetRoughnessCutoff(Config.SsrRoughnessCutoff);
+    Ssr->SetIntensity(Config.SsrIntensity);
+}
+
+void FDeferredRenderer::ApplyClusterDAGConfig(const FRendererConfig& Config)
+{
+    ClusterDagRuntime->ApplyConfig(Config);
+}
+
+void FDeferredRenderer::ApplyRestirGIConfig(const FRendererConfig& Config)
+{
+    const bool bCurrentDenoiserEnabled = RestirGIDenoiser->IsEnabled();
+    if (bCurrentDenoiserEnabled != Config.bEnableRestirGIDenoiser)
     {
         RestirGIDenoiser->SetEnabled(Config.bEnableRestirGIDenoiser);
+        InvalidateRestirGiDenoiserHistory();
     }
-    if (Ssr)
+
+    RestirGI->SetEnabled(Config.bEnableRestirGI);
+    RestirGI->SetSamplesPerPixel(std::clamp(Config.RestirGISamplesPerPixel, 1u, 32u));
+    RestirGI->SetIntensity((std::max)(0.0f, Config.RestirGIIntensity));
+    RestirGI->SetRayLength((std::max)(0.1f, Config.RestirGIRayLength));
+    RestirGI->SetClampThreshold((std::max)(0.1f, Config.RestirGIClamp));
+    RestirGI->SetTemporalReuseEnabled(Config.bEnableRestirGITemporalReuse);
+    RestirGI->SetSpatialReuseEnabled(Config.bEnableRestirGISpatialReuse);
+    RestirGI->SetTemporalAdditionalScale(std::clamp(Config.RestirGITemporalAdditionalScale, 0.0f, 1.0f));
+    RestirGI->SetSpatialAdditionalScale(std::clamp(Config.RestirGISpatialAdditionalScale, 0.0f, 1.0f));
+    RestirGI->SetResolveMinDenominator((std::max)(Config.RestirGIResolveMinDenominator, 1e-6f));
+    RestirGI->SetResolveMaxNormalization((std::max)(Config.RestirGIResolveMaxNormalization, 1.0f));
+    RestirGI->SetResolveLowSampleBoostGuard(std::clamp(Config.RestirGIResolveLowSampleBoostGuard, 0.0f, 1.0f));
+    RestirGI->SetResolveUseConfidence(Config.bRestirGIResolveUseConfidence);
+    RestirGI->SetMaxHistoryFrames(std::clamp(Config.RestirGIMaxHistoryFrames, 1u, 16u));
+    RestirGI->SetUseVisibility(Config.bRestirGIUseVisibility);
+    RestirGI->SetUseBrdf(Config.bRestirGIUseBrdf);
+    RestirGI->SetUseHistoryIndirect(Config.bRestirGIUseHistoryIndirect);
+
+    if (RestirGI->GetRandomMode() != Config.RestirGIRandomMode)
     {
-        Ssr->SetMaxSteps(Config.SsrMaxSteps);
-        Ssr->SetMaxDistance(Config.SsrMaxDistance);
-        Ssr->SetThickness(Config.SsrThickness);
-        Ssr->SetStride(Config.SsrStride);
-        Ssr->SetRoughnessCutoff(Config.SsrRoughnessCutoff);
-        Ssr->SetIntensity(Config.SsrIntensity);
-    }
-    if (RestirGI)
-    {
-        RestirGI->SetEnabled(Config.bEnableRestirGI);
-        RestirGI->SetSamplesPerPixel(std::clamp(Config.RestirGISamplesPerPixel, 1u, 32u));
-        RestirGI->SetIntensity((std::max)(0.0f, Config.RestirGIIntensity));
-        RestirGI->SetRayLength((std::max)(0.1f, Config.RestirGIRayLength));
-        RestirGI->SetClampThreshold((std::max)(0.1f, Config.RestirGIClamp));
-        RestirGI->SetTemporalReuseEnabled(Config.bEnableRestirGITemporalReuse);
-        RestirGI->SetSpatialReuseEnabled(Config.bEnableRestirGISpatialReuse);
-        RestirGI->SetTemporalAdditionalScale(std::clamp(Config.RestirGITemporalAdditionalScale, 0.0f, 1.0f));
-        RestirGI->SetSpatialAdditionalScale(std::clamp(Config.RestirGISpatialAdditionalScale, 0.0f, 1.0f));
-        RestirGI->SetResolveMinDenominator((std::max)(Config.RestirGIResolveMinDenominator, 1e-6f));
-        RestirGI->SetResolveMaxNormalization((std::max)(Config.RestirGIResolveMaxNormalization, 1.0f));
-        RestirGI->SetResolveLowSampleBoostGuard(std::clamp(Config.RestirGIResolveLowSampleBoostGuard, 0.0f, 1.0f));
-        RestirGI->SetResolveUseConfidence(Config.bRestirGIResolveUseConfidence);
-        RestirGI->SetMaxHistoryFrames(std::clamp(Config.RestirGIMaxHistoryFrames, 1u, 16u));
-        RestirGI->SetUseVisibility(Config.bRestirGIUseVisibility);
-        RestirGI->SetUseBrdf(Config.bRestirGIUseBrdf);
-        RestirGI->SetUseHistoryIndirect(Config.bRestirGIUseHistoryIndirect);
         RestirGI->SetRandomMode(Config.RestirGIRandomMode);
+        RestirGI->InvalidateReservoirHistory();
+        InvalidateRestirGiDenoiserHistory();
     }
-    if (Ssr)
-    {
-        Ssr->SetMode(Config.SsrMode);
-        Ssr->SetSamplesPerQuad(Config.SsrSamplesPerQuad);
-    }
+}
+
+void FDeferredRenderer::ApplyRestirGITransientState(const FRestirGITransientState& State)
+{
+    RestirGI->SetDebugRayEnabled(State.bDebugRayEnabled);
+    RestirGI->SetDebugPixel(State.DebugPixelX, State.DebugPixelY);
+    RestirGI->SetFreezeFrame(State.bFreezeFrame, GetFrameNumber());
+}
+
+void FDeferredRenderer::ApplyRendererConfig(const FRendererConfig& Config)
+{
+    ApplyPostProcessConfig(Config);
+    ApplyLightingPassConfig(Config);
+    ApplyClusterDAGConfig(Config);
+    Hzb->SetEnabled(Config.bEnableHZB);
+    Hzb->SetReady(false);
+    ApplyGtaoConfig(Config);
+    ApplyPathTracingConfig(Config);
+    ApplySsrConfig(Config);
+    ApplyRestirGIConfig(Config);
 }
 
 bool FDeferredRenderer::InitializePipelineDomains(FDX12Device* Device, DXGI_FORMAT BackBufferFormat)
 {
-    if (!CreateRayTracingPipeline(Device))
+    if (!GetRayTracingRuntime().CreatePipeline(*this, Device))
     {
         LogError("Deferred renderer initialization failed: ray tracing pipeline creation failed");
         return false;
@@ -867,85 +315,78 @@ bool FDeferredRenderer::InitializePipelineDomains(FDX12Device* Device, DXGI_FORM
         LogError("Deferred renderer initialization failed: skinning pipeline creation failed");
         return false;
     }
-    if (!CreateEnvironmentBuildPipelines(Device))
+    if (!EnvironmentMap->InitializePipelines(*this, Device))
     {
         LogError("Deferred renderer initialization failed: environment build pipeline creation failed");
         return false;
     }
 
     LogInfo("Creating deferred renderer geometry domain pipelines...");
-    if (!GeometryPasses->InitializePipelines(*this, Device, LightingBufferFormat))
+    if (!BasePass->InitializePipelines(*this, Device, LightingBufferFormat))
     {
         LogError("Deferred renderer initialization failed: geometry domain pipeline creation failed");
         return false;
     }
 
     LogInfo("Creating deferred renderer lighting domain pipelines...");
-    if (!LightingPasses->InitializePipelines(*this, Device, BackBufferFormat))
+    if (!LightingPass->InitializePipelines(*this, Device, BackBufferFormat))
     {
         LogError("Deferred renderer initialization failed: lighting domain pipeline creation failed");
         return false;
     }
 
-    if (Gtao && !Gtao->InitializePipelines(*this, Device))
+    if (!Gtao->InitializePipelines(*this, Device))
     {
         LogError("Deferred renderer initialization failed: GTAO pipeline creation failed");
         return false;
     }
 
     LogInfo("Creating deferred renderer path tracing pipelines...");
-    if (PathTracing && !PathTracing->InitializePipelines(*this, Device))
+    if (!PathTracing->InitializePipelines(*this, Device))
     {
         LogError("Deferred renderer initialization failed: path tracing pipeline creation failed");
         return false;
     }
 
-    if (RestirGI && !RestirGI->InitializePipelines(*this, Device))
+    if (!RestirGI->InitializePipelines(*this, Device))
     {
         LogError("Deferred renderer initialization failed: ReSTIR GI pipeline creation failed");
         return false;
     }
 
-    if (RestirGIDenoiser && !RestirGIDenoiser->InitializePipelines(*this, Device))
+    if (!RestirGIDenoiser->InitializePipelines(*this, Device))
     {
         LogError("Deferred renderer initialization failed: ReSTIR GI denoiser pipeline creation failed");
         return false;
     }
 
-    if (Ssr && !Ssr->InitializePipelines(*this, Device))
+    if (!Ssr->InitializePipelines(*this, Device))
     {
         LogError("Deferred renderer initialization failed: SSR pipeline creation failed");
         return false;
     }
 
-    if (AutoExposure && !AutoExposure->InitializePipelines(*this, Device))
+    if (!AutoExposure->InitializePipelines(*this, Device))
     {
         LogError("Deferred renderer initialization failed: auto exposure pipeline creation failed");
         return false;
     }
 
-    if (Cas && !Cas->InitializePipelines(*this, Device, BackBufferFormat))
+    if (!Cas->InitializePipelines(*this, Device, BackBufferFormat))
     {
         LogError("Deferred renderer initialization failed: CAS pipeline creation failed");
         return false;
     }
 
-    if (Tonemap && !Tonemap->InitializePipelines(*this, Device, BackBufferFormat))
+    if (!Tonemap->InitializePipelines(*this, Device, BackBufferFormat))
     {
         LogError("Deferred renderer initialization failed: tonemap pipeline creation failed");
         return false;
     }
 
-    if (Taa && !Taa->InitializePipelines(*this, Device, BackBufferFormat))
+    if (!Taa->InitializePipelines(*this, Device, BackBufferFormat))
     {
         LogError("Deferred renderer initialization failed: TAA pipeline creation failed");
-        return false;
-    }
-
-    LogInfo("Creating deferred renderer post-process pipelines...");
-    if (!PostProcessPasses->InitializePipelines(*this, Device, BackBufferFormat))
-    {
-        LogError("Deferred renderer initialization failed: post-process pipeline creation failed");
         return false;
     }
 
@@ -962,78 +403,69 @@ bool FDeferredRenderer::InitializeFrameResources(FDX12Device* Device, uint32_t W
         return false;
     }
 
-    if (NullTexture)
-    {
-        NullTexture->SetName(L"NullTexture");
-    }
+    NullTexture->SetName(L"NullTexture");
 
-    if (!GeometryPasses->InitializeResources(*this, Device, Width, Height))
+    if (!BasePass->InitializeResources(*this, Device, Width, Height))
     {
         LogError("Deferred renderer initialization failed: geometry domain resource creation failed");
         return false;
     }
 
-    if (!PostProcessPasses->InitializeResources(*this, Device, Width, Height, Config.FramesInFlight))
-    {
-        LogError("Deferred renderer initialization failed: post-process resource creation failed");
-        return false;
-    }
-
-    if (Taa && !Taa->InitializeResources(*this, Device, Width, Height, Config.FramesInFlight))
+    if (!Taa->InitializeResources(*this, Device, Width, Height, Config.FramesInFlight))
     {
         LogError("Deferred renderer initialization failed: TAA resource creation failed");
         return false;
     }
 
-    if (AutoExposure && !AutoExposure->InitializeResources(*this, Device))
+    if (!AutoExposure->InitializeResources(*this, Device))
     {
         LogError("Deferred renderer initialization failed: auto exposure resource creation failed");
         return false;
     }
 
-    if (Cas && !Cas->InitializeResources(*this, Device))
+    if (!Cas->InitializeResources(*this, Device))
     {
         LogError("Deferred renderer initialization failed: CAS resource creation failed");
         return false;
     }
 
-    if (Tonemap && !Tonemap->InitializeResources(*this, Device))
+    if (!Tonemap->InitializeResources(*this, Device))
     {
         LogError("Deferred renderer initialization failed: tonemap resource creation failed");
         return false;
     }
 
-    if (PathTracing && !PathTracing->InitializeResources(*this, Device, Width, Height, Config.FramesInFlight))
+    if (!PathTracing->InitializeResources(*this, Device, Width, Height, Config.FramesInFlight))
     {
         LogError("Deferred renderer initialization failed: path tracing resource creation failed");
         return false;
     }
 
-    if (RestirGI && !RestirGI->InitializeResources(*this, Device, Width, Height, Config.FramesInFlight))
+    if (!RestirGI->InitializeResources(*this, Device, Width, Height, Config.FramesInFlight))
     {
         LogError("Deferred renderer initialization failed: ReSTIR GI resource creation failed");
         return false;
     }
 
-    if (RestirGIDenoiser && !RestirGIDenoiser->InitializeResources(*this, Device, Width, Height))
+    if (!RestirGIDenoiser->InitializeResources(*this, Device, Width, Height))
     {
         LogError("Deferred renderer initialization failed: ReSTIR GI denoiser resource creation failed");
         return false;
     }
 
-    if (Ssr && !Ssr->InitializeResources(*this, Device, Width, Height))
+    if (!Ssr->InitializeResources(*this, Device, Width, Height))
     {
         LogError("Deferred renderer initialization failed: SSR resource creation failed");
         return false;
     }
 
-    if (!LightingPasses->InitializeResources(*this, Device, Width, Height))
+    if (!LightingPass->InitializeResources(*this, Device, Width, Height))
     {
         LogError("Deferred renderer initialization failed: lighting domain resource creation failed");
         return false;
     }
 
-    if (Gtao && !Gtao->InitializeResources(*this, Device, Width, Height))
+    if (!Gtao->InitializeResources(*this, Device, Width, Height))
     {
         LogError("Deferred renderer initialization failed: GTAO resource creation failed");
         return false;
@@ -1054,13 +486,39 @@ bool FDeferredRenderer::InitializeSceneResources(FDX12Device* Device, DXGI_FORMA
         return false;
     }
 
-    if (!VisibilityPasses->InitializeResources(*this, Device))
+    if (!CreateGpuDrivenResources(Device))
     {
         LogWarning("Deferred renderer GPU-driven resources creation failed; fallback to CPU-driven draws.");
     }
 
-    if (!InitializeSkyResources(Device))
+    if (ClusterDagRuntime->IsEnabled())
     {
+        bool bClusterDagRuntimeReady = false;
+        if (!ClusterDagRuntime->InitializePipelines(*this, Device))
+        {
+            LogWarning("Deferred renderer ClusterDag runtime pipeline creation failed; falling back to legacy path.");
+        }
+        else
+        {
+            bClusterDagRuntimeReady = true;
+        }
+
+        if (bClusterDagRuntimeReady && !ClusterDagRuntime->InitializeResources(*this, Device))
+        {
+            LogWarning("Deferred renderer ClusterDag runtime resource creation failed; falling back to legacy path.");
+        }
+    }
+
+    FSkyPipelineConfig SkyPipelineConfig;
+    SkyPipelineConfig.DepthEnable = true;
+    SkyPipelineConfig.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+    SkyPipelineConfig.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+    SkyPipelineConfig.DsvFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
+
+    const float SkySphereRadius = (std::max)(SceneRadius * 5.0f, 100.0f);
+    if (!SkyAtmosphere->Initialize(Device, SkySphereRadius, LightingBufferFormat, SkyPipelineConfig))
+    {
+        LogError("Deferred renderer initialization failed: sky pipeline state creation failed");
         return false;
     }
 
@@ -1075,7 +533,7 @@ bool FDeferredRenderer::InitializeSceneResources(FDX12Device* Device, DXGI_FORMA
 bool FDeferredRenderer::InitializeSceneModelResources(FDX12Device* Device, const FRendererConfig& Config)
 {
     const std::wstring SceneFilePath = Config.SceneFile.empty() ? L"Assets/Scenes/Scene.json" : Config.SceneFile;
-    if (!RendererUtils::CreateSceneModelsFromJson(Device, SceneFilePath, SceneModels, SceneCenter, SceneRadius, &GltfScenes))
+    if (!SceneModelResourceLoader::LoadModelsFromJson(Device, SceneFilePath, SceneModels, SceneCenter, SceneRadius, &GltfScenes))
     {
         LogError("scene JSON could not be loaded.");
         return false;
@@ -1109,6 +567,11 @@ bool FDeferredRenderer::InitializeSceneModelResources(FDX12Device* Device, const
         LogError("Deferred renderer initialization failed: constant buffer creation failed");
         return false;
     }
+    if (!CreateClusterDagSceneConstantBuffersPerFrame(Device, ConstantBufferSize))
+    {
+        LogError("Deferred renderer initialization failed: Cluster DAG constant buffer creation failed");
+        return false;
+    }
     if (!CreateCullingConstantBuffersPerFrame(Device))
     {
         LogError("Deferred renderer initialization failed: culling constant buffer creation failed");
@@ -1120,51 +583,26 @@ bool FDeferredRenderer::InitializeSceneModelResources(FDX12Device* Device, const
 
 bool FDeferredRenderer::InitializeEnvironmentAndDescriptorResources(FDX12Device* Device, const FRendererConfig& Config)
 {
-    if (!BuildEnvironmentFromEquirect(Config))
+    if (!EnvironmentMap->InitializeResources(*this, Device, Config, "Deferred"))
     {
-        LogError("Deferred renderer initialization failed: environment build requires R11G11B10 typed UAV support");
         return false;
     }
-    if (EnvironmentCubeTexture)
-    {
-        EnvironmentCubeTexture->SetName(L"EnvironmentCube");
-    }
 
-    if (!TextureLoader->LoadOrDefault(L"Assets/Textures/PreintegratedGF.dds", BrdfLutTexture))
-    {
-        LogError("Deferred renderer initialization failed: BRDF LUT texture loading failed");
-        return false;
-    }
-    if (BrdfLutTexture)
-    {
-        BrdfLutTexture->SetName(L"BrdfLut");
-    }
-
-    if (!TextureLoader->LoadOrDefault(L"Assets/Textures/BlueNoise/sobol_256_4d.png", BlueNoiseSobolTexture))
+    if (!TextureLoader->LoadOrDefault(L"Assets/Textures/BlueNoise/sobol_256_4d.png", BlueNoiseSobolTexture.Resource))
     {
         LogError("Deferred renderer initialization failed: blue noise sobol texture loading failed");
         return false;
     }
-    if (BlueNoiseSobolTexture)
-    {
-        BlueNoiseSobolTexture->SetName(L"BlueNoiseSobol");
-    }
+    BlueNoiseSobolTexture->SetName(L"BlueNoiseSobol");
+    InitializeBindlessTexture(BlueNoiseSobolTexture, BuildTextureDescFromResource(BlueNoiseSobolTexture.Get()), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
-    if (!TextureLoader->LoadOrDefault(L"Assets/Textures/BlueNoise/scrambling_ranking_128x128_2d_1spp.png", BlueNoiseScramblingRanking1SPPTexture))
+    if (!TextureLoader->LoadOrDefault(L"Assets/Textures/BlueNoise/scrambling_ranking_128x128_2d_1spp.png", BlueNoiseScramblingRanking1SPPTexture.Resource))
     {
         LogError("Deferred renderer initialization failed: blue noise scrambling/ranking texture loading failed");
         return false;
     }
-    if (BlueNoiseScramblingRanking1SPPTexture)
-    {
-        BlueNoiseScramblingRanking1SPPTexture->SetName(L"BlueNoiseScramblingRanking1SPP");
-    }
-
-    if (EnvironmentCubeTexture)
-    {
-        const D3D12_RESOURCE_DESC EnvDesc = EnvironmentCubeTexture->GetDesc();
-        EnvironmentMipCount = static_cast<float>((std::max)(1u, static_cast<uint32_t>(EnvDesc.MipLevels)));
-    }
+    BlueNoiseScramblingRanking1SPPTexture->SetName(L"BlueNoiseScramblingRanking1SPP");
+    InitializeBindlessTexture(BlueNoiseScramblingRanking1SPPTexture, BuildTextureDescFromResource(BlueNoiseScramblingRanking1SPPTexture.Get()), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
     if (!CreateSceneTextures(Device, SceneModels))
     {
@@ -1178,49 +616,50 @@ bool FDeferredRenderer::InitializeEnvironmentAndDescriptorResources(FDX12Device*
         return false;
     }
 
-    if (Gtao && !Gtao->CreatePersistentDescriptors(*this, Device))
+    if (!Gtao->CreatePersistentDescriptors(*this, Device))
     {
         LogError("Deferred renderer initialization failed: GTAO descriptor creation failed");
         return false;
     }
 
-    if (PathTracing && !PathTracing->CreatePersistentDescriptors(*this, Device))
+    if (!PathTracing->CreatePersistentDescriptors(*this, Device))
     {
         LogError("Deferred renderer initialization failed: path tracing descriptor creation failed");
         return false;
     }
 
-    if (RestirGI && !RestirGI->CreatePersistentDescriptors(*this, Device))
+    if (!RestirGI->CreatePersistentDescriptors(*this, Device))
     {
         LogError("Deferred renderer initialization failed: ReSTIR GI descriptor creation failed");
         return false;
     }
 
-    if (RestirGIDenoiser && !RestirGIDenoiser->CreatePersistentDescriptors(*this, Device))
+    if (!RestirGIDenoiser->CreatePersistentDescriptors(*this, Device))
     {
         LogError("Deferred renderer initialization failed: ReSTIR GI denoiser descriptor creation failed");
         return false;
     }
+    RestirGI->RefreshPersistentInputValidation(*this, Device);
 
-    if (AutoExposure && !AutoExposure->CreatePersistentDescriptors(*this, Device))
+    if (!AutoExposure->CreatePersistentDescriptors(*this, Device))
     {
         LogError("Deferred renderer initialization failed: auto exposure descriptor creation failed");
         return false;
     }
 
-    if (Cas && !Cas->CreatePersistentDescriptors(*this, Device))
+    if (!Cas->CreatePersistentDescriptors(*this, Device))
     {
         LogError("Deferred renderer initialization failed: CAS descriptor creation failed");
         return false;
     }
 
-    if (Taa && !Taa->CreatePersistentDescriptors(*this, Device))
+    if (!Taa->CreatePersistentDescriptors(*this, Device))
     {
         LogError("Deferred renderer initialization failed: TAA descriptor creation failed");
         return false;
     }
 
-    if (Tonemap && !Tonemap->CreatePersistentDescriptors(*this, Device))
+    if (!Tonemap->CreatePersistentDescriptors(*this, Device))
     {
         LogError("Deferred renderer initialization failed: tonemap descriptor creation failed");
         return false;
@@ -1229,43 +668,69 @@ bool FDeferredRenderer::InitializeEnvironmentAndDescriptorResources(FDX12Device*
     return true;
 }
 
-bool FDeferredRenderer::InitializeSkyResources(FDX12Device* Device)
+bool FDeferredRenderer::CreateClusterDagSceneConstantBuffersPerFrame(FDX12Device* Device, uint64_t BufferSize)
 {
-    SkySphereRadius = (std::max)(SceneRadius * 5.0f, 100.0f);
-    if (!RendererUtils::CreateSkyAtmosphereResources(Device, SkySphereRadius, SkyGeometry, SkyConstantBuffer, SkyConstantBufferMapped))
-    {
-        LogError("Deferred renderer initialization failed: sky resource creation failed");
-        return false;
-    }
+    ClusterDagSceneConstantBuffers.clear();
+    ClusterDagSceneConstantBufferMapped.clear();
+    ClusterDagSceneConstantBuffers.resize(GetFramesInFlight());
+    ClusterDagSceneConstantBufferMapped.resize(GetFramesInFlight(), nullptr);
 
-    if (SkyConstantBuffer)
+    for (uint32_t Index = 0; Index < GetFramesInFlight(); ++Index)
     {
-        SkyConstantBuffer->SetName(L"SkyConstantBuffer");
-    }
+        FMappedConstantBuffer ConstantBufferResource;
+        if (!CreateMappedConstantBuffer(Device, BufferSize, ConstantBufferResource))
+        {
+            return false;
+        }
 
-    FSkyPipelineConfig SkyPipelineConfig;
-    SkyPipelineConfig.DepthEnable = true;
-    SkyPipelineConfig.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
-    SkyPipelineConfig.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
-    SkyPipelineConfig.DsvFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
+        ClusterDagSceneConstantBuffers[Index] = ConstantBufferResource.Resource;
+        ClusterDagSceneConstantBufferMapped[Index] = ConstantBufferResource.MappedData;
 
-    if (!RendererUtils::CreateSkyAtmospherePipeline(Device, LightingBufferFormat, SkyPipelineConfig, SkyRootSignature, SkyPipelineState))
-    {
-        LogError("Deferred renderer initialization failed: sky pipeline state creation failed");
-        return false;
+        const std::wstring Name = L"ClusterDagSceneConstantBuffer_Frame" + std::to_wstring(Index);
+        ClusterDagSceneConstantBuffers[Index]->SetName(Name.c_str());
     }
 
     return true;
 }
 
-bool FDeferredRenderer::InitializeGpuDebugResources(FDX12Device* Device, DXGI_FORMAT BackBufferFormat)
+D3D12_GPU_VIRTUAL_ADDRESS FDeferredRenderer::GetClusterDagSceneConstantBufferAddress() const
 {
-    if (!bEnableGpuDebugPrint)
+    return GetClusterDagSceneConstantBufferAddress(GetFrameIndex());
+}
+
+D3D12_GPU_VIRTUAL_ADDRESS FDeferredRenderer::GetClusterDagSceneConstantBufferAddress(uint32_t FrameIndex) const
+{
+    if (FrameIndex >= ClusterDagSceneConstantBuffers.size())
     {
-        return true;
+        return 0;
     }
 
-    if (!CreateGpuDebugPrintResources(Device) || !CreateGpuDebugPrintPipeline(Device, BackBufferFormat) || !CreateGpuDebugLinePipeline(Device, BackBufferFormat) || !CreateGpuDebugPrintStatsPipeline(Device))
+    ID3D12Resource* Buffer = ClusterDagSceneConstantBuffers[FrameIndex].Get();
+    return Buffer ? Buffer->GetGPUVirtualAddress() : 0;
+}
+
+uint8_t* FDeferredRenderer::GetClusterDagSceneConstantBufferMapped() const
+{
+    const uint32_t FrameIndex = GetFrameIndex();
+    if (FrameIndex >= ClusterDagSceneConstantBufferMapped.size())
+    {
+        return nullptr;
+    }
+
+    return ClusterDagSceneConstantBufferMapped[FrameIndex];
+}
+
+bool FDeferredRenderer::InitializeGpuDebugResources(FDX12Device* Device, DXGI_FORMAT BackBufferFormat)
+{
+    if (!GpuDebugState.CreateResources(Device)
+        || !GpuDebugState.CreateLinePipeline(Device, BackBufferFormat, SceneDepthFormat)
+        || !GpuDebugState.CreateBoxPipeline(Device, BackBufferFormat, SceneDepthFormat))
+    {
+        LogError("Deferred renderer initialization failed: GPU debug debug-draw setup failed");
+        return false;
+    }
+
+    if (GpuDebugState.IsPrintEnabled() && (!GpuDebugState.CreatePrintPipeline(Device, BackBufferFormat) || !GpuDebugState.CreatePrintStatsPipeline(Device)))
     {
         LogError("Deferred renderer initialization failed: GPU debug print setup failed");
         return false;
@@ -1285,18 +750,20 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
     const bool bAnySkinningUpdated = RendererUtils::UpdateGltfSceneAnimation(SceneModels, GltfScenes, GltfScenePoses, GltfSceneTimes, DeltaTime);
 
-    PrepareGpuDebugPrint(CmdContext);
+    GpuDebugState.PreparePrint(CmdContext);
+    GpuDebugState.PrepareLine(CmdContext);
+    GpuDebugState.PrepareBox(CmdContext);
 
     FDeferredFrameState FrameState;
     PrepareFrameState(Camera, bAnySkinningUpdated, FrameState);
     DispatchSkinning(CmdContext, FrameState.LightViewProjection);
-    UpdateRayTracingBlasRefit(CmdContext);
-    BuildRayTracingTlas(CmdContext);
+    GetRayTracingRuntime().UpdateBlasRefit(*this, CmdContext);
+    GetRayTracingRuntime().BuildTlas(*this, CmdContext);
 
     FRenderGraph Graph;
     ConfigureFrameGraph(Graph);
 
-    const bool bUsePathTracing = bPathTracingEnabled && bRayTracingPipelineReady;
+    const bool bUsePathTracing = PathTracing->IsPreferred() && GetRayTracingRuntime().bRayTracingPipelineReady;
 
     FDeferredFrameResources Resources;
     FDeferredPassContext PassContext
@@ -1313,7 +780,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
     };
     ResourceImporter->ImportFrameResources(PassContext);
 
-    ConfigureHZBOcclusion(FrameState.bUseHZBOcclusion, HZBSrvBindlessIndex, HZBWidth, HZBHeight, HZBMipCount);
+    ConfigureHZBOcclusion(FrameState.bUseHZBOcclusion, Hzb->GetSrvBindlessIndex(), Hzb->GetWidth(), Hzb->GetHeight(), Hzb->GetMipCount());
 
     FrameOrchestrator->BuildFrameGraph(PassContext);
 
@@ -1370,53 +837,41 @@ void FDeferredRenderer::PrepareFrameState(const FCamera& Camera, bool bAnySkinni
 
     if (!bHasPreviousViewProjection)
     {
-        if (RestirGI)
-        {
-            RestirGI->InvalidateReservoirHistory();
-        }
+        RestirGI->InvalidateReservoirHistory();
         InvalidateRestirGiDenoiserHistory();
     }
 
-    if (!IsRestirGIEnabled())
+    if (!RestirGI->IsEnabled())
     {
-        if (RestirGI)
-        {
-            RestirGI->InvalidateReservoirHistory();
-        }
+        RestirGI->InvalidateReservoirHistory();
         InvalidateRestirGiDenoiserHistory();
     }
 
-    if (!IsRestirGIDenoiserEnabled())
+    if (!RestirGIDenoiser->IsEnabled())
     {
         InvalidateRestirGiDenoiserHistory();
     }
 
-    OutState.bGtaoJitterActive = bGtaoEnabled && bGtaoJitterEnabled;
-    if (Taa)
-    {
-        Taa->PrepareFrameState(
-            *this,
-            Camera,
-            OutState.bGtaoJitterActive,
-            OutState.bTaaActive,
-            OutState.bTaaHistoryReady,
-            OutState.TaaFrameIndex,
-            OutState.TaaReadIndex,
-            OutState.TaaWriteIndex);
-    }
+    OutState.bGtaoJitterActive = Gtao->IsEnabled() && Gtao->IsJitterEnabled();
+    Taa->PrepareFrameState(
+        *this,
+        Camera,
+        OutState.bGtaoJitterActive,
+        OutState.bTaaActive,
+        OutState.bTaaHistoryReady,
+        OutState.TaaFrameIndex,
+        OutState.TaaReadIndex,
+        OutState.TaaWriteIndex);
 
-    if (PathTracing)
-    {
-        PathTracing->PrepareFrameState(
-            OutState.TaaFrameIndex,
-            bCameraMoved,
-            OutState.bPathTracingAccumulationActive,
-            OutState.bPathTracingAccumulationHistoryReady,
-            OutState.PathTracingAccumulationReadIndex,
-            OutState.PathTracingAccumulationWriteIndex);
-    }
+    PathTracing->PrepareFrameState(
+        OutState.TaaFrameIndex,
+        bCameraMoved,
+        OutState.bPathTracingAccumulationActive,
+        OutState.bPathTracingAccumulationHistoryReady,
+        OutState.PathTracingAccumulationReadIndex,
+        OutState.PathTracingAccumulationWriteIndex);
 
-    const bool bUseTaaJitter = Taa && Taa->UsesJitter();
+    const bool bUseTaaJitter = Taa->UsesJitter();
     const DirectX::XMMATRIX CurrentProjection = bUseTaaJitter ? Taa->GetProjection() : Camera.GetProjectionMatrix();
     const DirectX::XMMATRIX CurrentViewProjection = Camera.GetViewMatrix() * CurrentProjection;
     DirectX::XMStoreFloat4x4(&CurrentViewProjectionMatrix, CurrentViewProjection);
@@ -1425,22 +880,22 @@ void FDeferredRenderer::PrepareFrameState(const FCamera& Camera, bool bAnySkinni
     const DirectX::XMMATRIX CurrentUnjitteredViewProjection = Camera.GetViewMatrix() * CurrentUnjitteredProjection;
     DirectX::XMStoreFloat4x4(&CurrentUnjitteredViewProjectionMatrix, CurrentUnjitteredViewProjection);
 
-    OutState.bRenderShadows = bShadowsEnabled && ShadowPipelines[0] && ShadowPipelines[1] && ShadowMap;
-    OutState.bDoDepthPrepass = bDepthPrepassEnabled && DepthPrepassPipelines[0] && DepthPrepassPipelines[1];
-    if (!bHZBEnabled)
+    OutState.bRenderShadows = bShadowsEnabled && BasePass->HasShadowPipelines() && ShadowMap;
+    OutState.bDoDepthPrepass = bDepthPrepassEnabled && BasePass->HasDepthPrepassPipelines();
+    if (!Hzb->IsEnabled())
     {
-        bHZBReady = false;
+        Hzb->SetReady(false);
     }
 
-    const bool bPrevHZBReady = bHZBReady;
-    OutState.bUseHZBOcclusion = bHZBEnabled && bPrevHZBReady && HZBSrvBindlessIndex != UINT32_MAX;
-    OutState.bUseHzbTwoPass = bEnableIndirectDraw && OutState.bUseHZBOcclusion && bEnableHzbTwoPass;
+    const bool bPrevHZBReady = Hzb->IsReady();
+    OutState.bUseHZBOcclusion = Hzb->IsEnabled() && bPrevHZBReady && IsValidBindlessIndex(Hzb->GetSrvBindlessIndex());
+    OutState.bUseHzbTwoPass = bEnableIndirectDraw && OutState.bUseHZBOcclusion && Hzb->IsTwoPassEnabled();
     if (OutState.bUseHzbTwoPass)
     {
         OutState.bDoDepthPrepass = false;
     }
-    OutState.bBuildHZB = bHZBEnabled;
-    OutState.bCasActive = Cas && Cas->IsReady();
+    OutState.bBuildHZB = Hzb->IsEnabled();
+    OutState.bCasActive = Cas->IsReady();
     OutState.LightViewProjection = RendererUtils::BuildDirectionalLightViewProjection(SceneCenter, SceneRadius, LightDirection);
 }
 
@@ -1454,30 +909,16 @@ void FDeferredRenderer::ConfigureFrameGraph(FRenderGraph& Graph) const
 
 void FDeferredRenderer::FinalizeFrameState(const FDeferredFrameState& FrameState)
 {
-    if (Taa)
-    {
-        Taa->FinalizeFrameState(FrameState.bTaaActive, FrameState.bGtaoJitterActive);
-    }
-
-    if (AutoExposure)
-    {
-        AutoExposure->FinalizeFrame();
-    }
+    Taa->FinalizeFrameState(FrameState.bTaaActive, FrameState.bGtaoJitterActive);
+    AutoExposure->FinalizeFrame();
 
     PreviousViewProjectionMatrix = CurrentViewProjectionMatrix;
     bHasPreviousViewProjection = true;
     PreviousUnjitteredViewProjectionMatrix = CurrentUnjitteredViewProjectionMatrix;
     bHasPreviousUnjitteredViewProjection = true;
 
-    if (RestirGI)
-    {
-        RestirGI->FinalizeFrame(*this);
-    }
-
-    if (RestirGIDenoiser)
-    {
-        RestirGIDenoiser->FinalizeFrame(*this);
-    }
+    RestirGI->FinalizeFrame(*this);
+    RestirGIDenoiser->FinalizeFrame(*this);
 
     for (FSceneModelResource& Model : SceneModels)
     {
@@ -1488,40 +929,165 @@ void FDeferredRenderer::FinalizeFrameState(const FDeferredFrameState& FrameState
 
 void FDeferredRenderer::InvalidateRestirGiDenoiserHistory()
 {
-    if (RestirGIDenoiser)
-    {
-        RestirGIDenoiser->InvalidateHistory();
-    }
+    RestirGIDenoiser->InvalidateHistory();
 }
 
 void FDeferredRenderer::OnFrameFenceSignaled(uint32_t FrameIndex, uint64_t FenceValue)
 {
     (void)FenceValue;
 
-    if (Taa)
+    Taa->OnFrameFenceSignaled(FrameIndex);
+    PathTracing->OnFrameFenceSignaled(FrameIndex);
+}
+
+bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, const std::vector<FSceneModelResource>& Models)
+{
+    (void)Device;
+
+    if (!TextureLoader)
     {
-        Taa->OnFrameFenceSignaled(FrameIndex);
+        return false;
     }
 
-    if (PathTracing)
+    SceneTextures.clear();
+    SceneTextures.reserve(Models.size());
+
+    std::vector<FTextureLoadRequest> Requests;
+    Requests.reserve(Models.size() * 10);
+
+    for (const FSceneModelResource& Model : Models)
     {
-        PathTracing->OnFrameFenceSignaled(FrameIndex);
+        (void)Model;
+        FModelTextureSet TextureSet;
+        SceneTextures.push_back(TextureSet);
     }
+
+    for (size_t i = 0; i < Models.size(); ++i)
+    {
+        const FSceneModelResource& Model = Models[i];
+        FModelTextureSet& TextureSet = SceneTextures[i];
+
+        if (!Model.BaseColorTexturePath.empty())
+        {
+            FTextureLoadRequest BaseColorRequest;
+            BaseColorRequest.Path = Model.BaseColorTexturePath;
+            BaseColorRequest.bUseSolidColor = false;
+            BaseColorRequest.bUseSRGB = true;
+            BaseColorRequest.OutTexture = &TextureSet.BaseColor;
+            Requests.push_back(BaseColorRequest);
+        }
+
+        if (!Model.MetallicRoughnessTexturePath.empty())
+        {
+            FTextureLoadRequest MetallicRoughnessRequest;
+            MetallicRoughnessRequest.Path = Model.MetallicRoughnessTexturePath;
+            MetallicRoughnessRequest.bUseSolidColor = false;
+            MetallicRoughnessRequest.OutTexture = &TextureSet.MetallicRoughness;
+            Requests.push_back(MetallicRoughnessRequest);
+        }
+
+        if (!Model.NormalTexturePath.empty())
+        {
+            FTextureLoadRequest NormalRequest;
+            NormalRequest.Path = Model.NormalTexturePath;
+            NormalRequest.bUseSolidColor = false;
+            NormalRequest.OutTexture = &TextureSet.Normal;
+            Requests.push_back(NormalRequest);
+        }
+
+        if (!Model.EmissiveTexturePath.empty())
+        {
+            FTextureLoadRequest EmissiveRequest;
+            EmissiveRequest.Path = Model.EmissiveTexturePath;
+            EmissiveRequest.bUseSolidColor = false;
+            EmissiveRequest.bUseSRGB = true;
+            EmissiveRequest.OutTexture = &TextureSet.Emissive;
+            Requests.push_back(EmissiveRequest);
+        }
+
+        if (!Model.SheenColorTexturePath.empty())
+        {
+            FTextureLoadRequest SheenColorRequest;
+            SheenColorRequest.Path = Model.SheenColorTexturePath;
+            SheenColorRequest.bUseSolidColor = false;
+            SheenColorRequest.bUseSRGB = true;
+            SheenColorRequest.OutTexture = &TextureSet.SheenColor;
+            Requests.push_back(SheenColorRequest);
+        }
+
+        if (!Model.SheenRoughnessTexturePath.empty())
+        {
+            FTextureLoadRequest SheenRoughnessRequest;
+            SheenRoughnessRequest.Path = Model.SheenRoughnessTexturePath;
+            SheenRoughnessRequest.bUseSolidColor = false;
+            SheenRoughnessRequest.OutTexture = &TextureSet.SheenRoughness;
+            Requests.push_back(SheenRoughnessRequest);
+        }
+
+        if (!Model.ClearcoatTexturePath.empty())
+        {
+            FTextureLoadRequest ClearcoatRequest;
+            ClearcoatRequest.Path = Model.ClearcoatTexturePath;
+            ClearcoatRequest.bUseSolidColor = false;
+            ClearcoatRequest.OutTexture = &TextureSet.Clearcoat;
+            Requests.push_back(ClearcoatRequest);
+        }
+
+        if (!Model.ClearcoatRoughnessTexturePath.empty())
+        {
+            FTextureLoadRequest ClearcoatRoughnessRequest;
+            ClearcoatRoughnessRequest.Path = Model.ClearcoatRoughnessTexturePath;
+            ClearcoatRoughnessRequest.bUseSolidColor = false;
+            ClearcoatRoughnessRequest.OutTexture = &TextureSet.ClearcoatRoughness;
+            Requests.push_back(ClearcoatRoughnessRequest);
+        }
+
+        if (!Model.ClearcoatNormalTexturePath.empty())
+        {
+            FTextureLoadRequest ClearcoatNormalRequest;
+            ClearcoatNormalRequest.Path = Model.ClearcoatNormalTexturePath;
+            ClearcoatNormalRequest.bUseSolidColor = false;
+            ClearcoatNormalRequest.OutTexture = &TextureSet.ClearcoatNormal;
+            Requests.push_back(ClearcoatNormalRequest);
+        }
+
+        if (!Model.AnisotropyTexturePath.empty())
+        {
+            FTextureLoadRequest AnisotropyRequest;
+            AnisotropyRequest.Path = Model.AnisotropyTexturePath;
+            AnisotropyRequest.bUseSolidColor = false;
+            AnisotropyRequest.OutTexture = &TextureSet.Anisotropy;
+            Requests.push_back(AnisotropyRequest);
+        }
+    }
+
+    LogInfo("Loading " + std::to_string(Requests.size()) + " textures in parallel for " + std::to_string(Models.size()) + " models");
+    const bool bSuccess = TextureLoader->LoadTexturesParallel(Requests);
+
+    if (!bSuccess)
+    {
+        LogError("Failed to load scene textures");
+    }
+
+    return bSuccess;
 }
 
 
-void FDeferredRenderer::UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, size_t ModelIndex, uint64_t ConstantBufferOffset)
+void FDeferredRenderer::WriteSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, uint64_t ConstantBufferOffset, uint8_t* ConstantBufferMapped, bool bUseClusterDagIndexBuffer)
 {
-    (void)ModelIndex;
+    if (ConstantBufferMapped == nullptr)
+    {
+        return;
+    }
 
     const DirectX::XMVECTOR LightDir = DirectX::XMLoadFloat3(&LightDirection);
     const DirectX::XMMATRIX LightVP = RendererUtils::BuildDirectionalLightViewProjection(SceneCenter, SceneRadius, LightDirection);
     DirectX::XMStoreFloat4x4(&LightViewProjection, LightVP);
-    const bool bUseTaaJitter = Taa && Taa->UsesJitter();
+    const bool bUseTaaJitter = Taa->UsesJitter();
     const DirectX::XMMATRIX Projection = bUseTaaJitter ? Taa->GetProjection() : Camera.GetProjectionMatrix();
     const DirectX::XMFLOAT2 Jitter = bUseTaaJitter ? Taa->GetJitter() : DirectX::XMFLOAT2(0.0f, 0.0f);
-    const uint32_t TaaSampleIndex = Taa ? Taa->GetSampleIndex() : 0u;
-    const uint32_t GtaoTemporalIndex = (bGtaoEnabled && bGtaoJitterEnabled) ? TaaSampleIndex : 0u;
+    const uint32_t TaaSampleIndex = Taa->GetSampleIndex();
+    const uint32_t GtaoTemporalIndex = (Gtao->IsEnabled() && Gtao->IsJitterEnabled()) ? TaaSampleIndex : 0u;
 
     const DirectX::XMMATRIX PreviousWorld = Model.bHasPreviousWorldMatrix
         ? DirectX::XMLoadFloat4x4(&Model.PreviousWorldMatrix)
@@ -1532,59 +1098,72 @@ void FDeferredRenderer::UpdateSceneConstants(const FCamera& Camera, const FScene
     bool bHasPreviousSkinning = false;
     const uint32_t FrameCount = GetFramesInFlight();
     const uint32_t PrevFrameIndex = FrameCount > 0 ? (GetFrameIndex() + FrameCount - 1u) % FrameCount : 0u;
-    if (Model.BoneMatrixBindlessIndex != UINT32_MAX
+    if (IsValidBindlessIndex(Model.BoneMatrixBindlessIndex)
         && Model.BoneMatrixCount > 0
         && PrevFrameIndex < Model.SkinnedPositionSrvBindlessIndices.size())
     {
         PreviousSkinnedPositionBindlessIndex = Model.SkinnedPositionSrvBindlessIndices[PrevFrameIndex];
-        bHasPreviousSkinning = PreviousSkinnedPositionBindlessIndex != UINT32_MAX;
+        bHasPreviousSkinning = IsValidBindlessIndex(PreviousSkinnedPositionBindlessIndex);
     }
 
-    RendererUtils::UpdateSceneConstants(
-        Camera,
-        Model,
-        LightIntensity,
-        LightDir,
-        LightColor,
-        LightVP,
-        Projection,
-        bShadowsEnabled ? ShadowStrength : 0.0f,
-        ShadowBias,
-        static_cast<float>(ShadowMapWidth),
-        static_cast<float>(ShadowMapHeight),
-        EnvironmentMipCount,
-        Jitter,
-        GtaoTemporalIndex,
-        bGtaoEnabled,
-        GtaoRadius,
-        GtaoIntensity,
-        GtaoPower,
-        GtaoThickness,
-        GtaoDirectionCount,
-        GtaoStepCount,
-        GetSceneConstantBufferMapped(),
-        ConstantBufferOffset,
-        DirectX::XMLoadFloat4x4(&PreviousViewProjectionMatrix),
-        bHasPreviousViewProjection,
-        PreviousWorld,
-        bHasPreviousWorld,
-        PreviousSkinnedPositionBindlessIndex,
-        bHasPreviousSkinning);
+    const EDeferredLightingVisualizationMode VisualizationMode = GetDeferredLightingVisualizationMode();
+    const bool bUseClusterDagDebugColor =
+        (VisualizationMode == EDeferredLightingVisualizationMode::ClusterDagClusters
+            || VisualizationMode == EDeferredLightingVisualizationMode::ClusterDagMip)
+        && IsValidBindlessIndex(Model.ClusterDagDebugColorBufferBindlessIndex);
+
+    RendererUtils::FUpdateSceneConstantsParams Params;
+    Params.Camera = &Camera;
+    Params.Model = &Model;
+    Params.LightIntensity = LightIntensity;
+    Params.LightDirection = LightDir;
+    Params.LightColor = LightColor;
+    Params.LightViewProjection = LightVP;
+    Params.Projection = Projection;
+    Params.ShadowStrength = bShadowsEnabled ? ShadowStrength : 0.0f;
+    Params.ShadowBias = ShadowBias;
+    Params.ShadowMapWidth = static_cast<float>(ShadowMapWidth);
+    Params.ShadowMapHeight = static_cast<float>(ShadowMapHeight);
+    Params.EnvMapMipCount = GetEnvironmentMipCount();
+    Gtao->SetTemporalIndex(GtaoTemporalIndex);
+    Params.bGtaoEnabled = Gtao->IsEnabled();
+    Params.GtaoIntensity = Gtao->GetIntensity();
+    Params.ConstantBufferMapped = ConstantBufferMapped;
+    Params.ConstantBufferOffset = ConstantBufferOffset;
+    Params.PreviousViewProjection = DirectX::XMLoadFloat4x4(&PreviousViewProjectionMatrix);
+    Params.bHasPreviousViewProjection = bHasPreviousViewProjection;
+    Params.PreviousWorld = PreviousWorld;
+    Params.bHasPreviousWorld = bHasPreviousWorld;
+    Params.PreviousSkinnedPositionBindlessIndex = PreviousSkinnedPositionBindlessIndex;
+    Params.bHasPreviousSkinning = bHasPreviousSkinning;
+    Params.DeferredLightingVisualizationMode = static_cast<uint32_t>(VisualizationMode);
+    Params.bUseClusterDagIndexBuffer = bUseClusterDagIndexBuffer;
+    Params.bUseClusterDagDebugColor = bUseClusterDagDebugColor;
+    RendererUtils::UpdateSceneConstants(Params);
 }
 
-void FDeferredRenderer::UpdateSkyConstants(const FCamera& Camera)
+void FDeferredRenderer::UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, size_t ModelIndex, uint64_t ConstantBufferOffset, bool bUseClusterDagIndexBuffer)
 {
-    using namespace DirectX;
+    (void)ModelIndex;
 
-    const FFloat3 CameraPosition = Camera.GetPosition();
-    const XMMATRIX Scale = XMMatrixScaling(SkySphereRadius, SkySphereRadius, SkySphereRadius);
-    const XMMATRIX Translation = XMMatrixTranslation(CameraPosition.x, CameraPosition.y, CameraPosition.z);
-    const XMMATRIX World = Scale * Translation;
+    WriteSceneConstants(
+        Camera,
+        Model,
+        ConstantBufferOffset,
+        GetSceneConstantBufferMapped(),
+        bUseClusterDagIndexBuffer);
+}
 
-    const XMVECTOR LightDir = XMLoadFloat3(&LightDirection);
-    const bool bUseTaaJitter = Taa && Taa->UsesJitter();
-    const DirectX::XMMATRIX Projection = bUseTaaJitter ? Taa->GetProjection() : Camera.GetProjectionMatrix();
-    RendererUtils::UpdateSkyConstants(Camera, World, Projection, LightDir, LightColor, SkyConstantBufferMapped);
+void FDeferredRenderer::UpdateClusterDagSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, size_t ModelIndex, uint64_t ConstantBufferOffset)
+{
+    (void)ModelIndex;
+
+    WriteSceneConstants(
+        Camera,
+        Model,
+        ConstantBufferOffset,
+        GetClusterDagSceneConstantBufferMapped(),
+        true);
 }
 
 void FDeferredRenderer::UpdateCullingVisibility(const FCamera& Camera)
@@ -1595,7 +1174,73 @@ void FDeferredRenderer::UpdateCullingVisibility(const FCamera& Camera)
         CullingCamera = &Camera;
     }
 
-    const bool bGpuCullingActive = bEnableIndirectDraw && CullingPipeline && CullingRootSignature && GetIndirectCommandBuffer()
-        && ModelBoundsBuffer && MeshletConeAxisBuffer && MeshletConeApexBuffer;
+    const bool bGpuCullingActive = CanDispatchGpuCulling();
     RendererUtils::UpdateCullingVisibility(*CullingCamera, SceneModels, SceneModelVisibility, !bGpuCullingActive);
+}
+
+bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
+{
+    if (SceneModels.empty() || !GetSceneConstantBuffer())
+    {
+        return false;
+    }
+
+    bool bCreatedAnyResource = false;
+    bool bPreparedLegacyGpuDrivenData = false;
+    bool bHasLegacyIndirectCommands = false;
+
+    // Step 1: Prepare indirect draw data
+    FGpuDrivenPreparedData PreparedData;
+    if (!PrepareGpuDrivenDrawData(PreparedData))
+    {
+        LogWarning("Failed to prepare legacy GPU-driven draw data");
+    }
+    else
+    {
+        bPreparedLegacyGpuDrivenData = true;
+        bHasLegacyIndirectCommands = !PreparedData.Commands.empty();
+
+        if (bHasLegacyIndirectCommands && !CreatePerFrameIndirectBuffers(Device, PreparedData))
+        {
+            LogWarning("Failed to create legacy GPU-driven per-frame indirect buffers");
+        }
+        else if (!CreateSharedGpuDrivenBuffers(Device, PreparedData))
+        {
+            LogWarning("Failed to create legacy GPU-driven shared buffers");
+        }
+        else if (!UploadGpuDrivenBuffers(Device, PreparedData))
+        {
+            LogWarning("Failed to upload legacy GPU-driven buffers");
+        }
+        else
+        {
+            bCreatedAnyResource = bHasLegacyIndirectCommands || bPreparedLegacyGpuDrivenData;
+        }
+    }
+
+    if (!bCreatedAnyResource && !ClusterDagRuntime->IsEnabled())
+    {
+        return false;
+    }
+
+    if (!CreateCullingPipelines(Device))
+    {
+        LogError("Failed to create culling pipelines");
+        return false;
+    }
+
+    if (!GpuDrivenCullingState.CreateVisibilityListPipelines(Device))
+    {
+        LogError("Failed to create visibility list pipelines");
+        return false;
+    }
+    RefreshGpuDrivenPersistentValidation();
+
+    if (!CreateIndirectCommandSignature(Device, BasePass->GetBasePassRootSignature()))
+    {
+        LogError("Failed to create indirect command signature");
+        return false;
+    }
+
+    return true;
 }

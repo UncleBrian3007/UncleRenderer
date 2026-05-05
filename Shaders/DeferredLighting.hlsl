@@ -1,5 +1,15 @@
 #include "PBRCommon.hlsl"
 #include "SceneConstants.hlsl"
+#include "Common.hlsli"
+#include "../Source/Core/LightingVisualizationShared.h"
+
+#ifndef COMPOSITE_VISUALIZATION_OFF
+#define COMPOSITE_VISUALIZATION_OFF 0
+#endif
+
+#ifndef COMPOSITE_VISUALIZATION_ON
+#define COMPOSITE_VISUALIZATION_ON 1
+#endif
 
 struct VSOutput
 {
@@ -25,19 +35,20 @@ cbuffer LightingBindlessConstants : register(b1)
     uint SsrFallbackTextureIndex;
 };
 
-cbuffer RestirGIConstants : register(b2)
+cbuffer DeferredLightingConstants : register(b2)
 {
     float RestirGIIntensity;
     uint RestirGIEnabled;
     uint RestirGISamplesPerPixel;
-    uint RestirGIShowOnly;
-    uint RestirGIPadding;
+    uint DeferredLightingVisualizationModeOverride;
+    uint DeferredLightingPadding;
 };
+
 SamplerState GBufferSampler : register(s0);
 SamplerComparisonState ShadowSampler : register(s1);
 SamplerState IblSampler : register(s2);
 
-VSOutput VSMain(uint VertexId : SV_VertexID)
+VSOutput DeferredLightingVS(uint VertexId : SV_VertexID)
 {
     float2 Positions[3] = {
         float2(-1.0, -1.0),
@@ -51,21 +62,7 @@ VSOutput VSMain(uint VertexId : SV_VertexID)
     return Output;
 }
 
-float ReconstructViewZ(float depth)
-{
-    return Projection._43 / max(depth, 1e-6f);
-}
-
-float3 ReconstructViewPosition(float2 uv, float depth)
-{
-    float2 ndc = float2(uv * 2.0f - 1.0f);
-    float viewZ = ReconstructViewZ(depth);
-    float viewX = ndc.x * viewZ / Projection._11;
-    float viewY = -ndc.y * viewZ / Projection._22;
-    return float3(viewX, viewY, viewZ);
-}
-
-float4 PSMain(VSOutput Input) : SV_Target
+float4 DeferredLightingPS(VSOutput Input) : SV_Target
 {
     Texture2D GBufferA = ResourceDescriptorHeap[GBufferAIndex];
     Texture2D GBufferB = ResourceDescriptorHeap[GBufferBIndex];
@@ -90,10 +87,10 @@ float4 PSMain(VSOutput Input) : SV_Target
 
     float roughness = smr.z;
     float metallic = smr.y;
-	float3 F0 = lerp(smr.x.xxx, albedo, metallic); // Metallic Àº Albedo ¿¡ ¹Ý»çÀ²(»ö±ò) ÀúÀå
+	float3 F0 = lerp(smr.x.xxx, albedo, metallic); // Metallic ???Albedo ?????熬?留???쀫뼔塋???轝???????????쀫뼔筌앹뼇???ㅼ맗???????? ?????
     uint shadingModelId = (uint)round(smr.w);
 
-    float3 viewPos = ReconstructViewPosition(Input.UV, depth);
+    float3 viewPos = ReconstructViewPositionFromDepth(Input.UV, depth, Projection);
     float3 worldPos = mul(float4(viewPos, 1.0f), ViewInverse).xyz;
 
     float3 V = normalize(CameraPosition - worldPos);
@@ -219,14 +216,32 @@ float4 PSMain(VSOutput Input) : SV_Target
         restirIrradiance = RestirGITexture.Sample(GBufferSampler, Input.UV).rgb;
     }
 
-    if (RestirGIShowOnly > 0u)
-    {
-        return float4(restirIrradiance, 1.0f);
-    }
-
     float3 restirDiffuse = restirIrradiance * albedo * (1.0f - metallic);
     float3 ambient = (diffuseIbl + specularIbl) * ao;
     ambient += restirDiffuse;
     float3 color = lighting + ambient;
+
+#if COMPOSITE_VISUALIZATION_ON
+    if (DeferredLightingVisualizationModeOverride == LIGHTING_VISUALIZATION_DIFFUSE_INDIRECT)
+    {
+        return float4(diffuseIbl + restirDiffuse, 1.0f);
+    }
+
+    if (DeferredLightingVisualizationModeOverride == LIGHTING_VISUALIZATION_AO)
+    {
+        return float4(ao.xxx, 1.0f);
+    }
+
+    if (DeferredLightingVisualizationModeOverride == LIGHTING_VISUALIZATION_DIRECT_LIGHTING)
+    {
+        return float4(lighting, 1.0f);
+    }
+
+    if (DeferredLightingVisualizationModeOverride == LIGHTING_VISUALIZATION_SPECULAR_INDIRECT)
+    {
+        return float4(specularIbl, 1.0f);
+    }
+#endif
+
     return float4(color, 1.0);
 }

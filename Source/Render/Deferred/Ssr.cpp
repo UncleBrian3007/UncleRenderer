@@ -16,11 +16,48 @@
 namespace
 {
     constexpr uint32_t SsrRayItemStride = 48u;
+    constexpr uint32_t SsrPipelineRefineBit = 1u;
+    constexpr uint32_t SsrPipelineHzbBit = 2u;
+    constexpr uint32_t SsrPipelineHwFallbackBit = 4u;
+    constexpr uint32_t SsrPipelineHzbFullResDepthBit = 8u;
+
+    uint32_t BuildSsrPipelineIndex(bool bUseHzb, bool bUseRefine, bool bUseSwSsr, bool bUseHzbFullResDepth)
+    {
+        uint32_t PipelineIndex = 0u;
+        if (bUseRefine)
+        {
+            PipelineIndex |= SsrPipelineRefineBit;
+        }
+        if (bUseHzb)
+        {
+            PipelineIndex |= SsrPipelineHzbBit;
+        }
+        if (!bUseSwSsr)
+        {
+            PipelineIndex |= SsrPipelineHwFallbackBit;
+        }
+        if (bUseHzb && bUseHzbFullResDepth)
+        {
+            PipelineIndex |= SsrPipelineHzbFullResDepthBit;
+        }
+
+        return PipelineIndex;
+    }
 }
 
 bool FSsr::InitializePipelines(FDeferredRenderer& Owner, FDX12Device* Device)
 {
     (void)Owner;
+    bBaseOutputPersistentInputsValid = false;
+    bGraphicsPersistentInputsValid = false;
+    bRayGatherPersistentInputsValid = false;
+    bBuildIndirectArgsPersistentInputsValid = false;
+    bSwTracePersistentInputsValid = false;
+    bHwTracePersistentInputsValid = false;
+    bResolvePersistentInputsValid = false;
+    bFallbackPersistentInputsValid = false;
+    bDenoisePersistentInputsValid = false;
+
     return CreateSsrRootSignature(Device)
         && CreateSsrPipeline(Device)
         && CreateSsrDenoiseRootSignature(Device)
@@ -38,76 +75,67 @@ bool FSsr::InitializePipelines(FDeferredRenderer& Owner, FDX12Device* Device)
 
 bool FSsr::InitializeResources(FDeferredRenderer& Owner, FDX12Device* Device, uint32_t Width, uint32_t Height)
 {
+    bBaseOutputPersistentInputsValid = false;
+    bGraphicsPersistentInputsValid = false;
+    bRayGatherPersistentInputsValid = false;
+    bBuildIndirectArgsPersistentInputsValid = false;
+    bSwTracePersistentInputsValid = false;
+    bHwTracePersistentInputsValid = false;
+    bResolvePersistentInputsValid = false;
+    bFallbackPersistentInputsValid = false;
+    bDenoisePersistentInputsValid = false;
+
     return CreateSsrResources(Owner, Device, Width, Height);
 }
 
 void FSsr::ImportPersistentResources(FDeferredPassContext& Context)
 {
-    FDeferredRenderer& Owner = Context.Owner;
     FRenderGraph& Graph = Context.Graph;
     FSsrFrameResources& OutResources = Context.Resources.Ssr;
 
-    OutResources.SsrHandle = Graph.ImportTexture(
-        "SSR",
-        SsrTexture.Get(),
-        &SsrState,
-        { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), DXGI_FORMAT_R16G16B16A16_FLOAT });
-
-    OutResources.SsrDenoiseHandle = Graph.ImportTexture(
-        "SSR Denoise",
-        SsrDenoiseTexture.Get(),
-        &SsrDenoiseState,
-        { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), DXGI_FORMAT_R16G16B16A16_FLOAT });
-
-    OutResources.SsrFallbackHandle = Graph.ImportTexture(
-        "SSR Fallback",
-        SsrFallbackTexture.Get(),
-        &SsrFallbackState,
-        { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), DXGI_FORMAT_R16G16B16A16_FLOAT });
-
-    OutResources.SsrResolveHandle = Graph.ImportTexture(
-        "SSR Resolve",
-        SsrResolveTexture.Get(),
-        &SsrResolveState,
-        { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), DXGI_FORMAT_R16G16B16A16_FLOAT });
+    OutResources.SsrHandle = ImportBindlessTexture(Graph, "SSR", SsrTexture);
+    OutResources.SsrDenoiseHandle = ImportBindlessTexture(Graph, "SSR Denoise", SsrDenoiseTexture);
+    OutResources.SsrFallbackHandle = ImportBindlessTexture(Graph, "SSR Fallback", SsrFallbackTexture);
+    OutResources.SsrResolveHandle = ImportBindlessTexture(Graph, "SSR Resolve", SsrResolveTexture);
 }
 
 bool FSsr::CreatePersistentDescriptors(FDeferredRenderer& Owner, FDX12Device* Device)
 {
     (void)Owner;
-    if (!Device)
-    {
-        return false;
-    }
+    CreateBindlessTextureViews(Device, SsrTexture, true, true);
+    CreateBindlessTextureViews(Device, SsrDenoiseTexture, true, false);
+    CreateBindlessTextureViews(Device, SsrFallbackTexture, true, true);
+    CreateBindlessTextureViews(Device, SsrResolveTexture, true, true);
 
-    D3D12_SHADER_RESOURCE_VIEW_DESC SsrSrvDesc = {};
-    SsrSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    SsrSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    SsrSrvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-    SsrSrvDesc.Texture2D.MipLevels = 1;
-    SsrBindlessIndex = Device->CreateBindlessSrv(SsrTexture.Get(), SsrSrvDesc);
-    SsrDenoiseBindlessIndex = Device->CreateBindlessSrv(SsrDenoiseTexture.Get(), SsrSrvDesc);
-    SsrFallbackBindlessIndex = Device->CreateBindlessSrv(SsrFallbackTexture.Get(), SsrSrvDesc);
-    SsrResolveBindlessIndex = Device->CreateBindlessSrv(SsrResolveTexture.Get(), SsrSrvDesc);
-
-    D3D12_UNORDERED_ACCESS_VIEW_DESC SsrUavDesc = {};
-    SsrUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-    SsrUavDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-    SsrUavDesc.Texture2D.MipSlice = 0;
-    SsrUavBindlessIndex = Device->CreateBindlessUav(SsrTexture.Get(), nullptr, SsrUavDesc);
-
-    D3D12_UNORDERED_ACCESS_VIEW_DESC SsrResolveUavDesc = {};
-    SsrResolveUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-    SsrResolveUavDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-    SsrResolveUavDesc.Texture2D.MipSlice = 0;
-    SsrResolveUavBindlessIndex = Device->CreateBindlessUav(SsrResolveTexture.Get(), nullptr, SsrResolveUavDesc);
-
-    D3D12_UNORDERED_ACCESS_VIEW_DESC SsrFallbackUavDesc = {};
-    SsrFallbackUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-    SsrFallbackUavDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-    SsrFallbackUavDesc.Texture2D.MipSlice = 0;
-    SsrFallbackUavBindlessIndex = Device->CreateBindlessUav(SsrFallbackTexture.Get(), nullptr, SsrFallbackUavDesc);
+    RefreshPersistentInputValidation();
     return true;
+}
+
+void FSsr::RefreshPersistentInputValidation()
+{
+    bBaseOutputPersistentInputsValid =
+        SsrTexture.IsFullyBound() &&
+        SsrResolveTexture.IsFullyBound() &&
+        SsrRtvHeap;
+
+    bGraphicsPersistentInputsValid = bBaseOutputPersistentInputsValid && SsrRootSignature;
+    bRayGatherPersistentInputsValid = SsrRayGatherPipeline && SsrRayGatherRootSignature;
+    bBuildIndirectArgsPersistentInputsValid = SsrBuildIndirectArgsPipeline && SsrBuildIndirectArgsRootSignature;
+    bSwTracePersistentInputsValid = bBaseOutputPersistentInputsValid && SsrSwTraceRootSignature && SsrDispatchCommandSignature;
+    bHwTracePersistentInputsValid = bBaseOutputPersistentInputsValid && SsrDispatchCommandSignature;
+    bResolvePersistentInputsValid = bBaseOutputPersistentInputsValid && SsrResolvePipeline && SsrResolveRootSignature;
+
+    bFallbackPersistentInputsValid =
+        SsrFallbackTexture.IsFullyBound();
+
+    bDenoisePersistentInputsValid =
+        SsrDenoiseTexture &&
+        SsrRtvHeap &&
+        SsrTexture.HasSrv() &&
+        SsrResolveTexture.HasSrv() &&
+        SsrDenoiseTexture.HasSrv() &&
+        SsrDenoiseRootSignature &&
+        SsrDenoisePipeline;
 }
 
 void FSsr::AddPasses(FDeferredPassContext& Context)
@@ -137,49 +165,35 @@ void FSsr::AddPasses(FDeferredPassContext& Context)
 
 uint32_t FSsr::GetBaseOutputSrvBindlessIndex() const
 {
-    return (SsrMode == ESSRMode::CS) ? SsrResolveBindlessIndex : SsrBindlessIndex;
+    if (SsrMode == ESSRMode::CS)
+    {
+        return bResolvePersistentInputsValid ? SsrResolveTexture.SrvBindlessIndex : UINT32_MAX;
+    }
+
+    return bGraphicsPersistentInputsValid ? SsrTexture.SrvBindlessIndex : UINT32_MAX;
 }
 
 uint32_t FSsr::GetLightingSrvBindlessIndex() const
 {
-    return bSsrDenoiseEnabled ? SsrDenoiseBindlessIndex : GetBaseOutputSrvBindlessIndex();
+    return (bSsrDenoiseEnabled && bDenoisePersistentInputsValid) ? SsrDenoiseTexture.SrvBindlessIndex : GetBaseOutputSrvBindlessIndex();
 }
 
 
 bool FSsr::CreateSsrRootSignature(FDX12Device* Device)
 {
-    D3D12_ROOT_PARAMETER1 RootParams[3] = {};
-
+    CD3DX12_ROOT_PARAMETER1 RootParams[3] = {};
     // RootParams[0]: Scene constants (b0), used in Shaders/SsrSWTracePS.hlsl PSMain
-    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    RootParams[0].Descriptor.ShaderRegister = 0;
-    RootParams[0].Descriptor.RegisterSpace = 0;
-    RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
-
+    RootParams[0].InitAsConstantBufferView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE, D3D12_SHADER_VISIBILITY_PIXEL);
     // RootParams[1]: SSR constants (b1), used in Shaders/SsrSWTracePS.hlsl PSMain
-    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    RootParams[1].Constants.Num32BitValues = 15;
-    RootParams[1].Constants.RegisterSpace = 0;
-    RootParams[1].Constants.ShaderRegister = 1;
-
+    RootParams[1].InitAsConstants(15, 1, 0, D3D12_SHADER_VISIBILITY_PIXEL);
     // RootParams[2]: SSR bindless indices (b2), used in Shaders/SsrSWTracePS.hlsl PSMain
-    RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    RootParams[2].Constants.Num32BitValues = 9;
-    RootParams[2].Constants.RegisterSpace = 0;
-    RootParams[2].Constants.ShaderRegister = 2;
+    RootParams[2].InitAsConstants(9, 2, 0, D3D12_SHADER_VISIBILITY_PIXEL);
 
-    D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
-    RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-    RootSigDesc.Desc_1_1.NumParameters = _countof(RootParams);
-    RootSigDesc.Desc_1_1.pParameters = RootParams;
-    RootSigDesc.Desc_1_1.NumStaticSamplers = 0;
-    RootSigDesc.Desc_1_1.pStaticSamplers = nullptr;
-    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+    CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc;
+    RootSigDesc.Init_1_1(_countof(RootParams), RootParams, 0, nullptr,
+        D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
         | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
-        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
+        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED);
 
     ComPtr<ID3DBlob> SerializedSig;
     ComPtr<ID3DBlob> ErrorBlob;
@@ -198,10 +212,8 @@ bool FSsr::CreateSsrPipeline(FDX12Device* Device)
 {
     FShaderCompiler Compiler;
 
-    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
-    const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
 
-    if (!Compiler.CompileFromFile(L"Shaders/SsrSWTracePS.hlsl", L"VSMain", VSTarget, SsrGraphicsVsBytecode))
+    if (!RendererUtils::CompileVertexShader(Compiler, Device, L"Shaders/Ssr/SsrSWTracePS.hlsl", SsrGraphicsVsBytecode))
     {
         return false;
     }
@@ -220,21 +232,21 @@ bool FSsr::CreateSsrPipeline(FDX12Device* Device)
 bool FSsr::CompileSsrGraphicsPs(FDX12Device* Device, uint32_t PipelineIndex, std::vector<uint8_t>& OutPs)
 {
     FShaderCompiler Compiler;
-    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
-    const std::wstring PSTarget = RendererUtils::BuildShaderTarget(L"ps", ShaderModel);
 
-    const bool bUseHzb = (PipelineIndex & 2u) != 0;
-    const bool bUseRefine = (PipelineIndex & 1u) != 0;
-    const bool bUseSwSsr = (PipelineIndex & 4u) == 0;
+    const bool bUseHzb = (PipelineIndex & SsrPipelineHzbBit) != 0;
+    const bool bUseRefine = (PipelineIndex & SsrPipelineRefineBit) != 0;
+    const bool bUseSwSsr = (PipelineIndex & SsrPipelineHwFallbackBit) == 0;
+    const bool bUseHzbFullResDepth = (PipelineIndex & SsrPipelineHzbFullResDepthBit) != 0;
 
     const std::vector<std::wstring> Defines =
     {
         bUseHzb ? L"HZB_ENABLED=1" : L"HZB_ENABLED=0",
         bUseRefine ? L"SSR_REFINE_ENABLED=1" : L"SSR_REFINE_ENABLED=0",
-        bUseSwSsr ? L"SW_SSR_ENABLED=1" : L"SW_SSR_ENABLED=0"
+        bUseSwSsr ? L"SW_SSR_ENABLED=1" : L"SW_SSR_ENABLED=0",
+        bUseHzbFullResDepth ? L"SSR_HZB_FULL_RES_DEPTH_ENABLED=1" : L"SSR_HZB_FULL_RES_DEPTH_ENABLED=0"
     };
 
-    return Compiler.CompileFromFile(L"Shaders/SsrSWTracePS.hlsl", L"PSMain", PSTarget, OutPs, Defines);
+    return RendererUtils::CompilePixelShader(Compiler, Device, L"Shaders/Ssr/SsrSWTracePS.hlsl", OutPs, Defines);
 }
 
 bool FSsr::BuildSsrGraphicsPsoDesc(uint32_t PipelineIndex, D3D12_GRAPHICS_PIPELINE_STATE_DESC& OutDesc) const
@@ -331,29 +343,15 @@ bool FSsr::EnsureSsrGraphicsPipelineOrFail(FDX12Device* Device, uint32_t Pipelin
 
 bool FSsr::CreateSsrDenoiseRootSignature(FDX12Device* Device)
 {
-    D3D12_ROOT_PARAMETER1 RootParams[2] = {};
+    CD3DX12_ROOT_PARAMETER1 RootParams[2] = {};
+    RootParams[0].InitAsConstants(4, 0, 0, D3D12_SHADER_VISIBILITY_PIXEL);
+    RootParams[1].InitAsConstants(5, 1, 0, D3D12_SHADER_VISIBILITY_PIXEL);
 
-    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    RootParams[0].Constants.Num32BitValues = 4;
-    RootParams[0].Constants.RegisterSpace = 0;
-    RootParams[0].Constants.ShaderRegister = 0;
-
-    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    RootParams[1].Constants.Num32BitValues = 5;
-    RootParams[1].Constants.RegisterSpace = 0;
-    RootParams[1].Constants.ShaderRegister = 1;
-
-    D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
-    RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-    RootSigDesc.Desc_1_1.NumParameters = _countof(RootParams);
-    RootSigDesc.Desc_1_1.pParameters = RootParams;
-    RootSigDesc.Desc_1_1.NumStaticSamplers = 0;
-    RootSigDesc.Desc_1_1.pStaticSamplers = nullptr;
-    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+    CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc;
+    RootSigDesc.Init_1_1(_countof(RootParams), RootParams, 0, nullptr,
+        D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
         | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
-        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
+        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED);
 
     ComPtr<ID3DBlob> SerializedSig;
     ComPtr<ID3DBlob> ErrorBlob;
@@ -374,16 +372,13 @@ bool FSsr::CreateSsrDenoisePipeline(FDX12Device* Device)
     std::vector<uint8_t> VSByteCode;
     std::vector<uint8_t> PSByteCode;
 
-    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
-    const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
-    const std::wstring PSTarget = RendererUtils::BuildShaderTarget(L"ps", ShaderModel);
 
-    if (!Compiler.CompileFromFile(L"Shaders/SsrDenoise.hlsl", L"VSMain", VSTarget, VSByteCode))
+    if (!RendererUtils::CompileVertexShader(Compiler, Device, L"Shaders/Ssr/SsrDenoise.hlsl", VSByteCode))
     {
         return false;
     }
 
-    if (!Compiler.CompileFromFile(L"Shaders/SsrDenoise.hlsl", L"PSMain", PSTarget, PSByteCode))
+    if (!RendererUtils::CompilePixelShader(Compiler, Device, L"Shaders/Ssr/SsrDenoise.hlsl", PSByteCode))
     {
         return false;
     }
@@ -418,34 +413,15 @@ bool FSsr::CreateSsrDenoisePipeline(FDX12Device* Device)
 
 bool FSsr::CreateSsrRayGatherRootSignature(FDX12Device* Device)
 {
-    D3D12_ROOT_PARAMETER1 RootParams[3] = {};
+    CD3DX12_ROOT_PARAMETER1 RootParams[3] = {};
+    RootParams[0].InitAsConstantBufferView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[1].InitAsConstants(11, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[2].InitAsConstants(6, 2, 0, D3D12_SHADER_VISIBILITY_ALL);
 
-    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[0].Descriptor.ShaderRegister = 0;
-    RootParams[0].Descriptor.RegisterSpace = 0;
-    RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
-
-    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[1].Constants.Num32BitValues = 11;
-    RootParams[1].Constants.RegisterSpace = 0;
-    RootParams[1].Constants.ShaderRegister = 1;
-
-    RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[2].Constants.Num32BitValues = 6;
-    RootParams[2].Constants.RegisterSpace = 0;
-    RootParams[2].Constants.ShaderRegister = 2;
-
-    D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
-    RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-    RootSigDesc.Desc_1_1.NumParameters = _countof(RootParams);
-    RootSigDesc.Desc_1_1.pParameters = RootParams;
-    RootSigDesc.Desc_1_1.NumStaticSamplers = 0;
-    RootSigDesc.Desc_1_1.pStaticSamplers = nullptr;
-    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
-        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
+    CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc;
+    RootSigDesc.Init_1_1(_countof(RootParams), RootParams, 0, nullptr,
+        D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
+        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED);
 
     ComPtr<ID3DBlob> SerializedSig;
     ComPtr<ID3DBlob> ErrorBlob;
@@ -463,11 +439,9 @@ bool FSsr::CreateSsrRayGatherRootSignature(FDX12Device* Device)
 bool FSsr::CreateSsrRayGatherPipeline(FDX12Device* Device)
 {
     FShaderCompiler Compiler;
-    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
-    const std::wstring CSTarget = RendererUtils::BuildShaderTarget(L"cs", ShaderModel);
 
     std::vector<uint8_t> CSByteCode;
-    if (!Compiler.CompileFromFile(L"Shaders/SsrRayGather.hlsl", L"CSMain", CSTarget, CSByteCode))
+    if (!RendererUtils::CompileComputeShader(Compiler, Device, L"Shaders/Ssr/SsrRayGather.hlsl", CSByteCode))
     {
         return false;
     }
@@ -481,34 +455,15 @@ bool FSsr::CreateSsrRayGatherPipeline(FDX12Device* Device)
 
 bool FSsr::CreateSsrSwTraceRootSignature(FDX12Device* Device)
 {
-    D3D12_ROOT_PARAMETER1 RootParams[3] = {};
+    CD3DX12_ROOT_PARAMETER1 RootParams[3] = {};
+    RootParams[0].InitAsConstantBufferView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[1].InitAsConstants(13, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[2].InitAsConstants(10, 2, 0, D3D12_SHADER_VISIBILITY_ALL);
 
-    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[0].Descriptor.ShaderRegister = 0;
-    RootParams[0].Descriptor.RegisterSpace = 0;
-    RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
-
-    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[1].Constants.Num32BitValues = 13;
-    RootParams[1].Constants.RegisterSpace = 0;
-    RootParams[1].Constants.ShaderRegister = 1;
-
-    RootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    RootParams[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[2].Constants.Num32BitValues = 10;
-    RootParams[2].Constants.RegisterSpace = 0;
-    RootParams[2].Constants.ShaderRegister = 2;
-
-    D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
-    RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-    RootSigDesc.Desc_1_1.NumParameters = _countof(RootParams);
-    RootSigDesc.Desc_1_1.pParameters = RootParams;
-    RootSigDesc.Desc_1_1.NumStaticSamplers = 0;
-    RootSigDesc.Desc_1_1.pStaticSamplers = nullptr;
-    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
-        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
+    CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc;
+    RootSigDesc.Init_1_1(_countof(RootParams), RootParams, 0, nullptr,
+        D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
+        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED);
 
     ComPtr<ID3DBlob> SerializedSig;
     ComPtr<ID3DBlob> ErrorBlob;
@@ -541,21 +496,21 @@ bool FSsr::CreateSsrSwTracePipeline(FDX12Device* Device)
 bool FSsr::CompileSsrSwTraceCs(FDX12Device* Device, uint32_t PipelineIndex, std::vector<uint8_t>& OutCs)
 {
     FShaderCompiler Compiler;
-    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
-    const std::wstring CSTarget = RendererUtils::BuildShaderTarget(L"cs", ShaderModel);
 
-    const bool bUseHzb = (PipelineIndex & 2u) != 0;
-    const bool bUseRefine = (PipelineIndex & 1u) != 0;
-    const bool bUseSwSsr = (PipelineIndex & 4u) == 0;
+    const bool bUseHzb = (PipelineIndex & SsrPipelineHzbBit) != 0;
+    const bool bUseRefine = (PipelineIndex & SsrPipelineRefineBit) != 0;
+    const bool bUseSwSsr = (PipelineIndex & SsrPipelineHwFallbackBit) == 0;
+    const bool bUseHzbFullResDepth = (PipelineIndex & SsrPipelineHzbFullResDepthBit) != 0;
 
     const std::vector<std::wstring> Defines =
     {
         bUseHzb ? L"HZB_ENABLED=1" : L"HZB_ENABLED=0",
         bUseRefine ? L"SSR_REFINE_ENABLED=1" : L"SSR_REFINE_ENABLED=0",
-        bUseSwSsr ? L"SW_SSR_ENABLED=1" : L"SW_SSR_ENABLED=0"
+        bUseSwSsr ? L"SW_SSR_ENABLED=1" : L"SW_SSR_ENABLED=0",
+        bUseHzbFullResDepth ? L"SSR_HZB_FULL_RES_DEPTH_ENABLED=1" : L"SSR_HZB_FULL_RES_DEPTH_ENABLED=0"
     };
 
-    return Compiler.CompileFromFile(L"Shaders/SsrSWTraceCS.hlsl", L"CSMain", CSTarget, OutCs, Defines);
+    return RendererUtils::CompileComputeShader(Compiler, Device, L"Shaders/Ssr/SsrSWTraceCS.hlsl", OutCs, Defines);
 }
 
 bool FSsr::EnsureSsrSwTracePipeline(FDX12Device* Device, uint32_t PipelineIndex)
@@ -621,28 +576,14 @@ bool FSsr::EnsureSsrSwTracePipelineOrFail(FDX12Device* Device, uint32_t Pipeline
 
 bool FSsr::CreateSsrBuildIndirectArgsRootSignature(FDX12Device* Device)
 {
-    D3D12_ROOT_PARAMETER1 RootParams[2] = {};
+    CD3DX12_ROOT_PARAMETER1 RootParams[2] = {};
+    RootParams[0].InitAsConstants(2, 0, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[1].InitAsConstants(2, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
 
-    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[0].Constants.Num32BitValues = 2;
-    RootParams[0].Constants.RegisterSpace = 0;
-    RootParams[0].Constants.ShaderRegister = 0;
-
-    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[1].Constants.Num32BitValues = 2;
-    RootParams[1].Constants.RegisterSpace = 0;
-    RootParams[1].Constants.ShaderRegister = 1;
-
-    D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
-    RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-    RootSigDesc.Desc_1_1.NumParameters = _countof(RootParams);
-    RootSigDesc.Desc_1_1.pParameters = RootParams;
-    RootSigDesc.Desc_1_1.NumStaticSamplers = 0;
-    RootSigDesc.Desc_1_1.pStaticSamplers = nullptr;
-    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
-        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
+    CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc;
+    RootSigDesc.Init_1_1(_countof(RootParams), RootParams, 0, nullptr,
+        D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
+        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED);
 
     ComPtr<ID3DBlob> SerializedSig;
     ComPtr<ID3DBlob> ErrorBlob;
@@ -660,11 +601,9 @@ bool FSsr::CreateSsrBuildIndirectArgsRootSignature(FDX12Device* Device)
 bool FSsr::CreateSsrBuildIndirectArgsPipeline(FDX12Device* Device)
 {
     FShaderCompiler Compiler;
-    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
-    const std::wstring CSTarget = RendererUtils::BuildShaderTarget(L"cs", ShaderModel);
 
     std::vector<uint8_t> CSByteCode;
-    if (!Compiler.CompileFromFile(L"Shaders/SsrBuildIndirectArgs.hlsl", L"CSMain", CSTarget, CSByteCode))
+    if (!RendererUtils::CompileComputeShader(Compiler, Device, L"Shaders/Ssr/SsrBuildIndirectArgs.hlsl", CSByteCode))
     {
         return false;
     }
@@ -678,28 +617,14 @@ bool FSsr::CreateSsrBuildIndirectArgsPipeline(FDX12Device* Device)
 
 bool FSsr::CreateSsrResolveRootSignature(FDX12Device* Device)
 {
-    D3D12_ROOT_PARAMETER1 RootParams[2] = {};
+    CD3DX12_ROOT_PARAMETER1 RootParams[2] = {};
+    RootParams[0].InitAsConstants(5, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[1].InitAsConstants(6, 2, 0, D3D12_SHADER_VISIBILITY_ALL);
 
-    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[0].Constants.Num32BitValues = 5;
-    RootParams[0].Constants.RegisterSpace = 0;
-    RootParams[0].Constants.ShaderRegister = 1;
-
-    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[1].Constants.Num32BitValues = 6;
-    RootParams[1].Constants.RegisterSpace = 0;
-    RootParams[1].Constants.ShaderRegister = 2;
-
-    D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
-    RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-    RootSigDesc.Desc_1_1.NumParameters = _countof(RootParams);
-    RootSigDesc.Desc_1_1.pParameters = RootParams;
-    RootSigDesc.Desc_1_1.NumStaticSamplers = 0;
-    RootSigDesc.Desc_1_1.pStaticSamplers = nullptr;
-    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
-        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
+    CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc;
+    RootSigDesc.Init_1_1(_countof(RootParams), RootParams, 0, nullptr,
+        D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
+        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED);
 
     ComPtr<ID3DBlob> SerializedSig;
     ComPtr<ID3DBlob> ErrorBlob;
@@ -717,11 +642,9 @@ bool FSsr::CreateSsrResolveRootSignature(FDX12Device* Device)
 bool FSsr::CreateSsrResolvePipeline(FDX12Device* Device)
 {
     FShaderCompiler Compiler;
-    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
-    const std::wstring CSTarget = RendererUtils::BuildShaderTarget(L"cs", ShaderModel);
 
     std::vector<uint8_t> CSByteCode;
-    if (!Compiler.CompileFromFile(L"Shaders/SsrResolve.hlsl", L"CSMain", CSTarget, CSByteCode))
+    if (!RendererUtils::CompileComputeShader(Compiler, Device, L"Shaders/Ssr/SsrResolve.hlsl", CSByteCode))
     {
         return false;
     }
@@ -736,11 +659,6 @@ bool FSsr::CreateSsrResolvePipeline(FDX12Device* Device)
 
 bool FSsr::CreateSsrDispatchCommandSignature(FDX12Device* Device)
 {
-    if (Device == nullptr)
-    {
-        return false;
-    }
-
     D3D12_INDIRECT_ARGUMENT_DESC ArgumentDesc = {};
     ArgumentDesc.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
 
@@ -756,90 +674,66 @@ bool FSsr::CreateSsrDispatchCommandSignature(FDX12Device* Device)
 
 bool FSsr::CreateSsrResources(FDeferredRenderer& Owner, FDX12Device* Device, uint32_t Width, uint32_t Height)
 {
-    if (Device == nullptr)
+    const D3D12_RESOURCE_FLAGS SharedFlags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    const FRGTextureDesc SharedDesc =
     {
-        return false;
-    }
-
-    CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
-
-    CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
-        DXGI_FORMAT_R16G16B16A16_FLOAT,
         Width,
         Height,
-        1,
-        1,
-        1,
-        0,
-        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-
-    D3D12_CLEAR_VALUE ClearValue = {};
-    ClearValue.Format = Desc.Format;
-    ClearValue.Color[0] = 0.0f;
-    ClearValue.Color[1] = 0.0f;
-    ClearValue.Color[2] = 0.0f;
-    ClearValue.Color[3] = 0.0f;
-
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &HeapProps,
-        D3D12_HEAP_FLAG_NONE,
-        &Desc,
-        D3D12_RESOURCE_STATE_RENDER_TARGET,
-        &ClearValue,
-        IID_PPV_ARGS(SsrTexture.GetAddressOf())));
-
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &HeapProps,
-        D3D12_HEAP_FLAG_NONE,
-        &Desc,
-        D3D12_RESOURCE_STATE_RENDER_TARGET,
-        &ClearValue,
-        IID_PPV_ARGS(SsrDenoiseTexture.GetAddressOf())));
-
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &HeapProps,
-        D3D12_HEAP_FLAG_NONE,
-        &Desc,
-        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-        &ClearValue,
-        IID_PPV_ARGS(SsrResolveTexture.GetAddressOf())));
-
-    CD3DX12_RESOURCE_DESC FallbackDesc = CD3DX12_RESOURCE_DESC::Tex2D(
         DXGI_FORMAT_R16G16B16A16_FLOAT,
+        1
+    };
+
+    const FLOAT Color[] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    CD3DX12_CLEAR_VALUE ClearValue(SharedDesc.Format, Color);
+
+    CreateBindlessTexture(
+        Device,
+        L"SSR",
+        SharedDesc,
+        SharedFlags,
+        D3D12_RESOURCE_STATE_RENDER_TARGET,
+        SsrTexture,
+        false,
+        false,
+        &ClearValue);
+    CreateBindlessTexture(
+        Device,
+        L"SSR_Denoise",
+        SharedDesc,
+        SharedFlags,
+        D3D12_RESOURCE_STATE_RENDER_TARGET,
+        SsrDenoiseTexture,
+        false,
+        false,
+        &ClearValue);
+    CreateBindlessTexture(
+        Device,
+        L"SSR_Resolve",
+        SharedDesc,
+        SharedFlags,
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        SsrResolveTexture,
+        false,
+        false,
+        &ClearValue);
+
+    const D3D12_RESOURCE_FLAGS FallbackFlags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    const FRGTextureDesc FallbackDesc =
+    {
         Width,
         Height,
-        1,
-        1,
-        1,
-        0,
-        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &HeapProps,
-        D3D12_HEAP_FLAG_NONE,
-        &FallbackDesc,
+        DXGI_FORMAT_R16G16B16A16_FLOAT,
+        1
+    };
+    CreateBindlessTexture(
+        Device,
+        L"SSR_Fallback",
+        FallbackDesc,
+        FallbackFlags,
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-        nullptr,
-        IID_PPV_ARGS(SsrFallbackTexture.GetAddressOf())));
-
-    if (SsrTexture)
-    {
-        SsrTexture->SetName(L"SSR");
-    }
-
-    if (SsrDenoiseTexture)
-    {
-        SsrDenoiseTexture->SetName(L"SSR_Denoise");
-    }
-
-    if (SsrResolveTexture)
-    {
-        SsrResolveTexture->SetName(L"SSR_Resolve");
-    }
-
-    if (SsrFallbackTexture)
-    {
-        SsrFallbackTexture->SetName(L"SSR_Fallback");
-    }
+        SsrFallbackTexture,
+        false,
+        false);
 
     D3D12_DESCRIPTOR_HEAP_DESC RtvHeapDesc = {};
     RtvHeapDesc.NumDescriptors = 2;
@@ -861,224 +755,87 @@ bool FSsr::CreateSsrResources(FDeferredRenderer& Owner, FDX12Device* Device, uin
     Device->GetDevice()->CreateRenderTargetView(SsrTexture.Get(), &RtvDesc, SsrRtvHandle);
     Device->GetDevice()->CreateRenderTargetView(SsrDenoiseTexture.Get(), &RtvDesc, SsrDenoiseRtvHandle);
 
-    SsrState = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    SsrDenoiseState = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    SsrFallbackState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    SsrResolveState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-
     const uint32_t Frames = Owner.GetFramesInFlight();
     SsrMaxRayCount = Width * Height;
-    SsrRayListBuffers.clear();
-    SsrRayListBuffers.resize(Frames);
-    SsrRayCounterBuffers.clear();
-    SsrRayCounterBuffers.resize(Frames);
-    SsrRayListSrvBindlessIndices.assign(Frames, UINT32_MAX);
-    SsrRayListUavBindlessIndices.assign(Frames, UINT32_MAX);
-    SsrRayCounterSrvBindlessIndices.assign(Frames, UINT32_MAX);
-    SsrRayCounterUavBindlessIndices.assign(Frames, UINT32_MAX);
-    SsrRayListStates.assign(Frames, D3D12_RESOURCE_STATE_COMMON);
-    SsrRayCounterStates.assign(Frames, D3D12_RESOURCE_STATE_COMMON);
-    SsrRayListPrimaryBuffers.clear();
-    SsrRayListPrimaryBuffers.resize(Frames);
-    SsrRayCounterPrimaryBuffers.clear();
-    SsrRayCounterPrimaryBuffers.resize(Frames);
-    SsrRayListHwMissBuffers.clear();
-    SsrRayListHwMissBuffers.resize(Frames);
-    SsrRayCounterHwMissBuffers.clear();
-    SsrRayCounterHwMissBuffers.resize(Frames);
-    SsrRayListPrimarySrvBindlessIndices.assign(Frames, UINT32_MAX);
-    SsrRayListPrimaryUavBindlessIndices.assign(Frames, UINT32_MAX);
-    SsrRayCounterPrimarySrvBindlessIndices.assign(Frames, UINT32_MAX);
-    SsrRayCounterPrimaryUavBindlessIndices.assign(Frames, UINT32_MAX);
-    SsrRayListHwMissSrvBindlessIndices.assign(Frames, UINT32_MAX);
-    SsrRayListHwMissUavBindlessIndices.assign(Frames, UINT32_MAX);
-    SsrRayCounterHwMissSrvBindlessIndices.assign(Frames, UINT32_MAX);
-    SsrRayCounterHwMissUavBindlessIndices.assign(Frames, UINT32_MAX);
-    SsrRayListPrimaryStates.assign(Frames, D3D12_RESOURCE_STATE_COMMON);
-    SsrRayCounterPrimaryStates.assign(Frames, D3D12_RESOURCE_STATE_COMMON);
-    SsrRayListHwMissStates.assign(Frames, D3D12_RESOURCE_STATE_COMMON);
-    SsrRayCounterHwMissStates.assign(Frames, D3D12_RESOURCE_STATE_COMMON);
-    SsrIndirectArgsPrimaryBuffers.clear();
-    SsrIndirectArgsPrimaryBuffers.resize(Frames);
-    SsrIndirectArgsHwMissBuffers.clear();
-    SsrIndirectArgsHwMissBuffers.resize(Frames);
-    SsrIndirectArgsPrimaryUavBindlessIndices.assign(Frames, UINT32_MAX);
-    SsrIndirectArgsHwMissUavBindlessIndices.assign(Frames, UINT32_MAX);
-    SsrIndirectArgsPrimaryStates.assign(Frames, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    SsrIndirectArgsHwMissStates.assign(Frames, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    const auto ResizeFrameBuffers = [Frames](std::vector<FBindlessBuffer>& Buffers)
+    {
+        Buffers.clear();
+        Buffers.resize(Frames);
+    };
+    ResizeFrameBuffers(SsrRayListBuffers);
+    ResizeFrameBuffers(SsrRayCounterBuffers);
+    ResizeFrameBuffers(SsrRayListPrimaryBuffers);
+    ResizeFrameBuffers(SsrRayCounterPrimaryBuffers);
+    ResizeFrameBuffers(SsrRayListHwMissBuffers);
+    ResizeFrameBuffers(SsrRayCounterHwMissBuffers);
+    ResizeFrameBuffers(SsrIndirectArgsPrimaryBuffers);
+    ResizeFrameBuffers(SsrIndirectArgsHwMissBuffers);
 
     const uint64_t RayListSize = static_cast<uint64_t>(SsrMaxRayCount) * SsrRayItemStride;
-    CD3DX12_HEAP_PROPERTIES DefaultHeap(D3D12_HEAP_TYPE_DEFAULT);
-    CD3DX12_RESOURCE_DESC RayListDesc = CD3DX12_RESOURCE_DESC::Buffer(RayListSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-    CD3DX12_RESOURCE_DESC CounterDesc = CD3DX12_RESOURCE_DESC::Buffer(sizeof(uint32_t), D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-    CD3DX12_RESOURCE_DESC IndirectArgsDesc = CD3DX12_RESOURCE_DESC::Buffer(sizeof(D3D12_DISPATCH_ARGUMENTS), D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+    FRGBufferDesc RayListRgDesc = {};
+    RayListRgDesc.Size = RayListSize;
+    RayListRgDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    RayListRgDesc.NumElements = SsrMaxRayCount;
+    RayListRgDesc.StructureByteStride = SsrRayItemStride;
+
+    FRGBufferDesc CounterRgDesc = {};
+    CounterRgDesc.Size = sizeof(uint32_t);
+    CounterRgDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    CounterRgDesc.ViewFormat = DXGI_FORMAT_R32_TYPELESS;
+    CounterRgDesc.NumElements = 1;
+    CounterRgDesc.SrvFlags = D3D12_BUFFER_SRV_FLAG_RAW;
+    CounterRgDesc.UavFlags = D3D12_BUFFER_UAV_FLAG_RAW;
+
+    FRGBufferDesc IndirectArgsRgDesc = {};
+    IndirectArgsRgDesc.Size = sizeof(D3D12_DISPATCH_ARGUMENTS);
+    IndirectArgsRgDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    IndirectArgsRgDesc.ViewFormat = DXGI_FORMAT_R32_TYPELESS;
+    IndirectArgsRgDesc.NumElements = sizeof(D3D12_DISPATCH_ARGUMENTS) / sizeof(uint32_t);
+    IndirectArgsRgDesc.SrvFlags = D3D12_BUFFER_SRV_FLAG_RAW;
+    IndirectArgsRgDesc.UavFlags = D3D12_BUFFER_UAV_FLAG_RAW;
+
+    const auto CreateRayPair = [&](uint32_t FrameIndex, FBindlessBuffer& RayList, FBindlessBuffer& RayCounter, const wchar_t* NameSuffix)
+    {
+        CreateBindlessBuffer(
+            Device,
+            std::wstring(L"SSR_RayList") + NameSuffix + L"_Frame" + std::to_wstring(FrameIndex),
+            RayListRgDesc,
+            D3D12_RESOURCE_STATE_COMMON,
+            RayList,
+            true,
+            true);
+        CreateBindlessBuffer(
+            Device,
+            std::wstring(L"SSR_RayCounter") + NameSuffix + L"_Frame" + std::to_wstring(FrameIndex),
+            CounterRgDesc,
+            D3D12_RESOURCE_STATE_COMMON,
+            RayCounter,
+            true,
+            true);
+    };
 
     for (uint32_t FrameIndex = 0; FrameIndex < Frames; ++FrameIndex)
     {
-        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-            &DefaultHeap,
-            D3D12_HEAP_FLAG_NONE,
-            &RayListDesc,
-            D3D12_RESOURCE_STATE_COMMON,
-            nullptr,
-            IID_PPV_ARGS(SsrRayListBuffers[FrameIndex].GetAddressOf())));
-        if (SsrRayListBuffers[FrameIndex])
-        {
-            const std::wstring Name = L"SSR_RayList_Frame" + std::to_wstring(FrameIndex);
-            SsrRayListBuffers[FrameIndex]->SetName(Name.c_str());
-        }
+        CreateRayPair(FrameIndex, SsrRayListBuffers[FrameIndex], SsrRayCounterBuffers[FrameIndex], L"");
+        CreateRayPair(FrameIndex, SsrRayListPrimaryBuffers[FrameIndex], SsrRayCounterPrimaryBuffers[FrameIndex], L"Primary");
+        CreateRayPair(FrameIndex, SsrRayListHwMissBuffers[FrameIndex], SsrRayCounterHwMissBuffers[FrameIndex], L"HwMiss");
 
-        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-            &DefaultHeap,
-            D3D12_HEAP_FLAG_NONE,
-            &CounterDesc,
-            D3D12_RESOURCE_STATE_COMMON,
-            nullptr,
-            IID_PPV_ARGS(SsrRayCounterBuffers[FrameIndex].GetAddressOf())));
-        if (SsrRayCounterBuffers[FrameIndex])
-        {
-            const std::wstring Name = L"SSR_RayCounter_Frame" + std::to_wstring(FrameIndex);
-            SsrRayCounterBuffers[FrameIndex]->SetName(Name.c_str());
-        }
-
-        D3D12_SHADER_RESOURCE_VIEW_DESC RayListSrvDesc = {};
-        RayListSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        RayListSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        RayListSrvDesc.Format = DXGI_FORMAT_UNKNOWN;
-        RayListSrvDesc.Buffer.FirstElement = 0;
-        RayListSrvDesc.Buffer.NumElements = SsrMaxRayCount;
-        RayListSrvDesc.Buffer.StructureByteStride = SsrRayItemStride;
-        RayListSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-        SsrRayListSrvBindlessIndices[FrameIndex] = Device->CreateBindlessSrv(SsrRayListBuffers[FrameIndex].Get(), RayListSrvDesc);
-
-        D3D12_UNORDERED_ACCESS_VIEW_DESC RayListUavDesc = {};
-        RayListUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-        RayListUavDesc.Format = DXGI_FORMAT_UNKNOWN;
-        RayListUavDesc.Buffer.FirstElement = 0;
-        RayListUavDesc.Buffer.NumElements = SsrMaxRayCount;
-        RayListUavDesc.Buffer.StructureByteStride = SsrRayItemStride;
-        RayListUavDesc.Buffer.CounterOffsetInBytes = 0;
-        RayListUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
-        SsrRayListUavBindlessIndices[FrameIndex] = Device->CreateBindlessUav(SsrRayListBuffers[FrameIndex].Get(), nullptr, RayListUavDesc);
-
-        D3D12_SHADER_RESOURCE_VIEW_DESC CounterSrvDesc = {};
-        CounterSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        CounterSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        CounterSrvDesc.Format = DXGI_FORMAT_R32_TYPELESS;
-        CounterSrvDesc.Buffer.FirstElement = 0;
-        CounterSrvDesc.Buffer.NumElements = 1;
-        CounterSrvDesc.Buffer.StructureByteStride = 0;
-        CounterSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
-        SsrRayCounterSrvBindlessIndices[FrameIndex] = Device->CreateBindlessSrv(SsrRayCounterBuffers[FrameIndex].Get(), CounterSrvDesc);
-
-        D3D12_UNORDERED_ACCESS_VIEW_DESC CounterUavDesc = {};
-        CounterUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-        CounterUavDesc.Format = DXGI_FORMAT_R32_TYPELESS;
-        CounterUavDesc.Buffer.FirstElement = 0;
-        CounterUavDesc.Buffer.NumElements = 1;
-        CounterUavDesc.Buffer.StructureByteStride = 0;
-        CounterUavDesc.Buffer.CounterOffsetInBytes = 0;
-        CounterUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
-        SsrRayCounterUavBindlessIndices[FrameIndex] = Device->CreateBindlessUav(SsrRayCounterBuffers[FrameIndex].Get(), nullptr, CounterUavDesc);
-
-        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-            &DefaultHeap,
-            D3D12_HEAP_FLAG_NONE,
-            &RayListDesc,
-            D3D12_RESOURCE_STATE_COMMON,
-            nullptr,
-            IID_PPV_ARGS(SsrRayListPrimaryBuffers[FrameIndex].GetAddressOf())));
-        if (SsrRayListPrimaryBuffers[FrameIndex])
-        {
-            const std::wstring Name = L"SSR_RayListPrimary_Frame" + std::to_wstring(FrameIndex);
-            SsrRayListPrimaryBuffers[FrameIndex]->SetName(Name.c_str());
-        }
-
-        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-            &DefaultHeap,
-            D3D12_HEAP_FLAG_NONE,
-            &CounterDesc,
-            D3D12_RESOURCE_STATE_COMMON,
-            nullptr,
-            IID_PPV_ARGS(SsrRayCounterPrimaryBuffers[FrameIndex].GetAddressOf())));
-        if (SsrRayCounterPrimaryBuffers[FrameIndex])
-        {
-            const std::wstring Name = L"SSR_RayCounterPrimary_Frame" + std::to_wstring(FrameIndex);
-            SsrRayCounterPrimaryBuffers[FrameIndex]->SetName(Name.c_str());
-        }
-
-        SsrRayListPrimarySrvBindlessIndices[FrameIndex] = Device->CreateBindlessSrv(SsrRayListPrimaryBuffers[FrameIndex].Get(), RayListSrvDesc);
-        SsrRayListPrimaryUavBindlessIndices[FrameIndex] = Device->CreateBindlessUav(SsrRayListPrimaryBuffers[FrameIndex].Get(), nullptr, RayListUavDesc);
-        SsrRayCounterPrimarySrvBindlessIndices[FrameIndex] = Device->CreateBindlessSrv(SsrRayCounterPrimaryBuffers[FrameIndex].Get(), CounterSrvDesc);
-        SsrRayCounterPrimaryUavBindlessIndices[FrameIndex] = Device->CreateBindlessUav(SsrRayCounterPrimaryBuffers[FrameIndex].Get(), nullptr, CounterUavDesc);
-
-        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-            &DefaultHeap,
-            D3D12_HEAP_FLAG_NONE,
-            &RayListDesc,
-            D3D12_RESOURCE_STATE_COMMON,
-            nullptr,
-            IID_PPV_ARGS(SsrRayListHwMissBuffers[FrameIndex].GetAddressOf())));
-        if (SsrRayListHwMissBuffers[FrameIndex])
-        {
-            const std::wstring Name = L"SSR_RayListHwMiss_Frame" + std::to_wstring(FrameIndex);
-            SsrRayListHwMissBuffers[FrameIndex]->SetName(Name.c_str());
-        }
-
-        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-            &DefaultHeap,
-            D3D12_HEAP_FLAG_NONE,
-            &CounterDesc,
-            D3D12_RESOURCE_STATE_COMMON,
-            nullptr,
-            IID_PPV_ARGS(SsrRayCounterHwMissBuffers[FrameIndex].GetAddressOf())));
-        if (SsrRayCounterHwMissBuffers[FrameIndex])
-        {
-            const std::wstring Name = L"SSR_RayCounterHwMiss_Frame" + std::to_wstring(FrameIndex);
-            SsrRayCounterHwMissBuffers[FrameIndex]->SetName(Name.c_str());
-        }
-
-        SsrRayListHwMissSrvBindlessIndices[FrameIndex] = Device->CreateBindlessSrv(SsrRayListHwMissBuffers[FrameIndex].Get(), RayListSrvDesc);
-        SsrRayListHwMissUavBindlessIndices[FrameIndex] = Device->CreateBindlessUav(SsrRayListHwMissBuffers[FrameIndex].Get(), nullptr, RayListUavDesc);
-        SsrRayCounterHwMissSrvBindlessIndices[FrameIndex] = Device->CreateBindlessSrv(SsrRayCounterHwMissBuffers[FrameIndex].Get(), CounterSrvDesc);
-        SsrRayCounterHwMissUavBindlessIndices[FrameIndex] = Device->CreateBindlessUav(SsrRayCounterHwMissBuffers[FrameIndex].Get(), nullptr, CounterUavDesc);
-
-        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-            &DefaultHeap,
-            D3D12_HEAP_FLAG_NONE,
-            &IndirectArgsDesc,
+        CreateBindlessBuffer(
+            Device,
+            L"SSR_IndirectArgsPrimary_Frame" + std::to_wstring(FrameIndex),
+            IndirectArgsRgDesc,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            nullptr,
-            IID_PPV_ARGS(SsrIndirectArgsPrimaryBuffers[FrameIndex].GetAddressOf())));
-        if (SsrIndirectArgsPrimaryBuffers[FrameIndex])
-        {
-            const std::wstring Name = L"SSR_IndirectArgsPrimary_Frame" + std::to_wstring(FrameIndex);
-            SsrIndirectArgsPrimaryBuffers[FrameIndex]->SetName(Name.c_str());
-        }
-
-        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-            &DefaultHeap,
-            D3D12_HEAP_FLAG_NONE,
-            &IndirectArgsDesc,
+            SsrIndirectArgsPrimaryBuffers[FrameIndex],
+            false,
+            true);
+        CreateBindlessBuffer(
+            Device,
+            L"SSR_IndirectArgsHwMiss_Frame" + std::to_wstring(FrameIndex),
+            IndirectArgsRgDesc,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            nullptr,
-            IID_PPV_ARGS(SsrIndirectArgsHwMissBuffers[FrameIndex].GetAddressOf())));
-        if (SsrIndirectArgsHwMissBuffers[FrameIndex])
-        {
-            const std::wstring Name = L"SSR_IndirectArgsHwMiss_Frame" + std::to_wstring(FrameIndex);
-            SsrIndirectArgsHwMissBuffers[FrameIndex]->SetName(Name.c_str());
-        }
-
-        D3D12_UNORDERED_ACCESS_VIEW_DESC IndirectArgsUavDesc = {};
-        IndirectArgsUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-        IndirectArgsUavDesc.Format = DXGI_FORMAT_R32_TYPELESS;
-        IndirectArgsUavDesc.Buffer.FirstElement = 0;
-        IndirectArgsUavDesc.Buffer.NumElements = sizeof(D3D12_DISPATCH_ARGUMENTS) / sizeof(uint32_t);
-        IndirectArgsUavDesc.Buffer.StructureByteStride = 0;
-        IndirectArgsUavDesc.Buffer.CounterOffsetInBytes = 0;
-        IndirectArgsUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
-        SsrIndirectArgsPrimaryUavBindlessIndices[FrameIndex] = Device->CreateBindlessUav(SsrIndirectArgsPrimaryBuffers[FrameIndex].Get(), nullptr, IndirectArgsUavDesc);
-        SsrIndirectArgsHwMissUavBindlessIndices[FrameIndex] = Device->CreateBindlessUav(SsrIndirectArgsHwMissBuffers[FrameIndex].Get(), nullptr, IndirectArgsUavDesc);
+            SsrIndirectArgsHwMissBuffers[FrameIndex],
+            false,
+            true);
     }
 
     return true;
@@ -1103,32 +860,14 @@ void FSsr::AddSsrRayCounterClearPass(FDeferredPassContext& Context)
             return;
         }
 
-        FRGBufferDesc CounterDesc = {};
-        CounterDesc.Size = sizeof(uint32_t);
-        CounterDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-
-        const FRGBufferHandle PrimaryHandle = Graph.ImportBuffer(
-            "SSR_RayCounterPrimary",
-            SsrRayCounterPrimaryBuffers[FrameIndex].Get(),
-            &SsrRayCounterPrimaryStates[FrameIndex],
-            CounterDesc);
-        const FRGBufferHandle HwMissHandle = Graph.ImportBuffer(
-            "SSR_RayCounterHwMiss",
-            SsrRayCounterHwMissBuffers[FrameIndex].Get(),
-            &SsrRayCounterHwMissStates[FrameIndex],
-            CounterDesc);
+        const FRGBufferHandle PrimaryHandle = ImportBindlessBuffer(Graph, "SSR_RayCounterPrimary", SsrRayCounterPrimaryBuffers[FrameIndex]);
+        const FRGBufferHandle HwMissHandle = ImportBindlessBuffer(Graph, "SSR_RayCounterHwMiss", SsrRayCounterHwMissBuffers[FrameIndex]);
 
         Builder.WriteBuffer(PrimaryHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         Builder.WriteBuffer(HwMissHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     }, [this, &Owner](const FSsrRayCounterClearPassData& Data, FDX12CommandContext& Cmd)
     {
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
-        FScopedPixEvent SsrClearEvent(LocalCommandList, L"SSR RayCounter Clear");
-
-        if (!Owner.Device || !Owner.Device->GetBindlessDescriptorHeap())
-        {
-            return;
-        }
 
         const uint32_t LocalFrameIndex = Cmd.GetCurrentFrameIndex();
         if (LocalFrameIndex >= SsrRayCounterPrimaryBuffers.size() || LocalFrameIndex >= SsrRayCounterHwMissBuffers.size())
@@ -1138,13 +877,8 @@ void FSsr::AddSsrRayCounterClearPass(FDeferredPassContext& Context)
 
         ID3D12Resource* PrimaryCounterBuffer = SsrRayCounterPrimaryBuffers[LocalFrameIndex].Get();
         ID3D12Resource* HwMissCounterBuffer = SsrRayCounterHwMissBuffers[LocalFrameIndex].Get();
-        const uint32_t PrimaryCounterUavIndex = SsrRayCounterPrimaryUavBindlessIndices[LocalFrameIndex];
-        const uint32_t HwMissCounterUavIndex = SsrRayCounterHwMissUavBindlessIndices[LocalFrameIndex];
-
-        if (!PrimaryCounterBuffer || !HwMissCounterBuffer || PrimaryCounterUavIndex == UINT32_MAX || HwMissCounterUavIndex == UINT32_MAX)
-        {
-            return;
-        }
+        const uint32_t PrimaryCounterUavIndex = SsrRayCounterPrimaryBuffers[LocalFrameIndex].UavBindlessIndex;
+        const uint32_t HwMissCounterUavIndex = SsrRayCounterHwMissBuffers[LocalFrameIndex].UavBindlessIndex;
 
         const uint32_t ClearValues[4] = { 0u, 0u, 0u, 0u };
         const D3D12_GPU_DESCRIPTOR_HANDLE PrimaryGpuHandle = Owner.GetBindlessGpuHandle(PrimaryCounterUavIndex);
@@ -1173,7 +907,7 @@ void FSsr::AddSsrRayGatherPass(FDeferredPassContext& Context)
     Graph.AddPass<FSsrRayGatherPassData>("SSR Ray Gather", [this, &Owner, FrameIndex, GBufferHandles, LinearDepthHandle, &Graph](FSsrRayGatherPassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("SSR");
-        Data.bEnabled = SsrRayGatherPipeline && SsrRayGatherRootSignature;
+        Data.bEnabled = bRayGatherPersistentInputsValid;
         if (!Data.bEnabled)
         {
             return;
@@ -1188,29 +922,14 @@ void FSsr::AddSsrRayGatherPass(FDeferredPassContext& Context)
         Builder.ReadTexture(GBufferHandles[1], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(LinearDepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
-        FRGBufferDesc CounterDesc = {};
-        CounterDesc.Size = sizeof(uint32_t);
-        CounterDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-        FRGBufferDesc RayListDesc = {};
-        RayListDesc.Size = static_cast<uint64_t>(SsrMaxRayCount) * SsrRayItemStride;
-        RayListDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-
-        const FRGBufferHandle RayCounterHandle = Graph.ImportBuffer(
-            "SSR_RayCounterPrimary",
-            SsrRayCounterPrimaryBuffers[FrameIndex].Get(),
-            &SsrRayCounterPrimaryStates[FrameIndex],
-            CounterDesc);
-        const FRGBufferHandle RayListHandle = Graph.ImportBuffer(
-            "SSR_RayListPrimary",
-            SsrRayListPrimaryBuffers[FrameIndex].Get(),
-            &SsrRayListPrimaryStates[FrameIndex],
-            RayListDesc);
+        const FRGBufferHandle RayCounterHandle = ImportBindlessBuffer(Graph, "SSR_RayCounterPrimary", SsrRayCounterPrimaryBuffers[FrameIndex]);
+        const FRGBufferHandle RayListHandle = ImportBindlessBuffer(Graph, "SSR_RayListPrimary", SsrRayListPrimaryBuffers[FrameIndex]);
 
         Builder.WriteBuffer(RayCounterHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         Builder.WriteBuffer(RayListHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     }, [this, &Owner](const FSsrRayGatherPassData& Data, FDX12CommandContext& Cmd)
     {
-        if (!Data.bEnabled || !Owner.Device || !Owner.Device->GetBindlessDescriptorHeap())
+        if (!Data.bEnabled)
         {
             return;
         }
@@ -1221,21 +940,16 @@ void FSsr::AddSsrRayGatherPass(FDeferredPassContext& Context)
             return;
         }
 
-        const uint32_t RayCounterUavIndex = SsrRayCounterPrimaryUavBindlessIndices[LocalFrameIndex];
-        const uint32_t RayListUavIndex = SsrRayListPrimaryUavBindlessIndices[LocalFrameIndex];
-        if (RayCounterUavIndex == UINT32_MAX || RayListUavIndex == UINT32_MAX)
-        {
-            return;
-        }
+        const uint32_t RayCounterUavIndex = SsrRayCounterPrimaryBuffers[LocalFrameIndex].UavBindlessIndex;
+        const uint32_t RayListUavIndex = SsrRayListPrimaryBuffers[LocalFrameIndex].UavBindlessIndex;
 
-        if (Owner.GBufferBindlessIndices[0] == UINT32_MAX || Owner.GBufferBindlessIndices[1] == UINT32_MAX || Owner.LinearDepthBindlessIndex == UINT32_MAX)
+        if (Owner.GBufferBindlessIndices[0] == UINT32_MAX || Owner.GBufferBindlessIndices[1] == UINT32_MAX || Owner.LinearDepthTexture.SrvBindlessIndex == UINT32_MAX)
         {
             return;
         }
 
         ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
-        FScopedPixEvent SsrGatherEvent(LocalCommandList, L"SSR Ray Gather");
 
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         LocalCommandList->SetPipelineState(SsrRayGatherPipeline.Get());
@@ -1277,7 +991,7 @@ void FSsr::AddSsrRayGatherPass(FDeferredPassContext& Context)
         {
             Owner.GBufferBindlessIndices[0],
             Owner.GBufferBindlessIndices[1],
-            Owner.LinearDepthBindlessIndex,
+            Owner.LinearDepthTexture.SrvBindlessIndex,
             RayCounterUavIndex,
             RayListUavIndex,
             Owner.Device->GetPointClampSamplerIndex()
@@ -1307,7 +1021,7 @@ void FSsr::AddSsrBuildIndirectArgsPass(FDeferredPassContext& Context, bool bHwMi
     Graph.AddPass<FSsrBuildIndirectArgsPassData>(PassName, [this, &Owner, FrameIndex, bHwMiss, &Graph](FSsrBuildIndirectArgsPassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("SSR");
-        Data.bEnabled = SsrBuildIndirectArgsPipeline && SsrBuildIndirectArgsRootSignature;
+        Data.bEnabled = bBuildIndirectArgsPersistentInputsValid;
         Data.bHwMiss = bHwMiss;
         if (!Data.bEnabled)
         {
@@ -1322,35 +1036,21 @@ void FSsr::AddSsrBuildIndirectArgsPass(FDeferredPassContext& Context, bool bHwMi
             return;
         }
 
-        FRGBufferDesc CounterDesc = {};
-        CounterDesc.Size = sizeof(uint32_t);
-        CounterDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-        FRGBufferDesc IndirectDesc = {};
-        IndirectDesc.Size = sizeof(D3D12_DISPATCH_ARGUMENTS);
-        IndirectDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-
-        const FRGBufferHandle CounterHandle = Graph.ImportBuffer(
-            bHwMiss ? "SSR_RayCounterHwMiss" : "SSR_RayCounterPrimary",
-            bHwMiss ? SsrRayCounterHwMissBuffers[FrameIndex].Get() : SsrRayCounterPrimaryBuffers[FrameIndex].Get(),
-            bHwMiss ? &SsrRayCounterHwMissStates[FrameIndex] : &SsrRayCounterPrimaryStates[FrameIndex],
-            CounterDesc);
-        const FRGBufferHandle IndirectHandle = Graph.ImportBuffer(
-            bHwMiss ? "SSR_IndirectArgsHwMiss" : "SSR_IndirectArgsPrimary",
-            bHwMiss ? SsrIndirectArgsHwMissBuffers[FrameIndex].Get() : SsrIndirectArgsPrimaryBuffers[FrameIndex].Get(),
-            bHwMiss ? &SsrIndirectArgsHwMissStates[FrameIndex] : &SsrIndirectArgsPrimaryStates[FrameIndex],
-            IndirectDesc);
+        FBindlessBuffer& CounterBuffer = bHwMiss ? SsrRayCounterHwMissBuffers[FrameIndex] : SsrRayCounterPrimaryBuffers[FrameIndex];
+        FBindlessBuffer& IndirectBuffer = bHwMiss ? SsrIndirectArgsHwMissBuffers[FrameIndex] : SsrIndirectArgsPrimaryBuffers[FrameIndex];
+        const FRGBufferHandle CounterHandle = ImportBindlessBuffer(Graph, bHwMiss ? "SSR_RayCounterHwMiss" : "SSR_RayCounterPrimary", CounterBuffer);
+        const FRGBufferHandle IndirectHandle = ImportBindlessBuffer(Graph, bHwMiss ? "SSR_IndirectArgsHwMiss" : "SSR_IndirectArgsPrimary", IndirectBuffer);
 
         Builder.ReadBuffer(CounterHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.WriteBuffer(IndirectHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     }, [this, &Owner, PassLabel](const FSsrBuildIndirectArgsPassData& Data, FDX12CommandContext& Cmd)
     {
-        if (!Data.bEnabled || !Owner.Device || !Owner.Device->GetBindlessDescriptorHeap())
+        if (!Data.bEnabled)
         {
             return;
         }
 
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
-        FScopedPixEvent BuildEvent(LocalCommandList, PassLabel);
 
         const uint32_t LocalFrameIndex = Cmd.GetCurrentFrameIndex();
         if (Data.bHwMiss)
@@ -1368,15 +1068,8 @@ void FSsr::AddSsrBuildIndirectArgsPass(FDeferredPassContext& Context, bool bHwMi
             }
         }
 
-        ID3D12Resource* RayCounterBuffer = Data.bHwMiss ? SsrRayCounterHwMissBuffers[LocalFrameIndex].Get() : SsrRayCounterPrimaryBuffers[LocalFrameIndex].Get();
-        ID3D12Resource* IndirectArgsBuffer = Data.bHwMiss ? SsrIndirectArgsHwMissBuffers[LocalFrameIndex].Get() : SsrIndirectArgsPrimaryBuffers[LocalFrameIndex].Get();
-        const uint32_t RayCounterSrvIndex = Data.bHwMiss ? SsrRayCounterHwMissSrvBindlessIndices[LocalFrameIndex] : SsrRayCounterPrimarySrvBindlessIndices[LocalFrameIndex];
-        const uint32_t IndirectArgsUavIndex = Data.bHwMiss ? SsrIndirectArgsHwMissUavBindlessIndices[LocalFrameIndex] : SsrIndirectArgsPrimaryUavBindlessIndices[LocalFrameIndex];
-
-        if (!RayCounterBuffer || !IndirectArgsBuffer || RayCounterSrvIndex == UINT32_MAX || IndirectArgsUavIndex == UINT32_MAX)
-        {
-            return;
-        }
+        const uint32_t RayCounterSrvIndex = Data.bHwMiss ? SsrRayCounterHwMissBuffers[LocalFrameIndex].SrvBindlessIndex : SsrRayCounterPrimaryBuffers[LocalFrameIndex].SrvBindlessIndex;
+        const uint32_t IndirectArgsUavIndex = Data.bHwMiss ? SsrIndirectArgsHwMissBuffers[LocalFrameIndex].UavBindlessIndex : SsrIndirectArgsPrimaryBuffers[LocalFrameIndex].UavBindlessIndex;
 
         ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
@@ -1403,7 +1096,7 @@ void FSsr::AddSsrSwTracePass(FDeferredPassContext& Context)
     const FDeferredRenderer::FDeferredFrameState& FrameState = Context.FrameState;
     const std::vector<FRGResourceHandle>& TaaHandles = Context.Resources.Taa.HistoryHandles;
     const FRGResourceHandle LinearDepthHandle = Context.Resources.LinearDepthHandle;
-    const FRGResourceHandle HZBHandle = Context.Resources.HZBHandle;
+    const FRGResourceHandle HZBHandle = Context.Resources.Hzb.HzbHandle;
     const FRGResourceHandle SsrHandle = Context.Resources.Ssr.SsrHandle;
 
     struct FSsrSwTracePassData
@@ -1421,12 +1114,12 @@ void FSsr::AddSsrSwTracePass(FDeferredPassContext& Context)
     Graph.AddPass<FSsrSwTracePassData>("SSR SW Trace", [this, &Owner, FrameIndex, FrameState, TaaHandles, LinearDepthHandle, HZBHandle, SsrHandle, &Graph](FSsrSwTracePassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("SSR");
-        Data.bUseHzb = bSsrHzbEnabled && Owner.bHZBReady && Owner.HZBSrvBindlessIndex != UINT32_MAX;
+        Data.bUseHzb = bSsrHzbEnabled && Owner.Hzb->IsReady() && IsValidBindlessIndex(Owner.Hzb->GetSrvBindlessIndex());
         Data.HistoryIndex = FrameState.TaaReadIndex;
         Data.bUseHistory = FrameState.bTaaHistoryReady && Data.HistoryIndex < TaaHandles.size();
         Data.bUseHzb = Data.bUseHzb && static_cast<bool>(HZBHandle);
-        Data.PipelineIndex = (Data.bUseHzb ? 2u : 0u) + (bSsrRefineEnabled ? 1u : 0u) + (bSsrSwEnabled ? 0u : 4u);
-        Data.bEnabled = (bSsrSwEnabled || bSsrHwEnabled) && SsrSwTraceRootSignature;
+        Data.PipelineIndex = BuildSsrPipelineIndex(Data.bUseHzb, bSsrRefineEnabled, bSsrSwEnabled, bSsrHzbFullResDepthEnabled);
+        Data.bEnabled = (bSsrSwEnabled || bSsrHwEnabled) && bSwTracePersistentInputsValid;
 
         if (!Data.bEnabled)
         {
@@ -1454,41 +1147,11 @@ void FSsr::AddSsrSwTracePass(FDeferredPassContext& Context)
         Data.SsrHandle = SsrHandle;
         Builder.WriteTexture(Data.SsrHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
-        FRGBufferDesc CounterDesc = {};
-        CounterDesc.Size = sizeof(uint32_t);
-        CounterDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-        FRGBufferDesc RayListDesc = {};
-        RayListDesc.Size = static_cast<uint64_t>(SsrMaxRayCount) * SsrRayItemStride;
-        RayListDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-        FRGBufferDesc IndirectDesc = {};
-        IndirectDesc.Size = sizeof(D3D12_DISPATCH_ARGUMENTS);
-        IndirectDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-
-        const FRGBufferHandle RayCounterHandle = Graph.ImportBuffer(
-            "SSR_RayCounterPrimary",
-            SsrRayCounterPrimaryBuffers[FrameIndex].Get(),
-            &SsrRayCounterPrimaryStates[FrameIndex],
-            CounterDesc);
-        const FRGBufferHandle RayListHandle = Graph.ImportBuffer(
-            "SSR_RayListPrimary",
-            SsrRayListPrimaryBuffers[FrameIndex].Get(),
-            &SsrRayListPrimaryStates[FrameIndex],
-            RayListDesc);
-        const FRGBufferHandle HwMissCounterHandle = Graph.ImportBuffer(
-            "SSR_RayCounterHwMiss",
-            SsrRayCounterHwMissBuffers[FrameIndex].Get(),
-            &SsrRayCounterHwMissStates[FrameIndex],
-            CounterDesc);
-        const FRGBufferHandle HwMissListHandle = Graph.ImportBuffer(
-            "SSR_RayListHwMiss",
-            SsrRayListHwMissBuffers[FrameIndex].Get(),
-            &SsrRayListHwMissStates[FrameIndex],
-            RayListDesc);
-        const FRGBufferHandle IndirectHandle = Graph.ImportBuffer(
-            "SSR_IndirectArgsPrimary",
-            SsrIndirectArgsPrimaryBuffers[FrameIndex].Get(),
-            &SsrIndirectArgsPrimaryStates[FrameIndex],
-            IndirectDesc);
+        const FRGBufferHandle RayCounterHandle = ImportBindlessBuffer(Graph, "SSR_RayCounterPrimary", SsrRayCounterPrimaryBuffers[FrameIndex]);
+        const FRGBufferHandle RayListHandle = ImportBindlessBuffer(Graph, "SSR_RayListPrimary", SsrRayListPrimaryBuffers[FrameIndex]);
+        const FRGBufferHandle HwMissCounterHandle = ImportBindlessBuffer(Graph, "SSR_RayCounterHwMiss", SsrRayCounterHwMissBuffers[FrameIndex]);
+        const FRGBufferHandle HwMissListHandle = ImportBindlessBuffer(Graph, "SSR_RayListHwMiss", SsrRayListHwMissBuffers[FrameIndex]);
+        const FRGBufferHandle IndirectHandle = ImportBindlessBuffer(Graph, "SSR_IndirectArgsPrimary", SsrIndirectArgsPrimaryBuffers[FrameIndex]);
 
         Builder.ReadBuffer(RayCounterHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadBuffer(RayListHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -1497,12 +1160,12 @@ void FSsr::AddSsrSwTracePass(FDeferredPassContext& Context)
         Builder.ReadBuffer(IndirectHandle, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
     }, [this, &Owner, &Graph](const FSsrSwTracePassData& Data, FDX12CommandContext& Cmd)
     {
-        if (!Data.bEnabled || !Owner.Device || !Owner.Device->GetBindlessDescriptorHeap())
+        if (!Data.bEnabled)
         {
             return;
         }
 
-        if (Owner.GBufferBindlessIndices[2] == UINT32_MAX || Owner.LinearDepthBindlessIndex == UINT32_MAX || SsrUavBindlessIndex == UINT32_MAX)
+        if (!IsValidBindlessIndex(Owner.GBufferBindlessIndices[2]) || !IsValidBindlessIndex(Owner.LinearDepthTexture.SrvBindlessIndex))
         {
             return;
         }
@@ -1515,23 +1178,13 @@ void FSsr::AddSsrSwTracePass(FDeferredPassContext& Context)
             return;
         }
 
-        const uint32_t RayCounterPrimarySrvIndex = SsrRayCounterPrimarySrvBindlessIndices[LocalFrameIndex];
-        const uint32_t RayListPrimarySrvIndex = SsrRayListPrimarySrvBindlessIndices[LocalFrameIndex];
-        const uint32_t RayCounterHwMissUavIndex = SsrRayCounterHwMissUavBindlessIndices[LocalFrameIndex];
-        const uint32_t RayListHwMissUavIndex = SsrRayListHwMissUavBindlessIndices[LocalFrameIndex];
-        if (RayCounterPrimarySrvIndex == UINT32_MAX || RayListPrimarySrvIndex == UINT32_MAX
-            || RayCounterHwMissUavIndex == UINT32_MAX || RayListHwMissUavIndex == UINT32_MAX)
-        {
-            return;
-        }
+        const uint32_t RayCounterPrimarySrvIndex = SsrRayCounterPrimaryBuffers[LocalFrameIndex].SrvBindlessIndex;
+        const uint32_t RayListPrimarySrvIndex = SsrRayListPrimaryBuffers[LocalFrameIndex].SrvBindlessIndex;
+        const uint32_t RayCounterHwMissUavIndex = SsrRayCounterHwMissBuffers[LocalFrameIndex].UavBindlessIndex;
+        const uint32_t RayListHwMissUavIndex = SsrRayListHwMissBuffers[LocalFrameIndex].UavBindlessIndex;
 
         ID3D12Resource* IndirectArgsBuffer = SsrIndirectArgsPrimaryBuffers[LocalFrameIndex].Get();
         if (!IndirectArgsBuffer)
-        {
-            return;
-        }
-
-        if (!SsrDispatchCommandSignature)
         {
             return;
         }
@@ -1549,11 +1202,10 @@ void FSsr::AddSsrSwTracePass(FDeferredPassContext& Context)
 
         ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
-        FScopedPixEvent SsrSwTraceEvent(LocalCommandList, L"SSR SW Trace");
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
 
-        const D3D12_GPU_DESCRIPTOR_HANDLE OutputGpuHandle = Owner.GetBindlessGpuHandle(SsrUavBindlessIndex);
-        const D3D12_CPU_DESCRIPTOR_HANDLE OutputCpuHandle = Owner.GetBindlessCpuClearHandle(SsrUavBindlessIndex);
+        const D3D12_GPU_DESCRIPTOR_HANDLE OutputGpuHandle = Owner.GetBindlessGpuHandle(SsrTexture.UavBindlessIndex);
+        const D3D12_CPU_DESCRIPTOR_HANDLE OutputCpuHandle = Owner.GetBindlessCpuClearHandle(SsrTexture.UavBindlessIndex);
         const float ClearValues[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
         LocalCommandList->ClearUnorderedAccessViewFloat(OutputGpuHandle, OutputCpuHandle, SsrOutput, ClearValues, 0, nullptr);
 
@@ -1593,9 +1245,9 @@ void FSsr::AddSsrSwTracePass(FDeferredPassContext& Context)
             SsrStride,
             SsrRoughnessCutoff,
             SsrIntensity,
-            Owner.HZBWidth,
-            Owner.HZBHeight,
-            Owner.HZBMipCount,
+            Owner.Hzb->GetWidth(),
+            Owner.Hzb->GetHeight(),
+            Owner.Hzb->GetMipCount(),
             Data.bUseHzb ? 1u : 0u,
             SsrMaxRayCount
         };
@@ -1604,21 +1256,21 @@ void FSsr::AddSsrSwTracePass(FDeferredPassContext& Context)
         const uint32_t SceneColorIndex = Data.bUseHistory && Owner.Taa
             ? Owner.Taa->GetHistorySrvBindlessIndex(Data.HistoryIndex)
             : Owner.GBufferBindlessIndices[2];
-        if (SceneColorIndex == UINT32_MAX)
+        if (!IsValidBindlessIndex(SceneColorIndex))
         {
             return;
         }
 
-        const uint32_t HzbIndex = Data.bUseHzb && Owner.HZBSrvBindlessIndex != UINT32_MAX ? Owner.HZBSrvBindlessIndex : Owner.LinearDepthBindlessIndex;
+        const uint32_t HzbIndex = Data.bUseHzb && IsValidBindlessIndex(Owner.Hzb->GetSrvBindlessIndex()) ? Owner.Hzb->GetSrvBindlessIndex() : Owner.LinearDepthTexture.SrvBindlessIndex;
         const uint32_t BindlessIndices[] =
         {
-            Owner.LinearDepthBindlessIndex,
+            Owner.LinearDepthTexture.SrvBindlessIndex,
             SceneColorIndex,
             RayCounterPrimarySrvIndex,
             RayListPrimarySrvIndex,
             RayCounterHwMissUavIndex,
             RayListHwMissUavIndex,
-            SsrUavBindlessIndex,
+            SsrTexture.UavBindlessIndex,
             HzbIndex,
             Owner.Device->GetPointClampSamplerIndex(),
             Owner.Device->GetLinearClampSamplerIndex()
@@ -1654,7 +1306,7 @@ void FSsr::AddSsrHwTracePass(FDeferredPassContext& Context)
         Builder.SetPixGroup("SSR");
         Data.HistoryIndex = FrameState.TaaReadIndex;
         Data.bUseHistory = FrameState.bTaaHistoryReady && Data.HistoryIndex < TaaHandles.size();
-        Data.bEnabled = bSsrHwEnabled && Owner.bRayTracingPipelineReady && Owner.RayQueryRootSignature && Owner.RayQuerySsrHwPipeline;
+        Data.bEnabled = bSsrHwEnabled && bHwTracePersistentInputsValid && Owner.GetRayTracingRuntime().bRayTracingPipelineReady && Owner.GetRayTracingRuntime().RayQueryRootSignature && Owner.GetRayTracingRuntime().RayQuerySsrHwPipeline;
         if (!Data.bEnabled)
         {
             return;
@@ -1675,38 +1327,16 @@ void FSsr::AddSsrHwTracePass(FDeferredPassContext& Context)
         }
         Builder.WriteTexture(Data.SsrHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
-        FRGBufferDesc CounterDesc = {};
-        CounterDesc.Size = sizeof(uint32_t);
-        CounterDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-        FRGBufferDesc RayListDesc = {};
-        RayListDesc.Size = static_cast<uint64_t>(SsrMaxRayCount) * SsrRayItemStride;
-        RayListDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-        FRGBufferDesc IndirectDesc = {};
-        IndirectDesc.Size = sizeof(D3D12_DISPATCH_ARGUMENTS);
-        IndirectDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-
-        const FRGBufferHandle RayCounterHandle = Graph.ImportBuffer(
-            "SSR_RayCounterHwMiss",
-            SsrRayCounterHwMissBuffers[FrameIndex].Get(),
-            &SsrRayCounterHwMissStates[FrameIndex],
-            CounterDesc);
-        const FRGBufferHandle RayListHandle = Graph.ImportBuffer(
-            "SSR_RayListHwMiss",
-            SsrRayListHwMissBuffers[FrameIndex].Get(),
-            &SsrRayListHwMissStates[FrameIndex],
-            RayListDesc);
-        const FRGBufferHandle IndirectHandle = Graph.ImportBuffer(
-            "SSR_IndirectArgsHwMiss",
-            SsrIndirectArgsHwMissBuffers[FrameIndex].Get(),
-            &SsrIndirectArgsHwMissStates[FrameIndex],
-            IndirectDesc);
+        const FRGBufferHandle RayCounterHandle = ImportBindlessBuffer(Graph, "SSR_RayCounterHwMiss", SsrRayCounterHwMissBuffers[FrameIndex]);
+        const FRGBufferHandle RayListHandle = ImportBindlessBuffer(Graph, "SSR_RayListHwMiss", SsrRayListHwMissBuffers[FrameIndex]);
+        const FRGBufferHandle IndirectHandle = ImportBindlessBuffer(Graph, "SSR_IndirectArgsHwMiss", SsrIndirectArgsHwMissBuffers[FrameIndex]);
 
         Builder.ReadBuffer(RayCounterHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadBuffer(RayListHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadBuffer(IndirectHandle, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
     }, [this, &Owner, &Graph](const FSsrHwTracePassData& Data, FDX12CommandContext& CmdContext)
     {
-        if (!Data.bEnabled || !Owner.Device || !Owner.Device->GetBindlessDescriptorHeap())
+        if (!Data.bEnabled)
         {
             return;
         }
@@ -1717,38 +1347,28 @@ void FSsr::AddSsrHwTracePass(FDeferredPassContext& Context)
             return;
         }
 
-        FScopedPixEvent SsrHWTraceEvent(CommandList4, L"SSR HW Trace");
 
         if (Data.Camera == nullptr)
         {
             return;
         }
 
-        if (Owner.GBufferBindlessIndices[2] == UINT32_MAX || SsrUavBindlessIndex == UINT32_MAX)
+        if (!IsValidBindlessIndex(Owner.GBufferBindlessIndices[2]))
         {
             return;
         }
 
         const uint32_t LocalFrameIndex = CmdContext.GetCurrentFrameIndex();
-        if (LocalFrameIndex >= Owner.TlasResultBuffers.size() || !Owner.TlasResultBuffers[LocalFrameIndex])
+        if (LocalFrameIndex >= Owner.GetRayTracingRuntime().TlasResultBuffers.size() || !Owner.GetRayTracingRuntime().TlasResultBuffers[LocalFrameIndex])
         {
             return;
         }
 
-        const uint32_t RayCounterHwMissIndex = SsrRayCounterHwMissSrvBindlessIndices[LocalFrameIndex];
-        const uint32_t RayListHwMissIndex = SsrRayListHwMissSrvBindlessIndices[LocalFrameIndex];
-        if (RayCounterHwMissIndex == UINT32_MAX || RayListHwMissIndex == UINT32_MAX)
-        {
-            return;
-        }
+        const uint32_t RayCounterHwMissIndex = SsrRayCounterHwMissBuffers[LocalFrameIndex].SrvBindlessIndex;
+        const uint32_t RayListHwMissIndex = SsrRayListHwMissBuffers[LocalFrameIndex].SrvBindlessIndex;
 
         ID3D12Resource* IndirectArgsBuffer = SsrIndirectArgsHwMissBuffers[LocalFrameIndex].Get();
         if (!IndirectArgsBuffer)
-        {
-            return;
-        }
-
-        if (!SsrDispatchCommandSignature)
         {
             return;
         }
@@ -1770,7 +1390,7 @@ void FSsr::AddSsrHwTracePass(FDeferredPassContext& Context)
         const uint32_t SceneColorIndex = Data.bUseHistory && Owner.Taa
             ? Owner.Taa->GetHistorySrvBindlessIndex(Data.HistoryIndex)
             : Owner.GBufferBindlessIndices[2];
-        if (SceneColorIndex == UINT32_MAX)
+        if (!IsValidBindlessIndex(SceneColorIndex))
         {
             return;
         }
@@ -1782,21 +1402,21 @@ void FSsr::AddSsrHwTracePass(FDeferredPassContext& Context)
             return;
         }
 
-        CommandList4->SetPipelineState(Owner.RayQuerySsrHwPipeline.Get());
-        CommandList4->SetComputeRootSignature(Owner.RayQueryRootSignature.Get());
-        CommandList4->SetComputeRootShaderResourceView(0, Owner.TlasResultBuffers[LocalFrameIndex]->GetGPUVirtualAddress());
+        CommandList4->SetPipelineState(Owner.GetRayTracingRuntime().RayQuerySsrHwPipeline.Get());
+        CommandList4->SetComputeRootSignature(Owner.GetRayTracingRuntime().RayQueryRootSignature.Get());
+        CommandList4->SetComputeRootShaderResourceView(0, Owner.GetRayTracingRuntime().TlasResultBuffers[LocalFrameIndex]->GetGPUVirtualAddress());
         const uint64_t ConstantBufferOffset = 0;
         Owner.UpdateSceneConstants(*Data.Camera, Owner.SceneModels.front(), 0u, ConstantBufferOffset);
         const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = Owner.GetSceneConstantBufferAddress();
         CommandList4->SetComputeRootConstantBufferView(1, ConstantBufferAddress + ConstantBufferOffset);
 
-        if (LocalFrameIndex >= Owner.PathTracingInstanceDataBindlessIndices.size())
+        if (LocalFrameIndex >= Owner.GetRayTracingRuntime().PathTracingInstanceDataBindlessIndices.size())
         {
             return;
         }
 
-        const uint32_t PathTracingInstanceDataBindlessIndex = Owner.PathTracingInstanceDataBindlessIndices[LocalFrameIndex];
-        if (PathTracingInstanceDataBindlessIndex == UINT32_MAX)
+        const uint32_t PathTracingInstanceDataBindlessIndex = Owner.GetRayTracingRuntime().PathTracingInstanceDataBindlessIndices[LocalFrameIndex];
+        if (!IsValidBindlessIndex(PathTracingInstanceDataBindlessIndex))
         {
             return;
         }
@@ -1805,7 +1425,7 @@ void FSsr::AddSsrHwTracePass(FDeferredPassContext& Context)
         {
             RayListHwMissIndex,
             RayCounterHwMissIndex,
-            SsrUavBindlessIndex,
+            SsrTexture.UavBindlessIndex,
             SceneColorIndex,
             PathTracingInstanceDataBindlessIndex,
             Owner.EnvironmentCubeBindlessIndex,
@@ -1843,7 +1463,7 @@ void FSsr::AddSsrResolvePass(FDeferredPassContext& Context)
     Graph.AddPass<FSsrResolvePassData>("SSR Resolve", [this, &Owner, GBufferHandles, LinearDepthHandle, SsrInputHandle, SsrResolveHandle](FSsrResolvePassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("SSR");
-        Data.bEnabled = SsrResolvePipeline && SsrResolveRootSignature;
+        Data.bEnabled = bResolvePersistentInputsValid;
         if (!Data.bEnabled)
         {
             return;
@@ -1856,20 +1476,19 @@ void FSsr::AddSsrResolvePass(FDeferredPassContext& Context)
         Builder.WriteTexture(SsrResolveHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     }, [this, &Owner](const FSsrResolvePassData& Data, FDX12CommandContext& Cmd)
     {
-        if (!Data.bEnabled || !Owner.Device || !Owner.Device->GetBindlessDescriptorHeap())
+        if (!Data.bEnabled)
         {
             return;
         }
 
-        if (SsrBindlessIndex == UINT32_MAX || SsrResolveUavBindlessIndex == UINT32_MAX || Owner.LinearDepthBindlessIndex == UINT32_MAX
-            || Owner.GBufferBindlessIndices[0] == UINT32_MAX || Owner.GBufferBindlessIndices[1] == UINT32_MAX)
+        if (!IsValidBindlessIndex(Owner.LinearDepthTexture.SrvBindlessIndex)
+            || !IsValidBindlessIndex(Owner.GBufferBindlessIndices[0]) || !IsValidBindlessIndex(Owner.GBufferBindlessIndices[1]))
         {
             return;
         }
 
         ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
-        FScopedPixEvent SsrResolveEvent(LocalCommandList, L"SSR Resolve");
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         LocalCommandList->SetPipelineState(SsrResolvePipeline.Get());
         LocalCommandList->SetComputeRootSignature(SsrResolveRootSignature.Get());
@@ -1895,11 +1514,11 @@ void FSsr::AddSsrResolvePass(FDeferredPassContext& Context)
 
         const uint32_t BindlessIndices[] =
         {
-            SsrBindlessIndex,
-            SsrResolveUavBindlessIndex,
+            SsrTexture.SrvBindlessIndex,
+            SsrResolveTexture.UavBindlessIndex,
             Owner.GBufferBindlessIndices[0],
             Owner.GBufferBindlessIndices[1],
-            Owner.LinearDepthBindlessIndex,
+            Owner.LinearDepthTexture.SrvBindlessIndex,
             Owner.Device->GetPointClampSamplerIndex()
         };
         LocalCommandList->SetComputeRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
@@ -1919,7 +1538,7 @@ void FSsr::AddSsrPass(FDeferredPassContext& Context)
     const std::array<FRGResourceHandle, 4>& GBufferHandles = Context.Resources.GBufferHandles;
     const FRGResourceHandle LinearDepthHandle = Context.Resources.LinearDepthHandle;
     const std::vector<FRGResourceHandle>& TaaHandles = Context.Resources.Taa.HistoryHandles;
-    const FRGResourceHandle HZBHandle = Context.Resources.HZBHandle;
+    const FRGResourceHandle HZBHandle = Context.Resources.Hzb.HzbHandle;
     const FRGResourceHandle SsrHandle = Context.Resources.Ssr.SsrHandle;
 
     struct FSsrPassData
@@ -1934,12 +1553,12 @@ void FSsr::AddSsrPass(FDeferredPassContext& Context)
     Graph.AddPass<FSsrPassData>("SSR", [this, &Owner, FrameIndex, GBufferHandles, LinearDepthHandle, TaaHandles, HZBHandle, SsrHandle, FrameState, &Graph](FSsrPassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("SSR");
-        Data.bUseHzb = bSsrHzbEnabled && Owner.bHZBReady && Owner.HZBSrvBindlessIndex != UINT32_MAX;
+        Data.bUseHzb = bSsrHzbEnabled && Owner.Hzb->IsReady() && IsValidBindlessIndex(Owner.Hzb->GetSrvBindlessIndex());
         Data.HistoryIndex = FrameState.TaaReadIndex;
         Data.bUseHistory = FrameState.bTaaHistoryReady && Data.HistoryIndex < TaaHandles.size();
         Data.bUseHzb = Data.bUseHzb && static_cast<bool>(HZBHandle);
-        Data.PipelineIndex = (Data.bUseHzb ? 2u : 0u) + (bSsrRefineEnabled ? 1u : 0u) + (bSsrSwEnabled ? 0u : 4u);
-        Data.bEnabled = (bSsrSwEnabled || bSsrHwEnabled) && SsrRootSignature;
+        Data.PipelineIndex = BuildSsrPipelineIndex(Data.bUseHzb, bSsrRefineEnabled, bSsrSwEnabled, bSsrHzbFullResDepthEnabled);
+        Data.bEnabled = (bSsrSwEnabled || bSsrHwEnabled) && bGraphicsPersistentInputsValid;
 
         Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(GBufferHandles[1], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -1959,35 +1578,14 @@ void FSsr::AddSsrPass(FDeferredPassContext& Context)
             return;
         }
 
-        FRGBufferDesc CounterDesc = {};
-        CounterDesc.Size = sizeof(uint32_t);
-        CounterDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-        FRGBufferDesc RayListDesc = {};
-        RayListDesc.Size = static_cast<uint64_t>(SsrMaxRayCount) * SsrRayItemStride;
-        RayListDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-
-        const FRGBufferHandle RayCounterHandle = Graph.ImportBuffer(
-            "SSR_RayCounter",
-            SsrRayCounterBuffers[FrameIndex].Get(),
-            &SsrRayCounterStates[FrameIndex],
-            CounterDesc);
-        const FRGBufferHandle RayListHandle = Graph.ImportBuffer(
-            "SSR_RayList",
-            SsrRayListBuffers[FrameIndex].Get(),
-            &SsrRayListStates[FrameIndex],
-            RayListDesc);
+        const FRGBufferHandle RayCounterHandle = ImportBindlessBuffer(Graph, "SSR_RayCounter", SsrRayCounterBuffers[FrameIndex]);
+        const FRGBufferHandle RayListHandle = ImportBindlessBuffer(Graph, "SSR_RayList", SsrRayListBuffers[FrameIndex]);
 
         Builder.WriteBuffer(RayCounterHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         Builder.WriteBuffer(RayListHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     }, [this, &Owner](const FSsrPassData& Data, FDX12CommandContext& Cmd)
     {
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
-        FScopedPixEvent SsrEvent(LocalCommandList, L"SSR");
-
-        if (!Owner.Device || !Owner.Device->GetBindlessDescriptorHeap())
-        {
-            return;
-        }
 
         ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
@@ -2001,7 +1599,7 @@ void FSsr::AddSsrPass(FDeferredPassContext& Context)
             return;
         }
 
-        if (Owner.GBufferBindlessIndices[0] == UINT32_MAX || Owner.GBufferBindlessIndices[1] == UINT32_MAX || Owner.LinearDepthBindlessIndex == UINT32_MAX)
+        if (!IsValidBindlessIndex(Owner.GBufferBindlessIndices[0]) || !IsValidBindlessIndex(Owner.GBufferBindlessIndices[1]) || !IsValidBindlessIndex(Owner.LinearDepthTexture.SrvBindlessIndex))
         {
             return;
         }
@@ -2009,7 +1607,7 @@ void FSsr::AddSsrPass(FDeferredPassContext& Context)
         const uint32_t HistoryIndex = Data.bUseHistory && Owner.Taa
             ? Owner.Taa->GetHistorySrvBindlessIndex(Data.HistoryIndex)
             : Owner.GBufferBindlessIndices[2];
-        if (HistoryIndex == UINT32_MAX)
+        if (!IsValidBindlessIndex(HistoryIndex))
         {
             return;
         }
@@ -2051,14 +1649,16 @@ void FSsr::AddSsrPass(FDeferredPassContext& Context)
         uint32_t RayCounterUavIndex = UINT32_MAX;
         uint32_t RayListUavIndex = UINT32_MAX;
         ID3D12Resource* RayCounterBuffer = nullptr;
+        bool bRayOutputAvailable = false;
         if (LocalFrameIndex < SsrRayCounterBuffers.size() && LocalFrameIndex < SsrRayListBuffers.size())
         {
             RayCounterBuffer = SsrRayCounterBuffers[LocalFrameIndex].Get();
-            RayCounterUavIndex = SsrRayCounterUavBindlessIndices[LocalFrameIndex];
-            RayListUavIndex = SsrRayListUavBindlessIndices[LocalFrameIndex];
+            RayCounterUavIndex = SsrRayCounterBuffers[LocalFrameIndex].UavBindlessIndex;
+            RayListUavIndex = SsrRayListBuffers[LocalFrameIndex].UavBindlessIndex;
+            bRayOutputAvailable = RayCounterBuffer != nullptr;
         }
 
-        if (RayCounterBuffer && RayCounterUavIndex != UINT32_MAX && RayListUavIndex != UINT32_MAX)
+        if (bRayOutputAvailable)
         {
             const D3D12_GPU_DESCRIPTOR_HANDLE CounterGpuHandle = Owner.GetBindlessGpuHandle(RayCounterUavIndex);
             const D3D12_CPU_DESCRIPTOR_HANDLE CounterCpuHandle = Owner.GetBindlessCpuClearHandle(RayCounterUavIndex);
@@ -2076,22 +1676,22 @@ void FSsr::AddSsrPass(FDeferredPassContext& Context)
             SsrStride,
             SsrRoughnessCutoff,
             SsrIntensity,
-            (bSsrHwEnabled && RayCounterUavIndex != UINT32_MAX && RayListUavIndex != UINT32_MAX) ? SsrMaxRayCount : 0u,
+            (bSsrHwEnabled && bRayOutputAvailable) ? SsrMaxRayCount : 0u,
             Data.bUseHistory ? 1u : 0u,
-            Owner.HZBWidth,
-            Owner.HZBHeight,
-            Owner.HZBMipCount,
+            Owner.Hzb->GetWidth(),
+            Owner.Hzb->GetHeight(),
+            Owner.Hzb->GetMipCount(),
             Data.bUseHzb ? 1u : 0u,
             bSsrHwEnabled ? 1u : 0u
         };
         LocalCommandList->SetGraphicsRoot32BitConstants(1, sizeof(FSsrConstants) / sizeof(uint32_t), &SsrConstants, 0);
 
-        const uint32_t HzbIndex = (Owner.HZBSrvBindlessIndex != UINT32_MAX) ? Owner.HZBSrvBindlessIndex : Owner.LinearDepthBindlessIndex;
+        const uint32_t HzbIndex = IsValidBindlessIndex(Owner.Hzb->GetSrvBindlessIndex()) ? Owner.Hzb->GetSrvBindlessIndex() : Owner.LinearDepthTexture.SrvBindlessIndex;
         const uint32_t SsrBindlessIndices[] =
         {
             Owner.GBufferBindlessIndices[0],
             Owner.GBufferBindlessIndices[1],
-            Owner.LinearDepthBindlessIndex,
+            Owner.LinearDepthTexture.SrvBindlessIndex,
             HistoryIndex,
             HzbIndex,
             Owner.Device->GetPointClampSamplerIndex(),
@@ -2131,7 +1731,7 @@ void FSsr::AddSsrFallbackPass(FDeferredPassContext& Context)
         Builder.SetPixGroup("SSR");
         Data.HistoryIndex = FrameState.TaaReadIndex;
         Data.bUseHistory = FrameState.bTaaHistoryReady && Data.HistoryIndex < TaaHandles.size();
-        Data.bEnabled = static_cast<bool>(SsrFallbackHandle);
+        Data.bEnabled = bFallbackPersistentInputsValid;
         Data.bDoRayTracing = bSsrHwEnabled && Data.bUseHistory;
         if (!Data.bEnabled)
         {
@@ -2157,29 +1757,14 @@ void FSsr::AddSsrFallbackPass(FDeferredPassContext& Context)
             return;
         }
 
-        FRGBufferDesc CounterDesc = {};
-        CounterDesc.Size = sizeof(uint32_t);
-        CounterDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-        FRGBufferDesc RayListDesc = {};
-        RayListDesc.Size = static_cast<uint64_t>(SsrMaxRayCount) * SsrRayItemStride;
-        RayListDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-
-        const FRGBufferHandle RayListHandle = Graph.ImportBuffer(
-            "SSR_RayList",
-            SsrRayListBuffers[FrameIndex].Get(),
-            &SsrRayListStates[FrameIndex],
-            RayListDesc);
-        const FRGBufferHandle RayCounterHandle = Graph.ImportBuffer(
-            "SSR_RayCounter",
-            SsrRayCounterBuffers[FrameIndex].Get(),
-            &SsrRayCounterStates[FrameIndex],
-            CounterDesc);
+        const FRGBufferHandle RayListHandle = ImportBindlessBuffer(Graph, "SSR_RayList", SsrRayListBuffers[FrameIndex]);
+        const FRGBufferHandle RayCounterHandle = ImportBindlessBuffer(Graph, "SSR_RayCounter", SsrRayCounterBuffers[FrameIndex]);
 
         Builder.ReadBuffer(RayListHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadBuffer(RayCounterHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     }, [this, &Owner, &Graph](const FSsrFallbackPassData& Data, FDX12CommandContext& CmdContext)
     {
-        if (!Data.bEnabled || !Owner.Device || !Owner.Device->GetBindlessDescriptorHeap())
+        if (!Data.bEnabled)
         {
             return;
         }
@@ -2190,11 +1775,7 @@ void FSsr::AddSsrFallbackPass(FDeferredPassContext& Context)
             return;
         }
 
-        const uint32_t FallbackUavIndex = SsrFallbackUavBindlessIndex;
-        if (FallbackUavIndex == UINT32_MAX)
-        {
-            return;
-        }
+        const uint32_t FallbackUavIndex = SsrFallbackTexture.UavBindlessIndex;
 
         ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
         ID3D12GraphicsCommandList4* CommandList4 = CmdContext.GetCommandList4();
@@ -2203,7 +1784,6 @@ void FSsr::AddSsrFallbackPass(FDeferredPassContext& Context)
             return;
         }
 
-        FScopedPixEvent SsrFallbackEvent(CommandList4, L"SSR Fallback");
 
         CommandList4->SetDescriptorHeaps(_countof(Heaps), Heaps);
         const D3D12_GPU_DESCRIPTOR_HANDLE UavGpuHandle = Owner.GetBindlessGpuHandle(FallbackUavIndex);
@@ -2211,7 +1791,7 @@ void FSsr::AddSsrFallbackPass(FDeferredPassContext& Context)
         const float ClearValues[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
         CommandList4->ClearUnorderedAccessViewFloat(UavGpuHandle, UavCpuHandle, FallbackTexture, ClearValues, 0, nullptr);
 
-        if (!Data.bDoRayTracing || !Owner.bRayTracingPipelineReady || !Owner.RayQuerySsrFallbackPipeline || !Owner.RayQueryRootSignature)
+        if (!Data.bDoRayTracing || !Owner.GetRayTracingRuntime().bRayTracingPipelineReady || !Owner.GetRayTracingRuntime().RayQuerySsrFallbackPipeline || !Owner.GetRayTracingRuntime().RayQueryRootSignature)
         {
             return;
         }
@@ -2228,7 +1808,7 @@ void FSsr::AddSsrFallbackPass(FDeferredPassContext& Context)
         }
 
         const uint32_t LocalFrameIndex = CmdContext.GetCurrentFrameIndex();
-        if (LocalFrameIndex >= Owner.TlasResultBuffers.size() || !Owner.TlasResultBuffers[LocalFrameIndex])
+        if (LocalFrameIndex >= Owner.GetRayTracingRuntime().TlasResultBuffers.size() || !Owner.GetRayTracingRuntime().TlasResultBuffers[LocalFrameIndex])
         {
             return;
         }
@@ -2238,12 +1818,8 @@ void FSsr::AddSsrFallbackPass(FDeferredPassContext& Context)
             return;
         }
 
-        const uint32_t RayListIndex = SsrRayListSrvBindlessIndices[LocalFrameIndex];
-        const uint32_t RayCounterIndex = SsrRayCounterSrvBindlessIndices[LocalFrameIndex];
-        if (RayListIndex == UINT32_MAX || RayCounterIndex == UINT32_MAX)
-        {
-            return;
-        }
+        const uint32_t RayListIndex = SsrRayListBuffers[LocalFrameIndex].SrvBindlessIndex;
+        const uint32_t RayCounterIndex = SsrRayCounterBuffers[LocalFrameIndex].SrvBindlessIndex;
 
         const uint32_t SceneColorIndex = Owner.Taa
             ? Owner.Taa->GetHistorySrvBindlessIndex(Data.HistoryIndex)
@@ -2263,20 +1839,20 @@ void FSsr::AddSsrFallbackPass(FDeferredPassContext& Context)
         constexpr uint32_t RayQueryThreadGroupSize = 64;
         const uint32_t DispatchCount = (SsrMaxRayCount + RayQueryThreadGroupSize - 1u) / RayQueryThreadGroupSize;
 
-        CommandList4->SetPipelineState(Owner.RayQuerySsrFallbackPipeline.Get());
-        CommandList4->SetComputeRootSignature(Owner.RayQueryRootSignature.Get());
-        CommandList4->SetComputeRootShaderResourceView(0, Owner.TlasResultBuffers[LocalFrameIndex]->GetGPUVirtualAddress());
+        CommandList4->SetPipelineState(Owner.GetRayTracingRuntime().RayQuerySsrFallbackPipeline.Get());
+        CommandList4->SetComputeRootSignature(Owner.GetRayTracingRuntime().RayQueryRootSignature.Get());
+        CommandList4->SetComputeRootShaderResourceView(0, Owner.GetRayTracingRuntime().TlasResultBuffers[LocalFrameIndex]->GetGPUVirtualAddress());
         const uint64_t ConstantBufferOffset = 0;
         Owner.UpdateSceneConstants(*Data.Camera, Owner.SceneModels.front(), 0u, ConstantBufferOffset);
         const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = Owner.GetSceneConstantBufferAddress();
         CommandList4->SetComputeRootConstantBufferView(1, ConstantBufferAddress + ConstantBufferOffset);
 
-        if (LocalFrameIndex >= Owner.PathTracingInstanceDataBindlessIndices.size())
+        if (LocalFrameIndex >= Owner.GetRayTracingRuntime().PathTracingInstanceDataBindlessIndices.size())
         {
             return;
         }
 
-        const uint32_t PathTracingInstanceDataBindlessIndex = Owner.PathTracingInstanceDataBindlessIndices[LocalFrameIndex];
+        const uint32_t PathTracingInstanceDataBindlessIndex = Owner.GetRayTracingRuntime().PathTracingInstanceDataBindlessIndices[LocalFrameIndex];
         if (PathTracingInstanceDataBindlessIndex == UINT32_MAX)
         {
             return;
@@ -2322,7 +1898,7 @@ void FSsr::AddSsrDenoisePass(FDeferredPassContext& Context, FRGResourceHandle In
     Graph.AddPass<FSsrDenoisePassData>("SSR Denoise", [this, &Owner, InputHandle, GBufferHandles, LinearDepthHandle, SsrDenoiseHandle](FSsrDenoisePassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("SSR");
-        Data.bEnabled = (bSsrSwEnabled || bSsrHwEnabled) && bSsrDenoiseEnabled && SsrDenoiseRootSignature && SsrDenoisePipeline;
+        Data.bEnabled = (bSsrSwEnabled || bSsrHwEnabled) && bSsrDenoiseEnabled && bDenoisePersistentInputsValid;
 
         Builder.ReadTexture(InputHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -2331,12 +1907,6 @@ void FSsr::AddSsrDenoisePass(FDeferredPassContext& Context, FRGResourceHandle In
     }, [this, &Owner](const FSsrDenoisePassData& Data, FDX12CommandContext& Cmd)
     {
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
-        FScopedPixEvent SsrDenoiseEvent(LocalCommandList, L"SSR Denoise");
-
-        if (!Owner.Device || !Owner.Device->GetBindlessDescriptorHeap())
-        {
-            return;
-        }
 
         ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
@@ -2350,8 +1920,8 @@ void FSsr::AddSsrDenoisePass(FDeferredPassContext& Context, FRGResourceHandle In
             return;
         }
 
-        const uint32_t SsrInputIndex = (SsrMode == ESSRMode::CS) ? SsrResolveBindlessIndex : SsrBindlessIndex;
-        if (SsrInputIndex == UINT32_MAX || Owner.GBufferBindlessIndices[0] == UINT32_MAX || Owner.LinearDepthBindlessIndex == UINT32_MAX)
+        const uint32_t SsrInputIndex = (SsrMode == ESSRMode::CS) ? SsrResolveTexture.SrvBindlessIndex : SsrTexture.SrvBindlessIndex;
+        if (Owner.GBufferBindlessIndices[0] == UINT32_MAX || Owner.LinearDepthTexture.SrvBindlessIndex == UINT32_MAX)
         {
             return;
         }
@@ -2385,7 +1955,7 @@ void FSsr::AddSsrDenoisePass(FDeferredPassContext& Context, FRGResourceHandle In
         {
             SsrInputIndex,
             Owner.GBufferBindlessIndices[0],
-            Owner.LinearDepthBindlessIndex,
+            Owner.LinearDepthTexture.SrvBindlessIndex,
             Owner.Device->GetPointClampSamplerIndex(),
             Owner.Device->GetLinearClampSamplerIndex()
         };
@@ -2394,5 +1964,3 @@ void FSsr::AddSsrDenoisePass(FDeferredPassContext& Context, FRGResourceHandle In
         LocalCommandList->DrawInstanced(3, 1, 0, 0);
     });
 }
-
-

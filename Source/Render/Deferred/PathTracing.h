@@ -1,14 +1,14 @@
 #pragma once
 
 #include <cstdint>
-#include <d3d12.h>
 #include <vector>
 #include <wrl.h>
 
-#include "../RenderGraph.h"
+#include "../GpuResource.h"
 
 class FDeferredRenderer;
 struct FDeferredPassContext;
+struct FRendererConfig;
 class FDX12CommandContext;
 class FDX12Device;
 
@@ -30,10 +30,15 @@ public:
     void OnFrameFenceSignaled(uint32_t FrameIndex);
     void ResetAccumulation();
 
+    void ApplyConfig(const FRendererConfig& Config);
+    bool IsPreferred() const { return bEnabled; }
+    bool IsVndfEnabled() const { return bUseVndf; }
+    void SetEnabled(bool bInEnabled) { bEnabled = bInEnabled; }
+
     void SetAccumulationEnabled(bool bEnabled);
     bool IsAccumulationEnabled() const { return bPathTracingAccumulationEnabled; }
 
-    void SetMaxBounces(uint32_t MaxBounces) { PathTracingMaxBounces = MaxBounces; }
+    void SetMaxBounces(uint32_t MaxBounces);
     uint32_t GetMaxBounces() const { return PathTracingMaxBounces; }
 
     void SetDebugMode(int Mode);
@@ -54,16 +59,11 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> PathTracingAccumulationPipeline;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> PathTracingAccumulationRootSignature;
 
-    Microsoft::WRL::ComPtr<ID3D12Resource> PathTracingTempTexture;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> PathTracingAccumulationTextures;
+    FBindlessTexture PathTracingTempTexture;
+    std::vector<FBindlessTexture> PathTracingAccumulationTextures;
 
-    uint32_t PathTracingTempBindlessIndex = UINT32_MAX;
-    std::vector<uint32_t> PathTracingAccumulationSrvBindlessIndices;
-    std::vector<uint32_t> PathTracingAccumulationUavBindlessIndices;
-
-    D3D12_RESOURCE_STATES PathTracingTempState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    std::vector<D3D12_RESOURCE_STATES> PathTracingAccumulationStates;
-
+    bool bEnabled = false;
+    bool bUseVndf = true;
     bool bPathTracingAccumulationEnabled = false;
     bool bPathTracingAccumulationUserPreference = false;
     uint32_t PathTracingAccumulationFrameCount = 0;

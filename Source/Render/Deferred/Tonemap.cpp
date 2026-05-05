@@ -11,6 +11,7 @@
 #include "../../RHI/DX12Device.h"
 #include <string>
 #include <vector>
+#include <d3dx12.h>
 
 bool FTonemap::InitializePipelines(FDeferredRenderer& Owner, FDX12Device* Device, DXGI_FORMAT BackBufferFormat)
 {
@@ -48,42 +49,30 @@ void FTonemap::AddPasses(FDeferredPassContext& Context) const
 
 bool FTonemap::CreateTonemapRootSignature(FDX12Device* Device)
 {
-    D3D12_ROOT_PARAMETER1 RootParams[2] = {};
+    CD3DX12_ROOT_PARAMETER1 RootParams[2] = {};
+    RootParams[0].InitAsConstants(4, 0, 0, D3D12_SHADER_VISIBILITY_PIXEL);
+    RootParams[1].InitAsConstants(2, 1, 0, D3D12_SHADER_VISIBILITY_PIXEL);
 
-    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    RootParams[0].Constants.Num32BitValues = 4;
-    RootParams[0].Constants.RegisterSpace = 0;
-    RootParams[0].Constants.ShaderRegister = 0;
+    CD3DX12_STATIC_SAMPLER_DESC SamplerDesc;
+    SamplerDesc.Init(
+        0,
+        D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+        D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+        D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+        D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+        0.0f, 0,
+        D3D12_COMPARISON_FUNC_ALWAYS,
+        D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE,
+        0.0f, D3D12_FLOAT32_MAX,
+        D3D12_SHADER_VISIBILITY_PIXEL);
 
-    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    RootParams[1].Constants.Num32BitValues = 2;
-    RootParams[1].Constants.RegisterSpace = 0;
-    RootParams[1].Constants.ShaderRegister = 1;
-
-    D3D12_STATIC_SAMPLER_DESC SamplerDesc = {};
-    SamplerDesc.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    SamplerDesc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    SamplerDesc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    SamplerDesc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    SamplerDesc.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
-    SamplerDesc.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
-    SamplerDesc.MinLOD = 0.0f;
-    SamplerDesc.MaxLOD = D3D12_FLOAT32_MAX;
-    SamplerDesc.ShaderRegister = 0;
-    SamplerDesc.RegisterSpace = 0;
-    SamplerDesc.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc = {};
-    RootSigDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-    RootSigDesc.Desc_1_1.NumParameters = _countof(RootParams);
-    RootSigDesc.Desc_1_1.pParameters = RootParams;
-    RootSigDesc.Desc_1_1.NumStaticSamplers = 1;
-    RootSigDesc.Desc_1_1.pStaticSamplers = &SamplerDesc;
-    RootSigDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
-        | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
-        | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED;
+    CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc;
+    RootSigDesc.Init_1_1(
+        _countof(RootParams), RootParams,
+        1, &SamplerDesc,
+        D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+            | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
+            | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED);
 
     ComPtr<ID3DBlob> SerializedSig;
     ComPtr<ID3DBlob> ErrorBlob;
@@ -104,16 +93,12 @@ bool FTonemap::CreateTonemapPipeline(FDX12Device* Device, DXGI_FORMAT BackBuffer
     std::vector<uint8_t> VSByteCode;
     std::vector<uint8_t> PSByteCode;
 
-    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
-    const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
-    const std::wstring PSTarget = RendererUtils::BuildShaderTarget(L"ps", ShaderModel);
-
-    if (!Compiler.CompileFromFile(L"Shaders/Tonemap.hlsl", L"VSMain", VSTarget, VSByteCode))
+    if (!RendererUtils::CompileVertexShader(Compiler, Device, L"Shaders/Tonemap.hlsl", VSByteCode))
     {
         return false;
     }
 
-    if (!Compiler.CompileFromFile(L"Shaders/Tonemap.hlsl", L"PSMain", PSTarget, PSByteCode))
+    if (!RendererUtils::CompilePixelShader(Compiler, Device, L"Shaders/Tonemap.hlsl", PSByteCode))
     {
         return false;
     }
@@ -165,7 +150,7 @@ void FTonemap::AddTonemapPass(FDeferredPassContext& Context) const
         Data.OutputHandle = Data.bUseCas ? Owner.TonemapOutputRtvHandle : Context.RtvHandle;
         Data.bUseTaa = Context.FrameState.bTaaActive && Owner.Taa;
         Data.LuminanceIndex = Owner.AutoExposure ? Owner.AutoExposure->LuminanceWriteIndex : 0u;
-        Data.InputBindlessIndex = Data.bUseTaa ? Owner.Taa->GetHistorySrvBindlessIndex(Context.FrameState.TaaWriteIndex) : Owner.LightingBufferBindlessIndex;
+        Data.InputBindlessIndex = Data.bUseTaa ? Owner.Taa->GetHistorySrvBindlessIndex(Context.FrameState.TaaWriteIndex) : Owner.LightingBuffer.SrvBindlessIndex;
         if (Data.bUseTaa)
         {
             Builder.ReadTexture(Context.Resources.Taa.HistoryHandles[Context.FrameState.TaaWriteIndex], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -189,7 +174,6 @@ void FTonemap::AddTonemapPass(FDeferredPassContext& Context) const
     }, [&, this](const FTonemapPassData& Data, FDX12CommandContext& Cmd)
     {
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
-        FScopedPixEvent TonemapEvent(LocalCommandList, L"Tonemap");
         Cmd.SetRenderTarget(Data.OutputHandle, nullptr);
 
         struct FTonemapConstants
@@ -221,12 +205,12 @@ void FTonemap::AddTonemapPass(FDeferredPassContext& Context) const
         const uint32_t TonemapBindlessIndices[] =
         {
             Data.InputBindlessIndex,
-            Owner.AutoExposure ? Owner.AutoExposure->LuminanceSrvBindlessIndices[Data.LuminanceIndex] : UINT32_MAX
+            Owner.AutoExposure ? Owner.AutoExposure->LuminanceTextures[Data.LuminanceIndex].SrvBindlessIndex : UINT32_MAX
         };
         LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(TonemapBindlessIndices), TonemapBindlessIndices, 0);
         LocalCommandList->DrawInstanced(3, 1, 0, 0);
 
-        Cmd.TransitionResource(Owner.LightingBuffer.Get(), Owner.LightingBufferState, D3D12_RESOURCE_STATE_RENDER_TARGET);
-        Owner.LightingBufferState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        Cmd.TransitionResource(Owner.LightingBuffer.Get(), Owner.LightingBuffer.State, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        Owner.LightingBuffer.State = D3D12_RESOURCE_STATE_RENDER_TARGET;
     });
 }

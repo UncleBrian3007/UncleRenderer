@@ -6,7 +6,7 @@
 #include <wrl.h>
 #include <DirectXMath.h>
 
-#include "../RenderGraph.h"
+#include "../GpuResource.h"
 
 class FDeferredRenderer;
 struct FDeferredPassContext;
@@ -33,7 +33,7 @@ public:
     void OnFrameFenceSignaled(uint32_t FrameIndex);
 
     void SetEnabled(bool bEnabled);
-    bool IsEnabled() const { return bEnabled_; }
+    bool IsEnabled() const { return bEnabled; }
 
     void SetHistoryWeight(float Weight) { HistoryWeight = Weight; }
     float GetHistoryWeight() const { return HistoryWeight; }
@@ -59,13 +59,10 @@ private:
 private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> Pipeline;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSignature;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> HistoryTextures;
-    std::vector<uint32_t> HistorySrvBindlessIndices;
-    std::vector<uint32_t> HistoryUavBindlessIndices;
-    std::vector<D3D12_RESOURCE_STATES> HistoryStates;
+    std::vector<FBindlessTexture> HistoryTextures;
     std::vector<bool> HistoryValid;
 
-    bool bEnabled_ = false;
+    bool bEnabled = false;
     float HistoryWeight = 0.9f;
     uint32_t SampleIndex = 0;
     DirectX::XMFLOAT2 Jitter{ 0.0f, 0.0f };

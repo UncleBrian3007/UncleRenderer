@@ -1,5 +1,6 @@
 #include "PBRCommon.hlsl"
 #include "SceneConstants.hlsl"
+#include "Common.hlsli"
 
 struct VSOutput
 {
@@ -28,7 +29,7 @@ cbuffer LightingBindlessConstants : register(b1)
 SamplerState GBufferSampler : register(s0);
 SamplerComparisonState ShadowSampler : register(s1);
 
-VSOutput VSMain(uint VertexId : SV_VertexID)
+VSOutput DeferredDirectLightingVS(uint VertexId : SV_VertexID)
 {
     float2 Positions[3] =
     {
@@ -43,21 +44,7 @@ VSOutput VSMain(uint VertexId : SV_VertexID)
     return Output;
 }
 
-float ReconstructViewZ(float depth)
-{
-    return Projection._43 / max(depth, 1e-6f);
-}
-
-float3 ReconstructViewPosition(float2 uv, float depth)
-{
-    float2 ndc = float2(uv * 2.0f - 1.0f);
-    float viewZ = ReconstructViewZ(depth);
-    float viewX = ndc.x * viewZ / Projection._11;
-    float viewY = -ndc.y * viewZ / Projection._22;
-    return float3(viewX, viewY, viewZ);
-}
-
-float4 PSMain(VSOutput Input) : SV_Target
+float4 DeferredDirectLightingPS(VSOutput Input) : SV_Target
 {
     Texture2D GBufferA = ResourceDescriptorHeap[GBufferAIndex];
     Texture2D GBufferB = ResourceDescriptorHeap[GBufferBIndex];
@@ -84,7 +71,7 @@ float4 PSMain(VSOutput Input) : SV_Target
     float3 F0 = lerp(smr.x.xxx, albedo, metallic);
     uint shadingModelId = (uint)round(smr.w);
 
-    float3 viewPos = ReconstructViewPosition(Input.UV, depth);
+    float3 viewPos = ReconstructViewPositionFromDepth(Input.UV, depth, Projection);
     float3 worldPos = mul(float4(viewPos, 1.0f), ViewInverse).xyz;
 
     float3 V = normalize(CameraPosition - worldPos);

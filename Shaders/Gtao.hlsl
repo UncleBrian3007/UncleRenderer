@@ -1,4 +1,5 @@
 #include "SceneConstants.hlsl"
+#include "Common.hlsli"
 
 struct VSOutput
 {
@@ -13,9 +14,21 @@ cbuffer GtaoBindlessConstants : register(b1)
     uint HilbertLutIndex;
 };
 
+cbuffer GtaoPassConstants : register(b2)
+{
+    float GtaoRadius;
+    float GtaoPower;
+    float GtaoThickness;
+    uint GtaoDirectionCount;
+    uint GtaoStepCount;
+    uint GtaoTemporalIndex;
+    uint GtaoPassPad0;
+    uint GtaoPassPad1;
+};
+
 SamplerState GBufferSampler : register(s0);
 
-VSOutput VSMain(uint VertexId : SV_VertexID)
+VSOutput GtaoVS(uint VertexId : SV_VertexID)
 {
     float2 Positions[3] = {
         float2(-1.0, -1.0),
@@ -27,14 +40,6 @@ VSOutput VSMain(uint VertexId : SV_VertexID)
     Output.Position = float4(Positions[VertexId], 0.0, 1.0);
     Output.UV = float2(Positions[VertexId].x * 0.5f + 0.5f, -Positions[VertexId].y * 0.5f + 0.5f);
     return Output;
-}
-
-float3 ReconstructViewPosition(float2 uv, float viewZ)
-{
-    float2 ndc = float2(uv * 2.0f - 1.0f);
-    float viewX = ndc.x * viewZ / Projection._11;
-    float viewY = -ndc.y * viewZ / Projection._22;
-    return float3(viewX, viewY, viewZ);
 }
 
 float FastSqrt(float x)
@@ -158,8 +163,8 @@ float ComputeGtao(Texture2D<float> LinearDepthTexture, Texture2D<uint> HilbertLu
 
             float sampleViewZ0 = LinearDepthTexture.SampleLevel(GBufferSampler, sampleUv0, 0).r;
             float sampleViewZ1 = LinearDepthTexture.SampleLevel(GBufferSampler, sampleUv1, 0).r;
-            float3 samplePos0 = ReconstructViewPosition(sampleUv0, sampleViewZ0);
-            float3 samplePos1 = ReconstructViewPosition(sampleUv1, sampleViewZ1);
+            float3 samplePos0 = ReconstructViewPosition(sampleUv0, sampleViewZ0, Projection);
+            float3 samplePos1 = ReconstructViewPosition(sampleUv1, sampleViewZ1, Projection);
 
             float3 sampleDelta0 = samplePos0 - viewPos;
             float3 sampleDelta1 = samplePos1 - viewPos;
@@ -199,7 +204,7 @@ float ComputeGtao(Texture2D<float> LinearDepthTexture, Texture2D<uint> HilbertLu
     return ao;
 }
 
-float4 PSMain(VSOutput Input) : SV_Target
+float4 GtaoPS(VSOutput Input) : SV_Target
 {
     Texture2D<float4> GBufferA = ResourceDescriptorHeap[GBufferAIndex];
     Texture2D<float> LinearDepthTexture = ResourceDescriptorHeap[LinearDepthIndex];
@@ -208,7 +213,7 @@ float4 PSMain(VSOutput Input) : SV_Target
     float3 worldNormal = normalize(normalEncoded.xyz * 2.0f - 1.0f);
     float3 viewNormal = normalize(mul(worldNormal, (float3x3)View));
     float viewZ = LinearDepthTexture.Sample(GBufferSampler, Input.UV).r;
-    float3 viewPos = ReconstructViewPosition(Input.UV, viewZ);
+    float3 viewPos = ReconstructViewPosition(Input.UV, viewZ, Projection);
     uint2 pixCoord = uint2(Input.Position.xy);
     float ao = ComputeGtao(LinearDepthTexture, HilbertLut, Input.UV, pixCoord, viewPos, viewNormal);
     return float4(ao, ao, ao, 1.0f);

@@ -5,6 +5,7 @@
 #include <d3d12.h>
 #include <wrl.h>
 
+#include "../GpuResource.h"
 #include "../RenderGraph.h"
 #include "../../Core/RendererConfig.h"
 
@@ -38,22 +39,20 @@ public:
     bool InitializePipelines(FDeferredRenderer& Owner, FDX12Device* Device);
     bool InitializeResources(FDeferredRenderer& Owner, FDX12Device* Device, uint32_t Width, uint32_t Height, uint32_t FrameCount);
     void AddPasses(FDeferredPassContext& Context) const;
-    void ImportPersistentResources(FDeferredPassContext& Context) const;
+    void ImportPersistentResources(FDeferredPassContext& Context);
     bool CreatePersistentDescriptors(FDeferredRenderer& Owner, FDX12Device* Device);
+    void RefreshPersistentInputValidation(const FDeferredRenderer& Owner, FDX12Device* Device);
     void FinalizeFrame(FDeferredRenderer& Owner);
     void InvalidateReservoirHistory();
 
-    void SetEnabled(bool bEnabled) { bEnabled_ = bEnabled; }
-    bool IsEnabled() const { return bEnabled_; }
+    void SetEnabled(bool bInEnabled) { bEnabled = bInEnabled; }
+    bool IsEnabled() const { return bEnabled; }
 
     void SetSamplesPerPixel(uint32_t Samples) { SamplesPerPixel = Samples; }
     uint32_t GetSamplesPerPixel() const { return SamplesPerPixel; }
 
     void SetIntensity(float Intensity) { Intensity_ = Intensity; }
     float GetIntensity() const { return Intensity_; }
-
-    void SetShowOnly(bool bEnabled) { bShowOnly = bEnabled; }
-    bool IsShowOnly() const { return bShowOnly; }
 
     void SetRayLength(float Value) { RayLength = Value; }
     float GetRayLength() const { return RayLength; }
@@ -109,7 +108,7 @@ public:
     uint32_t GetDebugPixelX() const { return DebugPixelX; }
     uint32_t GetDebugPixelY() const { return DebugPixelY; }
 
-    void SetFreezeFrame(bool bEnabled, uint64_t FrameNumber);
+    void SetFreezeFrame(bool bInEnabled, uint64_t FrameNumber);
     bool IsFreezeFrame() const { return bFreezeFrame; }
     uint32_t GetFrozenSequenceFrame() const { return FrozenSequenceFrame; }
     uint64_t GetFreezeStartFrameNumber() const { return FreezeStartFrameNumber; }
@@ -118,9 +117,9 @@ public:
     void SetMaxHistoryFrames(uint32_t Value) { MaxHistoryFrames = Value; }
     uint32_t GetMaxHistoryFrames() const { return MaxHistoryFrames; }
 
-    Microsoft::WRL::ComPtr<ID3D12Resource> GetCurrentOutputTexture() const { return RestirGITexture; }
-    uint32_t GetCurrentOutputSrvBindlessIndex() const { return RestirGIBindlessIndex; }
-    uint32_t GetCurrentOutputUavBindlessIndex() const { return RestirGIUavBindlessIndex; }
+    ID3D12Resource* GetCurrentOutputTexture() const { return RestirGI.Get(); }
+    uint32_t GetCurrentOutputSrvBindlessIndex() const { return RestirGI.SrvBindlessIndex; }
+    uint32_t GetCurrentOutputUavBindlessIndex() const { return RestirGI.UavBindlessIndex; }
     Microsoft::WRL::ComPtr<ID3D12RootSignature> GetRootSignature() const { return RestirGIRootSignature; }
     bool IsReservoirHistoryValid() const { return bReservoirHistoryValid; }
     uint32_t GetReservoirHistoryFrameCount() const { return ReservoirHistoryFrameCount; }
@@ -133,7 +132,7 @@ private:
     DXGI_FORMAT ResolveRadianceFormat(FDX12Device* Device) const;
     bool CreateResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     uint32_t GetDepthBindlessIndexForRestir(FDeferredRenderer& Owner) const;
-    void DispatchRestirPass(FDeferredPassContext& Context, FDX12CommandContext& Cmd, ID3D12PipelineState* PipelineState, const wchar_t* EventName, uint32_t SpatialPassIndex, const uint32_t BindlessIndices[30], uint32_t DispatchWidth, uint32_t DispatchHeight, bool bEnabled) const;
+    void DispatchRestirPass(FDeferredPassContext& Context, FDX12CommandContext& Cmd, ID3D12PipelineState* PipelineState, uint32_t SpatialPassIndex, const uint32_t BindlessIndices[30], uint32_t DispatchWidth, uint32_t DispatchHeight, bool bPassEnabled) const;
     void AddInitialSamplingPass(FDeferredPassContext& Context) const;
     void AddTemporalResamplingPass(FDeferredPassContext& Context) const;
     void AddReservoirBootstrapPass(FDeferredPassContext& Context) const;
@@ -142,10 +141,9 @@ private:
     void AddResolvePass(FDeferredPassContext& Context) const;
 
 private:
-    bool bEnabled_ = false;
+    bool bEnabled = false;
     uint32_t SamplesPerPixel = 2;
     float Intensity_ = 1.0f;
-    bool bShowOnly = false;
     float RayLength = 1000.0f;
     float ClampThreshold = 10.0f;
     bool bTemporalReuse = true;
@@ -169,6 +167,15 @@ private:
     uint64_t FreezeStartFrameNumber = 0;
     uint32_t ReservoirHistoryFrameCount = 0;
     bool bReservoirHistoryValid = false;
+    bool bCommonPersistentInputsValid = false;
+    bool bBlueNoisePersistentInputsValid = false;
+    bool bOutputPersistentDescriptorsValid = false;
+    bool bReservoirAReadDescriptorsValid = false;
+    bool bReservoirBReadDescriptorsValid = false;
+    bool bReservoirAWriteDescriptorsValid = false;
+    bool bReservoirBWriteDescriptorsValid = false;
+    uint32_t CachedLinearClampSamplerIndex = UINT32_MAX;
+    uint32_t CachedPrevLinearDepthSrvBindlessIndex = UINT32_MAX;
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> RestirGIRootSignature;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2> RestirGIInitialPipelines;
@@ -177,46 +184,14 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGISpatialPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RestirGIResolvePipeline;
 
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGITexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIHistoryTexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIReservoirDepthNormalATexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIReservoirDepthNormalBTexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIReservoirSampleRadianceATexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIReservoirSampleRadianceBTexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIReservoirRayDirectionATexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIReservoirRayDirectionBTexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIReservoirMWATexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> RestirGIReservoirMWBTexture;
-
-    uint32_t RestirGIBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIUavBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIHistorySrvBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIHistoryUavBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirDepthNormalASrvBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirDepthNormalAUavBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirDepthNormalBSrvBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirDepthNormalBUavBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirSampleRadianceASrvBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirSampleRadianceAUavBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirSampleRadianceBSrvBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirSampleRadianceBUavBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirRayDirectionASrvBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirRayDirectionAUavBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirRayDirectionBSrvBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirRayDirectionBUavBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirMWASrvBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirMWAUavBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirMWBSrvBindlessIndex = UINT32_MAX;
-    uint32_t RestirGIReservoirMWBUavBindlessIndex = UINT32_MAX;
-
-    D3D12_RESOURCE_STATES RestirGIState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    D3D12_RESOURCE_STATES RestirGIHistoryState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    D3D12_RESOURCE_STATES RestirGIReservoirDepthNormalAState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    D3D12_RESOURCE_STATES RestirGIReservoirDepthNormalBState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    D3D12_RESOURCE_STATES RestirGIReservoirSampleRadianceAState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    D3D12_RESOURCE_STATES RestirGIReservoirSampleRadianceBState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    D3D12_RESOURCE_STATES RestirGIReservoirRayDirectionAState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    D3D12_RESOURCE_STATES RestirGIReservoirRayDirectionBState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    D3D12_RESOURCE_STATES RestirGIReservoirMWAState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    D3D12_RESOURCE_STATES RestirGIReservoirMWBState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    FBindlessTexture RestirGI;
+    FBindlessTexture RestirGIHistory;
+    FBindlessTexture RestirGIReservoirDepthNormalA;
+    FBindlessTexture RestirGIReservoirDepthNormalB;
+    FBindlessTexture RestirGIReservoirSampleRadianceA;
+    FBindlessTexture RestirGIReservoirSampleRadianceB;
+    FBindlessTexture RestirGIReservoirRayDirectionA;
+    FBindlessTexture RestirGIReservoirRayDirectionB;
+    FBindlessTexture RestirGIReservoirMWA;
+    FBindlessTexture RestirGIReservoirMWB;
 };

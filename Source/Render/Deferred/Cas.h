@@ -24,11 +24,11 @@ public:
     bool CreatePersistentDescriptors(FDeferredRenderer& Owner, FDX12Device* Device);
     void AddPass(FDeferredPassContext& Context) const;
 
-    void SetEnabled(bool bEnabled) { bEnabled_ = bEnabled; }
-    bool IsEnabled() const { return bEnabled_; }
+    void SetEnabled(bool bInEnabled) { bEnabled = bInEnabled; }
+    bool IsEnabled() const { return bEnabled; }
 
-    void SetSharpness(float Sharpness) { Sharpness_ = Sharpness; }
-    float GetSharpness() const { return Sharpness_; }
+    void SetSharpness(float InSharpness) { Sharpness = InSharpness; }
+    float GetSharpness() const { return Sharpness; }
 
     bool IsReady() const;
 
@@ -42,8 +42,7 @@ private:
 private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> Pipeline;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSignature;
-    uint32_t TonemapOutputBindlessIndex = UINT32_MAX;
 
-    bool bEnabled_ = true;
-    float Sharpness_ = 0.2f;
+    bool bEnabled = true;
+    float Sharpness = 0.2f;
 };

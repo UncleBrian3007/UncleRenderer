@@ -71,6 +71,7 @@ bool FShaderCompiler::CompileFromFile(
     std::wstring TargetArg = L"-T" + Target;
 
     std::vector<LPCWSTR> Arguments;
+    Arguments.push_back(FilePath.c_str());
     Arguments.push_back(L"-Zpr");
     Arguments.push_back(EntryPointArg.c_str());
     Arguments.push_back(TargetArg.c_str());
@@ -159,6 +160,7 @@ bool FShaderCompiler::CompileLibraryFromFile(
     std::wstring TargetArg = L"-T" + Target;
 
     std::vector<LPCWSTR> Arguments;
+    Arguments.push_back(FilePath.c_str());
     Arguments.push_back(L"-Zpr");
     Arguments.push_back(TargetArg.c_str());
     Arguments.push_back(DXC_ARG_WARNINGS_ARE_ERRORS);

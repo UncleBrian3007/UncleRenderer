@@ -3,10 +3,9 @@
 #endif
 
 #include "RendererUtils.h"
+#include "GpuResource.h"
 
 #include "../Scene/Mesh.h"
-#include "../Scene/GltfLoader.h"
-#include "../Scene/SceneJsonLoader.h"
 #include "../Scene/Camera.h"
 #include "../Core/Logger.h"
 #include "ShaderCompiler.h"
@@ -14,7 +13,6 @@
 #include "../RHI/DX12Commons.h"
 #include "../RHI/DX12CommandContext.h"
 #include "../RHI/DX12CommandQueue.h"
-#include "../RHI/RayTracing.h"
 #include <vector>
 #include <cstring>
 #include <algorithm>
@@ -23,85 +21,13 @@
 #include <filesystem>
 #include <cmath>
 #include <limits>
+#include <utility>
 #include <d3dx12.h>
 
 using Microsoft::WRL::ComPtr;
 
 namespace
 {
-    std::string PathToUtf8String(const std::filesystem::path& Path)
-    {
-        const auto Utf8 = Path.u8string();
-        return std::string(Utf8.begin(), Utf8.end());
-    }
-
-    DirectX::XMFLOAT4 BuildOffsetScale(const FGltfTextureTransform& Transform)
-    {
-        return DirectX::XMFLOAT4(Transform.Offset.x, Transform.Offset.y, Transform.Scale.x, Transform.Scale.y);
-    }
-
-    DirectX::XMFLOAT4 BuildRotationConstants(const FGltfTextureTransform& Transform)
-    {
-        const float CosR = std::cos(Transform.Rotation);
-        const float SinR = std::sin(Transform.Rotation);
-        return DirectX::XMFLOAT4(CosR, SinR, 0.0f, 0.0f);
-    }
-
-    void ComputeMeshBounds(const FMesh& Mesh, FFloat3& OutCenter, float& OutRadius, FFloat3& OutMin, FFloat3& OutMax)
-    {
-        const auto& Primitives = Mesh.GetPrimitives();
-        bool bHasVertex = false;
-        FFloat3 Min{};
-        FFloat3 Max{};
-
-        for (const FMesh::FPrimitive& Primitive : Primitives)
-        {
-            const auto& Positions = Primitive.VertexStreams.Positions;
-            if (Positions.empty())
-            {
-                continue;
-            }
-
-            if (!bHasVertex)
-            {
-                Min = Positions.front();
-                Max = Positions.front();
-                bHasVertex = true;
-            }
-
-            for (const auto& Position : Positions)
-            {
-                Min.x = std::min(Min.x, Position.x);
-                Min.y = std::min(Min.y, Position.y);
-                Min.z = std::min(Min.z, Position.z);
-
-                Max.x = std::max(Max.x, Position.x);
-                Max.y = std::max(Max.y, Position.y);
-                Max.z = std::max(Max.z, Position.z);
-            }
-        }
-
-        if (!bHasVertex)
-        {
-            OutCenter = FFloat3(0.0f, 0.0f, 0.0f);
-            OutRadius = 1.0f;
-            OutMin = FFloat3(0.0f, 0.0f, 0.0f);
-            OutMax = FFloat3(0.0f, 0.0f, 0.0f);
-            return;
-        }
-
-        OutCenter = FFloat3(
-            0.5f * (Min.x + Max.x),
-            0.5f * (Min.y + Max.y),
-            0.5f * (Min.z + Max.z));
-
-        const DirectX::XMVECTOR Extents = DirectX::XMVectorSet(Max.x - Min.x, Max.y - Min.y, Max.z - Min.z, 0.0f);
-        OutRadius = DirectX::XMVectorGetX(DirectX::XMVector3Length(Extents)) * 0.5f;
-        OutRadius = std::max(OutRadius, 1.0f);
-        OutMin = Min;
-        OutMax = Max;
-    }
-
     struct FUploadBatch
     {
         FDX12CommandContext Context;
@@ -127,31 +53,6 @@ namespace
             UploadBuffers.clear();
         }
     };
-
-    uint32_t CreateStructuredBufferSrv(FDX12Device* Device, ID3D12Resource* Buffer, uint32_t Stride)
-    {
-        if (!Device || !Device->GetBindlessDescriptorHeap() || !Buffer || Stride == 0)
-        {
-            return UINT32_MAX;
-        }
-
-        const D3D12_RESOURCE_DESC BufferDesc = Buffer->GetDesc();
-        const uint64_t ElementCount = BufferDesc.Width / Stride;
-        if (ElementCount == 0)
-        {
-            return UINT32_MAX;
-        }
-
-        D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc = {};
-        SrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        SrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        SrvDesc.Format = DXGI_FORMAT_UNKNOWN;
-        SrvDesc.Buffer.FirstElement = 0;
-        SrvDesc.Buffer.NumElements = static_cast<UINT>(ElementCount);
-        SrvDesc.Buffer.StructureByteStride = Stride;
-        SrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-        return Device->CreateBindlessSrv(Buffer, SrvDesc);
-    }
 
     bool CreatePrimitiveGeometry(
         FDX12Device* Device,
@@ -411,6 +312,100 @@ std::wstring RendererUtils::BuildShaderTarget(const wchar_t* StagePrefix, D3D_SH
     return std::wstring(StagePrefix) + L"_" + std::to_wstring(Major) + L"_" + std::to_wstring(Minor);
 }
 
+std::wstring RendererUtils::BuildShaderEntryPoint(const std::wstring& ShaderPath, const wchar_t* StageSuffix)
+{
+    std::wstring EntryPoint = std::filesystem::path(ShaderPath).stem().wstring();
+    if (EntryPoint.size() >= 2)
+    {
+        const std::wstring ExistingSuffix = EntryPoint.substr(EntryPoint.size() - 2);
+        if (ExistingSuffix == L"VS" || ExistingSuffix == L"PS" || ExistingSuffix == L"CS")
+        {
+            EntryPoint.resize(EntryPoint.size() - 2);
+        }
+    }
+
+    EntryPoint += StageSuffix;
+    return EntryPoint;
+}
+
+std::wstring RendererUtils::BuildComputeShaderEntryPoint(const std::wstring& ShaderPath)
+{
+    return BuildShaderEntryPoint(ShaderPath, L"CS");
+}
+
+std::wstring RendererUtils::BuildVertexShaderEntryPoint(const std::wstring& ShaderPath)
+{
+    return BuildShaderEntryPoint(ShaderPath, L"VS");
+}
+
+std::wstring RendererUtils::BuildPixelShaderEntryPoint(const std::wstring& ShaderPath)
+{
+    return BuildShaderEntryPoint(ShaderPath, L"PS");
+}
+
+bool RendererUtils::CompileVertexShader(
+    FShaderCompiler& Compiler,
+    FDX12Device* Device,
+    const std::wstring& ShaderPath,
+    std::vector<uint8_t>& OutByteCode,
+    const std::vector<std::wstring>& Defines)
+{
+    const std::wstring VSTarget = BuildShaderTarget(L"vs", Device->GetShaderModel());
+    return Compiler.CompileFromFile(
+        ShaderPath,
+        BuildVertexShaderEntryPoint(ShaderPath),
+        VSTarget,
+        OutByteCode,
+        Defines);
+}
+
+bool RendererUtils::CompilePixelShader(
+    FShaderCompiler& Compiler,
+    FDX12Device* Device,
+    const std::wstring& ShaderPath,
+    std::vector<uint8_t>& OutByteCode,
+    const std::vector<std::wstring>& Defines)
+{
+    const std::wstring PSTarget = BuildShaderTarget(L"ps", Device->GetShaderModel());
+    return Compiler.CompileFromFile(
+        ShaderPath,
+        BuildPixelShaderEntryPoint(ShaderPath),
+        PSTarget,
+        OutByteCode,
+        Defines);
+}
+
+bool RendererUtils::CompileComputeShader(
+    FShaderCompiler& Compiler,
+    FDX12Device* Device,
+    const std::wstring& ShaderPath,
+    std::vector<uint8_t>& OutByteCode,
+    const std::vector<std::wstring>& Defines)
+{
+    const std::wstring CSTarget = BuildShaderTarget(L"cs", Device->GetShaderModel());
+    return Compiler.CompileFromFile(
+        ShaderPath,
+        BuildComputeShaderEntryPoint(ShaderPath),
+        CSTarget,
+        OutByteCode,
+        Defines);
+}
+
+bool RendererUtils::CompileComputeShader(
+    FShaderCompiler& Compiler,
+    const std::wstring& Target,
+    const std::wstring& ShaderPath,
+    std::vector<uint8_t>& OutByteCode,
+    const std::vector<std::wstring>& Defines)
+{
+    return Compiler.CompileFromFile(
+        ShaderPath,
+        BuildComputeShaderEntryPoint(ShaderPath),
+        Target,
+        OutByteCode,
+        Defines);
+}
+
 std::string RendererUtils::ResourceStateToString(D3D12_RESOURCE_STATES State)
 {
     if (State == D3D12_RESOURCE_STATE_COMMON)
@@ -497,990 +492,6 @@ bool RendererUtils::CreateSphereGeometry(FDX12Device* Device, FMeshGeometryBuffe
 {
     const FMesh Sphere = FMesh::CreateSphere(Radius, SliceCount, StackCount);
     return CreateMeshGeometry(Device, Sphere, OutGeometry);
-}
-
-namespace
-{
-    void UpdateSceneBounds(const DirectX::XMFLOAT3& ModelCenter, float ModelRadius, DirectX::XMFLOAT3& OutMin, DirectX::XMFLOAT3& OutMax)
-    {
-        OutMin.x = std::min(OutMin.x, ModelCenter.x - ModelRadius);
-        OutMin.y = std::min(OutMin.y, ModelCenter.y - ModelRadius);
-        OutMin.z = std::min(OutMin.z, ModelCenter.z - ModelRadius);
-
-        OutMax.x = std::max(OutMax.x, ModelCenter.x + ModelRadius);
-        OutMax.y = std::max(OutMax.y, ModelCenter.y + ModelRadius);
-        OutMax.z = std::max(OutMax.z, ModelCenter.z + ModelRadius);
-    }
-
-    float ComputeMaxScale(const DirectX::XMFLOAT4X4& Matrix)
-    {
-        const float ScaleX = std::sqrt(Matrix._11 * Matrix._11 + Matrix._21 * Matrix._21 + Matrix._31 * Matrix._31);
-        const float ScaleY = std::sqrt(Matrix._12 * Matrix._12 + Matrix._22 * Matrix._22 + Matrix._32 * Matrix._32);
-        const float ScaleZ = std::sqrt(Matrix._13 * Matrix._13 + Matrix._23 * Matrix._23 + Matrix._33 * Matrix._33);
-
-        return (std::max)((std::max)(ScaleX, ScaleY), ScaleZ);
-    }
-
-    bool CreateIndexBufferFromIndices(
-        FDX12Device* Device,
-        const std::vector<uint32_t>& Indices,
-        FMeshGeometryBuffers& InOutGeometry,
-        FUploadBatch* UploadBatch = nullptr)
-    {
-        if (!Device || Indices.empty())
-        {
-            return false;
-        }
-
-        const UINT IndexBufferSize = static_cast<UINT>(Indices.size() * sizeof(uint32_t));
-
-        D3D12_HEAP_PROPERTIES DefaultHeap = {};
-        DefaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
-        DefaultHeap.CreationNodeMask = 1;
-        DefaultHeap.VisibleNodeMask = 1;
-
-        D3D12_HEAP_PROPERTIES UploadHeap = {};
-        UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
-        UploadHeap.CreationNodeMask = 1;
-        UploadHeap.VisibleNodeMask = 1;
-
-        D3D12_RESOURCE_DESC BufferDesc = {};
-        BufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        BufferDesc.Width = IndexBufferSize;
-        BufferDesc.Height = 1;
-        BufferDesc.DepthOrArraySize = 1;
-        BufferDesc.MipLevels = 1;
-        BufferDesc.Format = DXGI_FORMAT_UNKNOWN;
-        BufferDesc.SampleDesc.Count = 1;
-        BufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-            &DefaultHeap,
-            D3D12_HEAP_FLAG_NONE,
-            &BufferDesc,
-            D3D12_RESOURCE_STATE_COPY_DEST,
-            nullptr,
-            IID_PPV_ARGS(InOutGeometry.IndexBuffer.ReleaseAndGetAddressOf())));
-
-		if (InOutGeometry.IndexBuffer)
-		{
-            InOutGeometry.IndexBuffer->SetName(L"PrimitiveIndexBuffer");
-		}
-
-        Microsoft::WRL::ComPtr<ID3D12Resource> UploadBuffer;
-        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-            &UploadHeap,
-            D3D12_HEAP_FLAG_NONE,
-            &BufferDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ,
-            nullptr,
-            IID_PPV_ARGS(UploadBuffer.ReleaseAndGetAddressOf())));
-
-        InOutGeometry.IndexBufferView.BufferLocation = InOutGeometry.IndexBuffer->GetGPUVirtualAddress();
-        InOutGeometry.IndexBufferView.Format = DXGI_FORMAT_R32_UINT;
-        InOutGeometry.IndexBufferView.SizeInBytes = IndexBufferSize;
-        InOutGeometry.IndexCount = static_cast<uint32_t>(Indices.size());
-
-        void* IndexData = nullptr;
-        D3D12_RANGE EmptyRange = { 0, 0 };
-        HR_CHECK(UploadBuffer->Map(0, &EmptyRange, &IndexData));
-        memcpy(IndexData, Indices.data(), IndexBufferSize);
-        UploadBuffer->Unmap(0, nullptr);
-
-        if (UploadBatch && !UploadBatch->bInitialized)
-        {
-            UploadBatch->Begin(Device);
-        }
-
-        FUploadBatch LocalBatch;
-        FUploadBatch* ActiveBatch = UploadBatch;
-        if (!ActiveBatch)
-        {
-            LocalBatch.Begin(Device);
-            ActiveBatch = &LocalBatch;
-        }
-
-        ID3D12GraphicsCommandList* CommandList = ActiveBatch->Context.GetCommandList();
-        CommandList->CopyBufferRegion(InOutGeometry.IndexBuffer.Get(), 0, UploadBuffer.Get(), 0, IndexBufferSize);
-        ActiveBatch->Context.TransitionResource(InOutGeometry.IndexBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ);
-        ActiveBatch->AddUploadBuffer(std::move(UploadBuffer));
-
-        if (!UploadBatch)
-        {
-            ActiveBatch->ExecuteAndFlush();
-        }
-
-        return true;
-    }
-
-    bool IsSphereInCameraFrustum(const DirectX::XMVECTOR Planes[6], const DirectX::XMFLOAT3& Center, float Radius)
-    {
-        using namespace DirectX;
-        const XMVECTOR CenterVec = XMLoadFloat3(&Center);
-        for (size_t PlaneIndex = 0; PlaneIndex < 6; ++PlaneIndex)
-        {
-            const XMVECTOR Plane = Planes[PlaneIndex];
-            const float Distance = XMVectorGetX(XMPlaneDotCoord(Plane, CenterVec));
-            if (Distance < -Radius)
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    uint64_t AlignRayTracingBufferSize(uint64_t Size)
-    {
-        const uint64_t Alignment = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT;
-        return (Size + Alignment - 1) & ~(Alignment - 1);
-    }
-
-    bool CreateRayTracingBuffer(
-        FDX12Device* Device,
-        uint64_t SizeInBytes,
-        D3D12_RESOURCE_FLAGS Flags,
-        D3D12_RESOURCE_STATES InitialState,
-        Microsoft::WRL::ComPtr<ID3D12Resource>& OutResource,
-        const wchar_t* Name)
-    {
-        if (!Device || SizeInBytes == 0)
-        {
-            return false;
-        }
-
-        D3D12_HEAP_PROPERTIES HeapProps = {};
-        HeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
-
-        D3D12_RESOURCE_DESC Desc = {};
-        Desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        Desc.Width = AlignRayTracingBufferSize(SizeInBytes);
-        Desc.Height = 1;
-        Desc.DepthOrArraySize = 1;
-        Desc.MipLevels = 1;
-        Desc.SampleDesc.Count = 1;
-        Desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-        Desc.Flags = Flags;
-
-        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-            &HeapProps,
-            D3D12_HEAP_FLAG_NONE,
-            &Desc,
-            InitialState,
-            nullptr,
-            IID_PPV_ARGS(OutResource.ReleaseAndGetAddressOf())));
-
-        if (OutResource && Name)
-        {
-            OutResource->SetName(Name);
-        }
-
-        return OutResource != nullptr;
-    }
-
-    bool BuildSceneModelBlas(FDX12Device* Device, std::vector<FSceneModelResource>& Models)
-    {
-        if (!Device || !Device->IsRayTracingSupported())
-        {
-            return true;
-        }
-
-        FRayTracingDevice RayTracingDevice;
-        if (!Device->CreateRayTracingDevice(RayTracingDevice))
-        {
-            LogWarning("Ray tracing device unavailable; BLAS build skipped.");
-            return true;
-        }
-
-        ComPtr<ID3D12CommandAllocator> Allocator;
-        HR_CHECK(Device->GetDevice()->CreateCommandAllocator(
-            D3D12_COMMAND_LIST_TYPE_DIRECT,
-            IID_PPV_ARGS(Allocator.ReleaseAndGetAddressOf())));
-
-        ComPtr<ID3D12GraphicsCommandList> CommandList;
-        HR_CHECK(Device->GetDevice()->CreateCommandList(
-            0,
-            D3D12_COMMAND_LIST_TYPE_DIRECT,
-            Allocator.Get(),
-            nullptr,
-            IID_PPV_ARGS(CommandList.ReleaseAndGetAddressOf())));
-        CommandList->SetName(L"RendererUtils_BLASBuild_CL");
-
-        ComPtr<ID3D12GraphicsCommandList4> CommandList4;
-        if (FAILED(CommandList.As(&CommandList4)))
-        {
-            LogWarning("Ray tracing command list interface not available; BLAS build skipped.");
-            return true;
-        }
-
-        for (FSceneModelResource& Model : Models)
-        {
-            if (!Model.Geometry.VertexBuffers[0] || !Model.Geometry.IndexBuffer)
-            {
-                continue;
-            }
-
-            const uint32_t VertexStride = Model.Geometry.VertexBufferViews[0].StrideInBytes;
-            const uint32_t VertexCount = VertexStride > 0
-                ? (Model.Geometry.VertexBufferViews[0].SizeInBytes / VertexStride)
-                : 0;
-            const uint32_t IndexCount = Model.Geometry.IndexCount;
-            if (VertexCount == 0 || IndexCount == 0)
-            {
-                continue;
-            }
-
-            D3D12_RAYTRACING_GEOMETRY_DESC GeometryDesc = {};
-            GeometryDesc.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
-            GeometryDesc.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
-            GeometryDesc.Triangles.VertexBuffer.StartAddress = Model.Geometry.VertexBuffers[0]->GetGPUVirtualAddress();
-            GeometryDesc.Triangles.VertexBuffer.StrideInBytes = VertexStride;
-            GeometryDesc.Triangles.VertexCount = VertexCount;
-            GeometryDesc.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
-            GeometryDesc.Triangles.IndexBuffer = Model.Geometry.IndexBuffer->GetGPUVirtualAddress();
-            GeometryDesc.Triangles.IndexCount = IndexCount;
-            GeometryDesc.Triangles.IndexFormat = DXGI_FORMAT_R32_UINT;
-
-            D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS Inputs = {};
-            Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
-            Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
-            Inputs.NumDescs = 1;
-            Inputs.pGeometryDescs = &GeometryDesc;
-            Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
-            if (Model.bUseSkinning)
-            {
-                Inputs.Flags |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE;
-            }
-
-            D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO PrebuildInfo = {};
-            RayTracingDevice.GetDevice()->GetRaytracingAccelerationStructurePrebuildInfo(&Inputs, &PrebuildInfo);
-
-            if (PrebuildInfo.ResultDataMaxSizeInBytes == 0 || PrebuildInfo.ScratchDataSizeInBytes == 0)
-            {
-                continue;
-            }
-
-            if (!CreateRayTracingBuffer(
-                    Device,
-                    PrebuildInfo.ResultDataMaxSizeInBytes,
-                    D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-                    D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
-                    Model.BlasResultBuffer,
-                    L"BLAS_Result")
-                || !CreateRayTracingBuffer(
-                    Device,
-                    PrebuildInfo.ScratchDataSizeInBytes,
-                    D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                    Model.BlasScratchBuffer,
-                    L"BLAS_Scratch"))
-            {
-                LogWarning("Failed to allocate BLAS buffers for model: " + Model.Name);
-                continue;
-            }
-
-            D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC BuildDesc = {};
-            BuildDesc.Inputs = Inputs;
-            BuildDesc.DestAccelerationStructureData = Model.BlasResultBuffer->GetGPUVirtualAddress();
-            BuildDesc.ScratchAccelerationStructureData = Model.BlasScratchBuffer->GetGPUVirtualAddress();
-
-            CommandList4->BuildRaytracingAccelerationStructure(&BuildDesc, 0, nullptr);
-
-            D3D12_RESOURCE_BARRIER Barrier = {};
-            Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-            Barrier.UAV.pResource = Model.BlasResultBuffer.Get();
-            CommandList4->ResourceBarrier(1, &Barrier);
-
-            Model.BlasGeometryDesc = GeometryDesc;
-            Model.bHasRayTracingBlas = true;
-        }
-
-        HR_CHECK(CommandList->Close());
-
-        ID3D12CommandList* Lists[] = { CommandList.Get() };
-        FDX12CommandQueue* Queue = Device->GetGraphicsQueue();
-        if (Queue)
-        {
-            Queue->ExecuteCommandLists(1, Lists);
-            const uint64_t FenceValue = Queue->Signal();
-            Queue->Wait(FenceValue);
-        }
-
-        return true;
-    }
-}
-
-bool RendererUtils::CreateSceneModelsFromJson(
-    FDX12Device* Device,
-    const std::wstring& SceneFilePath,
-    std::vector<FSceneModelResource>& OutModels,
-    DirectX::XMFLOAT3& OutSceneCenter,
-    float& OutSceneRadius,
-    std::vector<FGltfScene>* OutGltfScenes)
-{
-    OutModels.clear();
-    uint32_t NextObjectId = 1;
-
-    const std::filesystem::path ScenePath(SceneFilePath);
-    const std::string ScenePathUtf8 = PathToUtf8String(ScenePath);
-
-    std::vector<FSceneModelDesc> Models;
-    if (!FSceneJsonLoader::LoadScene(SceneFilePath, Models) || Models.empty())
-    {
-        LogError("Scene JSON did not provide any models: " + ScenePathUtf8);
-        return false;
-    }
-
-    DirectX::XMFLOAT3 SceneMin{ std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max() };
-    DirectX::XMFLOAT3 SceneMax{ std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest() };
-
-    FUploadBatch UploadBatch;
-
-    for (const FSceneModelDesc& Model : Models)
-    {
-        std::filesystem::path MeshPath(Model.MeshPath);
-        if (!MeshPath.is_absolute())
-        {
-            std::filesystem::path AssetsRoot = ScenePath.parent_path().parent_path();
-            MeshPath = AssetsRoot / MeshPath;
-        }
-
-        FGltfScene LoadedScene;
-        if (!FGltfLoader::LoadSceneFromFile(MeshPath, LoadedScene))
-        {
-            LogError("Failed to load mesh from scene: " + PathToUtf8String(MeshPath));
-            continue;
-        }
-
-        const int SceneIndex = OutGltfScenes ? static_cast<int>(OutGltfScenes->size()) : -1;
-
-        if (LoadedScene.Meshes.empty())
-        {
-            LogError("No meshes found in glTF: " + PathToUtf8String(MeshPath));
-            continue;
-        }
-
-        std::vector<FFloat3> MeshCenters(LoadedScene.Meshes.size());
-        std::vector<float> MeshRadii(LoadedScene.Meshes.size());
-        std::vector<FFloat3> MeshMins(LoadedScene.Meshes.size());
-        std::vector<FFloat3> MeshMaxs(LoadedScene.Meshes.size());
-
-        for (size_t MeshIndex = 0; MeshIndex < LoadedScene.Meshes.size(); ++MeshIndex)
-        {
-            const FMesh& Mesh = LoadedScene.Meshes[MeshIndex];
-            ComputeMeshBounds(Mesh, MeshCenters[MeshIndex], MeshRadii[MeshIndex], MeshMins[MeshIndex], MeshMaxs[MeshIndex]);
-        }
-
-        if (LoadedScene.Nodes.empty())
-        {
-            for (size_t MeshIndex = 0; MeshIndex < LoadedScene.Meshes.size(); ++MeshIndex)
-            {
-                FGltfNode DefaultNode;
-                DefaultNode.MeshIndex = static_cast<int>(MeshIndex);
-                DefaultNode.NodeIndex = static_cast<int>(MeshIndex);
-                DefaultNode.WorldMatrix = DirectX::XMFLOAT4X4(
-                    1.0f, 0.0f, 0.0f, 0.0f,
-                    0.0f, 1.0f, 0.0f, 0.0f,
-                    0.0f, 0.0f, 1.0f, 0.0f,
-                    0.0f, 0.0f, 0.0f, 1.0f);
-                DefaultNode.Name = "Mesh_" + std::to_string(MeshIndex);
-                LoadedScene.Nodes.push_back(DefaultNode);
-            }
-        }
-
-        for (const FGltfNode& LoadedNode : LoadedScene.Nodes)
-        {
-            if (LoadedNode.MeshIndex < 0 || static_cast<size_t>(LoadedNode.MeshIndex) >= LoadedScene.Meshes.size())
-            {
-                continue;
-            }
-
-            const size_t MeshIndex = static_cast<size_t>(LoadedNode.MeshIndex);
-
-            const FFloat3 MeshCenter = MeshCenters[MeshIndex];
-            float MeshRadius = MeshRadii[MeshIndex];
-            const FFloat3 MeshMin = MeshMins[MeshIndex];
-            const FFloat3 MeshMax = MeshMaxs[MeshIndex];
-
-            const std::array<float, 3> ScaleComponents = { Model.Scale.x, Model.Scale.y, Model.Scale.z };
-            float MaxScale = 0.0f;
-            for (float ScaleValue : ScaleComponents)
-            {
-                MaxScale = (std::max)(MaxScale, std::fabs(ScaleValue));
-            }
-
-            const float NodeScale = ComputeMaxScale(LoadedNode.WorldMatrix);
-
-            MeshRadius *= MaxScale;
-
-            using namespace DirectX;
-
-            const XMMATRIX NodeWorld = XMLoadFloat4x4(&LoadedNode.WorldMatrix);
-            const XMMATRIX Scale = XMMatrixScaling(Model.Scale.x, Model.Scale.y, Model.Scale.z);
-            const XMMATRIX Rotation = XMMatrixRotationRollPitchYaw(
-                XMConvertToRadians(Model.RotationEuler.x),
-                XMConvertToRadians(Model.RotationEuler.y),
-                XMConvertToRadians(Model.RotationEuler.z));
-            const XMMATRIX Translation = XMMatrixTranslation(Model.Position.x, Model.Position.y, Model.Position.z);
-
-            const XMMATRIX ModelTransform = Scale * Rotation * Translation;
-            const XMMATRIX World = NodeWorld * ModelTransform;
-
-            const std::array<XMVECTOR, 8> LocalCorners =
-            {
-                XMVectorSet(MeshMin.x, MeshMin.y, MeshMin.z, 1.0f),
-                XMVectorSet(MeshMax.x, MeshMin.y, MeshMin.z, 1.0f),
-                XMVectorSet(MeshMin.x, MeshMax.y, MeshMin.z, 1.0f),
-                XMVectorSet(MeshMax.x, MeshMax.y, MeshMin.z, 1.0f),
-                XMVectorSet(MeshMin.x, MeshMin.y, MeshMax.z, 1.0f),
-                XMVectorSet(MeshMax.x, MeshMin.y, MeshMax.z, 1.0f),
-                XMVectorSet(MeshMin.x, MeshMax.y, MeshMax.z, 1.0f),
-                XMVectorSet(MeshMax.x, MeshMax.y, MeshMax.z, 1.0f)
-            };
-
-            XMVECTOR BoundsMin = XMVectorSet(std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), 1.0f);
-            XMVECTOR BoundsMax = XMVectorSet(std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(), 1.0f);
-
-            for (const XMVECTOR Corner : LocalCorners)
-            {
-                const XMVECTOR WorldCorner = XMVector3TransformCoord(Corner, World);
-                BoundsMin = XMVectorMin(BoundsMin, WorldCorner);
-                BoundsMax = XMVectorMax(BoundsMax, WorldCorner);
-            }
-
-            const std::string BaseName = LoadedNode.Name.empty() ? ("Mesh_" + std::to_string(MeshIndex)) : LoadedNode.Name;
-
-            std::vector<FGltfPrimitiveSection> DefaultSections;
-            const std::vector<FGltfPrimitiveSection>* PrimitiveSections = nullptr;
-            if (MeshIndex < LoadedScene.MeshPrimitiveSections.size())
-            {
-                PrimitiveSections = &LoadedScene.MeshPrimitiveSections[MeshIndex];
-            }
-
-            const FMesh& Mesh = LoadedScene.Meshes[MeshIndex];
-            const std::vector<FMesh::FPrimitive>& MeshPrimitives = Mesh.GetPrimitives();
-
-            if (!PrimitiveSections || PrimitiveSections->empty())
-            {
-                FGltfPrimitiveSection Section;
-                Section.IndexStart = 0;
-                Section.IndexCount = MeshPrimitives.empty() ? 0 : static_cast<uint32_t>(MeshPrimitives.front().Indices.size());
-                DefaultSections.push_back(Section);
-                PrimitiveSections = &DefaultSections;
-            }
-
-            const size_t SectionCount = PrimitiveSections->size();
-            for (size_t SectionIndex = 0; SectionIndex < SectionCount; ++SectionIndex)
-            {
-                const FGltfPrimitiveSection& Section = (*PrimitiveSections)[SectionIndex];
-
-                FSceneModelResource ModelResource;
-                ModelResource.DrawIndexStart = Section.IndexStart;
-                ModelResource.DrawIndexCount = Section.IndexCount;
-                ModelResource.BaseIndexCount = Section.IndexCount;
-
-                XMStoreFloat4x4(&ModelResource.WorldMatrix, World);
-                XMStoreFloat4x4(&ModelResource.ModelTransform, ModelTransform);
-                ModelResource.GltfSceneIndex = SceneIndex;
-                ModelResource.GltfNodeIndex = LoadedNode.NodeIndex;
-                ModelResource.GltfSkinIndex = LoadedNode.SkinIndex;
-
-                const XMVECTOR CenterVec = XMVector3TransformCoord(XMVectorSet(MeshCenter.x, MeshCenter.y, MeshCenter.z, 1.0f), World);
-                XMStoreFloat3(&ModelResource.Center, CenterVec);
-                ModelResource.Radius = MeshRadius * NodeScale;
-
-                if (SectionCount > 1)
-                {
-                    ModelResource.Name = BaseName + "_Prim" + std::to_string(SectionIndex);
-                }
-                else
-                {
-                    ModelResource.Name = BaseName;
-                }
-
-                ModelResource.ObjectId = NextObjectId++;
-
-                XMStoreFloat3(&ModelResource.BoundsMin, BoundsMin);
-                XMStoreFloat3(&ModelResource.BoundsMax, BoundsMax);
-
-                const std::wstring EmptyTexture;
-                const FGltfMaterialTextureSet& Material = Section.Material;
-
-                const std::wstring& BaseColorPath = !Material.BaseColor.empty() ? Material.BaseColor : EmptyTexture;
-                const std::wstring& MetallicRoughnessPath = !Material.MetallicRoughness.empty() ? Material.MetallicRoughness : EmptyTexture;
-                const std::wstring& NormalPath = !Material.Normal.empty() ? Material.Normal : EmptyTexture;
-                const std::wstring& EmissivePath = !Material.Emissive.empty() ? Material.Emissive : EmptyTexture;
-                const std::wstring& SheenColorPath = !Material.SheenColor.empty() ? Material.SheenColor : EmptyTexture;
-                const std::wstring& SheenRoughnessPath = !Material.SheenRoughness.empty() ? Material.SheenRoughness : EmptyTexture;
-                const std::wstring& ClearcoatPath = !Material.Clearcoat.empty() ? Material.Clearcoat : EmptyTexture;
-                const std::wstring& ClearcoatRoughnessPath = !Material.ClearcoatRoughness.empty() ? Material.ClearcoatRoughness : EmptyTexture;
-                const std::wstring& ClearcoatNormalPath = !Material.ClearcoatNormal.empty() ? Material.ClearcoatNormal : EmptyTexture;
-                const std::wstring& AnisotropyPath = !Material.Anisotropy.empty() ? Material.Anisotropy : EmptyTexture;
-
-                ModelResource.BaseColorTexturePath = Model.BaseColorTexturePath.empty() ? BaseColorPath : Model.BaseColorTexturePath;
-                ModelResource.MetallicRoughnessTexturePath = Model.MetallicRoughnessTexturePath.empty() ? MetallicRoughnessPath : Model.MetallicRoughnessTexturePath;
-                ModelResource.NormalTexturePath = Model.NormalTexturePath.empty() ? NormalPath : Model.NormalTexturePath;
-                ModelResource.EmissiveTexturePath = Model.EmissiveTexturePath.empty() ? EmissivePath : Model.EmissiveTexturePath;
-                ModelResource.SheenColorTexturePath = SheenColorPath;
-                ModelResource.SheenRoughnessTexturePath = SheenRoughnessPath;
-                ModelResource.ClearcoatTexturePath = ClearcoatPath;
-                ModelResource.ClearcoatRoughnessTexturePath = ClearcoatRoughnessPath;
-                ModelResource.ClearcoatNormalTexturePath = ClearcoatNormalPath;
-                ModelResource.AnisotropyTexturePath = AnisotropyPath;
-                ModelResource.BaseColorFactor = Material.BaseColorFactor;
-                ModelResource.BaseColorAlpha = Material.BaseColorAlpha;
-                ModelResource.MetallicFactor = Material.MetallicFactor;
-                ModelResource.RoughnessFactor = Material.RoughnessFactor;
-                ModelResource.EmissiveFactor = Material.EmissiveFactor;
-                ModelResource.SheenColorFactor = Material.SheenColorFactor;
-                ModelResource.SheenRoughnessFactor = Material.SheenRoughnessFactor;
-                ModelResource.ClearcoatFactor = Material.ClearcoatFactor;
-                ModelResource.ClearcoatRoughnessFactor = Material.ClearcoatRoughnessFactor;
-                ModelResource.AnisotropyStrength = Material.AnisotropyStrength;
-                ModelResource.AnisotropyRotation = Material.AnisotropyRotation;
-                ModelResource.AlphaCutoff = Material.AlphaCutoff;
-                ModelResource.AlphaMode = static_cast<uint32_t>(Material.bAlphaBlend
-                    ? EAlphaMode::Blend
-                    : (Material.bAlphaMask ? EAlphaMode::Mask : EAlphaMode::Opaque));
-                ModelResource.bDoubleSided = Material.bDoubleSided;
-                ModelResource.ShadingModelId = Material.ShadingModelId;
-                ModelResource.bHasNormalMap = !ModelResource.NormalTexturePath.empty();
-
-                ModelResource.BaseColorTransformOffsetScale = BuildOffsetScale(Material.BaseColorTransform);
-                ModelResource.BaseColorTransformRotation = BuildRotationConstants(Material.BaseColorTransform);
-                ModelResource.MetallicRoughnessTransformOffsetScale = BuildOffsetScale(Material.MetallicRoughnessTransform);
-                ModelResource.MetallicRoughnessTransformRotation = BuildRotationConstants(Material.MetallicRoughnessTransform);
-                ModelResource.NormalTransformOffsetScale = BuildOffsetScale(Material.NormalTransform);
-                ModelResource.NormalTransformRotation = BuildRotationConstants(Material.NormalTransform);
-                ModelResource.EmissiveTransformOffsetScale = BuildOffsetScale(Material.EmissiveTransform);
-                ModelResource.EmissiveTransformRotation = BuildRotationConstants(Material.EmissiveTransform);
-                ModelResource.SheenColorTransformOffsetScale = BuildOffsetScale(Material.SheenColorTransform);
-                ModelResource.SheenColorTransformRotation = BuildRotationConstants(Material.SheenColorTransform);
-                ModelResource.SheenRoughnessTransformOffsetScale = BuildOffsetScale(Material.SheenRoughnessTransform);
-                ModelResource.SheenRoughnessTransformRotation = BuildRotationConstants(Material.SheenRoughnessTransform);
-                ModelResource.ClearcoatTransformOffsetScale = BuildOffsetScale(Material.ClearcoatTransform);
-                ModelResource.ClearcoatTransformRotation = BuildRotationConstants(Material.ClearcoatTransform);
-                ModelResource.ClearcoatRoughnessTransformOffsetScale = BuildOffsetScale(Material.ClearcoatRoughnessTransform);
-                ModelResource.ClearcoatRoughnessTransformRotation = BuildRotationConstants(Material.ClearcoatRoughnessTransform);
-                ModelResource.ClearcoatNormalTransformOffsetScale = BuildOffsetScale(Material.ClearcoatNormalTransform);
-                ModelResource.ClearcoatNormalTransformRotation = BuildRotationConstants(Material.ClearcoatNormalTransform);
-                ModelResource.AnisotropyTransformOffsetScale = BuildOffsetScale(Material.AnisotropyTransform);
-                ModelResource.AnisotropyTransformRotation = BuildRotationConstants(Material.AnisotropyTransform);
-
-                if (SectionIndex >= MeshPrimitives.size())
-                {
-                    continue;
-                }
-
-                const FMesh::FMeshletGroup* MeshletGroup = Mesh.GetMeshletGroup(SectionIndex);
-                const bool bUseMeshletIndices = Mesh.IsMeshletIndexingAllowed() && MeshletGroup && !MeshletGroup->MeshletIndices.empty();
-                if (!CreatePrimitiveGeometry(Device, MeshPrimitives[SectionIndex], ModelResource.Geometry, !bUseMeshletIndices, &UploadBatch))
-                {
-                    LogError("Failed to create primitive geometry for scene mesh: " + PathToUtf8String(MeshPath));
-                    continue;
-                }
-
-                if (bUseMeshletIndices)
-                {
-                    if (CreateIndexBufferFromIndices(Device, MeshletGroup->MeshletIndices, ModelResource.Geometry, &UploadBatch))
-                    {
-                        ModelResource.bUseMeshletCulling = true;
-                        ModelResource.Meshlets = MeshletGroup->Meshlets;
-                        ModelResource.MeshletBounds = MeshletGroup->MeshletBounds;
-                        ModelResource.MeshletIndices = MeshletGroup->MeshletIndices;
-                        ModelResource.DrawIndexStart = 0;
-                        ModelResource.DrawIndexCount = static_cast<uint32_t>(MeshletGroup->MeshletIndices.size());
-                        ModelResource.BaseIndexCount = ModelResource.DrawIndexCount;
-                    }
-                }
-                else
-                {
-                    ModelResource.DrawIndexStart = 0;
-                    ModelResource.DrawIndexCount = static_cast<uint32_t>(MeshPrimitives[SectionIndex].Indices.size());
-                    ModelResource.BaseIndexCount = ModelResource.DrawIndexCount;
-                }
-
-                if (Device && Device->GetBindlessDescriptorHeap())
-                {
-                    ModelResource.VertexBufferBindlessIndices[0] = CreateStructuredBufferSrv(Device, ModelResource.Geometry.VertexBuffers[0].Get(), sizeof(FFloat3));
-                    ModelResource.VertexBufferBindlessIndices[1] = CreateStructuredBufferSrv(Device, ModelResource.Geometry.VertexBuffers[1].Get(), sizeof(FFloat3));
-                    ModelResource.VertexBufferBindlessIndices[2] = CreateStructuredBufferSrv(Device, ModelResource.Geometry.VertexBuffers[2].Get(), sizeof(FFloat2));
-                    ModelResource.VertexBufferBindlessIndices[3] = CreateStructuredBufferSrv(Device, ModelResource.Geometry.VertexBuffers[3].Get(), sizeof(FFloat4));
-                    ModelResource.VertexBufferBindlessIndices[4] = CreateStructuredBufferSrv(Device, ModelResource.Geometry.VertexBuffers[4].Get(), sizeof(FFloat4));
-                    ModelResource.VertexBufferBindlessIndices[5] = CreateStructuredBufferSrv(Device, ModelResource.Geometry.VertexBuffers[5].Get(), sizeof(FUInt4));
-                    ModelResource.VertexBufferBindlessIndices[6] = CreateStructuredBufferSrv(Device, ModelResource.Geometry.VertexBuffers[6].Get(), sizeof(FFloat4));
-                    ModelResource.IndexBufferBindlessIndex = CreateStructuredBufferSrv(Device, ModelResource.Geometry.IndexBuffer.Get(), sizeof(uint32_t));
-                }
-
-                if (Device && Device->GetBindlessDescriptorHeap() && ModelResource.GltfSkinIndex >= 0)
-                {
-                    if (static_cast<size_t>(ModelResource.GltfSkinIndex) < LoadedScene.Skins.size())
-                    {
-                        const FGltfSkin& Skin = LoadedScene.Skins[static_cast<size_t>(ModelResource.GltfSkinIndex)];
-                        ModelResource.BoneMatrixCount = static_cast<uint32_t>(Skin.Joints.size());
-                        if (ModelResource.BoneMatrixCount > 0)
-                        {
-                            const uint64_t BufferSize = sizeof(DirectX::XMFLOAT4X4) * ModelResource.BoneMatrixCount;
-                            D3D12_HEAP_PROPERTIES UploadHeap = {};
-                            UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
-                            UploadHeap.CreationNodeMask = 1;
-                            UploadHeap.VisibleNodeMask = 1;
-
-                            D3D12_RESOURCE_DESC BufferDesc = {};
-                            BufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-                            BufferDesc.Width = BufferSize;
-                            BufferDesc.Height = 1;
-                            BufferDesc.DepthOrArraySize = 1;
-                            BufferDesc.MipLevels = 1;
-                            BufferDesc.Format = DXGI_FORMAT_UNKNOWN;
-                            BufferDesc.SampleDesc.Count = 1;
-                            BufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-                            HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-                                &UploadHeap,
-                                D3D12_HEAP_FLAG_NONE,
-                                &BufferDesc,
-                                D3D12_RESOURCE_STATE_GENERIC_READ,
-                                nullptr,
-                                IID_PPV_ARGS(ModelResource.BoneMatrixBuffer.ReleaseAndGetAddressOf())));
-
-                            if (ModelResource.BoneMatrixBuffer)
-                            {
-                                ModelResource.BoneMatrixBuffer->SetName(L"SkinMatrixBuffer");
-                                D3D12_RANGE EmptyRange = { 0, 0 };
-                                HR_CHECK(ModelResource.BoneMatrixBuffer->Map(
-                                    0,
-                                    &EmptyRange,
-                                    reinterpret_cast<void**>(&ModelResource.BoneMatrixBufferMapped)));
-                                if (ModelResource.BoneMatrixBufferMapped)
-                                {
-                                    std::vector<DirectX::XMFLOAT4X4> IdentityMatrices(ModelResource.BoneMatrixCount);
-                                    for (uint32_t JointIndex = 0; JointIndex < ModelResource.BoneMatrixCount; ++JointIndex)
-                                    {
-                                        IdentityMatrices[JointIndex] = DirectX::XMFLOAT4X4(
-                                            1.0f, 0.0f, 0.0f, 0.0f,
-                                            0.0f, 1.0f, 0.0f, 0.0f,
-                                            0.0f, 0.0f, 1.0f, 0.0f,
-                                            0.0f, 0.0f, 0.0f, 1.0f);
-                                    }
-                                    std::memcpy(ModelResource.BoneMatrixBufferMapped, IdentityMatrices.data(), BufferSize);
-                                }
-                            }
-
-                            ModelResource.BoneMatrixBindlessIndex = CreateStructuredBufferSrv(
-                                Device,
-                                ModelResource.BoneMatrixBuffer.Get(),
-                                sizeof(DirectX::XMFLOAT4X4));
-
-                            ModelResource.bUseSkinning = ModelResource.BoneMatrixBindlessIndex != UINT32_MAX;
-                        }
-                    }
-                }
-
-                UpdateSceneBounds(ModelResource.Center, ModelResource.Radius, SceneMin, SceneMax);
-
-                OutModels.push_back(std::move(ModelResource));
-            }
-        }
-
-        if (OutGltfScenes)
-        {
-            OutGltfScenes->push_back(std::move(LoadedScene));
-        }
-
-    }
-
-    if (UploadBatch.bInitialized)
-    {
-        UploadBatch.ExecuteAndFlush();
-    }
-
-    BuildSceneModelBlas(Device, OutModels);
-
-    if (OutModels.empty())
-    {
-        LogError("No renderable models could be created from scene JSON: " + ScenePathUtf8);
-        return false;
-    }
-
-    OutSceneCenter = DirectX::XMFLOAT3(
-        0.5f * (SceneMin.x + SceneMax.x),
-        0.5f * (SceneMin.y + SceneMax.y),
-        0.5f * (SceneMin.z + SceneMax.z));
-
-    const DirectX::XMVECTOR Extents = DirectX::XMVectorSet(SceneMax.x - SceneMin.x, SceneMax.y - SceneMin.y, SceneMax.z - SceneMin.z, 0.0f);
-    OutSceneRadius = DirectX::XMVectorGetX(DirectX::XMVector3Length(Extents)) * 0.5f;
-    OutSceneRadius = std::max(OutSceneRadius, 1.0f);
-
-    return true;
-}
-
-bool RendererUtils::CreateDepthResources(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT Format, FDepthResources& OutDepthResources)
-{
-    if (Device == nullptr)
-    {
-        return false;
-    }
-
-    DXGI_FORMAT ResourceFormat = Format;
-    if (Format == DXGI_FORMAT_D24_UNORM_S8_UINT)
-    {
-        ResourceFormat = DXGI_FORMAT_R24G8_TYPELESS;
-    }
-
-    CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
-        ResourceFormat,
-        Width,
-        Height,
-        1,
-        1,
-        1,
-        0,
-        D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
-
-    D3D12_CLEAR_VALUE ClearValue = {};
-    ClearValue.Format = Format;
-    ClearValue.DepthStencil.Depth = 0.0f;
-    ClearValue.DepthStencil.Stencil = 0;
-
-    CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
-
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &HeapProps,
-        D3D12_HEAP_FLAG_NONE,
-        &Desc,
-        D3D12_RESOURCE_STATE_DEPTH_WRITE,
-        &ClearValue,
-        IID_PPV_ARGS(OutDepthResources.DepthBuffer.GetAddressOf())));
-
-    OutDepthResources.DepthBuffer->SetName(L"DepthBuffer");
-
-    D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
-    HeapDesc.NumDescriptors = 1;
-    HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-    HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-    HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(OutDepthResources.DSVHeap.GetAddressOf())));
-
-    OutDepthResources.DepthStencilHandle = OutDepthResources.DSVHeap->GetCPUDescriptorHandleForHeapStart();
-
-    D3D12_DEPTH_STENCIL_VIEW_DESC ViewDesc = {};
-    ViewDesc.Format = Format;
-    ViewDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
-    ViewDesc.Flags = D3D12_DSV_FLAG_NONE;
-    Device->GetDevice()->CreateDepthStencilView(OutDepthResources.DepthBuffer.Get(), &ViewDesc, OutDepthResources.DepthStencilHandle);
-
-    return true;
-}
-
-bool RendererUtils::CreateObjectIdResources(
-    FDX12Device* Device,
-    uint32_t Width,
-    uint32_t Height,
-    ComPtr<ID3D12Resource>& OutTexture,
-    ComPtr<ID3D12DescriptorHeap>& OutRtvHeap,
-    D3D12_CPU_DESCRIPTOR_HANDLE& OutRtvHandle,
-    ComPtr<ID3D12Resource>& OutReadback,
-    D3D12_PLACED_SUBRESOURCE_FOOTPRINT& OutFootprint,
-    uint32_t& OutRowPitch)
-{
-    if (!Device)
-    {
-        return false;
-    }
-
-    CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
-        DXGI_FORMAT_R32_UINT,
-        Width,
-        Height,
-        1,
-        1,
-        1,
-        0,
-        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
-
-    D3D12_CLEAR_VALUE ClearValue = {};
-    ClearValue.Format = DXGI_FORMAT_R32_UINT;
-
-    CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
-
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &HeapProps,
-        D3D12_HEAP_FLAG_NONE,
-        &Desc,
-        D3D12_RESOURCE_STATE_RENDER_TARGET,
-        &ClearValue,
-        IID_PPV_ARGS(OutTexture.ReleaseAndGetAddressOf())));
-    OutTexture->SetName(L"ObjectIdTexture");
-
-    D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
-    HeapDesc.NumDescriptors = 1;
-    HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-    HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(OutRtvHeap.ReleaseAndGetAddressOf())));
-    OutRtvHandle = OutRtvHeap->GetCPUDescriptorHandleForHeapStart();
-
-    D3D12_RENDER_TARGET_VIEW_DESC RtvDesc = {};
-    RtvDesc.Format = DXGI_FORMAT_R32_UINT;
-    RtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
-    Device->GetDevice()->CreateRenderTargetView(OutTexture.Get(), &RtvDesc, OutRtvHandle);
-
-    OutRowPitch = D3D12_TEXTURE_DATA_PITCH_ALIGNMENT;
-    OutFootprint.Offset = 0;
-    OutFootprint.Footprint.Format = DXGI_FORMAT_R32_UINT;
-    OutFootprint.Footprint.Width = 1;
-    OutFootprint.Footprint.Height = 1;
-    OutFootprint.Footprint.Depth = 1;
-    OutFootprint.Footprint.RowPitch = OutRowPitch;
-
-    CD3DX12_RESOURCE_DESC BufferDesc = CD3DX12_RESOURCE_DESC::Buffer(OutRowPitch);
-    CD3DX12_HEAP_PROPERTIES ReadbackProps(D3D12_HEAP_TYPE_READBACK);
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &ReadbackProps,
-        D3D12_HEAP_FLAG_NONE,
-        &BufferDesc,
-        D3D12_RESOURCE_STATE_COPY_DEST,
-        nullptr,
-        IID_PPV_ARGS(OutReadback.ReleaseAndGetAddressOf())));
-    OutReadback->SetName(L"ObjectIdReadback");
-    return true;
-}
-
-bool RendererUtils::CreateObjectIdPipeline(
-    FDX12Device* Device,
-    ID3D12RootSignature* RootSignature,
-    ComPtr<ID3D12PipelineState>& OutPipelineState)
-{
-    if (!Device || !RootSignature)
-    {
-        return false;
-    }
-
-    FShaderCompiler Compiler;
-    std::vector<uint8_t> VSByteCode;
-    std::vector<uint8_t> PSByteCode;
-
-    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
-    const std::wstring VSTarget = BuildShaderTarget(L"vs", ShaderModel);
-    const std::wstring PSTarget = BuildShaderTarget(L"ps", ShaderModel);
-
-    if (!Compiler.CompileFromFile(L"Shaders/ObjectId.hlsl", L"VSMain", VSTarget, VSByteCode))
-    {
-        return false;
-    }
-
-    if (!Compiler.CompileFromFile(L"Shaders/ObjectId.hlsl", L"PSMain", PSTarget, PSByteCode))
-    {
-        return false;
-    }
-
-    D3D12_INPUT_ELEMENT_DESC InputLayout[] =
-    {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,   D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 1, 0,   D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    2, 0,   D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TANGENT",  0, DXGI_FORMAT_R32G32B32A32_FLOAT, 3, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "COLOR",    0, DXGI_FORMAT_R32G32B32A32_FLOAT, 4, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-    };
-
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
-    PsoDesc.pRootSignature = RootSignature;
-    PsoDesc.InputLayout = { InputLayout, _countof(InputLayout) };
-    PsoDesc.VS = { VSByteCode.data(), VSByteCode.size() };
-    PsoDesc.PS = { PSByteCode.data(), PSByteCode.size() };
-    PsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    PsoDesc.SampleDesc.Count = 1;
-    PsoDesc.SampleMask = UINT_MAX;
-
-    PsoDesc.RasterizerState = {};
-    PsoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    PsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
-    PsoDesc.RasterizerState.FrontCounterClockwise = TRUE;
-    PsoDesc.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
-    PsoDesc.RasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
-    PsoDesc.RasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
-    PsoDesc.RasterizerState.DepthClipEnable = TRUE;
-
-    PsoDesc.BlendState = {};
-    PsoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-    PsoDesc.NumRenderTargets = 1;
-    PsoDesc.RTVFormats[0] = DXGI_FORMAT_R32_UINT;
-    PsoDesc.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
-    PsoDesc.DepthStencilState = {};
-    PsoDesc.DepthStencilState.DepthEnable = TRUE;
-    PsoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
-    PsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
-    PsoDesc.DepthStencilState.StencilEnable = FALSE;
-
-    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(OutPipelineState.ReleaseAndGetAddressOf())));
-    return true;
-}
-
-void RendererUtils::RequestObjectIdReadback(
-    uint32_t X,
-    uint32_t Y,
-    bool& OutRequested,
-    bool& OutRecorded,
-    uint32_t& OutX,
-    uint32_t& OutY)
-{
-    OutRequested = true;
-    OutRecorded = false;
-    OutX = X;
-    OutY = Y;
-}
-
-bool RendererUtils::ConsumeObjectIdReadback(
-    const ComPtr<ID3D12Resource>& ReadbackResource,
-    uint32_t RowPitch,
-    bool& InOutRequested,
-    bool& InOutRecorded,
-    uint32_t& OutObjectId)
-{
-    if (!InOutRecorded || !ReadbackResource)
-    {
-        return false;
-    }
-
-    void* MappedData = nullptr;
-    D3D12_RANGE ReadRange = { 0, RowPitch };
-    if (FAILED(ReadbackResource->Map(0, &ReadRange, &MappedData)) || !MappedData)
-    {
-        return false;
-    }
-
-    OutObjectId = *static_cast<const uint32_t*>(MappedData);
-    D3D12_RANGE WriteRange = { 0, 0 };
-    ReadbackResource->Unmap(0, &WriteRange);
-    InOutRequested = false;
-    InOutRecorded = false;
-    return true;
-}
-
-bool RendererUtils::ComputeSceneModelStats(
-    const std::vector<FSceneModelResource>& Models,
-    const std::vector<bool>& Visibility,
-    size_t& OutTotal,
-    size_t& OutCulled)
-{
-    OutTotal = Models.size();
-    if (Visibility.empty())
-    {
-        OutCulled = 0;
-        return true;
-    }
-
-    const size_t VisibleCountMax = (std::min)(Models.size(), Visibility.size());
-    size_t VisibleCount = 0;
-    for (size_t Index = 0; Index < VisibleCountMax; ++Index)
-    {
-        if (Visibility[Index])
-        {
-            ++VisibleCount;
-        }
-    }
-
-    OutCulled = OutTotal > VisibleCount ? (OutTotal - VisibleCount) : 0;
-    return true;
 }
 
 void RendererUtils::UpdateCullingVisibility(
@@ -1604,216 +615,17 @@ bool RendererUtils::UpdateGltfSceneAnimation(
     return bAnySkinningUpdated;
 }
 
-bool RendererUtils::CreateMappedConstantBuffer(FDX12Device* Device, uint64_t BufferSize, FMappedConstantBuffer& OutConstantBuffer)
+void RendererUtils::UpdateSceneConstants(const FUpdateSceneConstantsParams& Params)
 {
-    if (Device == nullptr)
-    {
-        return false;
-    }
-
-    const uint64_t ConstantBufferSize = (BufferSize + 255ULL) & ~255ULL;
-
-    CD3DX12_HEAP_PROPERTIES UploadHeap(D3D12_HEAP_TYPE_UPLOAD);
-    CD3DX12_RESOURCE_DESC BufferDesc = CD3DX12_RESOURCE_DESC::Buffer(ConstantBufferSize);
-
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &UploadHeap,
-        D3D12_HEAP_FLAG_NONE,
-        &BufferDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        nullptr,
-        IID_PPV_ARGS(OutConstantBuffer.Resource.GetAddressOf())));
-
-    OutConstantBuffer.Resource->SetName(L"MappedConstantBuffer");
-
-    D3D12_RANGE EmptyRange = { 0, 0 };
-    HR_CHECK(OutConstantBuffer.Resource->Map(0, &EmptyRange, reinterpret_cast<void**>(&OutConstantBuffer.MappedData)));
-    return true;
-}
-
-bool RendererUtils::CreateSkyAtmosphereResources(
-    FDX12Device* Device,
-    float SkySphereRadius,
-    FMeshGeometryBuffers& OutGeometry,
-    Microsoft::WRL::ComPtr<ID3D12Resource>& OutConstantBuffer,
-    uint8_t*& OutConstantBufferMapped)
-{
-    FMappedConstantBuffer SkyConstantBuffer;
-    if (!CreateMappedConstantBuffer(Device, sizeof(FSkyAtmosphereConstants), SkyConstantBuffer))
-    {
-        return false;
-    }
-
-    OutConstantBuffer = SkyConstantBuffer.Resource;
-    OutConstantBufferMapped = SkyConstantBuffer.MappedData;
-
-    return CreateSphereGeometry(Device, OutGeometry, SkySphereRadius, 64, 32);
-}
-
-bool RendererUtils::CreateSkyAtmospherePipeline(
-    FDX12Device* Device,
-    DXGI_FORMAT BackBufferFormat,
-    const FSkyPipelineConfig& Config,
-    Microsoft::WRL::ComPtr<ID3D12RootSignature>& OutRootSignature,
-    Microsoft::WRL::ComPtr<ID3D12PipelineState>& OutPipelineState)
-{
-    if (Device == nullptr)
-    {
-        return false;
-    }
-
-    FShaderCompiler Compiler;
-    std::vector<uint8_t> VSByteCode;
-    std::vector<uint8_t> PSByteCode;
-
-    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
-    const std::wstring VSTarget = BuildShaderTarget(L"vs", ShaderModel);
-    const std::wstring PSTarget = BuildShaderTarget(L"ps", ShaderModel);
-
-    if (!Compiler.CompileFromFile(L"Shaders/SkyAtmosphere.hlsl", L"VSMain", VSTarget, VSByteCode))
-    {
-        return false;
-    }
-
-    if (!Compiler.CompileFromFile(L"Shaders/SkyAtmosphere.hlsl", L"PSMain", PSTarget, PSByteCode))
-    {
-        return false;
-    }
-
-    D3D12_ROOT_PARAMETER1 RootParams[1] = {};
-    // RootParams[0]: Sky constants (b0), used in Shaders/SkyAtmosphere.hlsl VSMain and PSMain
-    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[0].Descriptor.ShaderRegister = 0;
-    RootParams[0].Descriptor.RegisterSpace = 0;
-    RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
-
-    D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootDesc = {};
-    RootDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-    RootDesc.Desc_1_1.NumParameters = _countof(RootParams);
-    RootDesc.Desc_1_1.pParameters = RootParams;
-    RootDesc.Desc_1_1.NumStaticSamplers = 0;
-    RootDesc.Desc_1_1.pStaticSamplers = nullptr;
-    RootDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
-
-    Microsoft::WRL::ComPtr<ID3DBlob> SerializedSig;
-    Microsoft::WRL::ComPtr<ID3DBlob> ErrorBlob;
-    HR_CHECK(D3D12SerializeVersionedRootSignature(&RootDesc, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
-
-    if (ErrorBlob && ErrorBlob->GetBufferSize() > 0)
-    {
-        OutputDebugStringA(static_cast<const char*>(ErrorBlob->GetBufferPointer()));
-    }
-
-    HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(OutRootSignature.GetAddressOf())));
-
-    D3D12_INPUT_ELEMENT_DESC InputLayout[] =
-    {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,   D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 1, 0,   D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    2, 0,   D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TANGENT",  0, DXGI_FORMAT_R32G32B32A32_FLOAT, 3, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-    };
-
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
-    PsoDesc.pRootSignature = OutRootSignature.Get();
-    PsoDesc.InputLayout = { InputLayout, _countof(InputLayout) };
-    PsoDesc.VS = { VSByteCode.data(), VSByteCode.size() };
-    PsoDesc.PS = { PSByteCode.data(), PSByteCode.size() };
-    PsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    PsoDesc.SampleDesc.Count = 1;
-    PsoDesc.SampleMask = UINT_MAX;
-
-    PsoDesc.RasterizerState = {};
-    PsoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    PsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_FRONT;
-    PsoDesc.RasterizerState.FrontCounterClockwise = TRUE;
-    PsoDesc.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
-    PsoDesc.RasterizerState.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
-    PsoDesc.RasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
-    PsoDesc.RasterizerState.DepthClipEnable = TRUE;
-    PsoDesc.RasterizerState.MultisampleEnable = FALSE;
-    PsoDesc.RasterizerState.AntialiasedLineEnable = FALSE;
-    PsoDesc.RasterizerState.ForcedSampleCount = 0;
-    PsoDesc.RasterizerState.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
-
-    PsoDesc.BlendState = {};
-    PsoDesc.BlendState.AlphaToCoverageEnable = FALSE;
-    PsoDesc.BlendState.IndependentBlendEnable = FALSE;
-    D3D12_RENDER_TARGET_BLEND_DESC RtBlend = {};
-    RtBlend.BlendEnable = FALSE;
-    RtBlend.LogicOpEnable = FALSE;
-    RtBlend.SrcBlend = D3D12_BLEND_ONE;
-    RtBlend.DestBlend = D3D12_BLEND_ZERO;
-    RtBlend.BlendOp = D3D12_BLEND_OP_ADD;
-    RtBlend.SrcBlendAlpha = D3D12_BLEND_ONE;
-    RtBlend.DestBlendAlpha = D3D12_BLEND_ZERO;
-    RtBlend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
-    RtBlend.LogicOp = D3D12_LOGIC_OP_NOOP;
-    RtBlend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-    PsoDesc.BlendState.RenderTarget[0] = RtBlend;
-
-    PsoDesc.DepthStencilState = {};
-    PsoDesc.DepthStencilState.DepthEnable = Config.DepthEnable;
-    PsoDesc.DepthStencilState.DepthWriteMask = Config.DepthWriteMask;
-    PsoDesc.DepthStencilState.DepthFunc = Config.DepthFunc;
-    PsoDesc.DepthStencilState.StencilEnable = FALSE;
-    PsoDesc.NumRenderTargets = 1;
-    PsoDesc.RTVFormats[0] = BackBufferFormat;
-    PsoDesc.DSVFormat = Config.DsvFormat;
-    PsoDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
-
-    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(OutPipelineState.GetAddressOf())));
-
-    return true;
-}
-
-namespace
-{
-    void FillTransformConstants(const DirectX::XMFLOAT4& OffsetScale, const DirectX::XMFLOAT4& RotationTexCoord, DirectX::XMFLOAT4& OutOffsetScale, DirectX::XMFLOAT4& OutRotation)
-    {
-        OutOffsetScale = OffsetScale;
-        OutRotation = RotationTexCoord;
-    }
-}
-
-void RendererUtils::UpdateSceneConstants(
-    const FCamera& Camera,
-    const FSceneModelResource& Model,
-    float LightIntensity,
-    const DirectX::XMVECTOR& LightDirection,
-    const DirectX::XMFLOAT3& LightColor,
-    const DirectX::XMMATRIX& LightViewProjection,
-    const DirectX::XMMATRIX& Projection,
-    float ShadowStrength,
-    float ShadowBias,
-    float ShadowMapWidth,
-    float ShadowMapHeight,
-    float EnvMapMipCount,
-    const DirectX::XMFLOAT2& TaaJitter,
-    uint32_t GtaoTemporalIndex,
-    bool bGtaoEnabled,
-    float GtaoRadius,
-    float GtaoIntensity,
-    float GtaoPower,
-    float GtaoThickness,
-    uint32_t GtaoDirectionCount,
-    uint32_t GtaoStepCount,
-    uint8_t* ConstantBufferMapped,
-    uint64_t ConstantBufferOffset,
-    const DirectX::XMMATRIX& PreviousViewProjection,
-    bool bHasPreviousViewProjection,
-    const DirectX::XMMATRIX& PreviousWorld,
-    bool bHasPreviousWorld,
-    uint32_t PreviousSkinnedPositionBindlessIndex,
-    bool bHasPreviousSkinning)
-{
-    if (ConstantBufferMapped == nullptr)
+    if (Params.ConstantBufferMapped == nullptr)
     {
         return;
     }
 
     using namespace DirectX;
+
+    const FCamera& Camera = *Params.Camera;
+    const FSceneModelResource& Model = *Params.Model;
 
     const XMMATRIX View = Camera.GetViewMatrix();
     const XMMATRIX ViewInverse = XMMatrixInverse(nullptr, View);
@@ -1828,26 +640,26 @@ void RendererUtils::UpdateSceneConstants(
     XMStoreFloat4x4(&Constants.WorldInverseTranspose, XMMatrixTranspose(XMMatrixInverse(nullptr, WorldMatrix)));
     XMStoreFloat4x4(&Constants.View, View);
     XMStoreFloat4x4(&Constants.ViewInverse, ViewInverse);
-    XMStoreFloat4x4(&Constants.Projection, Projection);
-    const XMMATRIX ViewProjection = View * Projection;
+    XMStoreFloat4x4(&Constants.Projection, Params.Projection);
+    const XMMATRIX ViewProjection = View * Params.Projection;
     XMStoreFloat4x4(&Constants.ViewProjectionInverse, XMMatrixInverse(nullptr, ViewProjection));
-    XMStoreFloat4x4(&Constants.PreviousViewProjection, PreviousViewProjection);
-    XMStoreFloat4x4(&Constants.PreviousWorld, PreviousWorld);
-    Constants.HasPreviousViewProjection = bHasPreviousViewProjection ? 1u : 0u;
-    Constants.HasPreviousWorld = bHasPreviousWorld ? 1u : 0u;
-    Constants.HasPreviousSkinning = bHasPreviousSkinning ? 1u : 0u;
-    Constants.PreviousSkinnedPositionBindlessIndex = PreviousSkinnedPositionBindlessIndex;
+    XMStoreFloat4x4(&Constants.PreviousViewProjection, Params.PreviousViewProjection);
+    XMStoreFloat4x4(&Constants.PreviousWorld, Params.PreviousWorld);
+    Constants.HasPreviousViewProjection = Params.bHasPreviousViewProjection ? 1u : 0u;
+    Constants.HasPreviousWorld = Params.bHasPreviousWorld ? 1u : 0u;
+    Constants.HasPreviousSkinning = Params.bHasPreviousSkinning ? 1u : 0u;
+    Constants.PreviousSkinnedPositionBindlessIndex = Params.PreviousSkinnedPositionBindlessIndex;
     Constants.BaseColor = BaseColorFactor;
-    Constants.LightIntensity = LightIntensity;
-    XMStoreFloat3(&Constants.LightDirection, XMVector3Normalize(LightDirection));
+    Constants.LightIntensity = Params.LightIntensity;
+    XMStoreFloat3(&Constants.LightDirection, XMVector3Normalize(Params.LightDirection));
     Constants.LightRadius = 0.02f;
     Constants.CameraPosition = Camera.GetPosition();
-    Constants.LightColor = LightColor;
+    Constants.LightColor = Params.LightColor;
     Constants.EmissiveFactor = EmissiveFactor;
-    XMStoreFloat4x4(&Constants.LightViewProjection, LightViewProjection);
-    Constants.ShadowStrength = ShadowStrength;
-    Constants.ShadowBias = ShadowBias;
-    Constants.ShadowMapSize = DirectX::XMFLOAT2(ShadowMapWidth, ShadowMapHeight);
+    XMStoreFloat4x4(&Constants.LightViewProjection, Params.LightViewProjection);
+    Constants.ShadowStrength = Params.ShadowStrength;
+    Constants.ShadowBias = Params.ShadowBias;
+    Constants.ShadowMapSize = DirectX::XMFLOAT2(Params.ShadowMapWidth, Params.ShadowMapHeight);
     Constants.MetallicFactor = Model.MetallicFactor;
     Constants.RoughnessFactor = Model.RoughnessFactor;
     Constants.BaseColorAlpha = Model.BaseColorAlpha;
@@ -1860,70 +672,67 @@ void RendererUtils::UpdateSceneConstants(
     Constants.ClearcoatRoughnessFactor = Model.ClearcoatRoughnessFactor;
     Constants.AnisotropyStrength = Model.AnisotropyStrength;
     Constants.AnisotropyRotation = Model.AnisotropyRotation;
-    Constants.EnvMapMipCount = EnvMapMipCount;
-    Constants.TaaJitter = TaaJitter;
-    Constants.GtaoTemporalIndex = GtaoTemporalIndex;
+    Constants.EnvMapMipCount = Params.EnvMapMipCount;
+    const bool bUseClusterDagVertexBuffers =
+        Params.bUseClusterDagIndexBuffer
+        && AreAllBindlessIndicesValid(
+            Model.ClusterDagVertexBufferBindlessIndices[0],
+            Model.ClusterDagVertexBufferBindlessIndices[1],
+            Model.ClusterDagIndexBufferBindlessIndex);
     Constants.VertexBufferBindlessIndices = DirectX::XMUINT4(
-        Model.VertexBufferBindlessIndices[0],
-        Model.VertexBufferBindlessIndices[1],
-        Model.VertexBufferBindlessIndices[2],
-        Model.VertexBufferBindlessIndices[3]);
+        bUseClusterDagVertexBuffers ? Model.ClusterDagVertexBufferBindlessIndices[0] : Model.VertexBufferBindlessIndices[0],
+        bUseClusterDagVertexBuffers ? Model.ClusterDagVertexBufferBindlessIndices[1] : Model.VertexBufferBindlessIndices[1],
+        bUseClusterDagVertexBuffers ? Model.ClusterDagVertexBufferBindlessIndices[2] : Model.VertexBufferBindlessIndices[2],
+        bUseClusterDagVertexBuffers ? Model.ClusterDagVertexBufferBindlessIndices[3] : Model.VertexBufferBindlessIndices[3]);
     Constants.ExtraBindlessIndices = DirectX::XMUINT4(
-        Model.VertexBufferBindlessIndices[4],
-        Model.IndexBufferBindlessIndex,
-        0u,
+        bUseClusterDagVertexBuffers
+            ? Model.ClusterDagColorBufferBindlessIndex
+            : Model.VertexBufferBindlessIndices[4],
+        bUseClusterDagVertexBuffers
+            ? Model.ClusterDagIndexBufferBindlessIndex
+            : Model.IndexBufferBindlessIndex,
+        Params.bUseClusterDagDebugColor && IsValidBindlessIndex(Model.ClusterDagDebugColorBufferBindlessIndex)
+            ? Model.ClusterDagDebugColorBufferBindlessIndex
+            : UINT32_MAX,
         0u);
     Constants.SkinningBindlessIndices = DirectX::XMUINT4(
         Model.VertexBufferBindlessIndices[5],
         Model.VertexBufferBindlessIndices[6],
         Model.BoneMatrixBindlessIndex,
         Model.SkinnedPositionSrvBindlessIndex);
-    Constants.GtaoRadius = GtaoRadius;
-    Constants.GtaoIntensity = bGtaoEnabled ? GtaoIntensity : 0.0f;
-    Constants.GtaoPower = GtaoPower;
-    Constants.GtaoThickness = GtaoThickness;
-    Constants.GtaoDirectionCount = GtaoDirectionCount;
-    Constants.GtaoStepCount = GtaoStepCount;
-    Constants.ObjectId = Model.ObjectId;
-    FillTransformConstants(Model.BaseColorTransformOffsetScale, Model.BaseColorTransformRotation, Constants.BaseColorTransformOffsetScale, Constants.BaseColorTransformRotation);
-    FillTransformConstants(Model.MetallicRoughnessTransformOffsetScale, Model.MetallicRoughnessTransformRotation, Constants.MetallicRoughnessTransformOffsetScale, Constants.MetallicRoughnessTransformRotation);
-    FillTransformConstants(Model.NormalTransformOffsetScale, Model.NormalTransformRotation, Constants.NormalTransformOffsetScale, Constants.NormalTransformRotation);
-    FillTransformConstants(Model.EmissiveTransformOffsetScale, Model.EmissiveTransformRotation, Constants.EmissiveTransformOffsetScale, Constants.EmissiveTransformRotation);
-    FillTransformConstants(Model.SheenColorTransformOffsetScale, Model.SheenColorTransformRotation, Constants.SheenColorTransformOffsetScale, Constants.SheenColorTransformRotation);
-    FillTransformConstants(Model.SheenRoughnessTransformOffsetScale, Model.SheenRoughnessTransformRotation, Constants.SheenRoughnessTransformOffsetScale, Constants.SheenRoughnessTransformRotation);
-    FillTransformConstants(Model.ClearcoatTransformOffsetScale, Model.ClearcoatTransformRotation, Constants.ClearcoatTransformOffsetScale, Constants.ClearcoatTransformRotation);
-    FillTransformConstants(Model.ClearcoatRoughnessTransformOffsetScale, Model.ClearcoatRoughnessTransformRotation, Constants.ClearcoatRoughnessTransformOffsetScale, Constants.ClearcoatRoughnessTransformRotation);
-    FillTransformConstants(Model.ClearcoatNormalTransformOffsetScale, Model.ClearcoatNormalTransformRotation, Constants.ClearcoatNormalTransformOffsetScale, Constants.ClearcoatNormalTransformRotation);
-    FillTransformConstants(Model.AnisotropyTransformOffsetScale, Model.AnisotropyTransformRotation, Constants.AnisotropyTransformOffsetScale, Constants.AnisotropyTransformRotation);
+    Constants.ClusterDagPackedPositionOffset = Model.ClusterDagPackedPositionOffset;
+    Constants.ClusterDagPackedPositionScale = Model.ClusterDagPackedPositionScale;
+    Constants.ClusterDagPackedConstantUV = Model.ClusterDagPackedConstantUV;
+    Constants.ClusterDagPackedConstantColor = Model.ClusterDagPackedConstantColor;
+    Constants.ClusterDagVertexPackingMode =
+        bUseClusterDagVertexBuffers
+        ? Model.ClusterDagVertexPackingMode
+        : 0u;
+    Constants.GtaoIntensity = Params.bGtaoEnabled ? Params.GtaoIntensity : 0.0f;
 
-    memcpy(ConstantBufferMapped + ConstantBufferOffset, &Constants, sizeof(Constants));
-}
+    Constants.DeferredLightingVisualizationMode = Params.DeferredLightingVisualizationMode;
+    Constants.BaseColorTransformOffsetScale = Model.BaseColorTransformOffsetScale;
+    Constants.BaseColorTransformRotation = Model.BaseColorTransformRotation;
+    Constants.MetallicRoughnessTransformOffsetScale = Model.MetallicRoughnessTransformOffsetScale;
+    Constants.MetallicRoughnessTransformRotation = Model.MetallicRoughnessTransformRotation;
+    Constants.NormalTransformOffsetScale = Model.NormalTransformOffsetScale;
+    Constants.NormalTransformRotation = Model.NormalTransformRotation;
+    Constants.EmissiveTransformOffsetScale = Model.EmissiveTransformOffsetScale;
+    Constants.EmissiveTransformRotation = Model.EmissiveTransformRotation;
+    Constants.SheenColorTransformOffsetScale = Model.SheenColorTransformOffsetScale;
+    Constants.SheenColorTransformRotation = Model.SheenColorTransformRotation;
+    Constants.SheenRoughnessTransformOffsetScale = Model.SheenRoughnessTransformOffsetScale;
+    Constants.SheenRoughnessTransformRotation = Model.SheenRoughnessTransformRotation;
+    Constants.ClearcoatTransformOffsetScale = Model.ClearcoatTransformOffsetScale;
+    Constants.ClearcoatTransformRotation = Model.ClearcoatTransformRotation;
+    Constants.ClearcoatRoughnessTransformOffsetScale = Model.ClearcoatRoughnessTransformOffsetScale;
+    Constants.ClearcoatRoughnessTransformRotation = Model.ClearcoatRoughnessTransformRotation;
+    Constants.ClearcoatNormalTransformOffsetScale = Model.ClearcoatNormalTransformOffsetScale;
+    Constants.ClearcoatNormalTransformRotation = Model.ClearcoatNormalTransformRotation;
+    Constants.AnisotropyTransformOffsetScale = Model.AnisotropyTransformOffsetScale;
+    Constants.AnisotropyTransformRotation = Model.AnisotropyTransformRotation;
 
-void RendererUtils::UpdateSkyConstants(
-    const FCamera& Camera,
-    const DirectX::XMMATRIX& WorldMatrix,
-    const DirectX::XMMATRIX& Projection,
-    const DirectX::XMVECTOR& LightDirection,
-    const DirectX::XMFLOAT3& LightColor,
-    uint8_t* ConstantBufferMapped)
-{
-    if (ConstantBufferMapped == nullptr)
-    {
-        return;
-    }
-
-    using namespace DirectX;
-
-    const XMMATRIX View = Camera.GetViewMatrix();
-    FSkyAtmosphereConstants Constants = {};
-    XMStoreFloat4x4(&Constants.World, WorldMatrix);
-    XMStoreFloat4x4(&Constants.View, View);
-    XMStoreFloat4x4(&Constants.Projection, Projection);
-    Constants.CameraPosition = Camera.GetPosition();
-    XMStoreFloat3(&Constants.LightDirection, XMVector3Normalize(LightDirection));
-    Constants.LightColor = LightColor;
-
-    memcpy(ConstantBufferMapped, &Constants, sizeof(Constants));
+    memcpy(Params.ConstantBufferMapped + Params.ConstantBufferOffset, &Constants, sizeof(Constants));
 }
 
 DirectX::XMMATRIX RendererUtils::BuildDirectionalLightViewProjection(
@@ -2039,7 +848,7 @@ uint32_t RendererUtils::BuildPipelineKey(const FSceneModelResource& Model)
     const uint32_t UseSheenModel = (Model.ShadingModelId == 1u) ? 1u : 0u;
     const uint32_t UseClearcoatModel = (Model.ShadingModelId == 2u) ? 1u : 0u;
     const uint32_t UseAnisotropyModel = (Model.ShadingModelId == 3u) ? 1u : 0u;
-    const uint32_t UseSkinning = (Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0) ? 1u : 0u;
+    const uint32_t UseSkinning = (IsValidBindlessIndex(Model.BoneMatrixBindlessIndex) && Model.BoneMatrixCount > 0) ? 1u : 0u;
     const uint32_t UseDoubleSided = Model.bDoubleSided ? 1u : 0u;
     return (UseNormal) | (UseMr << 1) | (UseBase << 2) | (UseEmissive << 3) | (UseAlphaMask << 4)
         | (UseSheenModel << 5) | (UseClearcoatModel << 6) | (UseAnisotropyModel << 7) | (UseSkinning << 8) | (UseDoubleSided << 9);

@@ -1,10 +1,8 @@
 #include "DeferredFrameOrchestrator.h"
 
 #include "../DeferredRenderer.h"
-#include "DeferredVisibilityPasses.h"
-#include "DeferredGeometryPasses.h"
-#include "DeferredLightingPasses.h"
-#include "DeferredPostProcessPasses.h"
+#include "DeferredBasePass.h"
+#include "DeferredLightingPass.h"
 #include "Gtao.h"
 #include "RayTracingShadow.h"
 #include "Ssr.h"
@@ -30,29 +28,28 @@ void FDeferredFrameOrchestrator::BuildFrameGraph(FDeferredPassContext& Context) 
     uint32_t PrevVisibleCountSrvIndex = UINT32_MAX;
     uint32_t LateListSrvIndex = UINT32_MAX;
     uint32_t LateListCountSrvIndex = UINT32_MAX;
-    if (!Owner.MeshletVisibilitySrvBindlessIndices.empty())
+    if (Owner.GpuDrivenCullingState.HasMeshletVisibilityInputs())
     {
         const uint32_t FramesInFlight = Owner.GetFramesInFlight();
         const uint32_t PrevFrameIndex = (Owner.GetFrameIndex() + FramesInFlight - 1u) % FramesInFlight;
-        PrevVisibilityIndex = Owner.MeshletVisibilitySrvBindlessIndices[PrevFrameIndex];
+        PrevVisibilityIndex = Owner.GpuDrivenCullingState.GetMeshletVisibilityFrameData(PrevFrameIndex).SrvBindlessIndex;
         PrevVisibilityFrameIndex = PrevFrameIndex;
-        CurrentVisibilityIndex = Owner.MeshletVisibilitySrvBindlessIndices[Context.FrameIndex];
+        CurrentVisibilityIndex = Owner.GpuDrivenCullingState.GetMeshletVisibilityFrameData(Context.FrameIndex).SrvBindlessIndex;
     }
-    if (Context.FrameIndex < Owner.PrevVisibleListSrvBindlessIndices.size())
-    {
-        PrevVisibleListSrvIndex = Owner.PrevVisibleListSrvBindlessIndices[Context.FrameIndex];
-        PrevVisibleCountSrvIndex = Owner.PrevVisibleCountSrvBindlessIndices[Context.FrameIndex];
-    }
-    if (Context.FrameIndex < Owner.LateListSrvBindlessIndices.size())
-    {
-        LateListSrvIndex = Owner.LateListSrvBindlessIndices[Context.FrameIndex];
-        LateListCountSrvIndex = Owner.LateListCountSrvBindlessIndices[Context.FrameIndex];
-    }
+    const FRenderer::FVisibilityListFrameSrvIndices VisibilityListSrvs = Owner.GpuDrivenCullingState.GetVisibilityListFrameSrvIndices(Context.FrameIndex);
+    PrevVisibleListSrvIndex = VisibilityListSrvs.PrevVisibleListSrv;
+    PrevVisibleCountSrvIndex = VisibilityListSrvs.PrevVisibleCountSrv;
+    LateListSrvIndex = VisibilityListSrvs.LateListSrv;
+    LateListCountSrvIndex = VisibilityListSrvs.LateListCountSrv;
 
     if (FrameState.bUseHzbTwoPass)
     {
-        Owner.VisibilityPasses->AddVisibilityListPass(Context, PrevVisibilityIndex, PrevVisibilityFrameIndex);
-        Owner.VisibilityPasses->AddGpuCullingPass(
+        if (Owner.IsClusterDagEnabled())
+        {
+            Owner.ClusterDagRuntime->AddPasses(Context);
+        }
+        Owner.GpuDrivenCullingState.AddVisibilityListPass(Context, PrevVisibilityIndex, PrevVisibilityFrameIndex);
+        Owner.GpuDrivenCullingState.AddGpuCullingPass(
             Context,
             FRenderer::ECullingMode::All,
             UINT32_MAX,
@@ -61,7 +58,7 @@ void FDeferredFrameOrchestrator::BuildFrameGraph(FDeferredPassContext& Context) 
             PrevVisibleCountSrvIndex,
             "GPUCulling Early");
 
-        Owner.GeometryPasses->AddBasePass(
+        Owner.BasePass->AddBasePass(
             Context,
             true,
             true,
@@ -70,7 +67,11 @@ void FDeferredFrameOrchestrator::BuildFrameGraph(FDeferredPassContext& Context) 
     }
     else
     {
-        Owner.VisibilityPasses->AddGpuCullingPass(
+        if (Owner.IsClusterDagEnabled())
+        {
+            Owner.ClusterDagRuntime->AddPasses(Context);
+        }
+        Owner.GpuDrivenCullingState.AddGpuCullingPass(
             Context,
             FRenderer::ECullingMode::All,
             UINT32_MAX,
@@ -82,17 +83,17 @@ void FDeferredFrameOrchestrator::BuildFrameGraph(FDeferredPassContext& Context) 
 
     if (!Owner.bRayTracedShadowsEnabled && !Context.bUsePathTracing)
     {
-        Owner.GeometryPasses->AddShadowPass(Context);
+        Owner.BasePass->AddShadowPass(Context);
     }
 
     if (FrameState.bDoDepthPrepass)
     {
-        Owner.GeometryPasses->AddDepthPrepass(Context);
+        Owner.BasePass->AddDepthPrepass(Context);
     }
 
     if (!FrameState.bUseHzbTwoPass)
     {
-        Owner.GeometryPasses->AddBasePass(
+        Owner.BasePass->AddBasePass(
             Context,
             true,
             !FrameState.bDoDepthPrepass,
@@ -101,13 +102,13 @@ void FDeferredFrameOrchestrator::BuildFrameGraph(FDeferredPassContext& Context) 
     }
     if (FrameState.bUseHzbTwoPass)
     {
-        Owner.VisibilityPasses->AddEarlyRejectListPass(Context, CurrentVisibilityIndex);
+        Owner.GpuDrivenCullingState.AddEarlyRejectListPass(Context, CurrentVisibilityIndex);
     }
-    Owner.VisibilityPasses->AddHZBPass(Context);
+    Owner.Hzb->AddPass(Context);
     if (FrameState.bUseHzbTwoPass)
     {
-        Owner.VisibilityPasses->AddLateListMergePass(Context);
-        Owner.VisibilityPasses->AddGpuCullingPass(
+        Owner.GpuDrivenCullingState.AddLateListMergePass(Context);
+        Owner.GpuDrivenCullingState.AddGpuCullingPass(
             Context,
             FRenderer::ECullingMode::LateAfterEarly,
             UINT32_MAX,
@@ -115,7 +116,7 @@ void FDeferredFrameOrchestrator::BuildFrameGraph(FDeferredPassContext& Context) 
             LateListSrvIndex,
             LateListCountSrvIndex,
             "GPU Culling (Late)");
-        Owner.GeometryPasses->AddBasePass(
+        Owner.BasePass->AddBasePass(
             Context,
             false,
             false,
@@ -123,58 +124,31 @@ void FDeferredFrameOrchestrator::BuildFrameGraph(FDeferredPassContext& Context) 
             false);
     }
 
-    Owner.GeometryPasses->AddVelocityPass(Context);
+    Owner.BasePass->AddVelocityPass(Context);
 
     if (Context.bUsePathTracing)
     {
-        if (Owner.PathTracing)
-        {
-            Owner.PathTracing->AddPasses(Context);
-        }
+        Owner.PathTracing->AddPasses(Context);
     }
     else
     {
-        if (Owner.RayTracingShadow)
-        {
-            Owner.RayTracingShadow->AddPass(Context);
-        }
-        Owner.LightingPasses->AddLinearDepthPass(Context);
-        Owner.LightingPasses->AddExtractHalfDepthNormalPass(Context);
-        if (Owner.Gtao)
-        {
-            Owner.Gtao->AddPass(Context);
-        }
+        Owner.RayTracingShadow->AddPass(Context);
+        Owner.LightingPass->AddLinearDepthPass(Context);
+        Owner.LightingPass->AddExtractHalfDepthNormalPass(Context);
+        Owner.Gtao->AddPass(Context);
         Owner.RestirGI->AddPasses(Context);
-        if (Owner.RestirGIDenoiser)
-        {
-            Owner.RestirGIDenoiser->AddPasses(Context);
-        }
-        if (Owner.Ssr)
-        {
-            Owner.Ssr->AddPasses(Context);
-        }
+        Owner.RestirGIDenoiser->AddPasses(Context);
+        Owner.Ssr->AddPasses(Context);
         FRGResourceHandle DirectLightingHandle{};
-        Owner.LightingPasses->AddDirectLightingPass(Context, DirectLightingHandle);
-        Owner.LightingPasses->AddCompositeLightPass(Context, DirectLightingHandle);
+        Owner.LightingPass->AddDirectLightingPass(Context, DirectLightingHandle);
+        Owner.LightingPass->AddCompositeLightPass(Context, DirectLightingHandle);
     }
 
-    Owner.LightingPasses->AddSkyPass(Context);
-    Owner.GeometryPasses->AddObjectIdPass(Context);
-    if (Owner.Taa)
-    {
-        Owner.Taa->AddPass(Context);
-    }
-    if (Owner.AutoExposure)
-    {
-        Owner.AutoExposure->AddPass(Context);
-    }
-    if (Owner.Tonemap)
-    {
-        Owner.Tonemap->AddPasses(Context);
-    }
-    if (Owner.Cas)
-    {
-        Owner.Cas->AddPass(Context);
-    }
-    Owner.PostProcessPasses->AddDebugPrintPass(Context);
+    Owner.SkyAtmosphere->AddPass(Context);
+    Owner.ObjectId->AddPass(Context);
+    Owner.Taa->AddPass(Context);
+    Owner.AutoExposure->AddPass(Context);
+    Owner.Tonemap->AddPasses(Context);
+    Owner.Cas->AddPass(Context);
+    Owner.GetGpuDebugState().AddPass(Context);
 }

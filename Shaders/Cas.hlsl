@@ -26,7 +26,7 @@ struct VSOutput
     float2 UV       : TEXCOORD0;
 };
 
-VSOutput VSMain(uint VertexId : SV_VertexID)
+VSOutput CasVS(uint VertexId : SV_VertexID)
 {
     float2 Positions[3] =
     {
@@ -69,7 +69,7 @@ static const float2 CrossOffsets[4] =
 };
 
 // Based on rs_rcas.fsh from AMD FidelityFX CAS
-float4 PSMain(VSOutput Input) : SV_Target
+float4 CasPS(VSOutput Input) : SV_Target
 {
     Texture2D InputTexture = ResourceDescriptorHeap[InputTextureIndex];
     float2 uv = Input.UV;

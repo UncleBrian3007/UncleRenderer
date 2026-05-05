@@ -3,6 +3,9 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <DirectXMath.h>
+
+#include "LightingVisualizationShared.h"
 
 enum class ERendererType
 {
@@ -22,6 +25,24 @@ enum class ERestirGIRandomMode : uint32_t
     BlueNoiseSobol = 1
 };
 
+enum class EDeferredLightingVisualizationMode : uint32_t
+{
+    Off = LIGHTING_VISUALIZATION_OFF,
+    DiffuseIndirect = LIGHTING_VISUALIZATION_DIFFUSE_INDIRECT,
+    AO = LIGHTING_VISUALIZATION_AO,
+    DirectLighting = LIGHTING_VISUALIZATION_DIRECT_LIGHTING,
+    SpecularIndirect = LIGHTING_VISUALIZATION_SPECULAR_INDIRECT,
+    ClusterDagClusters = LIGHTING_VISUALIZATION_CLUSTER_DAG_CLUSTERS,
+    ClusterDagMip = LIGHTING_VISUALIZATION_CLUSTER_DAG_MIP
+};
+
+enum class EClusterDAGTraversalMode : uint32_t
+{
+    Legacy = 0,
+    PersistentQueue = 1,
+    SplitQueue = 2,
+    LevelSplitQueue = 3
+};
 
 struct FRendererConfig
 {
@@ -54,17 +75,26 @@ struct FRendererConfig
     float TaaHistoryWeight = 0.9f;
     bool bEnableTaskSystem = true;
     bool bLogResourceBarriers = false;
+    bool bLogMeshOptimizationStats = false;
     bool bEnableGraphDump = false;
     bool bEnableGpuTiming = false;
     bool bForceLegacyBarriers = true;
+    bool bEnableModelPixEvents = true;
+    float LightYaw = -1.19028997f;
+    float LightPitch = -1.07681236f;
+    float LightIntensity = 1.0f;
+    DirectX::XMFLOAT3 LightColor{ 1.0f, 1.0f, 1.0f };
     bool bEnableHZB = true;
+    bool bEnableHzbTwoPass = true;
     bool bEnableGtao = true;
     bool bEnableGtaoJitter = true;
     bool bEnableSsrSw = true;
     bool bEnableSsrHw = true;
     bool bEnableSsrHzb = false;
+    bool bEnableSsrHzbFullResDepth = true;
     bool bEnableSsrRefine = false;
     bool bEnableSsrDenoise = true;
+    EDeferredLightingVisualizationMode DeferredLightingVisualizationMode = EDeferredLightingVisualizationMode::Off;
     bool bEnableRestirGI = false;
     bool bEnableRestirGIDenoiser = true;
     uint32_t RestirGISamplesPerPixel = 2;
@@ -85,7 +115,16 @@ struct FRendererConfig
     bool bRestirGIUseHistoryIndirect = true;
     ERestirGIRandomMode RestirGIRandomMode = ERestirGIRandomMode::BlueNoiseSobol;
     bool bEnableIndirectDraw = true;
+    bool bEnableClusterDAGRuntime = false;
+    bool bForceRebuildClusterDAGCache = false;
     bool bEnableSkinningIndirectDraw = false;
+    bool bEnableClusterDAGFastShader = false;
+    EClusterDAGTraversalMode ClusterDAGTraversalMode = EClusterDAGTraversalMode::Legacy;
+    float ClusterDAGTargetErrorPixels = 1.0f;
+    bool bEnableClusterDAGForceMip = false;
+    uint32_t ClusterDAGForceMipLevel = 0;
+    bool bEnableClusterDAGForceMipSkipFrustumCull = false;
+    bool bEnableClusterDAGDebug = false;
     bool bEnablePbrResearch = false;
     bool bEnableGpuDebugPrint = true;
     std::wstring EnvironmentEquirectPath = L"Assets/Textures/hdri/rural_landscape_1k.hdr";

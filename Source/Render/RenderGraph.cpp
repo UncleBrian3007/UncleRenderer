@@ -1,4 +1,5 @@
 #include "RenderGraph.h"
+#include "GpuResource.h"
 #include "../RHI/DX12CommandContext.h"
 #include "../RHI/DX12Device.h"
 #include "RendererUtils.h"
@@ -111,7 +112,7 @@ FRGPassBuilder::FRGPassBuilder(FRenderGraph& InGraph, FRenderGraph::PassEntry& I
 {
 }
 
-FRGResourceHandle FRGPassBuilder::CreateTexture(const std::string& Name, const FRGTextureDesc& Desc)
+FRGTextureHandle FRGPassBuilder::CreateTexture(const std::string& Name, const FRGTextureDesc& Desc)
 {
     return Graph->RegisterTexture(Name, Desc);
 }
@@ -121,13 +122,13 @@ FRGBufferHandle FRGPassBuilder::CreateBuffer(const std::string& Name, const FRGB
     return Graph->RegisterBuffer(Name, Desc);
 }
 
-FRGResourceHandle FRGPassBuilder::ReadTexture(const FRGResourceHandle& Handle, D3D12_RESOURCE_STATES RequiredState)
+FRGTextureHandle FRGPassBuilder::ReadTexture(const FRGTextureHandle& Handle, D3D12_RESOURCE_STATES RequiredState)
 {
     Graph->RegisterUsage(*Entry, Handle, RequiredState, ERGResourceAccess::Read);
     return Handle;
 }
 
-FRGResourceHandle FRGPassBuilder::WriteTexture(const FRGResourceHandle& Handle, D3D12_RESOURCE_STATES RequiredState)
+FRGTextureHandle FRGPassBuilder::WriteTexture(const FRGTextureHandle& Handle, D3D12_RESOURCE_STATES RequiredState)
 {
     Graph->RegisterUsage(*Entry, Handle, RequiredState, ERGResourceAccess::Write);
     return Handle;
@@ -163,17 +164,35 @@ void FRGPassBuilder::SetPixGroup(const char* GroupName)
     Entry->PixGroupName = GroupName ? GroupName : "";
 }
 
-FRGResourceHandle FRenderGraph::ImportTexture(
+FRGTextureHandle FRGPassBuilder::UavBarrier(const FRGTextureHandle& Handle)
+{
+    Graph->RegisterUavBarrier(*Entry, Handle);
+    return Handle;
+}
+
+FRGBufferHandle FRGPassBuilder::UavBarrier(const FRGBufferHandle& Handle)
+{
+    Graph->RegisterUavBarrier(*Entry, Handle);
+    return Handle;
+}
+
+FRGTextureHandle FRenderGraph::ImportTexture(
     const std::string& Name,
     ID3D12Resource* Resource,
     D3D12_RESOURCE_STATES* StatePtr,
-    const FRGTextureDesc& Desc)
+    const FRGTextureDesc& Desc,
+    uint32 ImportedSrvBindlessIndex,
+    uint32 ImportedUavBindlessIndex)
 {
-    FRGResourceHandle Handle = RegisterTexture(Name, Desc);
+    FRGTextureHandle Handle = RegisterTexture(Name, Desc);
     FRGTextureResource& ResourceEntry = Textures[Handle.Id];
     ResourceEntry.Resource = Resource;
     ResourceEntry.ExternalState = StatePtr;
     ResourceEntry.bExternal = true;
+    ResourceEntry.DefaultSrvBindlessIndex = ImportedSrvBindlessIndex;
+    ResourceEntry.DefaultUavBindlessIndex = ImportedUavBindlessIndex;
+    ResourceEntry.DefaultSrvViewResource = IsValidBindlessIndex(ImportedSrvBindlessIndex) ? Resource : nullptr;
+    ResourceEntry.DefaultUavViewResource = IsValidBindlessIndex(ImportedUavBindlessIndex) ? Resource : nullptr;
     if (StatePtr)
     {
         ResourceEntry.CurrentState = *StatePtr;
@@ -186,13 +205,19 @@ FRGBufferHandle FRenderGraph::ImportBuffer(
     const std::string& Name,
     ID3D12Resource* Resource,
     D3D12_RESOURCE_STATES* StatePtr,
-    const FRGBufferDesc& Desc)
+    const FRGBufferDesc& Desc,
+    uint32 ImportedSrvBindlessIndex,
+    uint32 ImportedUavBindlessIndex)
 {
     FRGBufferHandle Handle = RegisterBuffer(Name, Desc);
     FRGBufferResource& ResourceEntry = Buffers[Handle.Id];
     ResourceEntry.Resource = Resource;
     ResourceEntry.ExternalState = StatePtr;
     ResourceEntry.bExternal = true;
+    ResourceEntry.DefaultSrvBindlessIndex = ImportedSrvBindlessIndex;
+    ResourceEntry.DefaultUavBindlessIndex = ImportedUavBindlessIndex;
+    ResourceEntry.DefaultSrvViewResource = IsValidBindlessIndex(ImportedSrvBindlessIndex) ? Resource : nullptr;
+    ResourceEntry.DefaultUavViewResource = IsValidBindlessIndex(ImportedUavBindlessIndex) ? Resource : nullptr;
     if (StatePtr)
     {
         ResourceEntry.CurrentState = *StatePtr;
@@ -212,9 +237,9 @@ ID3D12Resource* FRenderGraph::GetBufferResource(const FRGBufferHandle& Handle) c
     return Resource.Resource;
 }
 
-FRGResourceHandle FRenderGraph::RegisterTexture(const std::string& Name, const FRGTextureDesc& Desc)
+FRGTextureHandle FRenderGraph::RegisterTexture(const std::string& Name, const FRGTextureDesc& Desc)
 {
-    FRGResourceHandle Handle = { static_cast<uint32>(Textures.size()) };
+    FRGTextureHandle Handle = { static_cast<uint32>(Textures.size()) };
     FRGTextureResource Resource;
     Resource.Name = Name;
     Resource.Desc = Desc;
@@ -232,7 +257,7 @@ FRGBufferHandle FRenderGraph::RegisterBuffer(const std::string& Name, const FRGB
     return Handle;
 }
 
-ID3D12Resource* FRenderGraph::GetTextureResource(const FRGResourceHandle& Handle) const
+ID3D12Resource* FRenderGraph::GetTextureResource(const FRGTextureHandle& Handle) const
 {
     if (!Handle || Handle.Id >= Textures.size())
     {
@@ -243,27 +268,27 @@ ID3D12Resource* FRenderGraph::GetTextureResource(const FRGResourceHandle& Handle
     return Resource.Resource;
 }
 
-uint32 FRenderGraph::GetTextureSrvBindlessIndex(const FRGResourceHandle& Handle)
+uint32 FRenderGraph::GetTextureSrvBindlessIndex(const FRGTextureHandle& Handle)
 {
-    FRGTextureResource* Resource = ResolveResource(Handle);
+    FRGTextureResource* Resource = ResolveTexture(Handle);
     return Resource ? GetTextureViewBindlessIndex(*Resource, false) : UINT32_MAX;
 }
 
-uint32 FRenderGraph::GetTextureUavBindlessIndex(const FRGResourceHandle& Handle)
+uint32 FRenderGraph::GetTextureUavBindlessIndex(const FRGTextureHandle& Handle)
 {
-    FRGTextureResource* Resource = ResolveResource(Handle);
+    FRGTextureResource* Resource = ResolveTexture(Handle);
     return Resource ? GetTextureViewBindlessIndex(*Resource, true) : UINT32_MAX;
 }
 
-uint32 FRenderGraph::GetTextureMipSrvBindlessIndex(const FRGResourceHandle& Handle, uint32 MipIndex)
+uint32 FRenderGraph::GetTextureMipSrvBindlessIndex(const FRGTextureHandle& Handle, uint32 MipIndex)
 {
-    FRGTextureResource* Resource = ResolveResource(Handle);
+    FRGTextureResource* Resource = ResolveTexture(Handle);
     return Resource ? GetTextureMipViewBindlessIndex(*Resource, false, MipIndex) : UINT32_MAX;
 }
 
-uint32 FRenderGraph::GetTextureMipUavBindlessIndex(const FRGResourceHandle& Handle, uint32 MipIndex)
+uint32 FRenderGraph::GetTextureMipUavBindlessIndex(const FRGTextureHandle& Handle, uint32 MipIndex)
 {
-    FRGTextureResource* Resource = ResolveResource(Handle);
+    FRGTextureResource* Resource = ResolveTexture(Handle);
     return Resource ? GetTextureMipViewBindlessIndex(*Resource, true, MipIndex) : UINT32_MAX;
 }
 
@@ -273,15 +298,21 @@ uint32 FRenderGraph::GetBufferUavBindlessIndex(const FRGBufferHandle& Handle)
     return Resource ? GetBufferUavBindlessIndex(*Resource) : UINT32_MAX;
 }
 
-void FRenderGraph::RegisterUsage(PassEntry& Entry, const FRGResourceHandle& Handle, D3D12_RESOURCE_STATES RequiredState, ERGResourceAccess Access)
+uint32 FRenderGraph::GetBufferSrvBindlessIndex(const FRGBufferHandle& Handle)
+{
+    FRGBufferResource* Resource = ResolveBuffer(Handle);
+    return Resource ? GetBufferSrvBindlessIndex(*Resource) : UINT32_MAX;
+}
+
+void FRenderGraph::RegisterUsage(PassEntry& Entry, const FRGTextureHandle& Handle, D3D12_RESOURCE_STATES RequiredState, ERGResourceAccess Access)
 {
     if (!Handle)
     {
         return;
     }
 
-    AccumulateResourceFlags(Handle, RequiredState, Access);
-    Entry.ResourceUsages.push_back({ Handle, RequiredState, Access });
+    AccumulateTextureFlags(Handle, RequiredState, Access);
+    Entry.TextureUsages.push_back({ Handle, RequiredState, Access });
 }
 
 void FRenderGraph::RegisterUsage(PassEntry& Entry, const FRGBufferHandle& Handle, D3D12_RESOURCE_STATES RequiredState, ERGResourceAccess Access)
@@ -291,12 +322,32 @@ void FRenderGraph::RegisterUsage(PassEntry& Entry, const FRGBufferHandle& Handle
         return;
     }
 
-    Entry.BufferUsages.push_back({ { Handle.Id }, RequiredState, Access });
+    Entry.BufferUsages.push_back({ Handle, RequiredState, Access });
 }
 
-void FRenderGraph::AccumulateResourceFlags(const FRGResourceHandle& Handle, D3D12_RESOURCE_STATES RequiredState, ERGResourceAccess Access)
+void FRenderGraph::RegisterUavBarrier(PassEntry& Entry, const FRGTextureHandle& Handle)
 {
-    FRGTextureResource* Resource = ResolveResource(Handle);
+    if (!Handle)
+    {
+        return;
+    }
+
+    Entry.TextureUavBarriers.push_back(Handle);
+}
+
+void FRenderGraph::RegisterUavBarrier(PassEntry& Entry, const FRGBufferHandle& Handle)
+{
+    if (!Handle)
+    {
+        return;
+    }
+
+    Entry.BufferUavBarriers.push_back(Handle);
+}
+
+void FRenderGraph::AccumulateTextureFlags(const FRGTextureHandle& Handle, D3D12_RESOURCE_STATES RequiredState, ERGResourceAccess Access)
+{
+    FRGTextureResource* Resource = ResolveTexture(Handle);
     if (!Resource || Resource->bExternal)
     {
         return;
@@ -321,7 +372,7 @@ void FRenderGraph::AccumulateResourceFlags(const FRGResourceHandle& Handle, D3D1
     }
 }
 
-FRenderGraph::FRGTextureResource* FRenderGraph::ResolveResource(const FRGResourceHandle& Handle)
+FRenderGraph::FRGTextureResource* FRenderGraph::ResolveTexture(const FRGTextureHandle& Handle)
 {
     if (!Handle || Handle.Id >= Textures.size())
     {
@@ -341,14 +392,45 @@ FRenderGraph::FRGBufferResource* FRenderGraph::ResolveBuffer(const FRGBufferHand
     return &Buffers[Handle.Id];
 }
 
-void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
+std::string FRenderGraph::BuildTextureViewOwnerLabel(const FRGTextureResource& Texture, bool bUav, int32 MipIndex) const
 {
-    if (!Device)
+    std::ostringstream Stream;
+    Stream << "Pass=" << (CurrentExecutingPassName.empty() ? "<NoPass>" : CurrentExecutingPassName)
+        << " Resource=" << (Texture.Name.empty() ? "<UnnamedTexture>" : Texture.Name)
+        << " View=";
+
+    if (MipIndex >= 0)
     {
-        LogError("RenderGraph Execute called without a valid device");
-        return;
+        Stream << (bUav ? "MipUAV" : "MipSRV") << "[" << MipIndex << "]";
+    }
+    else
+    {
+        Stream << (bUav ? "UAV" : "SRV");
     }
 
+    return Stream.str();
+}
+
+std::string FRenderGraph::BuildBufferUavOwnerLabel(const FRGBufferResource& Buffer) const
+{
+    std::ostringstream Stream;
+    Stream << "Pass=" << (CurrentExecutingPassName.empty() ? "<NoPass>" : CurrentExecutingPassName)
+        << " Resource=" << (Buffer.Name.empty() ? "<UnnamedBuffer>" : Buffer.Name)
+        << " View=UAV";
+    return Stream.str();
+}
+
+std::string FRenderGraph::BuildBufferSrvOwnerLabel(const FRGBufferResource& Buffer) const
+{
+    std::ostringstream Stream;
+    Stream << "Pass=" << (CurrentExecutingPassName.empty() ? "<NoPass>" : CurrentExecutingPassName)
+        << " Resource=" << (Buffer.Name.empty() ? "<UnnamedBuffer>" : Buffer.Name)
+        << " View=SRV";
+    return Stream.str();
+}
+
+void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
+{
     CurrentFrameIndex = CmdContext.GetCurrentFrameIndex();
     const FDX12CommandQueue* Queue = Device->GetGraphicsQueue();
     CurrentFrameFenceValue = Queue ? (Queue->GetLastSignaledFenceValue() + 1u) : 0;
@@ -358,62 +440,61 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
     const size_t ResourceCount = Textures.size();
     const size_t BufferCount = Buffers.size();
 
-    std::vector<int32_t> FirstUse(ResourceCount, -1);
-    std::vector<int32_t> LastUse(ResourceCount, -1);
+    std::vector<bool> ResourceUsed(ResourceCount, false);
     std::vector<bool> ResourceRead(ResourceCount, false);
-    std::vector<int32_t> BufferFirstUse(BufferCount, -1);
-    std::vector<int32_t> BufferLastUse(BufferCount, -1);
+    std::vector<bool> BufferUsed(BufferCount, false);
     std::vector<bool> BufferRead(BufferCount, false);
+    std::vector<bool> TexturePendingUavWrite(ResourceCount, false);
+    std::vector<bool> BufferPendingUavWrite(BufferCount, false);
+    std::vector<std::vector<uint32_t>> PassTextureReferences(Passes.size());
+    std::vector<std::vector<uint32_t>> PassBufferReferences(Passes.size());
 
     for (int32_t PassIndex = 0; PassIndex < static_cast<int32_t>(Passes.size()); ++PassIndex)
     {
         const PassEntry& Entry = Passes[PassIndex];
-        for (const FRGResourceUsage& Usage : Entry.ResourceUsages)
+        std::vector<uint32_t>& UniqueTextureReferences = PassTextureReferences[PassIndex];
+        std::vector<uint32_t>& UniqueBufferReferences = PassBufferReferences[PassIndex];
+        for (const FRGTextureUsage& Usage : Entry.TextureUsages)
         {
             if (!Usage.Handle || Usage.Handle.Id >= Textures.size())
             {
                 continue;
             }
 
-            if (FirstUse[Usage.Handle.Id] == -1)
-            {
-                FirstUse[Usage.Handle.Id] = PassIndex;
-            }
-            LastUse[Usage.Handle.Id] = PassIndex;
+            ResourceUsed[Usage.Handle.Id] = true;
             if (Usage.Access == ERGResourceAccess::Read)
             {
                 ResourceRead[Usage.Handle.Id] = true;
             }
+
+            FRGTextureResource& Resource = Textures[Usage.Handle.Id];
+            if (!Resource.bExternal &&
+                std::find(UniqueTextureReferences.begin(), UniqueTextureReferences.end(), Usage.Handle.Id) == UniqueTextureReferences.end())
+            {
+                UniqueTextureReferences.push_back(Usage.Handle.Id);
+            }
         }
 
-        for (const FRGResourceUsage& Usage : Entry.BufferUsages)
+        for (const FRGBufferUsage& Usage : Entry.BufferUsages)
         {
             if (Usage.Handle.Id >= Buffers.size())
             {
                 continue;
             }
 
-            if (BufferFirstUse[Usage.Handle.Id] == -1)
-            {
-                BufferFirstUse[Usage.Handle.Id] = PassIndex;
-            }
-            BufferLastUse[Usage.Handle.Id] = PassIndex;
+            BufferUsed[Usage.Handle.Id] = true;
             if (Usage.Access == ERGResourceAccess::Read)
             {
                 BufferRead[Usage.Handle.Id] = true;
             }
-        }
-    }
 
-    for (uint32_t Index = 0; Index < ResourceCount; ++Index)
-    {
-        Textures[Index].FirstUsePass = FirstUse[Index];
-        Textures[Index].LastUsePass = LastUse[Index];
-    }
-    for (uint32_t Index = 0; Index < BufferCount; ++Index)
-    {
-        Buffers[Index].FirstUsePass = BufferFirstUse[Index];
-        Buffers[Index].LastUsePass = BufferLastUse[Index];
+            FRGBufferResource& Resource = Buffers[Usage.Handle.Id];
+            if (!Resource.bExternal &&
+                std::find(UniqueBufferReferences.begin(), UniqueBufferReferences.end(), Usage.Handle.Id) == UniqueBufferReferences.end())
+            {
+                UniqueBufferReferences.push_back(Usage.Handle.Id);
+            }
+        }
     }
 
     std::vector<bool> ResourceRequired(ResourceCount, false);
@@ -423,7 +504,7 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
         {
             ResourceRequired[Index] = true;
         }
-        else if (Textures[Index].ExternalState && FirstUse[Index] != -1)
+        else if (Textures[Index].ExternalState && ResourceUsed[Index])
         {
             ResourceRequired[Index] = true;
         }
@@ -435,7 +516,7 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
         {
             BufferRequired[Index] = true;
         }
-        else if (Buffers[Index].ExternalState && BufferFirstUse[Index] != -1)
+        else if (Buffers[Index].ExternalState && BufferUsed[Index])
         {
             BufferRequired[Index] = true;
         }
@@ -447,7 +528,7 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
         const PassEntry& Entry = Passes[PassIndex];
         bool bTouchesRequiredResource = false;
 
-        for (const FRGResourceUsage& Usage : Entry.ResourceUsages)
+        for (const FRGTextureUsage& Usage : Entry.TextureUsages)
         {
             if (!Usage.Handle || Usage.Handle.Id >= Textures.size())
             {
@@ -463,7 +544,7 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
 
         if (!bTouchesRequiredResource)
         {
-            for (const FRGResourceUsage& Usage : Entry.BufferUsages)
+            for (const FRGBufferUsage& Usage : Entry.BufferUsages)
             {
                 if (Usage.Handle.Id >= Buffers.size())
                 {
@@ -485,7 +566,7 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
 
         PassRequired[PassIndex] = true;
 
-        for (const FRGResourceUsage& Usage : Entry.ResourceUsages)
+        for (const FRGTextureUsage& Usage : Entry.TextureUsages)
         {
             if (!Usage.Handle || Usage.Handle.Id >= Textures.size())
             {
@@ -495,7 +576,7 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
             ResourceRequired[Usage.Handle.Id] = true;
         }
 
-        for (const FRGResourceUsage& Usage : Entry.BufferUsages)
+        for (const FRGBufferUsage& Usage : Entry.BufferUsages)
         {
             if (Usage.Handle.Id >= Buffers.size())
             {
@@ -506,9 +587,72 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
         }
     }
 
+    for (FRGTextureResource& Resource : Textures)
+    {
+        Resource.ReferenceCount = 0u;
+        Resource.InitialReferenceCount = 0u;
+    }
+    for (FRGBufferResource& Resource : Buffers)
+    {
+        Resource.ReferenceCount = 0u;
+        Resource.InitialReferenceCount = 0u;
+    }
+
+    for (size_t PassIndex = 0; PassIndex < Passes.size(); ++PassIndex)
+    {
+        for (uint32_t TextureIndex : PassTextureReferences[PassIndex])
+        {
+            if (TextureIndex < Textures.size())
+            {
+                Textures[TextureIndex].ReferenceCount++;
+            }
+        }
+
+        for (uint32_t BufferIndex : PassBufferReferences[PassIndex])
+        {
+            if (BufferIndex < Buffers.size())
+            {
+                Buffers[BufferIndex].ReferenceCount++;
+            }
+        }
+    }
+
+    for (size_t PassIndex = 0; PassIndex < Passes.size(); ++PassIndex)
+    {
+        if (PassRequired[PassIndex])
+        {
+            continue;
+        }
+
+        for (uint32_t TextureIndex : PassTextureReferences[PassIndex])
+        {
+            if (TextureIndex < Textures.size() && Textures[TextureIndex].ReferenceCount > 0u)
+            {
+                Textures[TextureIndex].ReferenceCount--;
+            }
+        }
+
+        for (uint32_t BufferIndex : PassBufferReferences[PassIndex])
+        {
+            if (BufferIndex < Buffers.size() && Buffers[BufferIndex].ReferenceCount > 0u)
+            {
+                Buffers[BufferIndex].ReferenceCount--;
+            }
+        }
+    }
+
+    for (FRGTextureResource& Resource : Textures)
+    {
+        Resource.InitialReferenceCount = Resource.ReferenceCount;
+    }
+    for (FRGBufferResource& Resource : Buffers)
+    {
+        Resource.InitialReferenceCount = Resource.ReferenceCount;
+    }
+
     if (bEnableGraphDump)
     {
-        DumpDebugInfo(PassRequired, ResourceRequired);
+        DumpDebugInfo(PassRequired, ResourceRequired, BufferRequired);
     }
 
     uint32 ActivePassCount = 0;
@@ -522,6 +666,7 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
 
     const bool bDoGpuTiming = bEnableGpuTiming && ActivePassCount > 0;
     std::vector<std::string> GpuTimedPassNames;
+    std::vector<std::string> GpuTimedPixGroupNames;
     Microsoft::WRL::ComPtr<ID3D12QueryHeap> QueryHeap;
     Microsoft::WRL::ComPtr<ID3D12Resource> QueryReadback;
     uint64 TimestampFrequency = 0;
@@ -624,121 +769,7 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
         {
             CmdContext.GetCommandList()->EndQuery(QueryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, QueryIndex++);
             GpuTimedPassNames.push_back(Entry.Name);
-        }
-
-        const bool bUseEnhancedBarriers = Device && Device->SupportsEnhancedBarriers();
-        std::vector<D3D12_RESOURCE_BARRIER> PendingBarriers;
-        PendingBarriers.reserve(Entry.ResourceUsages.size() + Entry.BufferUsages.size());
-
-        for (const FRGResourceUsage& Usage : Entry.ResourceUsages)
-        {
-            FRGTextureResource* Resource = ResolveResource(Usage.Handle);
-            if (!Resource)
-            {
-                continue;
-            }
-
-            if (!Resource->Resource && !Resource->bExternal)
-            {
-                AcquireTransientTexture(*Resource, Usage.RequiredState);
-            }
-
-            if (!Resource->Resource)
-            {
-                continue;
-            }
-
-            D3D12_RESOURCE_STATES& StateRef = Resource->ExternalState ? *Resource->ExternalState : Resource->CurrentState;
-            if (StateRef != Usage.RequiredState)
-            {
-                D3D12_RESOURCE_BARRIER Barrier = {};
-                Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                Barrier.Transition.pResource = Resource->Resource;
-                Barrier.Transition.StateBefore = StateRef;
-                Barrier.Transition.StateAfter = Usage.RequiredState;
-                Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                PendingBarriers.push_back(Barrier);
-
-                if (bEnableBarrierLogs)
-                {
-                    std::ostringstream Stream;
-                    Stream << (bUseEnhancedBarriers ? "[RG][Enhanced] Pass '" : "[RG] Pass '") << Entry.Name << "' transitioning '"
-                        << (Resource->Name.empty() ? "<Unnamed>" : Resource->Name) << "': "
-                        << RendererUtils::ResourceStateToString(StateRef) << " -> "
-                        << RendererUtils::ResourceStateToString(Usage.RequiredState);
-                    LogInfo(Stream.str());
-                }
-
-                StateRef = Usage.RequiredState;
-                Resource->CurrentState = Usage.RequiredState;
-            }
-        }
-
-        for (const FRGResourceUsage& Usage : Entry.BufferUsages)
-        {
-            if (Usage.Handle.Id >= Buffers.size())
-            {
-                continue;
-            }
-
-            FRGBufferResource& Resource = Buffers[Usage.Handle.Id];
-            if (!Resource.Resource && !Resource.bExternal)
-            {
-                AcquireTransientBuffer(Resource, Usage.RequiredState);
-            }
-
-            if (!Resource.Resource)
-            {
-                continue;
-            }
-
-            D3D12_RESOURCE_STATES& StateRef = Resource.ExternalState ? *Resource.ExternalState : Resource.CurrentState;
-            if (StateRef != Usage.RequiredState)
-            {
-                D3D12_RESOURCE_BARRIER Barrier = {};
-                Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                Barrier.Transition.pResource = Resource.Resource;
-                Barrier.Transition.StateBefore = StateRef;
-                Barrier.Transition.StateAfter = Usage.RequiredState;
-                Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                PendingBarriers.push_back(Barrier);
-
-                if (bEnableBarrierLogs)
-                {
-                    std::ostringstream Stream;
-                    Stream << (bUseEnhancedBarriers ? "[RG][Enhanced] Pass '" : "[RG] Pass '") << Entry.Name << "' transitioning buffer '"
-                        << (Resource.Name.empty() ? "<Unnamed>" : Resource.Name) << "': "
-                        << RendererUtils::ResourceStateToString(StateRef) << " -> "
-                        << RendererUtils::ResourceStateToString(Usage.RequiredState);
-                    LogInfo(Stream.str());
-                }
-
-                StateRef = Usage.RequiredState;
-                Resource.CurrentState = Usage.RequiredState;
-            }
-        }
-
-        if (bUseEnhancedBarriers)
-        {
-            for (const D3D12_RESOURCE_BARRIER& Barrier : PendingBarriers)
-            {
-                if (Barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION)
-                {
-                    CmdContext.TransitionResourceEx(
-                        Barrier.Transition.pResource,
-                        Barrier.Transition.StateBefore,
-                        Barrier.Transition.StateAfter,
-                        Barrier.Transition.Subresource);
-                }
-                else if (Barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_UAV)
-                {
-                    CmdContext.UavBarrierEx(Barrier.UAV.pResource);
-                }
-            }
-        }
-        else
-        {
-            CmdContext.TransitionResources(PendingBarriers);
+            GpuTimedPixGroupNames.push_back(Entry.PixGroupName);
         }
 
         std::chrono::high_resolution_clock::time_point PassBegin, PassEnd;
@@ -747,9 +778,253 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
             PassBegin = std::chrono::high_resolution_clock::now();
         }
 
-        if (Entry.ExecuteFunc)
+        CurrentExecutingPassName = Entry.Name;
         {
-            Entry.ExecuteFunc(Entry.DataStorage, CmdContext);
+            FScopedPixEvent PassEvent(
+                CmdContext.GetCommandList(),
+                Entry.PixEventName.empty() ? L"" : Entry.PixEventName.c_str(),
+                !Entry.PixEventName.empty());
+
+            const bool bUseEnhancedBarriers = Device && Device->SupportsEnhancedBarriers();
+            std::vector<D3D12_RESOURCE_BARRIER> PendingBarriers;
+            PendingBarriers.reserve(Entry.TextureUsages.size() + Entry.BufferUsages.size() + Entry.TextureUavBarriers.size() + Entry.BufferUavBarriers.size());
+            std::vector<bool> TextureUavBarrierQueued(ResourceCount, false);
+            std::vector<bool> BufferUavBarrierQueued(BufferCount, false);
+
+            const auto QueueTextureUavBarrier = [&](uint32 TextureIndex)
+            {
+                if (TextureIndex >= Textures.size() || TextureUavBarrierQueued[TextureIndex])
+                {
+                    return;
+                }
+
+                FRGTextureResource& Resource = Textures[TextureIndex];
+                if (!Resource.Resource)
+                {
+                    return;
+                }
+
+                D3D12_RESOURCE_BARRIER Barrier = {};
+                Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+                Barrier.UAV.pResource = Resource.Resource;
+                PendingBarriers.push_back(Barrier);
+                TextureUavBarrierQueued[TextureIndex] = true;
+                TexturePendingUavWrite[TextureIndex] = false;
+
+                if (bEnableBarrierLogs)
+                {
+                    std::ostringstream Stream;
+                    Stream << (bUseEnhancedBarriers ? "[RG][Enhanced] Pass '" : "[RG] Pass '") << Entry.Name << "' inserting UAV barrier for '"
+                        << (Resource.Name.empty() ? "<Unnamed>" : Resource.Name) << "'";
+                    LogInfo(Stream.str());
+                }
+            };
+
+            const auto QueueBufferUavBarrier = [&](uint32 BufferIndex)
+            {
+                if (BufferIndex >= Buffers.size() || BufferUavBarrierQueued[BufferIndex])
+                {
+                    return;
+                }
+
+                FRGBufferResource& Resource = Buffers[BufferIndex];
+                if (!Resource.Resource)
+                {
+                    return;
+                }
+
+                D3D12_RESOURCE_BARRIER Barrier = {};
+                Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+                Barrier.UAV.pResource = Resource.Resource;
+                PendingBarriers.push_back(Barrier);
+                BufferUavBarrierQueued[BufferIndex] = true;
+                BufferPendingUavWrite[BufferIndex] = false;
+
+                if (bEnableBarrierLogs)
+                {
+                    std::ostringstream Stream;
+                    Stream << (bUseEnhancedBarriers ? "[RG][Enhanced] Pass '" : "[RG] Pass '") << Entry.Name << "' inserting UAV barrier for buffer '"
+                        << (Resource.Name.empty() ? "<Unnamed>" : Resource.Name) << "'";
+                    LogInfo(Stream.str());
+                }
+            };
+
+            for (const FRGTextureUsage& Usage : Entry.TextureUsages)
+            {
+                FRGTextureResource* Resource = ResolveTexture(Usage.Handle);
+                if (!Resource)
+                {
+                    continue;
+                }
+
+                if (!Resource->Resource && !Resource->bExternal)
+                {
+                    AcquireTransientTexture(*Resource, Usage.RequiredState);
+                }
+
+                if (!Resource->Resource)
+                {
+                    continue;
+                }
+
+                if ((Usage.RequiredState & D3D12_RESOURCE_STATE_UNORDERED_ACCESS) != 0 && TexturePendingUavWrite[Usage.Handle.Id])
+                {
+                    QueueTextureUavBarrier(Usage.Handle.Id);
+                }
+
+                D3D12_RESOURCE_STATES& StateRef = Resource->ExternalState ? *Resource->ExternalState : Resource->CurrentState;
+                if (StateRef != Usage.RequiredState)
+                {
+                    D3D12_RESOURCE_BARRIER Barrier = {};
+                    Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                    Barrier.Transition.pResource = Resource->Resource;
+                    Barrier.Transition.StateBefore = StateRef;
+                    Barrier.Transition.StateAfter = Usage.RequiredState;
+                    Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                    PendingBarriers.push_back(Barrier);
+
+                    if (bEnableBarrierLogs)
+                    {
+                        std::ostringstream Stream;
+                        Stream << (bUseEnhancedBarriers ? "[RG][Enhanced] Pass '" : "[RG] Pass '") << Entry.Name << "' transitioning '"
+                            << (Resource->Name.empty() ? "<Unnamed>" : Resource->Name) << "': "
+                            << RendererUtils::ResourceStateToString(StateRef) << " -> "
+                            << RendererUtils::ResourceStateToString(Usage.RequiredState);
+                        LogInfo(Stream.str());
+                    }
+
+                    StateRef = Usage.RequiredState;
+                    Resource->CurrentState = Usage.RequiredState;
+                }
+            }
+
+            for (const FRGBufferUsage& Usage : Entry.BufferUsages)
+            {
+                if (Usage.Handle.Id >= Buffers.size())
+                {
+                    continue;
+                }
+
+                FRGBufferResource& Resource = Buffers[Usage.Handle.Id];
+                if (!Resource.Resource && !Resource.bExternal)
+                {
+                    AcquireTransientBuffer(Resource, Usage.RequiredState);
+                }
+
+                if (!Resource.Resource)
+                {
+                    continue;
+                }
+
+                if ((Usage.RequiredState & D3D12_RESOURCE_STATE_UNORDERED_ACCESS) != 0 && BufferPendingUavWrite[Usage.Handle.Id])
+                {
+                    QueueBufferUavBarrier(Usage.Handle.Id);
+                }
+
+                D3D12_RESOURCE_STATES& StateRef = Resource.ExternalState ? *Resource.ExternalState : Resource.CurrentState;
+                if (StateRef != Usage.RequiredState)
+                {
+                    D3D12_RESOURCE_BARRIER Barrier = {};
+                    Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                    Barrier.Transition.pResource = Resource.Resource;
+                    Barrier.Transition.StateBefore = StateRef;
+                    Barrier.Transition.StateAfter = Usage.RequiredState;
+                    Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                    PendingBarriers.push_back(Barrier);
+
+                    if (bEnableBarrierLogs)
+                    {
+                        std::ostringstream Stream;
+                        Stream << (bUseEnhancedBarriers ? "[RG][Enhanced] Pass '" : "[RG] Pass '") << Entry.Name << "' transitioning buffer '"
+                            << (Resource.Name.empty() ? "<Unnamed>" : Resource.Name) << "': "
+                            << RendererUtils::ResourceStateToString(StateRef) << " -> "
+                            << RendererUtils::ResourceStateToString(Usage.RequiredState);
+                        LogInfo(Stream.str());
+                    }
+
+                    StateRef = Usage.RequiredState;
+                    Resource.CurrentState = Usage.RequiredState;
+                }
+            }
+
+            for (const FRGTextureHandle& Handle : Entry.TextureUavBarriers)
+            {
+                if (Handle && Handle.Id < Textures.size())
+                {
+                    QueueTextureUavBarrier(Handle.Id);
+                }
+            }
+
+            for (const FRGBufferHandle& Handle : Entry.BufferUavBarriers)
+            {
+                if (Handle.Id < Buffers.size())
+                {
+                    QueueBufferUavBarrier(Handle.Id);
+                }
+            }
+
+            if (bUseEnhancedBarriers)
+            {
+                for (const D3D12_RESOURCE_BARRIER& Barrier : PendingBarriers)
+                {
+                    if (Barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION)
+                    {
+                        CmdContext.TransitionResourceEx(
+                            Barrier.Transition.pResource,
+                            Barrier.Transition.StateBefore,
+                            Barrier.Transition.StateAfter,
+                            Barrier.Transition.Subresource);
+                    }
+                    else if (Barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_UAV)
+                    {
+                        CmdContext.UavBarrierEx(Barrier.UAV.pResource);
+                    }
+                }
+            }
+            else
+            {
+                CmdContext.TransitionResources(PendingBarriers);
+            }
+
+            if (Entry.ExecuteFunc)
+            {
+                Entry.ExecuteFunc(Entry.DataStorage, CmdContext);
+            }
+        }
+        CurrentExecutingPassName.clear();
+
+        for (const FRGTextureUsage& Usage : Entry.TextureUsages)
+        {
+            if (!Usage.Handle || Usage.Handle.Id >= Textures.size())
+            {
+                continue;
+            }
+
+            if (Usage.Access == ERGResourceAccess::Write && (Usage.RequiredState & D3D12_RESOURCE_STATE_UNORDERED_ACCESS) != 0)
+            {
+                TexturePendingUavWrite[Usage.Handle.Id] = true;
+            }
+            else if ((Usage.RequiredState & D3D12_RESOURCE_STATE_UNORDERED_ACCESS) == 0)
+            {
+                TexturePendingUavWrite[Usage.Handle.Id] = false;
+            }
+        }
+
+        for (const FRGBufferUsage& Usage : Entry.BufferUsages)
+        {
+            if (Usage.Handle.Id >= Buffers.size())
+            {
+                continue;
+            }
+
+            if (Usage.Access == ERGResourceAccess::Write && (Usage.RequiredState & D3D12_RESOURCE_STATE_UNORDERED_ACCESS) != 0)
+            {
+                BufferPendingUavWrite[Usage.Handle.Id] = true;
+            }
+            else if ((Usage.RequiredState & D3D12_RESOURCE_STATE_UNORDERED_ACCESS) == 0)
+            {
+                BufferPendingUavWrite[Usage.Handle.Id] = false;
+            }
         }
 
         if (bEnableDebugRecording)
@@ -764,31 +1039,43 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
             CmdContext.GetCommandList()->EndQuery(QueryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, QueryIndex++);
         }
 
-        for (const FRGResourceUsage& Usage : Entry.ResourceUsages)
+        for (uint32_t TextureIndex : PassTextureReferences[PassIndex])
         {
-            FRGTextureResource* Resource = ResolveResource(Usage.Handle);
-            if (!Resource || Resource->bExternal)
+            if (TextureIndex >= Textures.size())
             {
                 continue;
             }
 
-            if (Resource->LastUsePass == PassIndex)
+            FRGTextureResource& Resource = Textures[TextureIndex];
+            if (Resource.ReferenceCount == 0u)
             {
-                ReleaseTransientTexture(*Resource);
+                continue;
+            }
+
+            Resource.ReferenceCount--;
+            if (Resource.ReferenceCount == 0u)
+            {
+                ReleaseTransientTexture(Resource);
             }
         }
 
-        for (const FRGResourceUsage& Usage : Entry.BufferUsages)
+        for (uint32_t BufferIndex : PassBufferReferences[PassIndex])
         {
-            FRGBufferResource* Resource = ResolveBuffer({ Usage.Handle.Id });
-            if (!Resource || Resource->bExternal)
+            if (BufferIndex >= Buffers.size())
             {
                 continue;
             }
 
-            if (Resource->LastUsePass == PassIndex)
+            FRGBufferResource& Resource = Buffers[BufferIndex];
+            if (Resource.ReferenceCount == 0u)
             {
-                ReleaseTransientBuffer(*Resource);
+                continue;
+            }
+
+            Resource.ReferenceCount--;
+            if (Resource.ReferenceCount == 0u)
+            {
+                ReleaseTransientBuffer(Resource);
             }
         }
     }
@@ -813,6 +1100,7 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
         Pending.QueryCount = QueryIndex;
         Pending.Frequency = TimestampFrequency;
         Pending.PassNames = std::move(GpuTimedPassNames);
+        Pending.PixGroupNames = std::move(GpuTimedPixGroupNames);
         Pending.bPending = true;
     }
 
@@ -824,11 +1112,6 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
 
 bool FRenderGraph::AcquireTransientTexture(FRGTextureResource& Texture, D3D12_RESOURCE_STATES InitialState)
 {
-    if (!Device)
-    {
-        return false;
-    }
-
     const FDX12CommandQueue* Queue = Device->GetGraphicsQueue();
     const uint64 CompletedFenceValue = Queue ? Queue->GetCompletedFenceValue() : 0;
 
@@ -865,22 +1148,17 @@ bool FRenderGraph::AcquireTransientTexture(FRGTextureResource& Texture, D3D12_RE
         0,
         Texture.Flags);
 
-    D3D12_CLEAR_VALUE ClearValue = {};
+    CD3DX12_CLEAR_VALUE ClearValue = {};
     D3D12_CLEAR_VALUE* ClearPtr = nullptr;
     if (Texture.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)
     {
-        ClearValue.Format = Texture.Desc.Format;
-        ClearValue.Color[0] = 0.0f;
-        ClearValue.Color[1] = 0.0f;
-        ClearValue.Color[2] = 0.0f;
-        ClearValue.Color[3] = 0.0f;
+        const FLOAT Color[] = { 0.0f, 0.0f, 0.0f, 0.0f };
+        ClearValue = CD3DX12_CLEAR_VALUE(Texture.Desc.Format, Color);
         ClearPtr = &ClearValue;
     }
     else if (Texture.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)
     {
-        ClearValue.Format = Texture.Desc.Format;
-        ClearValue.DepthStencil.Depth = 1.0f;
-        ClearValue.DepthStencil.Stencil = 0;
+        ClearValue = CD3DX12_CLEAR_VALUE(Texture.Desc.Format, 1.0f, 0);
         ClearPtr = &ClearValue;
     }
 
@@ -923,11 +1201,6 @@ bool FRenderGraph::AcquireTransientTexture(FRGTextureResource& Texture, D3D12_RE
 
 bool FRenderGraph::AcquireTransientBuffer(FRGBufferResource& Buffer, D3D12_RESOURCE_STATES InitialState)
 {
-    if (!Device)
-    {
-        return false;
-    }
-
     const FDX12CommandQueue* Queue = Device->GetGraphicsQueue();
     const uint64 CompletedFenceValue = Queue ? Queue->GetCompletedFenceValue() : 0;
 
@@ -1044,9 +1317,12 @@ void FRenderGraph::ReleaseTransientBuffer(FRGBufferResource& Buffer)
     Pooled.LastFenceValue = CurrentFrameFenceValue;
     if (Device)
     {
+        Device->RetireTransientBindlessDescriptorIndex(Buffer.DefaultSrvBindlessIndex, CurrentFrameFenceValue);
         Device->RetireTransientBindlessDescriptorIndex(Buffer.DefaultUavBindlessIndex, CurrentFrameFenceValue);
     }
+    Buffer.DefaultSrvBindlessIndex = UINT32_MAX;
     Buffer.DefaultUavBindlessIndex = UINT32_MAX;
+    Buffer.DefaultSrvViewResource = nullptr;
     Buffer.DefaultUavViewResource = nullptr;
     Buffer.Resource = nullptr;
     Buffer.PoolIndex = -1;
@@ -1054,13 +1330,16 @@ void FRenderGraph::ReleaseTransientBuffer(FRGBufferResource& Buffer)
 
 uint32 FRenderGraph::GetTextureViewBindlessIndex(FRGTextureResource& Texture, bool bUav)
 {
-    if (!Device)
-    {
-        return UINT32_MAX;
-    }
+    uint32& BindlessIndex = bUav ? Texture.DefaultUavBindlessIndex : Texture.DefaultSrvBindlessIndex;
+    ID3D12Resource*& ViewResource = bUav ? Texture.DefaultUavViewResource : Texture.DefaultSrvViewResource;
 
     if (Texture.bExternal)
     {
+        if (IsValidBindlessIndex(BindlessIndex))
+        {
+            return BindlessIndex;
+        }
+
         std::ostringstream Stream;
         Stream << "RenderGraph bindless view requested for imported texture '"
             << (Texture.Name.empty() ? "<Unnamed>" : Texture.Name)
@@ -1074,9 +1353,6 @@ uint32 FRenderGraph::GetTextureViewBindlessIndex(FRGTextureResource& Texture, bo
         return UINT32_MAX;
     }
 
-    uint32& BindlessIndex = bUav ? Texture.DefaultUavBindlessIndex : Texture.DefaultSrvBindlessIndex;
-    ID3D12Resource*& ViewResource = bUav ? Texture.DefaultUavViewResource : Texture.DefaultSrvViewResource;
-
     if (bUav && (Texture.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) == 0)
     {
         return UINT32_MAX;
@@ -1089,6 +1365,8 @@ uint32 FRenderGraph::GetTextureViewBindlessIndex(FRGTextureResource& Texture, bo
         {
             return UINT32_MAX;
         }
+
+        Device->TrackTransientBindlessDescriptorOwner(BindlessIndex, BuildTextureViewOwnerLabel(Texture, bUav, -1));
     }
 
     if (ViewResource != Texture.Resource)
@@ -1151,6 +1429,8 @@ uint32 FRenderGraph::GetTextureMipViewBindlessIndex(FRGTextureResource& Texture,
         {
             return UINT32_MAX;
         }
+
+        Device->TrackTransientBindlessDescriptorOwner(BindlessIndex, BuildTextureViewOwnerLabel(Texture, bUav, static_cast<int32>(MipIndex)));
     }
 
     if (ViewResource != Texture.Resource)
@@ -1182,13 +1462,13 @@ uint32 FRenderGraph::GetTextureMipViewBindlessIndex(FRGTextureResource& Texture,
 
 uint32 FRenderGraph::GetBufferUavBindlessIndex(FRGBufferResource& Buffer)
 {
-    if (!Device)
-    {
-        return UINT32_MAX;
-    }
-
     if (Buffer.bExternal)
     {
+        if (IsValidBindlessIndex(Buffer.DefaultUavBindlessIndex))
+        {
+            return Buffer.DefaultUavBindlessIndex;
+        }
+
         std::ostringstream Stream;
         Stream << "RenderGraph bindless UAV requested for imported buffer '"
             << (Buffer.Name.empty() ? "<Unnamed>" : Buffer.Name)
@@ -1214,6 +1494,8 @@ uint32 FRenderGraph::GetBufferUavBindlessIndex(FRGBufferResource& Buffer)
         {
             return UINT32_MAX;
         }
+
+        Device->TrackTransientBindlessDescriptorOwner(Buffer.DefaultUavBindlessIndex, BuildBufferUavOwnerLabel(Buffer));
     }
 
     if (Buffer.DefaultUavViewResource != Buffer.Resource)
@@ -1233,12 +1515,104 @@ uint32 FRenderGraph::GetBufferUavBindlessIndex(FRGBufferResource& Buffer)
     return Buffer.DefaultUavBindlessIndex;
 }
 
-void FRenderGraph::DumpDebugInfo(const std::vector<bool>& PassRequired, const std::vector<bool>& ResourceRequired)
+uint32 FRenderGraph::GetBufferSrvBindlessIndex(FRGBufferResource& Buffer)
+{
+    if (Buffer.bExternal)
+    {
+        if (IsValidBindlessIndex(Buffer.DefaultSrvBindlessIndex))
+        {
+            return Buffer.DefaultSrvBindlessIndex;
+        }
+
+        std::ostringstream Stream;
+        Stream << "RenderGraph bindless SRV requested for imported buffer '"
+            << (Buffer.Name.empty() ? "<Unnamed>" : Buffer.Name)
+            << "'";
+        LogWarning(Stream.str());
+        return UINT32_MAX;
+    }
+
+    if (!Buffer.Resource || Buffer.Desc.NumElements == 0)
+    {
+        return UINT32_MAX;
+    }
+
+    if (Buffer.DefaultSrvBindlessIndex == UINT32_MAX)
+    {
+        Buffer.DefaultSrvBindlessIndex = Device->AllocateTransientBindlessDescriptorIndex();
+        if (Buffer.DefaultSrvBindlessIndex == UINT32_MAX)
+        {
+            return UINT32_MAX;
+        }
+
+        Device->TrackTransientBindlessDescriptorOwner(Buffer.DefaultSrvBindlessIndex, BuildBufferSrvOwnerLabel(Buffer));
+    }
+
+    if (Buffer.DefaultSrvViewResource != Buffer.Resource)
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc = {};
+        SrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        SrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        SrvDesc.Format = Buffer.Desc.ViewFormat;
+        SrvDesc.Buffer.FirstElement = 0;
+        SrvDesc.Buffer.NumElements = Buffer.Desc.NumElements;
+        SrvDesc.Buffer.StructureByteStride = Buffer.Desc.StructureByteStride;
+        SrvDesc.Buffer.Flags = Buffer.Desc.SrvFlags;
+        Device->WriteBindlessSrv(Buffer.DefaultSrvBindlessIndex, Buffer.Resource, SrvDesc);
+        Buffer.DefaultSrvViewResource = Buffer.Resource;
+    }
+
+    return Buffer.DefaultSrvBindlessIndex;
+}
+
+void FRenderGraph::DumpDebugInfo(const std::vector<bool>& PassRequired, const std::vector<bool>& ResourceRequired, const std::vector<bool>& BufferRequired)
 {
     LogInfo("RenderGraph Debug Dump Begin");
 
     if (bEnableResourceLifetimeLog)
     {
+        std::vector<int32_t> TextureFirstUse(Textures.size(), -1);
+        std::vector<int32_t> TextureLastUse(Textures.size(), -1);
+        std::vector<int32_t> BufferFirstUse(Buffers.size(), -1);
+        std::vector<int32_t> BufferLastUse(Buffers.size(), -1);
+
+        for (int32_t PassIndex = 0; PassIndex < static_cast<int32_t>(Passes.size()); ++PassIndex)
+        {
+            if (!PassRequired[PassIndex])
+            {
+                continue;
+            }
+
+            const PassEntry& Entry = Passes[PassIndex];
+            for (const FRGTextureUsage& Usage : Entry.TextureUsages)
+            {
+                if (!Usage.Handle || Usage.Handle.Id >= Textures.size())
+                {
+                    continue;
+                }
+
+                if (TextureFirstUse[Usage.Handle.Id] == -1)
+                {
+                    TextureFirstUse[Usage.Handle.Id] = PassIndex;
+                }
+                TextureLastUse[Usage.Handle.Id] = PassIndex;
+            }
+
+            for (const FRGBufferUsage& Usage : Entry.BufferUsages)
+            {
+                if (Usage.Handle.Id >= Buffers.size())
+                {
+                    continue;
+                }
+
+                if (BufferFirstUse[Usage.Handle.Id] == -1)
+                {
+                    BufferFirstUse[Usage.Handle.Id] = PassIndex;
+                }
+                BufferLastUse[Usage.Handle.Id] = PassIndex;
+            }
+        }
+
         LogInfo("Resources:");
         for (size_t Index = 0; Index < Textures.size(); ++Index)
         {
@@ -1251,8 +1625,29 @@ void FRenderGraph::DumpDebugInfo(const std::vector<bool>& PassRequired, const st
 
             std::ostringstream Stream;
             Stream << " - " << Resource.Name
-                << " (FirstUse: " << Resource.FirstUsePass
-                << ", LastUse: " << Resource.LastUsePass
+                << " (FirstUse: " << TextureFirstUse[Index]
+                << ", LastUse: " << TextureLastUse[Index]
+                << ", RefCount: " << Resource.InitialReferenceCount
+                << ", External: " << (Resource.bExternal ? "Yes" : "No")
+                << ")";
+            LogInfo(Stream.str());
+        }
+
+        LogInfo("Buffers:");
+        for (size_t Index = 0; Index < Buffers.size(); ++Index)
+        {
+            if (!BufferRequired[Index])
+            {
+                continue;
+            }
+
+            const FRGBufferResource& Resource = Buffers[Index];
+
+            std::ostringstream Stream;
+            Stream << " - " << Resource.Name
+                << " (FirstUse: " << BufferFirstUse[Index]
+                << ", LastUse: " << BufferLastUse[Index]
+                << ", RefCount: " << Resource.InitialReferenceCount
                 << ", External: " << (Resource.bExternal ? "Yes" : "No")
                 << ")";
             LogInfo(Stream.str());
@@ -1268,9 +1663,9 @@ void FRenderGraph::DumpDebugInfo(const std::vector<bool>& PassRequired, const st
             << (PassRequired[PassIndex] ? "" : " (Culled)");
         LogInfo(Stream.str());
 
-        for (const FRGResourceUsage& Usage : Entry.ResourceUsages)
+        for (const FRGTextureUsage& Usage : Entry.TextureUsages)
         {
-            const FRGTextureResource* Resource = ResolveResource(Usage.Handle);
+            const FRGTextureResource* Resource = ResolveTexture(Usage.Handle);
             if (!Resource)
             {
                 continue;
@@ -1346,6 +1741,14 @@ void FRenderGraph::ProcessPendingGpuTimings(const FDX12CommandContext& CmdContex
     const size_t PassCount = Timing.PassNames.size();
     const auto Now = std::chrono::steady_clock::now();
     const double WindowSeconds = (std::max)(0.1, GpuTimingWindowSeconds);
+    const auto Cutoff = Now - std::chrono::duration<double>(WindowSeconds);
+    struct FGroupTimingAccumulator
+    {
+        double Milliseconds = 0.0;
+        uint32 PassCount = 0;
+    };
+    std::unordered_map<std::string, FGroupTimingAccumulator> GroupTimings;
+
     for (size_t Index = 0; Index < PassCount; ++Index)
     {
         const size_t StartIdx = Index * 2;
@@ -1365,7 +1768,29 @@ void FRenderGraph::ProcessPendingGpuTimings(const FDX12CommandContext& CmdContex
         std::deque<FGpuTimingSample>& Samples = GpuTimingSamples[PassName];
         Samples.push_back({ Now, Milliseconds });
 
-        const auto Cutoff = Now - std::chrono::duration<double>(WindowSeconds);
+        while (!Samples.empty() && Samples.front().Timestamp < Cutoff)
+        {
+            Samples.pop_front();
+        }
+
+        if (Index < Timing.PixGroupNames.size() && !Timing.PixGroupNames[Index].empty())
+        {
+            FGroupTimingAccumulator& GroupTiming = GroupTimings[Timing.PixGroupNames[Index]];
+            GroupTiming.Milliseconds += Milliseconds;
+            GroupTiming.PassCount++;
+        }
+    }
+
+    for (const auto& GroupTimingIt : GroupTimings)
+    {
+        const FGroupTimingAccumulator& GroupTiming = GroupTimingIt.second;
+        if (GroupTiming.PassCount <= 1u)
+        {
+            continue;
+        }
+
+        std::deque<FGpuTimingSample>& Samples = GpuTimingSamples[GroupTimingIt.first];
+        Samples.push_back({ Now, GroupTiming.Milliseconds });
         while (!Samples.empty() && Samples.front().Timestamp < Cutoff)
         {
             Samples.pop_front();

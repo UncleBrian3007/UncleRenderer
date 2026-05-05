@@ -10,7 +10,7 @@ cbuffer ExtractHalfDepthNormalConstants : register(b1)
 }
 
 [numthreads(8, 8, 1)]
-void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID)
+void ExtractHalfDepthNormalCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 {
     Texture2D<float> DepthTexture = ResourceDescriptorHeap[DepthIndex];
     Texture2D<float4> GBufferA = ResourceDescriptorHeap[GBufferAIndex];

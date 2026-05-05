@@ -5,11 +5,42 @@
 #include <atomic>
 #include <deque>
 #include <mutex>
+#include <string>
+#include <unordered_map>
 #include <vector>
+
+#ifndef WITH_BINDLESS_DESCRIPTOR_STATS
+#define WITH_BINDLESS_DESCRIPTOR_STATS 0
+#endif
 
 class FDX12Device
 {
 public:
+    struct FBindlessDescriptorStats
+    {
+#if WITH_BINDLESS_DESCRIPTOR_STATS
+        uint32_t DescriptorCount = 0u;
+        uint32_t NextIndex = 0u;
+        uint32_t FreeTransientCount = 0u;
+        uint32_t RetiredTransientCount = 0u;
+        uint32_t ReclaimableTransientCount = 0u;
+        uint32_t MinFreeTransientThisFrame = 0u;
+        uint32_t PeakTransientLiveThisFrame = 0u;
+        uint32_t LiveTransientDescriptorCount = 0u;
+        uint64_t PermanentAllocationCount = 0u;
+        uint64_t TransientHeapAllocationCount = 0u;
+        uint64_t TransientHeapAllocsThisFrame = 0u;
+        uint64_t TransientReuseCount = 0u;
+        uint64_t TransientRetireCount = 0u;
+        uint64_t TransientReclaimCount = 0u;
+        uint64_t CompletedFenceValue = 0u;
+        uint64_t LastSignaledFenceValue = 0u;
+        uint64_t OldestRetiredFenceValue = 0u;
+        uint64_t NewestRetiredFenceValue = 0u;
+        std::vector<std::string> LiveTransientOwnerSamples;
+#endif
+    };
+
     FDX12Device();
     ~FDX12Device();
 
@@ -22,10 +53,23 @@ public:
     ID3D12DescriptorHeap* GetBindlessDescriptorHeap() const { return BindlessDescriptorHeap.Get(); }
     ID3D12DescriptorHeap* GetBindlessCpuDescriptorHeap() const { return BindlessCpuDescriptorHeap.Get(); }
     uint32_t             GetBindlessDescriptorCount() const { return BindlessDescriptorCount; }
+    FBindlessDescriptorStats GetBindlessDescriptorStats() const;
     uint32_t             CreateBindlessSrv(ID3D12Resource* Resource, const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc);
     uint32_t             CreateBindlessUav(ID3D12Resource* Resource, ID3D12Resource* Counter, const D3D12_UNORDERED_ACCESS_VIEW_DESC& Desc);
     uint32_t             AllocateTransientBindlessDescriptorIndex();
     void                 RetireTransientBindlessDescriptorIndex(uint32_t Index, uint64_t FenceValue);
+    void                 PumpTransientBindlessDescriptorReclaim();
+    void                 ResetBindlessDescriptorFrameStats();
+    void                 SetLiveTransientBindlessOwnerTrackingEnabled(bool bEnabled);
+    bool                 IsLiveTransientBindlessOwnerTrackingEnabled() const
+    {
+#if WITH_BINDLESS_DESCRIPTOR_STATS
+        return bTrackLiveTransientBindlessOwners;
+#else
+        return false;
+#endif
+    }
+    void                 TrackTransientBindlessDescriptorOwner(uint32_t Index, const std::string& OwnerLabel);
     void                 WriteBindlessSrv(uint32_t Index, ID3D12Resource* Resource, const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc) const;
     void                 WriteBindlessUav(uint32_t Index, ID3D12Resource* Resource, ID3D12Resource* Counter, const D3D12_UNORDERED_ACCESS_VIEW_DESC& Desc) const;
     ID3D12DescriptorHeap* GetSamplerDescriptorHeap() const { return SamplerDescriptorHeap.Get(); }
@@ -60,6 +104,11 @@ private:
     bool DetermineShaderModel();
     uint32_t AllocateBindlessDescriptorIndex();
     void ReclaimTransientBindlessDescriptorIndicesLocked(uint64_t CompletedFenceValue);
+#if WITH_BINDLESS_DESCRIPTOR_STATS
+    void UpdateTransientBindlessFrameStatsLocked();
+    void MaybeLogBindlessDescriptorPressure(const char* Reason, uint32_t UsedCount);
+    void LogBindlessDescriptorStats(const char* Reason) const;
+#endif
 
     struct FRetiredBindlessDescriptor
     {
@@ -79,6 +128,20 @@ private:
     mutable std::mutex TransientBindlessDescriptorMutex;
     std::vector<uint32_t> FreeTransientBindlessDescriptorIndices;
     std::deque<FRetiredBindlessDescriptor> RetiredTransientBindlessDescriptorIndices;
+#if WITH_BINDLESS_DESCRIPTOR_STATS
+    std::unordered_map<uint32_t, std::string> LiveTransientBindlessDescriptorOwners;
+    std::atomic<uint64_t> PermanentBindlessDescriptorAllocationCount{ 0 };
+    std::atomic<uint64_t> TransientBindlessDescriptorHeapAllocationCount{ 0 };
+    std::atomic<uint64_t> TransientBindlessDescriptorReuseCount{ 0 };
+    std::atomic<uint64_t> TransientBindlessDescriptorRetireCount{ 0 };
+    std::atomic<uint64_t> TransientBindlessDescriptorReclaimCount{ 0 };
+    std::atomic<uint32_t> BindlessPressureLogLevel{ 0 };
+    uint32_t MinFreeTransientThisFrame = 0u;
+    uint32_t PeakTransientLiveThisFrame = 0u;
+    uint64_t TransientHeapAllocsThisFrame = 0u;
+    bool bTrackLiveTransientBindlessOwners = false;
+#endif
+
     ComPtr<ID3D12DescriptorHeap> SamplerDescriptorHeap;
     uint32_t LinearClampSamplerIndex = 0;
     uint32_t LinearWrapSamplerIndex = 0;

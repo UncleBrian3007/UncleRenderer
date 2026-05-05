@@ -1,4 +1,5 @@
 #include "SceneConstants.hlsl"
+#include "ClusterDagPackedVertex.hlsli"
 
 #ifndef USE_SKINNING
 #define USE_SKINNING 0
@@ -15,10 +16,16 @@ struct VSOutput
     float4 Position : SV_Position;
 };
 
-VSOutput VSMain(VSInput Input)
+cbuffer DrawCommandConstants : register(b2)
+{
+    uint DrawIndexStart;
+};
+
+VSOutput ShadowMapVS(VSInput Input)
 {
     VSOutput Output;
     StructuredBuffer<float3> PositionBuffer = ResourceDescriptorHeap[VertexBufferBindlessIndices.x];
+    StructuredBuffer<ClusterDagPackedPosition> PackedPositionBuffer = ResourceDescriptorHeap[VertexBufferBindlessIndices.x];
     StructuredBuffer<uint> IndexBuffer = ResourceDescriptorHeap[ExtraBindlessIndices.y];
 #if USE_SKINNING
     StructuredBuffer<uint4> JointBuffer = ResourceDescriptorHeap[SkinningBindlessIndices.x];
@@ -27,8 +34,10 @@ VSOutput VSMain(VSInput Input)
     StructuredBuffer<float3> SkinnedPositionBuffer = ResourceDescriptorHeap[SkinningBindlessIndices.w];
 #endif
 
-    uint vertexIndex = IndexBuffer[Input.VertexId];
-    float3 position = PositionBuffer[vertexIndex];
+    uint vertexIndex = IndexBuffer[Input.VertexId + DrawIndexStart];
+    float3 position = ClusterDagVertexPackingMode != 0u
+        ? DecodeClusterDagPackedPosition(PackedPositionBuffer[vertexIndex])
+        : PositionBuffer[vertexIndex];
 
 #if USE_SKINNING
     uint4 joints = JointBuffer[vertexIndex];

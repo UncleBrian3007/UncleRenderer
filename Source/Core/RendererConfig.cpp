@@ -343,6 +343,11 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
         OutConfig.bLogResourceBarriers = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
 
+    if (LowerKey == "logmeshoptimizationstats" || LowerKey == "meshoptimizationstats" || LowerKey == "logmeshoptimizerstats")
+    {
+        OutConfig.bLogMeshOptimizationStats = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+
     if (LowerKey == "graphdump" || LowerKey == "enablegraphdump" || LowerKey == "dumpgraph")
     {
         OutConfig.bEnableGraphDump = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
@@ -385,6 +390,10 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     {
         OutConfig.bEnableSsrHzb = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
+    if (LowerKey == "ssrhzbfullresdepth" || LowerKey == "enablessrhzbfullresdepth" || LowerKey == "ssr_hzb_full_res_depth" || LowerKey == "ssrfullresdepth")
+    {
+        OutConfig.bEnableSsrHzbFullResDepth = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
     if (LowerKey == "ssrrefine" || LowerKey == "enablessrrefine" || LowerKey == "ssr_refine")
     {
         OutConfig.bEnableSsrRefine = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
@@ -392,6 +401,37 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     if (LowerKey == "ssrdenoise" || LowerKey == "enablessrdenoise" || LowerKey == "ssr_denoise")
     {
         OutConfig.bEnableSsrDenoise = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+    if (LowerKey == "deferredlightingvisualizationmode" || LowerKey == "lightingdebugview")
+    {
+        if (LowerValue == "off")
+        {
+            OutConfig.DeferredLightingVisualizationMode = EDeferredLightingVisualizationMode::Off;
+        }
+        else if (LowerValue == "diffuseindirect")
+        {
+            OutConfig.DeferredLightingVisualizationMode = EDeferredLightingVisualizationMode::DiffuseIndirect;
+        }
+        else if (LowerValue == "ao")
+        {
+            OutConfig.DeferredLightingVisualizationMode = EDeferredLightingVisualizationMode::AO;
+        }
+        else if (LowerValue == "directlighting")
+        {
+            OutConfig.DeferredLightingVisualizationMode = EDeferredLightingVisualizationMode::DirectLighting;
+        }
+        else if (LowerValue == "specularindirect")
+        {
+            OutConfig.DeferredLightingVisualizationMode = EDeferredLightingVisualizationMode::SpecularIndirect;
+        }
+        else if (LowerValue == "clusterdagclusters" || LowerValue == "clusterdagcluster" || LowerValue == "clusterdag")
+        {
+            OutConfig.DeferredLightingVisualizationMode = EDeferredLightingVisualizationMode::ClusterDagClusters;
+        }
+        else if (LowerValue == "clusterdagmip" || LowerValue == "clusterdagmips" || LowerValue == "clustermip")
+        {
+            OutConfig.DeferredLightingVisualizationMode = EDeferredLightingVisualizationMode::ClusterDagMip;
+        }
     }
     if (LowerKey == "restirgi" || LowerKey == "enablerestirgi")
     {
@@ -743,6 +783,101 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     if (LowerKey == "indirectdraw" || LowerKey == "enableindirectdraw")
     {
         OutConfig.bEnableIndirectDraw = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+
+    if (LowerKey == "clusterdagruntime" || LowerKey == "enableclusterdagruntime")
+    {
+        OutConfig.bEnableClusterDAGRuntime = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+
+    if (LowerKey == "clusterdagtraversalmode"
+        || LowerKey == "clusterdagtraversal"
+        || LowerKey == "clusterdagmode")
+    {
+        if (LowerValue == "persistentqueue" || LowerValue == "persistent_queue" || LowerValue == "persistent")
+        {
+            OutConfig.ClusterDAGTraversalMode = EClusterDAGTraversalMode::PersistentQueue;
+        }
+        else if (LowerValue == "levelsplitqueue"
+            || LowerValue == "level_split_queue"
+            || LowerValue == "levelsplit"
+            || LowerValue == "level_split")
+        {
+            OutConfig.ClusterDAGTraversalMode = EClusterDAGTraversalMode::LevelSplitQueue;
+        }
+        else if (LowerValue == "splitqueue"
+            || LowerValue == "split_queue"
+            || LowerValue == "split"
+            || LowerValue == "nodecluster")
+        {
+            OutConfig.ClusterDAGTraversalMode = EClusterDAGTraversalMode::SplitQueue;
+        }
+        else
+        {
+            OutConfig.ClusterDAGTraversalMode = EClusterDAGTraversalMode::Legacy;
+        }
+    }
+
+    if (LowerKey == "clusterdagfastshader"
+        || LowerKey == "enableclusterdagfastshader"
+        || LowerKey == "clusterdagtrusteddata"
+        || LowerKey == "enableclusterdagtrusteddata")
+    {
+        OutConfig.bEnableClusterDAGFastShader = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+
+    if (LowerKey == "forcerebuildclusterdagcache"
+        || LowerKey == "forceclusterdagcachebuild"
+        || LowerKey == "ignoreclusterdagcache"
+        || LowerKey == "forcevmeshrebuild"
+        || LowerKey == "ignorevmeshcache")
+    {
+        OutConfig.bForceRebuildClusterDAGCache = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+
+    if (LowerKey == "clusterdagtargeterrorpixels")
+    {
+        try
+        {
+            OutConfig.ClusterDAGTargetErrorPixels = (std::max)(0.0f, std::stof(Value));
+        }
+        catch (...)
+        {
+            LogWarning("Invalid Cluster DAG target error pixels in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "clusterdagforcemip" || LowerKey == "enableclusterdagforcemip")
+    {
+        OutConfig.bEnableClusterDAGForceMip = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+
+    if (LowerKey == "clusterdagforcemiplevel")
+    {
+        try
+        {
+            OutConfig.ClusterDAGForceMipLevel = static_cast<uint32_t>((std::max)(0, std::stoi(Value)));
+        }
+        catch (...)
+        {
+            LogWarning("Invalid Cluster DAG force mip level in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "clusterdagforcemipskipfrustumcull"
+        || LowerKey == "enableclusterdagforcemipskipfrustumcull"
+        || LowerKey == "clusterdagforcemipdisablefrustumcull"
+        || LowerKey == "enableclusterdagforcemipdisablefrustumcull")
+    {
+        OutConfig.bEnableClusterDAGForceMipSkipFrustumCull = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+
+    if (LowerKey == "clusterdagdebug"
+        || LowerKey == "enableclusterdagdebug"
+        || LowerKey == "clusterdagselectdebug"
+        || LowerKey == "enableclusterdagselectdebug")
+    {
+        OutConfig.bEnableClusterDAGDebug = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
 
     if (LowerKey == "skinningindirectdraw" || LowerKey == "enableskinningindirectdraw")

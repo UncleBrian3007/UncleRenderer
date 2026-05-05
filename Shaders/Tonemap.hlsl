@@ -4,7 +4,7 @@ struct VSOutput
     float2 UV       : TEXCOORD0;
 };
 
-VSOutput VSMain(uint VertexId : SV_VertexID)
+VSOutput TonemapVS(uint VertexId : SV_VertexID)
 {
     float2 Positions[3] =
     {
@@ -66,7 +66,7 @@ float3 PBRNeutralToneMapping(float3 color)
     return lerp(color, newPeak * float3(1.0f, 1.0f, 1.0f), g);
 }
 
-float4 PSMain(VSOutput Input) : SV_Target
+float4 TonemapPS(VSOutput Input) : SV_Target
 {
 	Texture2D<float4> HDRScene = ResourceDescriptorHeap[HDRSceneIndex];
 	Texture2D<float> LogAverageLuminance = ResourceDescriptorHeap[LogAverageLuminanceIndex];

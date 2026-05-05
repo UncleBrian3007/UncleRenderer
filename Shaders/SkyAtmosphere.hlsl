@@ -26,7 +26,7 @@ cbuffer SkyConstants : register(b0)
     float Padding2;
 };
 
-VSOutput VSMain(VSInput Input)
+VSOutput SkyAtmosphereVS(VSInput Input)
 {
     VSOutput Output;
     float4 WorldPosition = mul(float4(Input.Position, 1.0), World);
@@ -93,7 +93,7 @@ float3 ApplyAtmosphere(float3 viewDir)
     return baseSky + atmospheric;
 }
 
-float4 PSMain(VSOutput Input) : SV_Target
+float4 SkyAtmospherePS(VSOutput Input) : SV_Target
 {
     float3 viewDir = normalize(Input.WorldPos - CameraPosition);
     float3 skyColor = ApplyAtmosphere(viewDir);

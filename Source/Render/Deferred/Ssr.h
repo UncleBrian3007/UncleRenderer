@@ -8,6 +8,7 @@
 #include <vector>
 #include <wrl.h>
 
+#include "../GpuResource.h"
 #include "../RenderGraph.h"
 #include "../../Core/RendererConfig.h"
 
@@ -45,6 +46,7 @@ public:
     void SetSwEnabled(bool bEnabled) { bSsrSwEnabled = bEnabled; }
     void SetHwEnabled(bool bEnabled) { bSsrHwEnabled = bEnabled; }
     void SetHzbEnabled(bool bEnabled) { bSsrHzbEnabled = bEnabled; }
+    void SetHzbFullResDepthEnabled(bool bEnabled) { bSsrHzbFullResDepthEnabled = bEnabled; }
     void SetRefineEnabled(bool bEnabled) { bSsrRefineEnabled = bEnabled; }
     void SetDenoiseEnabled(bool bEnabled) { bSsrDenoiseEnabled = bEnabled; }
     void SetMode(ESSRMode Mode) { SsrMode = Mode; }
@@ -59,6 +61,7 @@ public:
     bool IsSwEnabled() const { return bSsrSwEnabled; }
     bool IsHwEnabled() const { return bSsrHwEnabled; }
     bool IsHzbEnabled() const { return bSsrHzbEnabled; }
+    bool IsHzbFullResDepthEnabled() const { return bSsrHzbFullResDepthEnabled; }
     bool IsRefineEnabled() const { return bSsrRefineEnabled; }
     bool IsDenoiseEnabled() const { return bSsrDenoiseEnabled; }
     ESSRMode GetMode() const { return SsrMode; }
@@ -72,7 +75,7 @@ public:
 
     uint32_t GetBaseOutputSrvBindlessIndex() const;
     uint32_t GetLightingSrvBindlessIndex() const;
-    uint32_t GetFallbackSrvBindlessIndex() const { return SsrFallbackBindlessIndex; }
+    uint32_t GetFallbackSrvBindlessIndex() const { return bFallbackPersistentInputsValid ? SsrFallbackTexture.SrvBindlessIndex : UINT32_MAX; }
 
 private:
     friend class FDeferredRenderer;
@@ -98,6 +101,7 @@ private:
     bool CreateSsrResolvePipeline(FDX12Device* Device);
     bool CreateSsrDispatchCommandSignature(FDX12Device* Device);
     bool CreateSsrResources(FDeferredRenderer& Owner, FDX12Device* Device, uint32_t Width, uint32_t Height);
+    void RefreshPersistentInputValidation();
 
     void AddSsrRayCounterClearPass(FDeferredPassContext& Context);
     void AddSsrRayGatherPass(FDeferredPassContext& Context);
@@ -112,20 +116,20 @@ private:
 private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> SsrRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> SsrDenoiseRootSignature;
-    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 8> SsrPipelines;
+    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 16> SsrPipelines;
     std::vector<uint8_t> SsrGraphicsVsBytecode;
-    std::array<std::vector<uint8_t>, 8> SsrGraphicsPsBytecodes;
-    std::array<bool, 8> SsrGraphicsPsCompiled{};
-    std::array<bool, 8> SsrGraphicsFailureLogged{};
+    std::array<std::vector<uint8_t>, 16> SsrGraphicsPsBytecodes;
+    std::array<bool, 16> SsrGraphicsPsCompiled{};
+    std::array<bool, 16> SsrGraphicsFailureLogged{};
     std::mutex SsrGraphicsPipelineMutex;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> SsrDenoisePipeline;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> SsrRayGatherRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> SsrRayGatherPipeline;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> SsrSwTraceRootSignature;
-    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 8> SsrSwTracePipelines;
-    std::array<std::vector<uint8_t>, 8> SsrSwTraceCsBytecodes;
-    std::array<bool, 8> SsrSwTraceCsCompiled{};
-    std::array<bool, 8> SsrSwTraceFailureLogged{};
+    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 16> SsrSwTracePipelines;
+    std::array<std::vector<uint8_t>, 16> SsrSwTraceCsBytecodes;
+    std::array<bool, 16> SsrSwTraceCsCompiled{};
+    std::array<bool, 16> SsrSwTraceFailureLogged{};
     std::mutex SsrSwTracePipelineMutex;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> SsrBuildIndirectArgsRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> SsrBuildIndirectArgsPipeline;
@@ -133,62 +137,37 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> SsrResolvePipeline;
     Microsoft::WRL::ComPtr<ID3D12CommandSignature> SsrDispatchCommandSignature;
 
-    Microsoft::WRL::ComPtr<ID3D12Resource> SsrTexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> SsrDenoiseTexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> SsrFallbackTexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> SsrResolveTexture;
+    FBindlessTexture SsrTexture;
+    FBindlessTexture SsrDenoiseTexture;
+    FBindlessTexture SsrFallbackTexture;
+    FBindlessTexture SsrResolveTexture;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> SsrRtvHeap;
     D3D12_CPU_DESCRIPTOR_HANDLE SsrRtvHandle{};
     D3D12_CPU_DESCRIPTOR_HANDLE SsrDenoiseRtvHandle{};
 
-    uint32_t SsrBindlessIndex = UINT32_MAX;
-    uint32_t SsrDenoiseBindlessIndex = UINT32_MAX;
-    uint32_t SsrFallbackBindlessIndex = UINT32_MAX;
-    uint32_t SsrFallbackUavBindlessIndex = UINT32_MAX;
-    uint32_t SsrUavBindlessIndex = UINT32_MAX;
-    uint32_t SsrResolveBindlessIndex = UINT32_MAX;
-    uint32_t SsrResolveUavBindlessIndex = UINT32_MAX;
-
-    D3D12_RESOURCE_STATES SsrState = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    D3D12_RESOURCE_STATES SsrDenoiseState = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    D3D12_RESOURCE_STATES SsrFallbackState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    D3D12_RESOURCE_STATES SsrResolveState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SsrRayListBuffers;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SsrRayCounterBuffers;
-    std::vector<uint32_t> SsrRayListSrvBindlessIndices;
-    std::vector<uint32_t> SsrRayListUavBindlessIndices;
-    std::vector<uint32_t> SsrRayCounterSrvBindlessIndices;
-    std::vector<uint32_t> SsrRayCounterUavBindlessIndices;
-    std::vector<D3D12_RESOURCE_STATES> SsrRayListStates;
-    std::vector<D3D12_RESOURCE_STATES> SsrRayCounterStates;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SsrRayListPrimaryBuffers;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SsrRayCounterPrimaryBuffers;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SsrRayListHwMissBuffers;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SsrRayCounterHwMissBuffers;
-    std::vector<uint32_t> SsrRayListPrimarySrvBindlessIndices;
-    std::vector<uint32_t> SsrRayListPrimaryUavBindlessIndices;
-    std::vector<uint32_t> SsrRayCounterPrimarySrvBindlessIndices;
-    std::vector<uint32_t> SsrRayCounterPrimaryUavBindlessIndices;
-    std::vector<uint32_t> SsrRayListHwMissSrvBindlessIndices;
-    std::vector<uint32_t> SsrRayListHwMissUavBindlessIndices;
-    std::vector<uint32_t> SsrRayCounterHwMissSrvBindlessIndices;
-    std::vector<uint32_t> SsrRayCounterHwMissUavBindlessIndices;
-    std::vector<D3D12_RESOURCE_STATES> SsrRayListPrimaryStates;
-    std::vector<D3D12_RESOURCE_STATES> SsrRayCounterPrimaryStates;
-    std::vector<D3D12_RESOURCE_STATES> SsrRayListHwMissStates;
-    std::vector<D3D12_RESOURCE_STATES> SsrRayCounterHwMissStates;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SsrIndirectArgsPrimaryBuffers;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SsrIndirectArgsHwMissBuffers;
-    std::vector<uint32_t> SsrIndirectArgsPrimaryUavBindlessIndices;
-    std::vector<uint32_t> SsrIndirectArgsHwMissUavBindlessIndices;
-    std::vector<D3D12_RESOURCE_STATES> SsrIndirectArgsPrimaryStates;
-    std::vector<D3D12_RESOURCE_STATES> SsrIndirectArgsHwMissStates;
+    std::vector<FBindlessBuffer> SsrRayListBuffers;
+    std::vector<FBindlessBuffer> SsrRayCounterBuffers;
+    std::vector<FBindlessBuffer> SsrRayListPrimaryBuffers;
+    std::vector<FBindlessBuffer> SsrRayCounterPrimaryBuffers;
+    std::vector<FBindlessBuffer> SsrRayListHwMissBuffers;
+    std::vector<FBindlessBuffer> SsrRayCounterHwMissBuffers;
+    std::vector<FBindlessBuffer> SsrIndirectArgsPrimaryBuffers;
+    std::vector<FBindlessBuffer> SsrIndirectArgsHwMissBuffers;
     uint32_t SsrMaxRayCount = 0;
+    bool bBaseOutputPersistentInputsValid = false;
+    bool bGraphicsPersistentInputsValid = false;
+    bool bRayGatherPersistentInputsValid = false;
+    bool bBuildIndirectArgsPersistentInputsValid = false;
+    bool bSwTracePersistentInputsValid = false;
+    bool bHwTracePersistentInputsValid = false;
+    bool bResolvePersistentInputsValid = false;
+    bool bFallbackPersistentInputsValid = false;
+    bool bDenoisePersistentInputsValid = false;
 
     bool bSsrSwEnabled = true;
     bool bSsrHwEnabled = true;
     bool bSsrHzbEnabled = false;
+    bool bSsrHzbFullResDepthEnabled = true;
     bool bSsrRefineEnabled = false;
     bool bSsrDenoiseEnabled = false;
     uint32_t SsrMaxSteps = 32;

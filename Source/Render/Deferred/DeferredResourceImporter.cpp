@@ -2,6 +2,7 @@
 
 #include "../DeferredRenderer.h"
 #include "Gtao.h"
+#include "Hzb.h"
 #include "Ssr.h"
 #include "RestirGI.h"
 #include "AutoExposure.h"
@@ -22,7 +23,7 @@ void FDeferredResourceImporter::ImportFrameResources(FDeferredPassContext& Conte
     OutResources.ShadowHandle = Graph.ImportTexture(
         "ShadowMap",
         Owner.ShadowMap.Get(),
-        &Owner.ShadowMapState,
+        &Owner.ShadowMap.State,
         { 2048, 2048, DXGI_FORMAT_D32_FLOAT });
 
     const FRGTextureDesc DepthDesc =
@@ -34,15 +35,14 @@ void FDeferredResourceImporter::ImportFrameResources(FDeferredPassContext& Conte
 
     D3D12_RESOURCE_STATES& DepthState = Owner.GetDepthBufferState();
     OutResources.DepthHandle = Graph.ImportTexture("Depth", Owner.GetDepthBuffer(), &DepthState, DepthDesc);
-    OutResources.ObjectIdHandle = Graph.ImportTexture(
-        "ObjectId",
-        Owner.ObjectIdTexture.Get(),
-        &Owner.ObjectIdState,
-        { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), DXGI_FORMAT_R32_UINT });
+    OutResources.ObjectIdHandle = Owner.ObjectId->ImportResource(
+        Graph,
+        static_cast<uint32_t>(Owner.Viewport.Width),
+        static_cast<uint32_t>(Owner.Viewport.Height));
     OutResources.VelocityHandle = Graph.ImportTexture(
         "Velocity",
         Owner.VelocityTexture.Get(),
-        &Owner.VelocityState,
+        &Owner.VelocityTexture.State,
         { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), DXGI_FORMAT_R16G16B16A16_FLOAT });
     OutResources.GBufferHandles =
     {
@@ -55,74 +55,32 @@ void FDeferredResourceImporter::ImportFrameResources(FDeferredPassContext& Conte
     OutResources.LinearDepthHandle = Graph.ImportTexture(
         "LinearDepth",
         Owner.LinearDepthTexture.Get(),
-        &Owner.LinearDepthState,
+        &Owner.LinearDepthTexture.State,
         { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), DXGI_FORMAT_R16_FLOAT });
 
-    if (Owner.Gtao)
-    {
-        Owner.Gtao->ImportPersistentResources(Context);
-    }
-
-    if (Owner.RestirGI)
-    {
-        Owner.RestirGI->ImportPersistentResources(Context);
-    }
-
-    if (Owner.RestirGIDenoiser)
-    {
-        Owner.RestirGIDenoiser->ImportPersistentResources(Context);
-    }
-
-    if (Owner.Ssr)
-    {
-        Owner.Ssr->ImportPersistentResources(Context);
-    }
+    Owner.Gtao->ImportPersistentResources(Context);
+    Owner.RestirGI->ImportPersistentResources(Context);
+    Owner.RestirGIDenoiser->ImportPersistentResources(Context);
+    Owner.Ssr->ImportPersistentResources(Context);
 
     OutResources.LightingHandle = Graph.ImportTexture(
         "Lighting",
         Owner.LightingBuffer.Get(),
-        &Owner.LightingBufferState,
-        { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), FDeferredRenderer::LightingBufferFormat });
+        &Owner.LightingBuffer.State,
+        { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), FDeferredRenderer::LightingBufferFormat },
+        Owner.LightingBuffer.SrvBindlessIndex);
 
-    if (Owner.AutoExposure)
-    {
-        Owner.AutoExposure->ImportPersistentResources(Context);
-    }
+    Owner.AutoExposure->ImportPersistentResources(Context);
+    Owner.Cas->ImportPersistentResources(Context);
+    Owner.Tonemap->ImportPersistentResources(Context);
+    Owner.Taa->ImportPersistentResources(Context);
+    Owner.PathTracing->ImportPersistentResources(Context);
 
-    if (Owner.Cas)
-    {
-        Owner.Cas->ImportPersistentResources(Context);
-    }
-
-    if (Owner.Tonemap)
-    {
-        Owner.Tonemap->ImportPersistentResources(Context);
-    }
-
-    if (Owner.Taa)
-    {
-        Owner.Taa->ImportPersistentResources(Context);
-    }
-
-    if (Owner.PathTracing)
-    {
-        Owner.PathTracing->ImportPersistentResources(Context);
-    }
-
-    OutResources.HZBHandle = Graph.ImportTexture(
-        "HZB",
-        Owner.HierarchicalZBuffer.Get(),
-        &Owner.HZBState,
-        { Owner.HZBWidth, Owner.HZBHeight, DXGI_FORMAT_R32G32_FLOAT });
+    Owner.Hzb->ImportPersistentResources(Context);
 }
 
 bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
 {
-    if (!Device)
-    {
-        return false;
-    }
-
     const auto CreateSceneTextureSrv = [&](ID3D12Resource* Texture) -> uint32_t
     {
         if (!Texture)
@@ -143,7 +101,7 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         return Device->CreateBindlessSrv(Texture, SceneSrvDesc);
     };
 
-    const auto CreateSceneTextureDescriptors = [&]() -> bool
+    const auto CreateSceneTextureDescriptors = [&]()
     {
         for (size_t Index = 0; Index < SceneTextures.size(); ++Index)
         {
@@ -158,12 +116,8 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
             SceneModels[Index].ClearcoatNormalBindlessIndex = CreateSceneTextureSrv(SceneTextures[Index].ClearcoatNormal.Get());
             SceneModels[Index].AnisotropyBindlessIndex = CreateSceneTextureSrv(SceneTextures[Index].Anisotropy.Get());
         }
-        return true;
     };
-    if (!CreateSceneTextureDescriptors())
-    {
-        return false;
-    }
+    CreateSceneTextureDescriptors();
 
     ID3D12Resource* Buffers[4] = { GBufferA.Get(), GBufferB.Get(), GBufferC.Get(), GBufferD.Get() };
     for (int i = 0; i < 4; ++i)
@@ -181,85 +135,65 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
     ShadowSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     ShadowSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
     ShadowSrvDesc.Texture2D.MipLevels = 1;
-    ShadowMapBindlessIndex = Device->CreateBindlessSrv(ShadowMap.Get(), ShadowSrvDesc);
+    if (ShadowMap.SrvBindlessIndex == UINT32_MAX)
+    {
+        ShadowMap.SrvBindlessIndex = Device->CreateBindlessSrv(ShadowMap.Get(), ShadowSrvDesc);
+    }
+    else
+    {
+        Device->WriteBindlessSrv(ShadowMap.SrvBindlessIndex, ShadowMap.Get(), ShadowSrvDesc);
+    }
 
     {
+        ID3D12Resource* EnvironmentCube = GetEnvironmentCubeTexture();
         D3D12_SHADER_RESOURCE_VIEW_DESC EnvSrvDesc = {};
         EnvSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
         EnvSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        EnvSrvDesc.Format = EnvironmentCubeTexture->GetDesc().Format;
-        EnvSrvDesc.TextureCube.MipLevels = EnvironmentCubeTexture->GetDesc().MipLevels;
+        EnvSrvDesc.Format = EnvironmentCube->GetDesc().Format;
+        EnvSrvDesc.TextureCube.MipLevels = EnvironmentCube->GetDesc().MipLevels;
         EnvSrvDesc.TextureCube.MostDetailedMip = 0;
         EnvSrvDesc.TextureCube.ResourceMinLODClamp = 0.0f;
-        EnvironmentCubeBindlessIndex = Device->CreateBindlessSrv(EnvironmentCubeTexture.Get(), EnvSrvDesc);
+        EnvironmentCubeBindlessIndex = Device->CreateBindlessSrv(EnvironmentCube, EnvSrvDesc);
     }
 
     {
+        ID3D12Resource* BrdfLut = GetBrdfLutTexture();
         D3D12_SHADER_RESOURCE_VIEW_DESC BrdfSrvDesc = {};
         BrdfSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         BrdfSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        BrdfSrvDesc.Format = BrdfLutTexture->GetDesc().Format;
-        BrdfSrvDesc.Texture2D.MipLevels = BrdfLutTexture->GetDesc().MipLevels;
+        BrdfSrvDesc.Format = BrdfLut->GetDesc().Format;
+        BrdfSrvDesc.Texture2D.MipLevels = BrdfLut->GetDesc().MipLevels;
         BrdfSrvDesc.Texture2D.MostDetailedMip = 0;
         BrdfSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
-        BrdfLutBindlessIndex = Device->CreateBindlessSrv(BrdfLutTexture.Get(), BrdfSrvDesc);
+        BrdfLutBindlessIndex = Device->CreateBindlessSrv(BrdfLut, BrdfSrvDesc);
     }
 
     {
-        D3D12_SHADER_RESOURCE_VIEW_DESC LinearDepthSrvDesc = {};
-        LinearDepthSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        LinearDepthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        LinearDepthSrvDesc.Format = DXGI_FORMAT_R16_FLOAT;
-        LinearDepthSrvDesc.Texture2D.MipLevels = 1;
-        LinearDepthBindlessIndex = Device->CreateBindlessSrv(LinearDepthTexture.Get(), LinearDepthSrvDesc);
+        WriteOrCreateBindlessTextureSrv(Device, LinearDepthTexture);
     }
 
     {
-        D3D12_SHADER_RESOURCE_VIEW_DESC VelocitySrvDesc = {};
-        VelocitySrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        VelocitySrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        VelocitySrvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-        VelocitySrvDesc.Texture2D.MipLevels = 1;
-        VelocityBindlessIndex = Device->CreateBindlessSrv(VelocityTexture.Get(), VelocitySrvDesc);
+        WriteOrCreateBindlessTextureSrv(Device, VelocityTexture);
     }
 
     {
-        D3D12_SHADER_RESOURCE_VIEW_DESC SobolSrvDesc = {};
-        SobolSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        SobolSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        SobolSrvDesc.Format = BlueNoiseSobolTexture->GetDesc().Format;
-        SobolSrvDesc.Texture2D.MipLevels = 1;
-        SobolSrvDesc.Texture2D.MostDetailedMip = 0;
-        SobolSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
-        BlueNoiseSobolSrvBindlessIndex = Device->CreateBindlessSrv(BlueNoiseSobolTexture.Get(), SobolSrvDesc);
+        WriteOrCreateBindlessTextureSrv(Device, BlueNoiseSobolTexture);
     }
 
     {
-        D3D12_SHADER_RESOURCE_VIEW_DESC ScramblingSrvDesc = {};
-        ScramblingSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        ScramblingSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        ScramblingSrvDesc.Format = BlueNoiseScramblingRanking1SPPTexture->GetDesc().Format;
-        ScramblingSrvDesc.Texture2D.MipLevels = 1;
-        ScramblingSrvDesc.Texture2D.MostDetailedMip = 0;
-        ScramblingSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
-        BlueNoiseScramblingRanking1SPPSrvBindlessIndex = Device->CreateBindlessSrv(BlueNoiseScramblingRanking1SPPTexture.Get(), ScramblingSrvDesc);
+        WriteOrCreateBindlessTextureSrv(Device, BlueNoiseScramblingRanking1SPPTexture);
     }
 
-    if (Ssr && !Ssr->CreatePersistentDescriptors(*this, Device))
+    if (!Ssr->CreatePersistentDescriptors(*this, Device))
     {
         return false;
     }
 
     {
-        D3D12_SHADER_RESOURCE_VIEW_DESC LightingSrvDesc = {};
-        LightingSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        LightingSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        LightingSrvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-        LightingSrvDesc.Texture2D.MipLevels = 1;
-        LightingBufferBindlessIndex = Device->CreateBindlessSrv(LightingBuffer.Get(), LightingSrvDesc);
+        WriteOrCreateBindlessTextureSrv(Device, LightingBuffer);
     }
 
-    const auto CreateTemporalAndHzbDescriptors = [&]() -> bool
+    const auto CreateTemporalAndHzbDescriptors = [&]()
     {
         DepthBindlessIndices.clear();
         DepthBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
@@ -272,65 +206,12 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
             DepthSrvDesc.Texture2D.MipLevels = 1;
             DepthSrvDesc.Texture2D.MostDetailedMip = 0;
             DepthSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
-            ID3D12Resource* DepthBuffer = DepthResourcesPerFrame.empty() ? nullptr : DepthResourcesPerFrame[Index].DepthBuffer.Get();
+            ID3D12Resource* DepthBuffer = DepthResourcesPerFrame[Index].DepthBuffer.Get();
             DepthBindlessIndices[Index] = Device->CreateBindlessSrv(DepthBuffer, DepthSrvDesc);
         }
 
-        {
-            D3D12_SHADER_RESOURCE_VIEW_DESC HZBSrvDesc = {};
-            HZBSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-            HZBSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            HZBSrvDesc.Format = DXGI_FORMAT_R32G32_FLOAT;
-            HZBSrvDesc.Texture2D.MipLevels = HZBMipCount;
-            HZBSrvDesc.Texture2D.MostDetailedMip = 0;
-            HZBSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
-            HZBSrvBindlessIndex = Device->CreateBindlessSrv(HierarchicalZBuffer.Get(), HZBSrvDesc);
-        }
-
-        HZBSrvMipBindlessIndices.clear();
-        HZBSrvMipBindlessIndices.reserve(HZBMipCount);
-        for (uint32_t Mip = 0; Mip < HZBMipCount; ++Mip)
-        {
-            D3D12_SHADER_RESOURCE_VIEW_DESC HZBMipSrvDesc = {};
-            HZBMipSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-            HZBMipSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            HZBMipSrvDesc.Format = DXGI_FORMAT_R32G32_FLOAT;
-            HZBMipSrvDesc.Texture2D.MipLevels = 1;
-            HZBMipSrvDesc.Texture2D.MostDetailedMip = Mip;
-            HZBMipSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
-
-            HZBSrvMipBindlessIndices.push_back(Device->CreateBindlessSrv(HierarchicalZBuffer.Get(), HZBMipSrvDesc));
-        }
-
-        HZBUavBindlessIndices.clear();
-        HZBUavBindlessIndices.reserve(HZBMipCount);
-        for (uint32_t Mip = 0; Mip < HZBMipCount; ++Mip)
-        {
-            D3D12_UNORDERED_ACCESS_VIEW_DESC UavDesc = {};
-            UavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-            UavDesc.Format = DXGI_FORMAT_R32G32_FLOAT;
-            UavDesc.Texture2D.MipSlice = Mip;
-            UavDesc.Texture2D.PlaneSlice = 0;
-
-            HZBUavBindlessIndices.push_back(Device->CreateBindlessUav(HierarchicalZBuffer.Get(), nullptr, UavDesc));
-        }
-
-        {
-            D3D12_UNORDERED_ACCESS_VIEW_DESC NullUavDesc = {};
-            NullUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-            NullUavDesc.Format = DXGI_FORMAT_R32G32_FLOAT;
-            NullUavDesc.Texture2D.MipSlice = 0;
-            NullUavDesc.Texture2D.PlaneSlice = 0;
-
-            HZBNullUavBindlessIndex = Device->CreateBindlessUav(HZBNullUavResource.Get(), nullptr, NullUavDesc);
-        }
-
-        return true;
     };
-    if (!CreateTemporalAndHzbDescriptors())
-    {
-        return false;
-    }
+    CreateTemporalAndHzbDescriptors();
 
     return true;
 }

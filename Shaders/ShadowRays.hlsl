@@ -1,4 +1,5 @@
 #include "SceneConstants.hlsl"
+#include "Common.hlsli"
 
 RaytracingAccelerationStructure Scene : register(t0);
 cbuffer RayTracingBindlessConstants : register(b1)
@@ -11,23 +12,13 @@ cbuffer RayTracingBindlessConstants : register(b1)
     uint DispatchHeight;
 };
 
-float3 ReconstructWorldPosition(uint2 pixel, float depth, uint2 dispatchDim)
-{
-    float2 uv = (float2(pixel) + 0.5f) / float2(dispatchDim);
-    float2 ndc = float2(uv.x * 2.0f - 1.0f, 1.0f - uv.y * 2.0f);
-    float4 clip = float4(ndc, depth, 1.0f);
-    float4 worldPosition = mul(clip, ViewProjectionInverse);
-    worldPosition.xyz /= worldPosition.w;
-    return worldPosition.xyz;
-}
-
 static const uint RayQueryThreadGroupSize = 8;
 static const uint ShadowRayFlags = RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
     | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER
     | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES;
 
 [numthreads(RayQueryThreadGroupSize, RayQueryThreadGroupSize, 1)]
-void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID)
+void ShadowRaysCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 {
     if (DispatchThreadId.x >= DispatchWidth || DispatchThreadId.y >= DispatchHeight)
     {
@@ -48,7 +39,7 @@ void CSMain(uint3 DispatchThreadId : SV_DispatchThreadID)
     }
 
     RayDesc Ray;
-    float3 worldPosition = ReconstructWorldPosition(DispatchIndex, Depth, DispatchDim);
+    float3 worldPosition = ReconstructWorldPosition(DispatchIndex, Depth, DispatchDim, ViewProjectionInverse);
     float4 normalEncoded = GBufferA.Load(int3(DispatchIndex, 0));
     float3 worldNormal = normalize(normalEncoded.xyz * 2.0f - 1.0f);
     if (any(isnan(worldNormal)) || all(worldNormal == 0.0f))

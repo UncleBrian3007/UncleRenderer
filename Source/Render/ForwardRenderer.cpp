@@ -1,7 +1,9 @@
 #include "ForwardRenderer.h"
 
+#include "EnvironmentMap.h"
 #include "ShaderCompiler.h"
 #include "RendererUtils.h"
+#include "SceneModelResourceLoader.h"
 #include "RenderGraph.h"
 #include "../Scene/GltfLoader.h"
 #include "../Scene/Camera.h"
@@ -11,6 +13,7 @@
 #include "../Core/GpuDebugMarkers.h"
 #include "../Core/Logger.h"
 #include "../Core/RendererConfig.h"
+#include <d3dx12.h>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -18,7 +21,10 @@
 #include <cmath>
 #include <array>
 
-FForwardRenderer::FForwardRenderer() = default;
+FForwardRenderer::FForwardRenderer()
+    : SkyAtmosphere(std::make_unique<FSkyAtmosphere>())
+{
+}
 
 
 bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT BackBufferFormat, const FRendererConfig& Config)
@@ -32,10 +38,11 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
     this->Device = Device;
 
     LogInfo("Forward renderer initialization started");
+    FMesh::SetOptimizationStatsLoggingEnabled(Config.bLogMeshOptimizationStats);
 
     InitializeCommonSettings(Width, Height, Config);
 
-    if (!CreateRayTracingPipeline(Device))
+    if (!GetRayTracingRuntime().CreatePipeline(*this, Device))
     {
         LogError("Forward renderer initialization failed: ray tracing pipeline creation failed");
         return false;
@@ -45,7 +52,7 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
         LogError("Forward renderer initialization failed: skinning pipeline creation failed");
         return false;
     }
-    if (!CreateEnvironmentBuildPipelines(Device))
+    if (!EnvironmentMap->InitializePipelines(*this, Device))
     {
         LogError("Forward renderer initialization failed: environment build pipeline creation failed");
         return false;
@@ -66,7 +73,7 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
     }
 
     LogInfo("Creating forward renderer object ID pipeline...");
-    if (!CreateObjectIdPipeline(Device))
+    if (!ObjectId->InitializePipelines(Device, RootSignature.Get()))
     {
         LogError("Forward renderer initialization failed: object ID pipeline creation failed");
         return false;
@@ -110,30 +117,9 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
         NullTexture->SetName(L"NullTexture");
     }
 
-    if (!BuildEnvironmentFromEquirect(Config))
+    if (!EnvironmentMap->InitializeResources(*this, Device, Config, "Forward"))
     {
-        LogError("Forward renderer initialization failed: environment build requires R11G11B10 typed UAV support");
         return false;
-    }
-    if (EnvironmentCubeTexture)
-    {
-        EnvironmentCubeTexture->SetName(L"EnvironmentCube");
-    }
-
-    if (!TextureLoader->LoadOrDefault(L"Assets/Textures/PreintegratedGF.dds", BrdfLutTexture))
-    {
-        LogError("Forward renderer initialization failed: BRDF LUT texture loading failed");
-        return false;
-    }
-    if (BrdfLutTexture)
-    {
-        BrdfLutTexture->SetName(L"BrdfLut");
-    }
-
-    if (EnvironmentCubeTexture)
-    {
-        const D3D12_RESOURCE_DESC EnvDesc = EnvironmentCubeTexture->GetDesc();
-        EnvironmentMipCount = static_cast<float>((std::max)(1u, static_cast<uint32_t>(EnvDesc.MipLevels)));
     }
 
     if (!CreateDepthResourcesPerFrame(Device, Width, Height, DXGI_FORMAT_D24_UNORM_S8_UINT))
@@ -142,32 +128,20 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
         return false;
     }
 
-    if (!CreateObjectIdResources(Device, Width, Height))
+    if (!ObjectId->InitializeResources(Device, Width, Height))
     {
         LogError("Forward renderer initialization failed: object ID resources creation failed");
         return false;
     }
-    if (ObjectIdTexture)
-    {
-        ObjectIdTexture->SetName(L"ObjectIdTexture");
-    }
-    if (ObjectIdRtvHeap)
-    {
-        ObjectIdRtvHeap->SetName(L"ObjectIdRtvHeap");
-    }
-    if (ObjectIdReadback)
-    {
-        ObjectIdReadback->SetName(L"ObjectIdReadback");
-    }
 
-    if (!CreateShadowResources(Device, ShadowMapWidth, ShadowMapHeight, ShadowMap, ShadowDSVHeap, ShadowDSVHandle, ShadowMapState))
+    if (!CreateShadowResources(Device, ShadowMapWidth, ShadowMapHeight, ShadowMap, ShadowDSVHeap, ShadowDSVHandle))
     {
         LogError("Forward renderer initialization failed: shadow resources creation failed");
         return false;
     }
 
     const std::wstring SceneFilePath = Config.SceneFile.empty() ? L"Assets/Scenes/Scene.json" : Config.SceneFile;
-    if (!RendererUtils::CreateSceneModelsFromJson(Device, SceneFilePath, SceneModels, SceneCenter, SceneRadius, &GltfScenes))
+    if (!SceneModelResourceLoader::LoadModelsFromJson(Device, SceneFilePath, SceneModels, SceneCenter, SceneRadius, &GltfScenes))
     {
         LogError("scene JSON could not be loaded.");
         return false;
@@ -201,24 +175,14 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
         return false;
     }
 
-    SkySphereRadius = (std::max)(SceneRadius * 5.0f, 100.0f);
-    if (!RendererUtils::CreateSkyAtmosphereResources(Device, SkySphereRadius, SkyGeometry, SkyConstantBuffer, SkyConstantBufferMapped))
-    {
-        LogError("Forward renderer initialization failed: sky resource creation failed");
-        return false;
-    }
-    if (SkyConstantBuffer)
-    {
-        SkyConstantBuffer->SetName(L"SkyConstantBuffer");
-    }
-
     FSkyPipelineConfig SkyPipelineConfig;
     SkyPipelineConfig.DepthEnable = false;
     SkyPipelineConfig.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
     SkyPipelineConfig.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
     SkyPipelineConfig.DsvFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
 
-    if (!RendererUtils::CreateSkyAtmospherePipeline(Device, BackBufferFormat, SkyPipelineConfig, SkyRootSignature, SkyPipelineState))
+    const float SkySphereRadius = (std::max)(SceneRadius * 5.0f, 100.0f);
+    if (!SkyAtmosphere->Initialize(Device, SkySphereRadius, BackBufferFormat, SkyPipelineConfig))
     {
         LogError("Forward renderer initialization failed: sky pipeline state creation failed");
         return false;
@@ -235,13 +199,18 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
         LogWarning("Forward renderer GPU-driven resources creation failed; fallback to CPU-driven draws.");
     }
 
-    if (bEnableGpuDebugPrint)
+    if (!GpuDebugState.CreateResources(Device)
+        || !GpuDebugState.CreateLinePipeline(Device, BackBufferFormat, SceneDepthFormat)
+        || !GpuDebugState.CreateBoxPipeline(Device, BackBufferFormat, SceneDepthFormat))
     {
-        if (!CreateGpuDebugPrintResources(Device) || !CreateGpuDebugPrintPipeline(Device, BackBufferFormat) || !CreateGpuDebugLinePipeline(Device, BackBufferFormat) || !CreateGpuDebugPrintStatsPipeline(Device))
-        {
-            LogError("Forward renderer initialization failed: GPU debug print setup failed");
-            return false;
-        }
+        LogError("Forward renderer initialization failed: GPU debug draw setup failed");
+        return false;
+    }
+
+    if (GpuDebugState.IsPrintEnabled() && (!GpuDebugState.CreatePrintPipeline(Device, BackBufferFormat) || !GpuDebugState.CreatePrintStatsPipeline(Device)))
+    {
+        LogError("Forward renderer initialization failed: GPU debug print setup failed");
+        return false;
     }
 
     LogInfo("Forward renderer initialization completed");
@@ -261,14 +230,16 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
 
     RendererUtils::UpdateGltfSceneAnimation(SceneModels, GltfScenes, GltfScenePoses, GltfSceneTimes, DeltaTime);
 
-    PrepareGpuDebugPrint(CmdContext);
+    GpuDebugState.PreparePrint(CmdContext);
+    GpuDebugState.PrepareLine(CmdContext);
+    GpuDebugState.PrepareBox(CmdContext);
     ConfigureHZBOcclusion(false, UINT32_MAX, 0, 0, 0);
 
     FForwardFrameState FrameState;
     PrepareFrameState(Camera, FrameState);
     DispatchSkinning(CmdContext, FrameState.LightViewProjection);
-    UpdateRayTracingBlasRefit(CmdContext);
-    BuildRayTracingTlas(CmdContext);
+    GetRayTracingRuntime().UpdateBlasRefit(*this, CmdContext);
+    GetRayTracingRuntime().BuildTlas(*this, CmdContext);
 
     FRenderGraph Graph;
     ConfigureFrameGraph(Graph);
@@ -277,7 +248,7 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
     ImportFrameResources(Graph, Resources);
 
     AddGpuCullingPass(Graph, Camera, Resources.DepthHandle);
-    if (!bRayTracedShadowsEnabled || !bRayTracingPipelineReady)
+    if (!bRayTracedShadowsEnabled || !GetRayTracingRuntime().bRayTracingPipelineReady)
     {
         AddShadowPass(Graph, Camera, FrameState, Resources.ShadowHandle);
     }
@@ -312,7 +283,7 @@ void FForwardRenderer::ImportFrameResources(FRenderGraph& Graph, FForwardFrameRe
     OutResources.ShadowHandle = Graph.ImportTexture(
         "ShadowMap",
         ShadowMap.Get(),
-        &ShadowMapState,
+        &ShadowMap.State,
         { 2048, 2048, DXGI_FORMAT_D32_FLOAT });
 
     const FRGTextureDesc DepthDesc =
@@ -324,11 +295,10 @@ void FForwardRenderer::ImportFrameResources(FRenderGraph& Graph, FForwardFrameRe
 
     D3D12_RESOURCE_STATES& DepthState = GetDepthBufferState();
     OutResources.DepthHandle = Graph.ImportTexture("Depth", GetDepthBuffer(), &DepthState, DepthDesc);
-    OutResources.ObjectIdHandle = Graph.ImportTexture(
-        "ObjectId",
-        ObjectIdTexture.Get(),
-        &ObjectIdState,
-        { static_cast<uint32>(Viewport.Width), static_cast<uint32>(Viewport.Height), DXGI_FORMAT_R32_UINT });
+    OutResources.ObjectIdHandle = ObjectId->ImportResource(
+        Graph,
+        static_cast<uint32_t>(Viewport.Width),
+        static_cast<uint32_t>(Viewport.Height));
 }
 
 void FForwardRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle DepthHandle, FRGResourceHandle GBufferHandle, FRGResourceHandle& ShadowMaskHandle)
@@ -350,7 +320,7 @@ void FForwardRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCamer
 
     Graph.AddPass<FRayTracingShadowPassData>("RTShadowMask", [&, ShadowMaskDesc, DepthHandle, GBufferHandle](FRayTracingShadowPassData& Data, FRGPassBuilder& Builder)
     {
-        if (!bRayTracedShadowsEnabled || !bRayTracingPipelineReady || !GBufferHandle)
+        if (!bRayTracedShadowsEnabled || !GetRayTracingRuntime().bRayTracingPipelineReady || !GBufferHandle)
         {
             return;
         }
@@ -366,7 +336,7 @@ void FForwardRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCamer
         ShadowMaskHandle = Data.ShadowMaskHandle;
     }, [this, &Graph](const FRayTracingShadowPassData& Data, FDX12CommandContext& CmdContext)
     {
-        if (!bRayTracingPipelineReady || !RayQueryShadowPipeline || !RayQueryRootSignature || !Device || !Device->GetBindlessDescriptorHeap())
+        if (!GetRayTracingRuntime().bRayTracingPipelineReady || !GetRayTracingRuntime().RayQueryShadowPipeline || !GetRayTracingRuntime().RayQueryRootSignature)
         {
             return;
         }
@@ -395,7 +365,7 @@ void FForwardRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCamer
         }
 
         const uint32_t FrameIndex = CmdContext.GetCurrentFrameIndex();
-        if (FrameIndex >= TlasResultBuffers.size() || !TlasResultBuffers[FrameIndex])
+        if (FrameIndex >= GetRayTracingRuntime().TlasResultBuffers.size() || !GetRayTracingRuntime().TlasResultBuffers[FrameIndex])
         {
             return;
         }
@@ -406,79 +376,13 @@ void FForwardRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCamer
             return;
         }
 
-        if (FrameIndex >= RayTracingDepthSrvBindlessIndices.size())
-        {
-            return;
-        }
+        FRayTracingRuntime& RayTracing = GetRayTracingRuntime();
+        const uint32_t DepthBindlessIndex = RayTracing.UpdateDepthSrv(*this, FrameIndex, DepthBuffer);
+        const uint32_t GBufferABindlessIndex = RayTracing.UpdateGBufferSrv(*this, FRayTracingRuntime::EGBufferSlot::A, GBufferA);
+        const uint32_t ShadowMaskUavBindlessIndex = RayTracing.UpdateShadowMaskUav(*this, ShadowMask);
+        const uint32_t ShadowMaskSrvBindlessIndex = RayTracing.UpdateShadowMaskSrv(*this, ShadowMask);
 
-        D3D12_SHADER_RESOURCE_VIEW_DESC DepthSrvDesc = {};
-        DepthSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        DepthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        DepthSrvDesc.Format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
-        DepthSrvDesc.Texture2D.MipLevels = 1;
-        DepthSrvDesc.Texture2D.MostDetailedMip = 0;
-        DepthSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
-        const uint32_t DepthBindlessIndex = RayTracingDepthSrvBindlessIndices[FrameIndex];
-        if (DepthBindlessIndex == UINT32_MAX)
-        {
-            return;
-        }
-        if (FrameIndex < RayTracingDepthResources.size() && RayTracingDepthResources[FrameIndex] != DepthBuffer)
-        {
-            WriteBindlessSrv(DepthBindlessIndex, DepthBuffer, DepthSrvDesc);
-            RayTracingDepthResources[FrameIndex] = DepthBuffer;
-        }
-
-        D3D12_SHADER_RESOURCE_VIEW_DESC GBufferSrvDesc = {};
-        GBufferSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        GBufferSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        GBufferSrvDesc.Format = GBufferA->GetDesc().Format;
-        GBufferSrvDesc.Texture2D.MipLevels = 1;
-        GBufferSrvDesc.Texture2D.MostDetailedMip = 0;
-        GBufferSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
-        if (RayTracingGBufferASrvBindlessIndex == UINT32_MAX)
-        {
-            RayTracingGBufferASrvBindlessIndex = Device->CreateBindlessSrv(GBufferA, GBufferSrvDesc);
-        }
-        else if (RayTracingGBufferAResource != GBufferA)
-        {
-            WriteBindlessSrv(RayTracingGBufferASrvBindlessIndex, GBufferA, GBufferSrvDesc);
-        }
-        RayTracingGBufferAResource = GBufferA;
-
-        D3D12_UNORDERED_ACCESS_VIEW_DESC ShadowMaskUavDesc = {};
-        ShadowMaskUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-        ShadowMaskUavDesc.Format = DXGI_FORMAT_R8_UNORM;
-        ShadowMaskUavDesc.Texture2D.MipSlice = 0;
-        if (RayTracingShadowMaskUavBindlessIndex == UINT32_MAX)
-        {
-            RayTracingShadowMaskUavBindlessIndex = Device->CreateBindlessUav(ShadowMask, nullptr, ShadowMaskUavDesc);
-        }
-        else if (RayTracingShadowMaskUavResource != ShadowMask)
-        {
-            WriteBindlessUav(RayTracingShadowMaskUavBindlessIndex, ShadowMask, nullptr, ShadowMaskUavDesc);
-        }
-        RayTracingShadowMaskUavResource = ShadowMask;
-
-        if (ShadowMaskBindlessIndex == UINT32_MAX || ShadowMaskResource != ShadowMask)
-        {
-            D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc = {};
-            SrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-            SrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            SrvDesc.Format = DXGI_FORMAT_R8_UNORM;
-            SrvDesc.Texture2D.MipLevels = 1;
-            if (ShadowMaskBindlessIndex == UINT32_MAX)
-            {
-                ShadowMaskBindlessIndex = Device->CreateBindlessSrv(ShadowMask, SrvDesc);
-            }
-            else
-            {
-                WriteBindlessSrv(ShadowMaskBindlessIndex, ShadowMask, SrvDesc);
-            }
-            ShadowMaskResource = ShadowMask;
-        }
-
-        if (RayTracingGBufferASrvBindlessIndex == UINT32_MAX || RayTracingShadowMaskUavBindlessIndex == UINT32_MAX || ShadowMaskBindlessIndex == UINT32_MAX)
+        if (DepthBindlessIndex == UINT32_MAX || GBufferABindlessIndex == UINT32_MAX || ShadowMaskUavBindlessIndex == UINT32_MAX || ShadowMaskSrvBindlessIndex == UINT32_MAX)
         {
             return;
         }
@@ -486,8 +390,8 @@ void FForwardRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCamer
         const UINT ClearValues[4] = { 1u, 0u, 0u, 0u };
         ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap(), Device->GetSamplerDescriptorHeap() };
         CommandList4->SetDescriptorHeaps(_countof(Heaps), Heaps);
-        const D3D12_GPU_DESCRIPTOR_HANDLE UavGpuHandle = GetBindlessGpuHandle(RayTracingShadowMaskUavBindlessIndex);
-        const D3D12_CPU_DESCRIPTOR_HANDLE UavCpuHandle = GetBindlessCpuClearHandle(RayTracingShadowMaskUavBindlessIndex);
+        const D3D12_GPU_DESCRIPTOR_HANDLE UavGpuHandle = GetBindlessGpuHandle(ShadowMaskUavBindlessIndex);
+        const D3D12_CPU_DESCRIPTOR_HANDLE UavCpuHandle = GetBindlessCpuClearHandle(ShadowMaskUavBindlessIndex);
         CommandList4->ClearUnorderedAccessViewUint(UavGpuHandle, UavCpuHandle, ShadowMask, ClearValues, 0, nullptr);
 
         const uint32_t DispatchWidth = static_cast<uint32_t>(Viewport.Width);
@@ -501,9 +405,9 @@ void FForwardRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCamer
         const uint32_t GroupCountX = (DispatchWidth + RayQueryThreadGroupSize - 1u) / RayQueryThreadGroupSize;
         const uint32_t GroupCountY = (DispatchHeight + RayQueryThreadGroupSize - 1u) / RayQueryThreadGroupSize;
 
-        CommandList4->SetPipelineState(RayQueryShadowPipeline.Get());
-        CommandList4->SetComputeRootSignature(RayQueryRootSignature.Get());
-        CommandList4->SetComputeRootShaderResourceView(0, TlasResultBuffers[FrameIndex]->GetGPUVirtualAddress());
+        CommandList4->SetPipelineState(GetRayTracingRuntime().RayQueryShadowPipeline.Get());
+        CommandList4->SetComputeRootSignature(GetRayTracingRuntime().RayQueryRootSignature.Get());
+        CommandList4->SetComputeRootShaderResourceView(0, GetRayTracingRuntime().TlasResultBuffers[FrameIndex]->GetGPUVirtualAddress());
         const uint64_t ConstantBufferOffset = 0;
         const DirectX::XMMATRIX LightViewProjection = RendererUtils::BuildDirectionalLightViewProjection(SceneCenter, SceneRadius, LightDirection);
         UpdateSceneConstants(*Data.Camera, SceneModels.front(), ConstantBufferOffset, LightViewProjection);
@@ -512,8 +416,8 @@ void FForwardRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCamer
         const uint32_t BindlessIndices[] =
         {
             DepthBindlessIndex,
-            RayTracingGBufferASrvBindlessIndex,
-            RayTracingShadowMaskUavBindlessIndex,
+            GBufferABindlessIndex,
+            ShadowMaskUavBindlessIndex,
             0u,
             DispatchWidth,
             DispatchHeight
@@ -547,8 +451,7 @@ void FForwardRenderer::AddGpuCullingPass(FRenderGraph& Graph, const FCamera& Cam
     const char* PassName = "GPU Culling";
     Graph.AddPass<FGpuCullingPassData>(PassName, [this, &Camera, DepthHandle](FGpuCullingPassData& Data, FRGPassBuilder& Builder)
     {
-        Data.bEnabled = bEnableIndirectDraw && CullingPipeline && CullingRootSignature && GetIndirectCommandBuffer()
-            && ModelBoundsBuffer && MeshletConeAxisBuffer && MeshletConeApexBuffer && Device && Device->GetBindlessDescriptorHeap();
+        Data.bEnabled = CanDispatchGpuCulling();
         Data.Camera = &Camera;
         if (Data.bEnabled)
         {
@@ -593,13 +496,7 @@ void FForwardRenderer::AddShadowPass(FRenderGraph& Graph, const FCamera& Camera,
 
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
 
-        FScopedPixEvent ShadowEvent(LocalCommandList, L"ShadowMap");
         Cmd.ClearDepth(ShadowDSVHandle, 1.0f);
-
-        if (!Device || !Device->GetBindlessDescriptorHeap())
-        {
-            return;
-        }
 
         ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap() };
         ID3D12PipelineState* CurrentShadowPipeline = nullptr;
@@ -643,7 +540,7 @@ void FForwardRenderer::AddShadowPass(FRenderGraph& Graph, const FCamera& Camera,
 
         for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
         {
-            if (!ShadowVisibility.empty() && !ShadowVisibility[ModelIndex])
+            if (!ShadowVisibility[ModelIndex])
             {
                 continue;
             }
@@ -659,7 +556,8 @@ void FForwardRenderer::AddShadowPass(FRenderGraph& Graph, const FCamera& Camera,
             LocalCommandList->SetGraphicsRootConstantBufferView(
                 0,
                 ConstantBufferAddress + ConstantBufferOffset);
-            const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0;
+            LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
+            const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBindlessIndex) && Model.BoneMatrixCount > 0;
             SetShadowPipeline(bUseSkinning, Model.bDoubleSided);
 
             if (AreModelPixEventsEnabled())
@@ -668,11 +566,11 @@ void FForwardRenderer::AddShadowPass(FRenderGraph& Graph, const FCamera& Camera,
                     ? L"Model"
                     : std::wstring(Model.Name.begin(), Model.Name.end());
                 FScopedPixEvent ModelEvent(LocalCommandList, ModelLabel.c_str());
-                LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0);
+                LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, 0, 0);
             }
             else
             {
-                LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0);
+                LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, 0, 0);
             }
         }
 
@@ -711,15 +609,9 @@ void FForwardRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Camer
 
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
 
-        FScopedPixEvent DepthEvent(LocalCommandList, L"DepthPrepass");
         Cmd.ClearDepth(GetDSVHandle());
 
-        if (!Device || !Device->GetBindlessDescriptorHeap())
-        {
-            return;
-        }
-
-        if (ShadowMapBindlessIndex == UINT32_MAX || EnvironmentCubeBindlessIndex == UINT32_MAX || BrdfLutBindlessIndex == UINT32_MAX)
+        if (!IsValidBindlessIndex(ShadowMap.SrvBindlessIndex) || !IsValidBindlessIndex(EnvironmentCubeBindlessIndex) || !IsValidBindlessIndex(BrdfLutBindlessIndex))
         {
             return;
         }
@@ -751,7 +643,7 @@ void FForwardRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Camer
 
             UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset, Data.LightViewProjection);
 
-            const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0;
+            const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBindlessIndex) && Model.BoneMatrixCount > 0;
             ID3D12PipelineState* DesiredPipeline = bUseSkinning ? DepthPrepassPipelinesSkinned[Model.bDoubleSided ? 1u : 0u].Get() : DepthPrepassPipelines[Model.bDoubleSided ? 1u : 0u].Get();
             if (DesiredPipeline != CurrentPipeline)
             {
@@ -763,21 +655,22 @@ void FForwardRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Camer
             LocalCommandList->SetGraphicsRootConstantBufferView(
                 0,
                 ConstantBufferAddress + ConstantBufferOffset);
-            const uint32_t ShadowMaskEnabled = (bRayTracedShadowsEnabled && ShadowMaskBindlessIndex != UINT32_MAX) ? 1u : 0u;
-            const uint32_t ResolvedShadowMaskIndex = ShadowMaskEnabled ? ShadowMaskBindlessIndex : ShadowMapBindlessIndex;
+            const uint32_t ShadowMaskEnabled = (bRayTracedShadowsEnabled && IsValidBindlessIndex(ShadowMaskBindlessIndex)) ? 1u : 0u;
+            const uint32_t ResolvedShadowMaskIndex = ShadowMaskEnabled ? ShadowMaskBindlessIndex : ShadowMap.SrvBindlessIndex;
             const uint32_t ForwardBindlessIndices[] =
             {
                 Model.BaseColorBindlessIndex,
                 Model.MetallicRoughnessBindlessIndex,
                 Model.NormalBindlessIndex,
                 Model.EmissiveBindlessIndex,
-                ShadowMapBindlessIndex,
+                ShadowMap.SrvBindlessIndex,
                 ResolvedShadowMaskIndex,
                 ShadowMaskEnabled,
                 EnvironmentCubeBindlessIndex,
                 BrdfLutBindlessIndex
             };
             LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(ForwardBindlessIndices), ForwardBindlessIndices, 0);
+            LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
 
             if (AreModelPixEventsEnabled())
             {
@@ -785,11 +678,11 @@ void FForwardRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Camer
                     ? L"Model"
                     : std::wstring(Model.Name.begin(), Model.Name.end());
                 FScopedPixEvent ModelEvent(LocalCommandList, ModelLabel.c_str());
-                LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0);
+                LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, 0, 0);
             }
             else
             {
-                LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0);
+                LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, 0, 0);
             }
         }
     });
@@ -809,7 +702,7 @@ void FForwardRenderer::AddSkyPass(FRenderGraph& Graph, const FCamera& Camera, co
     {
         Data.OutputHandle = RtvHandle;
         Data.Camera = &Camera;
-        Data.bEnabled = SkyPipelineState && SkyRootSignature && SkyGeometry.IndexCount > 0;
+        Data.bEnabled = SkyAtmosphere && SkyAtmosphere->IsReady();
         Data.bClearDepth = !FrameState.bDoDepthPrepass;
 
         if (Data.bEnabled)
@@ -823,28 +716,15 @@ void FForwardRenderer::AddSkyPass(FRenderGraph& Graph, const FCamera& Camera, co
             return;
         }
 
-        ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
-
-        FScopedPixEvent SkyEvent(LocalCommandList, L"SkyAtmosphere");
         const D3D12_CPU_DESCRIPTOR_HANDLE& DepthHandle = GetDSVHandle();
-        Cmd.SetRenderTarget(Data.OutputHandle, &DepthHandle);
-
-        if (Data.bClearDepth)
-        {
-            Cmd.ClearDepth(GetDSVHandle());
-        }
-
-        LocalCommandList->SetPipelineState(SkyPipelineState.Get());
-        LocalCommandList->SetGraphicsRootSignature(SkyRootSignature.Get());
-        LocalCommandList->RSSetViewports(1, &Viewport);
-        LocalCommandList->RSSetScissorRects(1, &ScissorRect);
-        LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        LocalCommandList->IASetVertexBuffers(0, SkyGeometry.VertexBufferCount, SkyGeometry.VertexBufferViews.data());
-        LocalCommandList->IASetIndexBuffer(&SkyGeometry.IndexBufferView);
-
-        UpdateSkyConstants(*Data.Camera);
-        LocalCommandList->SetGraphicsRootConstantBufferView(0, SkyConstantBuffer->GetGPUVirtualAddress());
-        LocalCommandList->DrawIndexedInstanced(SkyGeometry.IndexCount, 1, 0, 0, 0);
+        FSkyAtmosphereFrameParameters Parameters;
+        Parameters.Camera = Data.Camera;
+        Parameters.Projection = Data.Camera->GetProjectionMatrix();
+        Parameters.LightDirection = GetLightDirection();
+        Parameters.LightColor = GetLightColor();
+        Parameters.Viewport = Viewport;
+        Parameters.ScissorRect = ScissorRect;
+        SkyAtmosphere->Draw(Cmd, Parameters, Data.OutputHandle, DepthHandle, Data.bClearDepth);
     });
 }
 
@@ -865,7 +745,7 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
         Data.Camera = &Camera;
         Data.bRenderShadows = FrameState.bRenderShadows;
         Data.LightViewProjection = FrameState.LightViewProjection;
-        Data.bClearDepth = !FrameState.bDoDepthPrepass && !(SkyPipelineState && SkyRootSignature && SkyGeometry.IndexCount > 0);
+        Data.bClearDepth = !FrameState.bDoDepthPrepass && !(SkyAtmosphere && SkyAtmosphere->IsReady());
 
         Builder.WriteTexture(DepthHandle, D3D12_RESOURCE_STATE_DEPTH_WRITE);
         if (FrameState.bRenderShadows)
@@ -876,7 +756,6 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
     {
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
 
-        FScopedPixEvent ForwardEvent(LocalCommandList, L"ForwardPass");
         const D3D12_CPU_DESCRIPTOR_HANDLE& DepthHandle = GetDSVHandle();
         Cmd.SetRenderTarget(Data.OutputHandle, &DepthHandle);
 
@@ -887,12 +766,7 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
 
         LocalCommandList->SetGraphicsRootSignature(RootSignature.Get());
 
-        if (!Device || !Device->GetBindlessDescriptorHeap())
-        {
-            return;
-        }
-
-        if (ShadowMapBindlessIndex == UINT32_MAX || EnvironmentCubeBindlessIndex == UINT32_MAX || BrdfLutBindlessIndex == UINT32_MAX)
+        if (!IsValidBindlessIndex(ShadowMap.SrvBindlessIndex) || !IsValidBindlessIndex(EnvironmentCubeBindlessIndex) || !IsValidBindlessIndex(BrdfLutBindlessIndex))
         {
             return;
         }
@@ -944,15 +818,15 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                     return;
                 }
                 LocalCommandList->SetPipelineState(Pipeline);
-                const uint32_t ShadowMaskEnabled = (bRayTracedShadowsEnabled && ShadowMaskBindlessIndex != UINT32_MAX) ? 1u : 0u;
-                const uint32_t ResolvedShadowMaskIndex = ShadowMaskEnabled ? ShadowMaskBindlessIndex : ShadowMapBindlessIndex;
+                const uint32_t ShadowMaskEnabled = (bRayTracedShadowsEnabled && IsValidBindlessIndex(ShadowMaskBindlessIndex)) ? 1u : 0u;
+                const uint32_t ResolvedShadowMaskIndex = ShadowMaskEnabled ? ShadowMaskBindlessIndex : ShadowMap.SrvBindlessIndex;
                 const uint32_t ForwardBindlessIndices[] =
                 {
                     Range.MaterialBindlessIndices[0],
                     Range.MaterialBindlessIndices[1],
                     Range.MaterialBindlessIndices[2],
                     Range.MaterialBindlessIndices[3],
-                    ShadowMapBindlessIndex,
+                    ShadowMap.SrvBindlessIndex,
                     ResolvedShadowMaskIndex,
                     ShadowMaskEnabled,
                     EnvironmentCubeBindlessIndex,
@@ -989,7 +863,7 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                         continue;
                     }
 
-                    const bool bUseSkinning = Model.BoneMatrixBindlessIndex != UINT32_MAX && Model.BoneMatrixCount > 0;
+                    const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBindlessIndex) && Model.BoneMatrixCount > 0;
                     if (!bUseSkinning)
                     {
                         continue;
@@ -1008,21 +882,22 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                     LocalCommandList->SetGraphicsRootConstantBufferView(
                         0,
                         ConstantBufferAddress + ConstantBufferOffset);
-                    const uint32_t ShadowMaskEnabled = (bRayTracedShadowsEnabled && ShadowMaskBindlessIndex != UINT32_MAX) ? 1u : 0u;
-                    const uint32_t ResolvedShadowMaskIndex = ShadowMaskEnabled ? ShadowMaskBindlessIndex : ShadowMapBindlessIndex;
+                    const uint32_t ShadowMaskEnabled = (bRayTracedShadowsEnabled && IsValidBindlessIndex(ShadowMaskBindlessIndex)) ? 1u : 0u;
+                    const uint32_t ResolvedShadowMaskIndex = ShadowMaskEnabled ? ShadowMaskBindlessIndex : ShadowMap.SrvBindlessIndex;
                     const uint32_t ForwardBindlessIndices[] =
                     {
                         Model.BaseColorBindlessIndex,
                         Model.MetallicRoughnessBindlessIndex,
                         Model.NormalBindlessIndex,
                         Model.EmissiveBindlessIndex,
-                        ShadowMapBindlessIndex,
+                        ShadowMap.SrvBindlessIndex,
                         ResolvedShadowMaskIndex,
                         ShadowMaskEnabled,
                         EnvironmentCubeBindlessIndex,
                         BrdfLutBindlessIndex
                     };
                     LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(ForwardBindlessIndices), ForwardBindlessIndices, 0);
+                    LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
 
                     if (AreModelPixEventsEnabled())
                     {
@@ -1030,11 +905,11 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                             ? L"Model"
                             : std::wstring(Model.Name.begin(), Model.Name.end());
                         FScopedPixEvent ModelEvent(LocalCommandList, ModelLabel.c_str());
-                        LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0);
+                        LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, 0, 0);
                     }
                     else
                     {
-                        LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0);
+                        LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, 0, 0);
                     }
                 }
             }
@@ -1068,21 +943,22 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                 LocalCommandList->SetGraphicsRootConstantBufferView(
                     0,
                     ConstantBufferAddress + ConstantBufferOffset);
-                const uint32_t ShadowMaskEnabled = (bRayTracedShadowsEnabled && ShadowMaskBindlessIndex != UINT32_MAX) ? 1u : 0u;
-                const uint32_t ResolvedShadowMaskIndex = ShadowMaskEnabled ? ShadowMaskBindlessIndex : ShadowMapBindlessIndex;
+                const uint32_t ShadowMaskEnabled = (bRayTracedShadowsEnabled && IsValidBindlessIndex(ShadowMaskBindlessIndex)) ? 1u : 0u;
+                const uint32_t ResolvedShadowMaskIndex = ShadowMaskEnabled ? ShadowMaskBindlessIndex : ShadowMap.SrvBindlessIndex;
                 const uint32_t ForwardBindlessIndices[] =
                 {
                     Model.BaseColorBindlessIndex,
                     Model.MetallicRoughnessBindlessIndex,
                     Model.NormalBindlessIndex,
                     Model.EmissiveBindlessIndex,
-                    ShadowMapBindlessIndex,
+                    ShadowMap.SrvBindlessIndex,
                     ResolvedShadowMaskIndex,
                     ShadowMaskEnabled,
                     EnvironmentCubeBindlessIndex,
                     BrdfLutBindlessIndex
                 };
                 LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(ForwardBindlessIndices), ForwardBindlessIndices, 0);
+                LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
 
                 if (AreModelPixEventsEnabled())
                 {
@@ -1090,11 +966,11 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                         ? L"Model"
                         : std::wstring(Model.Name.begin(), Model.Name.end());
                     FScopedPixEvent ModelEvent(LocalCommandList, ModelLabel.c_str());
-                    LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0);
+                    LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, 0, 0);
                 }
                 else
                 {
-                    LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0);
+                    LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, 0, 0);
                 }
             }
         }
@@ -1112,7 +988,7 @@ void FForwardRenderer::AddObjectIdPass(FRenderGraph& Graph, const FCamera& Camer
 
     Graph.AddPass<FObjectIdPassData>("ObjectId", [this, &Camera, FrameState, ObjectIdHandle, DepthHandle](FObjectIdPassData& Data, FRGPassBuilder& Builder)
     {
-        Data.bEnabled = bObjectIdReadbackRequested && ObjectIdPipeline && ObjectIdTexture;
+        Data.bEnabled = ObjectId->IsReadbackRequested() && ObjectId->IsReady();
         Data.Camera = &Camera;
         Data.LightViewProjection = FrameState.LightViewProjection;
 
@@ -1130,18 +1006,18 @@ void FForwardRenderer::AddObjectIdPass(FRenderGraph& Graph, const FCamera& Camer
 
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
 
-        FScopedPixEvent ObjectIdEvent(LocalCommandList, L"ObjectIdPass");
 
-        LocalCommandList->SetPipelineState(ObjectIdPipeline.Get());
+        LocalCommandList->SetPipelineState(ObjectId->GetPipeline());
         LocalCommandList->SetGraphicsRootSignature(RootSignature.Get());
         LocalCommandList->RSSetViewports(1, &Viewport);
         LocalCommandList->RSSetScissorRects(1, &ScissorRect);
         LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         const D3D12_CPU_DESCRIPTOR_HANDLE& DepthHandle = GetDSVHandle();
+        const D3D12_CPU_DESCRIPTOR_HANDLE ObjectIdRtvHandle = ObjectId->GetRtvHandle();
         LocalCommandList->OMSetRenderTargets(1, &ObjectIdRtvHandle, FALSE, &DepthHandle);
 
         const UINT ClearValue[4] = { 0, 0, 0, 0 };
-        LocalCommandList->ClearRenderTargetView(ObjectIdRtvHandle, reinterpret_cast<const float*>(ClearValue), 0, nullptr);
+        LocalCommandList->ClearRenderTargetView(ObjectId->GetRtvHandle(), reinterpret_cast<const float*>(ClearValue), 0, nullptr);
 
         for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
         {
@@ -1170,6 +1046,7 @@ void FForwardRenderer::AddObjectIdPass(FRenderGraph& Graph, const FCamera& Camer
             LocalCommandList->SetGraphicsRootConstantBufferView(
                 0,
                 ConstantBufferAddress + ConstantBufferOffset);
+            LocalCommandList->SetGraphicsRoot32BitConstants(1, 1, &Model.ObjectId, 0);
 
             if (AreModelPixEventsEnabled())
             {
@@ -1187,26 +1064,26 @@ void FForwardRenderer::AddObjectIdPass(FRenderGraph& Graph, const FCamera& Camer
 
         const uint32_t Width = static_cast<uint32_t>(Viewport.Width);
         const uint32_t Height = static_cast<uint32_t>(Viewport.Height);
-        const uint32_t ReadX = (std::min)(ObjectIdReadbackX, Width > 0 ? Width - 1 : 0);
-        const uint32_t ReadY = (std::min)(ObjectIdReadbackY, Height > 0 ? Height - 1 : 0);
+        const uint32_t ReadX = (std::min)(ObjectId->GetReadbackX(), Width > 0 ? Width - 1 : 0);
+        const uint32_t ReadY = (std::min)(ObjectId->GetReadbackY(), Height > 0 ? Height - 1 : 0);
 
         D3D12_RESOURCE_BARRIER Barrier = {};
         Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        Barrier.Transition.pResource = ObjectIdTexture.Get();
+        Barrier.Transition.pResource = ObjectId->GetTexture();
         Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
         Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
         LocalCommandList->ResourceBarrier(1, &Barrier);
 
         D3D12_TEXTURE_COPY_LOCATION Src = {};
-        Src.pResource = ObjectIdTexture.Get();
+        Src.pResource = ObjectId->GetTexture();
         Src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
         Src.SubresourceIndex = 0;
 
         D3D12_TEXTURE_COPY_LOCATION Dst = {};
-        Dst.pResource = ObjectIdReadback.Get();
+        Dst.pResource = ObjectId->GetReadbackResource();
         Dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-        Dst.PlacedFootprint = ObjectIdFootprint;
+        Dst.PlacedFootprint = ObjectId->GetFootprint();
 
         D3D12_BOX SourceBox = {};
         SourceBox.left = ReadX;
@@ -1221,7 +1098,7 @@ void FForwardRenderer::AddObjectIdPass(FRenderGraph& Graph, const FCamera& Camer
         std::swap(Barrier.Transition.StateBefore, Barrier.Transition.StateAfter);
         LocalCommandList->ResourceBarrier(1, &Barrier);
 
-        bObjectIdReadbackRecorded = true;
+        ObjectId->SetReadbackRecorded();
     });
 }
 
@@ -1229,30 +1106,42 @@ void FForwardRenderer::AddDebugPrintPass(FRenderGraph& Graph, const D3D12_CPU_DE
 {
     struct FDebugPrintPassData
     {
-        bool bEnabled = false;
+        bool bPrintEnabled = false;
+        bool bBoxEnabled = false;
+        bool bLineEnabled = false;
         D3D12_CPU_DESCRIPTOR_HANDLE OutputHandle{};
     };
 
     Graph.AddPass<FDebugPrintPassData>("GpuDebugPrint", [this, RtvHandle](FDebugPrintPassData& Data, FRGPassBuilder& Builder)
     {
-        Data.bEnabled = bEnableGpuDebugPrint && GpuDebugPrintPipeline && GpuDebugPrintRootSignature
-            && GpuDebugLinePipeline && GpuDebugLineRootSignature
-            && Device && Device->GetBindlessDescriptorHeap();
+        Data.bPrintEnabled = GpuDebugState.IsPrintPassReady();
+        Data.bBoxEnabled = GpuDebugState.IsBoxPassReady();
+        Data.bLineEnabled = GpuDebugState.IsLinePassReady();
         Data.OutputHandle = RtvHandle;
-        if (Data.bEnabled)
+        if (Data.bPrintEnabled || Data.bBoxEnabled || Data.bLineEnabled)
         {
             Builder.KeepAlive();
         }
     }, [this](const FDebugPrintPassData& Data, FDX12CommandContext& Cmd)
     {
-        if (!Data.bEnabled)
+        if (!Data.bPrintEnabled && !Data.bBoxEnabled && !Data.bLineEnabled)
         {
             return;
         }
 
-        DispatchGpuDebugPrintStats(Cmd);
-        RenderGpuDebugPrint(Cmd, Data.OutputHandle);
-        RenderGpuDebugLine(Cmd, Data.OutputHandle);
+        if (Data.bPrintEnabled)
+        {
+            GpuDebugState.DispatchPrintStats(Device, Cmd);
+            GpuDebugState.RenderPrint(Device, Viewport, ScissorRect, Cmd, Data.OutputHandle);
+        }
+        if (Data.bBoxEnabled)
+        {
+            GpuDebugState.RenderBox(Device, Viewport, ScissorRect, GetSceneConstantBufferAddress(), GetDSVHandle(), Cmd, Data.OutputHandle);
+        }
+        if (Data.bLineEnabled)
+        {
+            GpuDebugState.RenderLine(Device, Viewport, ScissorRect, GetSceneConstantBufferAddress(), GetDSVHandle(), Cmd, Data.OutputHandle);
+        }
     });
 }
 
@@ -1264,75 +1153,43 @@ void FForwardRenderer::UpdateCullingVisibility(const FCamera& Camera)
         CullingCamera = &Camera;
     }
 
-    const bool bGpuCullingActive = bEnableIndirectDraw && CullingPipeline && CullingRootSignature && GetIndirectCommandBuffer()
-        && ModelBoundsBuffer && MeshletConeAxisBuffer && MeshletConeApexBuffer;
+    const bool bGpuCullingActive = CanDispatchGpuCulling();
     RendererUtils::UpdateCullingVisibility(*CullingCamera, SceneModels, SceneModelVisibility, !bGpuCullingActive);
 }
 
 bool FForwardRenderer::CreateRootSignature(FDX12Device* Device)
 {
-    D3D12_ROOT_PARAMETER1 RootParams[2] = {};
+    CD3DX12_ROOT_PARAMETER1 RootParams[3] = {};
     // RootParams[0]: Scene constant buffer (b0), used in Shaders/ForwardVS.hlsl VSMain and Shaders/ForwardPS.hlsl PSMain
-    RootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-    RootParams[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-    RootParams[0].Descriptor.ShaderRegister = 0;
-    RootParams[0].Descriptor.RegisterSpace = 0;
-    RootParams[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
-
+    RootParams[0].InitAsConstantBufferView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE, D3D12_SHADER_VISIBILITY_ALL);
     // RootParams[1]: Forward bindless indices (b1), used in Shaders/ForwardPS.hlsl PSMain
-    RootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    RootParams[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-    RootParams[1].Constants.Num32BitValues = 9;
-    RootParams[1].Constants.ShaderRegister = 1;
-    RootParams[1].Constants.RegisterSpace = 0;
+    RootParams[1].InitAsConstants(9, 1, 0, D3D12_SHADER_VISIBILITY_PIXEL);
+    // RootParams[2]: Draw command constants (b2), used in vertex shaders that manually index into the bindless index buffer.
+    RootParams[2].InitAsConstants(1, 2, 0, D3D12_SHADER_VISIBILITY_VERTEX);
 
-    D3D12_STATIC_SAMPLER_DESC Samplers[3] = {};
-    Samplers[0].Filter = D3D12_FILTER_ANISOTROPIC;
-    Samplers[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    Samplers[0].AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    Samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-    Samplers[0].MipLODBias = 0.0f;
-    Samplers[0].MaxAnisotropy = 4;
-    Samplers[0].ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
-    Samplers[0].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
-    Samplers[0].MinLOD = 0.0f;
-    Samplers[0].MaxLOD = D3D12_FLOAT32_MAX;
-    Samplers[0].ShaderRegister = 0;
-    Samplers[0].RegisterSpace = 0;
-    Samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    CD3DX12_STATIC_SAMPLER_DESC Samplers[3];
+    CD3DX12_STATIC_SAMPLER_DESC::Init(Samplers[0], 0,
+        D3D12_FILTER_ANISOTROPIC,
+        D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+        0.0f, 4, D3D12_COMPARISON_FUNC_ALWAYS, D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE,
+        0.0f, D3D12_FLOAT32_MAX, D3D12_SHADER_VISIBILITY_PIXEL);
+    CD3DX12_STATIC_SAMPLER_DESC::Init(Samplers[1], 1,
+        D3D12_FILTER_COMPARISON_MIN_MAG_MIP_POINT,
+        D3D12_TEXTURE_ADDRESS_MODE_BORDER, D3D12_TEXTURE_ADDRESS_MODE_BORDER, D3D12_TEXTURE_ADDRESS_MODE_BORDER,
+        0.0f, 0, D3D12_COMPARISON_FUNC_LESS_EQUAL, D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE,
+        0.0f, D3D12_FLOAT32_MAX, D3D12_SHADER_VISIBILITY_PIXEL);
+    CD3DX12_STATIC_SAMPLER_DESC::Init(Samplers[2], 2,
+        D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+        D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+        0.0f, 0, D3D12_COMPARISON_FUNC_ALWAYS, D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK,
+        0.0f, D3D12_FLOAT32_MAX, D3D12_SHADER_VISIBILITY_PIXEL);
 
-    Samplers[1].Filter = D3D12_FILTER_COMPARISON_MIN_MAG_MIP_POINT;
-    Samplers[1].AddressU = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-    Samplers[1].AddressV = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-    Samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-    Samplers[1].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
-    Samplers[1].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-    Samplers[1].MinLOD = 0.0f;
-    Samplers[1].MaxLOD = D3D12_FLOAT32_MAX;
-    Samplers[1].ShaderRegister = 1;
-    Samplers[1].RegisterSpace = 0;
-    Samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    Samplers[2].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    Samplers[2].AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    Samplers[2].AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    Samplers[2].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    Samplers[2].ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
-    Samplers[2].BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
-    Samplers[2].MinLOD = 0.0f;
-    Samplers[2].MaxLOD = D3D12_FLOAT32_MAX;
-    Samplers[2].ShaderRegister = 2;
-    Samplers[2].RegisterSpace = 0;
-    Samplers[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-    D3D12_VERSIONED_ROOT_SIGNATURE_DESC RootDesc = {};
-    RootDesc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
-    RootDesc.Desc_1_1.NumParameters = _countof(RootParams);
-    RootDesc.Desc_1_1.pParameters = RootParams;
-    RootDesc.Desc_1_1.NumStaticSamplers = _countof(Samplers);
-    RootDesc.Desc_1_1.pStaticSamplers = Samplers;
-    RootDesc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
-        | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+    CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC RootDesc;
+    RootDesc.Init_1_1(
+        _countof(RootParams), RootParams,
+        _countof(Samplers), Samplers,
+        D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+            | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
 
     Microsoft::WRL::ComPtr<ID3DBlob> SerializedSig;
     Microsoft::WRL::ComPtr<ID3DBlob> ErrorBlob;
@@ -1351,14 +1208,12 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
 {
     FShaderCompiler Compiler;
 
-    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
-    const std::wstring VSTarget = RendererUtils::BuildShaderTarget(L"vs", ShaderModel);
 
-    if (!Compiler.CompileFromFile(L"Shaders/ForwardVS.hlsl", L"VSMain", VSTarget, ForwardBasePassVsBytecodes[0]))
+    if (!RendererUtils::CompileVertexShader(Compiler, Device, L"Shaders/ForwardVS.hlsl", ForwardBasePassVsBytecodes[0]))
     {
         return false;
     }
-    if (!Compiler.CompileFromFile(L"Shaders/ForwardVS.hlsl", L"VSMain", VSTarget, ForwardBasePassVsBytecodes[1], { L"USE_SKINNING=1" }))
+    if (!RendererUtils::CompileVertexShader(Compiler, Device, L"Shaders/ForwardVS.hlsl", ForwardBasePassVsBytecodes[1], { L"USE_SKINNING=1" }))
     {
         return false;
     }
@@ -1407,8 +1262,6 @@ bool FForwardRenderer::CreatePipelineState(FDX12Device* Device, DXGI_FORMAT Back
 bool FForwardRenderer::CompileForwardBasePassPs(uint32_t PipelineKey, std::vector<uint8_t>& OutPs)
 {
     FShaderCompiler Compiler;
-    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
-    const std::wstring PSTarget = RendererUtils::BuildShaderTarget(L"ps", ShaderModel);
 
     const bool bUseNormal = (PipelineKey & 1u) != 0;
     const bool bUseMr = (PipelineKey & 2u) != 0;
@@ -1432,7 +1285,7 @@ bool FForwardRenderer::CompileForwardBasePassPs(uint32_t PipelineKey, std::vecto
         Defines.push_back(L"USE_ALPHA_MASK=1");
     }
 
-    return Compiler.CompileFromFile(L"Shaders/ForwardPS.hlsl", L"PSMain", PSTarget, OutPs, Defines);
+    return RendererUtils::CompilePixelShader(Compiler, Device, L"Shaders/ForwardPS.hlsl", OutPs, Defines);
 }
 
 bool FForwardRenderer::BuildForwardBasePassPsoDesc(uint32_t PipelineKey, bool bUseSkinning, D3D12_GRAPHICS_PIPELINE_STATE_DESC& OutDesc) const
@@ -1565,21 +1418,11 @@ bool FForwardRenderer::EnsureBasePassPipelineOrFail(uint32_t PipelineKey, bool b
 
 bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vector<FSceneModelResource>& Models)
 {
-    if (!TextureLoader)
-    {
-        return false;
-    }
-
     SceneTextures.clear();
     SceneTextures.reserve(Models.size() * 10); // base color + metallic roughness + normal + emissive + sheen + clearcoat + anisotropy
-    ShadowMapBindlessIndex = UINT32_MAX;
+    ShadowMap.SrvBindlessIndex = UINT32_MAX;
     EnvironmentCubeBindlessIndex = UINT32_MAX;
     BrdfLutBindlessIndex = UINT32_MAX;
-
-    if (!ShadowMap)
-    {
-        return false;
-    }
 
     // Prepare parallel texture loading
     struct FTextureLoadResult
@@ -1747,19 +1590,22 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
     ShadowSrvDesc.Texture2D.MostDetailedMip = 0;
     ShadowSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
 
+    ID3D12Resource* EnvironmentCube = GetEnvironmentCubeTexture();
+    ID3D12Resource* BrdfLut = GetBrdfLutTexture();
+
     D3D12_SHADER_RESOURCE_VIEW_DESC EnvSrvDesc = {};
     EnvSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
     EnvSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    EnvSrvDesc.Format = EnvironmentCubeTexture ? EnvironmentCubeTexture->GetDesc().Format : DXGI_FORMAT_UNKNOWN;
-    EnvSrvDesc.TextureCube.MipLevels = EnvironmentCubeTexture ? EnvironmentCubeTexture->GetDesc().MipLevels : 1;
+    EnvSrvDesc.Format = EnvironmentCube ? EnvironmentCube->GetDesc().Format : DXGI_FORMAT_UNKNOWN;
+    EnvSrvDesc.TextureCube.MipLevels = EnvironmentCube ? EnvironmentCube->GetDesc().MipLevels : 1;
     EnvSrvDesc.TextureCube.MostDetailedMip = 0;
     EnvSrvDesc.TextureCube.ResourceMinLODClamp = 0.0f;
 
     D3D12_SHADER_RESOURCE_VIEW_DESC BrdfSrvDesc = {};
     BrdfSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     BrdfSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    BrdfSrvDesc.Format = BrdfLutTexture ? BrdfLutTexture->GetDesc().Format : DXGI_FORMAT_R8G8B8A8_UNORM;
-    BrdfSrvDesc.Texture2D.MipLevels = BrdfLutTexture ? BrdfLutTexture->GetDesc().MipLevels : 1;
+    BrdfSrvDesc.Format = BrdfLut ? BrdfLut->GetDesc().Format : DXGI_FORMAT_R8G8B8A8_UNORM;
+    BrdfSrvDesc.Texture2D.MipLevels = BrdfLut ? BrdfLut->GetDesc().MipLevels : 1;
     BrdfSrvDesc.Texture2D.MostDetailedMip = 0;
     BrdfSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
 
@@ -1846,19 +1692,21 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
         SceneModels[Index].AnisotropyBindlessIndex = CreateSceneTextureSrv(LoadResults[Index].Anisotropy.Get());
     }
 
-    ShadowMapBindlessIndex = Device->CreateBindlessSrv(ShadowMap.Get(), ShadowSrvDesc);
-    EnvironmentCubeBindlessIndex = Device->CreateBindlessSrv(EnvironmentCubeTexture.Get(), EnvSrvDesc);
-    BrdfLutBindlessIndex = Device->CreateBindlessSrv(BrdfLutTexture.Get(), BrdfSrvDesc);
+    if (ShadowMap.SrvBindlessIndex == UINT32_MAX)
+    {
+        ShadowMap.SrvBindlessIndex = Device->CreateBindlessSrv(ShadowMap.Get(), ShadowSrvDesc);
+    }
+    else
+    {
+        Device->WriteBindlessSrv(ShadowMap.SrvBindlessIndex, ShadowMap.Get(), ShadowSrvDesc);
+    }
+    EnvironmentCubeBindlessIndex = Device->CreateBindlessSrv(EnvironmentCube, EnvSrvDesc);
+    BrdfLutBindlessIndex = Device->CreateBindlessSrv(BrdfLut, BrdfSrvDesc);
     return true;
 }
 
 bool FForwardRenderer::CreateGpuDrivenResources(FDX12Device* Device)
 {
-    if (!Device || SceneModels.empty() || !GetSceneConstantBuffer())
-    {
-        return false;
-    }
-
     // Step 1: Prepare indirect draw data
     FGpuDrivenPreparedData PreparedData;
     if (!PrepareGpuDrivenDrawData(PreparedData))
@@ -1895,11 +1743,12 @@ bool FForwardRenderer::CreateGpuDrivenResources(FDX12Device* Device)
         return false;
     }
 
-    if (!CreateVisibilityListPipelines(Device))
+    if (!GpuDrivenCullingState.CreateVisibilityListPipelines(Device))
     {
         LogError("Failed to create visibility list pipelines");
         return false;
     }
+    RefreshGpuDrivenPersistentValidation();
 
     // Step 6: Create indirect command signature
     if (!CreateIndirectCommandSignature(Device, RootSignature.Get()))
@@ -1911,69 +1760,24 @@ bool FForwardRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     return true;
 }
 
-bool FForwardRenderer::CreateObjectIdResources(FDX12Device* Device, uint32_t Width, uint32_t Height)
-{
-    const bool bCreated = RendererUtils::CreateObjectIdResources(
-        Device,
-        Width,
-        Height,
-        ObjectIdTexture,
-        ObjectIdRtvHeap,
-        ObjectIdRtvHandle,
-        ObjectIdReadback,
-        ObjectIdFootprint,
-        ObjectIdRowPitch);
-    if (bCreated)
-    {
-        ObjectIdState = D3D12_RESOURCE_STATE_RENDER_TARGET;
-    }
-    return bCreated;
-}
-
-bool FForwardRenderer::CreateObjectIdPipeline(FDX12Device* Device)
-{
-    return RendererUtils::CreateObjectIdPipeline(Device, RootSignature.Get(), ObjectIdPipeline);
-}
-
 void FForwardRenderer::UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, uint64_t ConstantBufferOffset, const DirectX::XMMATRIX& LightViewProjection)
 {
     const DirectX::XMVECTOR LightDir = DirectX::XMLoadFloat3(&LightDirection);
 
-    RendererUtils::UpdateSceneConstants(
-        Camera,
-        Model,
-        LightIntensity,
-        LightDir,
-        LightColor,
-        LightViewProjection,
-        Camera.GetProjectionMatrix(),
-        bShadowsEnabled ? ShadowStrength : 0.0f,
-        ShadowBias,
-        static_cast<float>(ShadowMapWidth),
-        static_cast<float>(ShadowMapHeight),
-        EnvironmentMipCount,
-        DirectX::XMFLOAT2(0.0f, 0.0f),
-        0u,
-        bGtaoEnabled,
-        GtaoRadius,
-        GtaoIntensity,
-        GtaoPower,
-        GtaoThickness,
-        GtaoDirectionCount,
-        GtaoStepCount,
-        GetSceneConstantBufferMapped(),
-        ConstantBufferOffset);
-}
-
-void FForwardRenderer::UpdateSkyConstants(const FCamera& Camera)
-{
-    using namespace DirectX;
-
-    const FFloat3 CameraPosition = Camera.GetPosition();
-    const XMMATRIX Scale = XMMatrixScaling(SkySphereRadius, SkySphereRadius, SkySphereRadius);
-    const XMMATRIX Translation = XMMatrixTranslation(CameraPosition.x, CameraPosition.y, CameraPosition.z);
-    const XMMATRIX World = Scale * Translation;
-
-    const XMVECTOR LightDir = XMLoadFloat3(&LightDirection);
-    RendererUtils::UpdateSkyConstants(Camera, World, Camera.GetProjectionMatrix(), LightDir, LightColor, SkyConstantBufferMapped);
+    RendererUtils::FUpdateSceneConstantsParams Params;
+    Params.Camera = &Camera;
+    Params.Model = &Model;
+    Params.LightIntensity = LightIntensity;
+    Params.LightDirection = LightDir;
+    Params.LightColor = LightColor;
+    Params.LightViewProjection = LightViewProjection;
+    Params.Projection = Camera.GetProjectionMatrix();
+    Params.ShadowStrength = bShadowsEnabled ? ShadowStrength : 0.0f;
+    Params.ShadowBias = ShadowBias;
+    Params.ShadowMapWidth = static_cast<float>(ShadowMapWidth);
+    Params.ShadowMapHeight = static_cast<float>(ShadowMapHeight);
+    Params.EnvMapMipCount = GetEnvironmentMipCount();
+    Params.ConstantBufferMapped = GetSceneConstantBufferMapped();
+    Params.ConstantBufferOffset = ConstantBufferOffset;
+    RendererUtils::UpdateSceneConstants(Params);
 }

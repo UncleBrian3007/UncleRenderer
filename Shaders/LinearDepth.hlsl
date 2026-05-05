@@ -12,7 +12,7 @@ cbuffer LinearDepthBindlessConstants : register(b1)
 };
 SamplerState DepthSampler : register(s0);
 
-VSOutput VSMain(uint VertexId : SV_VertexID)
+VSOutput LinearDepthVS(uint VertexId : SV_VertexID)
 {
     float2 Positions[3] =
     {
@@ -27,7 +27,7 @@ VSOutput VSMain(uint VertexId : SV_VertexID)
     return Output;
 }
 
-float PSMain(VSOutput Input) : SV_Target
+float LinearDepthPS(VSOutput Input) : SV_Target
 {
     Texture2D<float> DepthBuffer = ResourceDescriptorHeap[DepthBufferIndex];
     float depth = DepthBuffer.Sample(DepthSampler, Input.UV).r;

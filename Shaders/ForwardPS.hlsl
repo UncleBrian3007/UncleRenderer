@@ -1,5 +1,6 @@
 #include "PBRCommon.hlsl"
 #include "SceneConstants.hlsl"
+#include "Common.hlsli"
 
 struct VSOutput
 {
@@ -43,39 +44,7 @@ SamplerState AlbedoSampler : register(s0);
 SamplerComparisonState ShadowSampler : register(s1);
 SamplerState IblSampler : register(s2);
 
-float2 ApplyTextureTransform(float2 uv, float4 offsetScale, float4 rotation)
-{
-    float2 scaled = uv * offsetScale.zw;
-    float2 rotated = float2(
-        scaled.x * rotation.x - scaled.y * rotation.y,
-        scaled.x * rotation.y + scaled.y * rotation.x);
-    return rotated + offsetScale.xy;
-}
-
-float3 ComputeWorldNormal(VSOutput Input, float2 normalUV)
-{
-    float3 vertexNormal = normalize(Input.Normal);
-
-#if USE_NORMAL_MAP
-    Texture2D NormalTexture = ResourceDescriptorHeap[NormalTextureIndex];
-    float3 tangent = normalize(Input.Tangent.xyz - vertexNormal * dot(vertexNormal, Input.Tangent.xyz));
-    float3 bitangent = normalize(cross(vertexNormal, tangent)) * Input.Tangent.w;
-
-    float3 tangentNormal = NormalTexture.Sample(AlbedoSampler, normalUV).rgb * 2.0f - 1.0f;
-    const float tangentEpsilon = 1e-5f;
-    float tangentNormalLength = length(tangentNormal);
-    tangentNormal = tangentNormalLength < tangentEpsilon ? float3(0.0f, 0.0f, 1.0f) : tangentNormal;
-
-    float3x3 TBN = float3x3(tangent, bitangent, vertexNormal);
-    float3 worldNormal = mul(tangentNormal, TBN);
-
-    return normalize(worldNormal);
-#else
-    return vertexNormal;
-#endif
-}
-
-float4 PSMain(VSOutput Input) : SV_Target
+float4 ForwardPS(VSOutput Input) : SV_Target
 {
     Texture2D AlbedoTexture = ResourceDescriptorHeap[AlbedoTextureIndex];
     Texture2D MetallicRoughnessTexture = ResourceDescriptorHeap[MetallicRoughnessTextureIndex];
@@ -106,7 +75,12 @@ float4 PSMain(VSOutput Input) : SV_Target
 #if USE_EMISSIVE_MAP
     emissive *= EmissiveTexture.Sample(AlbedoSampler, emissiveUV).rgb;
 #endif
-    float3 n = ComputeWorldNormal(Input, normalUV);
+#if USE_NORMAL_MAP
+    float3 tangentNormal = NormalTexture.Sample(AlbedoSampler, normalUV).rgb * 2.0f - 1.0f;
+    float3 n = ComputeWorldNormal(Input.Normal, Input.Tangent, tangentNormal);
+#else
+    float3 n = normalize(Input.Normal);
+#endif
     float3 v = normalize(CameraPosition - Input.WorldPos);
     float3 l = normalize(LightDirection);
 

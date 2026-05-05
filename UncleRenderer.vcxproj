@@ -59,20 +59,24 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
-      <PreprocessorDefinitions>WIN32;_WINDOWS;_DEBUG;_UNICODE;UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;_WINDOWS;_DEBUG;_UNICODE;UNICODE;WITH_EMBREE_MESHCARDS=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>$(ProjectDir)Source;$(ProjectDir)Source\Core;$(ProjectDir)Source\RHI;$(ProjectDir)Source\Render;$(ProjectDir)ThirdParty\imgui;$(ProjectDir)ThirdParty\imgui\backends;$(ProjectDir)ThirdParty\d3d12;$(ProjectDir)ThirdParty\WinPixEventRuntime;$(ProjectDir)ThirdParty\meshoptimizer;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)Source;$(ProjectDir)Source\Core;$(ProjectDir)Source\RHI;$(ProjectDir)Source\Render;$(ProjectDir)ThirdParty\imgui;$(ProjectDir)ThirdParty\imgui\backends;$(ProjectDir)ThirdParty\d3d12;$(ProjectDir)ThirdParty\WinPixEventRuntime;$(ProjectDir)ThirdParty\meshoptimizer;$(ProjectDir)ThirdParty\embree\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>d3d12.lib;dxgi.lib;dxcompiler.lib;dxguid.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(ProjectDir)ThirdParty\embree\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>d3d12.lib;dxgi.lib;dxcompiler.lib;dxguid.lib;embree4.lib;tbb12.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
       <Command>if exist "$(SolutionDir)packages\WinPixEventRuntime.1.0.240308001\bin\WinPixEventRuntime.dll" copy /Y "$(SolutionDir)packages\WinPixEventRuntime.1.0.240308001\bin\WinPixEventRuntime.dll" "$(OutDir)"
 if exist "$(SolutionDir)packages\Microsoft.Direct3D.DXC.1.8.2505.32\bin\x64\dxcompiler.dll" copy /Y "$(SolutionDir)packages\Microsoft.Direct3D.DXC.1.8.2505.32\bin\x64\dxcompiler.dll" "$(OutDir)"
+if exist "$(ProjectDir)ThirdParty\embree\bin\embree4.dll" copy /Y "$(ProjectDir)ThirdParty\embree\bin\embree4.dll" "$(OutDir)"
+if exist "$(ProjectDir)ThirdParty\embree\bin\tbb12.dll" copy /Y "$(ProjectDir)ThirdParty\embree\bin\tbb12.dll" "$(OutDir)"
+if exist "$(ProjectDir)ThirdParty\embree\bin\tbbmalloc.dll" copy /Y "$(ProjectDir)ThirdParty\embree\bin\tbbmalloc.dll" "$(OutDir)"
 if not exist "$(OutDir)D3D12" mkdir "$(OutDir)D3D12"
 if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\D3D12Core.dll" copy /Y "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\D3D12Core.dll" "$(OutDir)D3D12"
 if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\D3D12Core.pdb" copy /Y "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\D3D12Core.pdb" "$(OutDir)D3D12"
@@ -86,9 +90,9 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>WIN32;_WINDOWS;NDEBUG;_UNICODE;UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;_WINDOWS;NDEBUG;_UNICODE;UNICODE;WITH_EMBREE_MESHCARDS=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>$(ProjectDir)Source;$(ProjectDir)Source\Core;$(ProjectDir)Source\RHI;$(ProjectDir)Source\Render;$(ProjectDir)ThirdParty\imgui;$(ProjectDir)ThirdParty\imgui\backends;$(ProjectDir)ThirdParty\d3d12;$(ProjectDir)ThirdParty\WinPixEventRuntime;$(ProjectDir)ThirdParty\meshoptimizer;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)Source;$(ProjectDir)Source\Core;$(ProjectDir)Source\RHI;$(ProjectDir)Source\Render;$(ProjectDir)ThirdParty\imgui;$(ProjectDir)ThirdParty\imgui\backends;$(ProjectDir)ThirdParty\d3d12;$(ProjectDir)ThirdParty\WinPixEventRuntime;$(ProjectDir)ThirdParty\meshoptimizer;$(ProjectDir)ThirdParty\embree\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
@@ -96,11 +100,15 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
       <SubSystem>Windows</SubSystem>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
-      <AdditionalDependencies>d3d12.lib;dxgi.lib;dxcompiler.lib;dxguid.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(ProjectDir)ThirdParty\embree\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>d3d12.lib;dxgi.lib;dxcompiler.lib;dxguid.lib;embree4.lib;tbb12.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
       <Command>if exist "$(SolutionDir)packages\WinPixEventRuntime.1.0.240308001\bin\WinPixEventRuntime.dll" copy /Y "$(SolutionDir)packages\WinPixEventRuntime.1.0.240308001\bin\WinPixEventRuntime.dll" "$(OutDir)"
 if exist "$(SolutionDir)packages\Microsoft.Direct3D.DXC.1.8.2505.32\bin\x64\dxcompiler.dll" copy /Y "$(SolutionDir)packages\Microsoft.Direct3D.DXC.1.8.2505.32\bin\x64\dxcompiler.dll" "$(OutDir)"
+if exist "$(ProjectDir)ThirdParty\embree\bin\embree4.dll" copy /Y "$(ProjectDir)ThirdParty\embree\bin\embree4.dll" "$(OutDir)"
+if exist "$(ProjectDir)ThirdParty\embree\bin\tbb12.dll" copy /Y "$(ProjectDir)ThirdParty\embree\bin\tbb12.dll" "$(OutDir)"
+if exist "$(ProjectDir)ThirdParty\embree\bin\tbbmalloc.dll" copy /Y "$(ProjectDir)ThirdParty\embree\bin\tbbmalloc.dll" "$(OutDir)"
 if not exist "$(OutDir)D3D12" mkdir "$(OutDir)D3D12"
 if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\D3D12Core.dll" copy /Y "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\D3D12Core.dll" "$(OutDir)D3D12"
 if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\D3D12Core.pdb" copy /Y "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\D3D12Core.pdb" "$(OutDir)D3D12"
@@ -109,6 +117,8 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="Source\Scene\ClusterDAGBuilder.cpp" />
+    <ClCompile Include="Source\Scene\PositionQemReducer.cpp" />
     <ClCompile Include="Source\Scene\GltfAnimation.cpp" />
     <ClCompile Include="Source\Scene\SceneJsonLoader.cpp" />
     <ClCompile Include="Source\Scene\GltfLoader.cpp" />
@@ -130,28 +140,36 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <ClCompile Include="Source\Core\RendererConfig.cpp" />
     <ClCompile Include="Source\Render\DeferredRenderer.cpp" />
     <ClCompile Include="Source\Render\Deferred\DeferredFrameOrchestrator.cpp" />
-    <ClCompile Include="Source\Render\Deferred\DeferredGeometryPasses.cpp" />
-    <ClCompile Include="Source\Render\Deferred\DeferredLightingPasses.cpp" />
+    <ClCompile Include="Source\Render\Deferred\DeferredBasePass.cpp" />
+    <ClCompile Include="Source\Render\Deferred\DeferredLightingPass.cpp" />
+    <ClCompile Include="Source\Render\Deferred\Hzb.cpp" />
     <ClCompile Include="Source\Render\Deferred\GTAO.cpp" />
     <ClCompile Include="Source\Render\Deferred\AutoExposure.cpp" />
     <ClCompile Include="Source\Render\Deferred\Cas.cpp" />
-    <ClCompile Include="Source\Render\Deferred\DeferredPostProcessPasses.cpp" />
     <ClCompile Include="Source\Render\Deferred\Taa.cpp" />
     <ClCompile Include="Source\Render\Deferred\Ssr.cpp" />
     <ClCompile Include="Source\Render\Deferred\RestirGI.cpp" />
     <ClCompile Include="Source\Render\Deferred\RayTracingShadow.cpp" />
     <ClCompile Include="Source\Render\Deferred\PathTracing.cpp" />
     <ClCompile Include="Source\Render\Deferred\RestirGIDenoiser.cpp" />
+    <ClCompile Include="Source\Render\Deferred\ClusterDagRuntime.cpp" />
     <ClCompile Include="Source\Render\Deferred\Tonemap.cpp" />
     <ClCompile Include="Source\Render\Deferred\DeferredResourceImporter.cpp" />
-    <ClCompile Include="Source\Render\Deferred\DeferredVisibilityPasses.cpp" />
     <ClCompile Include="Source\Render\DebugPrintFont.cpp" />
+    <ClCompile Include="Source\Render\GpuDebug.cpp" />
+    <ClCompile Include="Source\Render\GpuDrivenCulling.cpp" />
+    <ClCompile Include="Source\Render\EnvironmentMap.cpp" />
+    <ClCompile Include="Source\Render\RayTracingRuntime.cpp" />
+    <ClCompile Include="Source\Render\ObjectId.cpp" />
+    <ClCompile Include="Source\Render\SceneModelResourceLoader.cpp" />
     <ClCompile Include="Source\Render\Renderer.cpp" />
     <ClCompile Include="Source\Render\RendererUtils.cpp" />
+    <ClCompile Include="Source\Render\SkyAtmosphere.cpp">
+      <ObjectFileName>$(IntDir)Render\SkyAtmosphereShared.obj</ObjectFileName>
+    </ClCompile>
     <ClCompile Include="Source\Render\TextureLoader.cpp" />
     <ClCompile Include="Source\Render\ForwardRenderer.cpp" />
     <ClCompile Include="Source\Render\RenderGraph.cpp" />
-    <ClCompile Include="Source\Render\RenderPass.cpp" />
     <ClCompile Include="Source\Render\ShaderCompiler.cpp" />
     <ClCompile Include="Source\Scene\Camera.cpp" />
     <ClCompile Include="Source\Scene\Material.cpp" />
@@ -166,31 +184,43 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <ClCompile Include="ThirdParty\imgui\imgui_widgets.cpp" Condition="Exists('$(ProjectDir)ThirdParty\imgui\imgui_widgets.cpp')" />
     <ClCompile Include="ThirdParty\meshoptimizer\allocator.cpp" />
     <ClCompile Include="ThirdParty\meshoptimizer\clusterizer.cpp" />
+    <ClCompile Include="ThirdParty\meshoptimizer\indexanalyzer.cpp" />
     <ClCompile Include="ThirdParty\meshoptimizer\indexcodec.cpp" />
     <ClCompile Include="ThirdParty\meshoptimizer\indexgenerator.cpp" />
-    <ClCompile Include="ThirdParty\meshoptimizer\overdrawanalyzer.cpp" />
+    <ClCompile Include="ThirdParty\meshoptimizer\meshletcodec.cpp" />
+    <ClCompile Include="ThirdParty\meshoptimizer\meshletutils.cpp" />
+    <ClCompile Include="ThirdParty\meshoptimizer\opacitymap.cpp" />
     <ClCompile Include="ThirdParty\meshoptimizer\overdrawoptimizer.cpp" />
+    <ClCompile Include="ThirdParty\meshoptimizer\partition.cpp" />
+    <ClCompile Include="ThirdParty\meshoptimizer\quantization.cpp" />
+    <ClCompile Include="ThirdParty\meshoptimizer\rasterizer.cpp" />
     <ClCompile Include="ThirdParty\meshoptimizer\simplifier.cpp" />
     <ClCompile Include="ThirdParty\meshoptimizer\spatialorder.cpp" />
     <ClCompile Include="ThirdParty\meshoptimizer\stripifier.cpp" />
-    <ClCompile Include="ThirdParty\meshoptimizer\vcacheanalyzer.cpp" />
     <ClCompile Include="ThirdParty\meshoptimizer\vcacheoptimizer.cpp" />
     <ClCompile Include="ThirdParty\meshoptimizer\vertexcodec.cpp" />
     <ClCompile Include="ThirdParty\meshoptimizer\vertexfilter.cpp" />
-    <ClCompile Include="ThirdParty\meshoptimizer\vfetchanalyzer.cpp" />
     <ClCompile Include="ThirdParty\meshoptimizer\vfetchoptimizer.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="Assets\Scenes\BoxTextured.json" />
+    <None Include="Assets\Scenes\CompareBaseColor.json" />
+    <None Include="Assets\Scenes\CompareNormal.json" />
+    <None Include="Assets\Scenes\Duck.json" />
+    <None Include="Assets\Scenes\metal_spheres.json" />
+    <None Include="Shaders\Common.hlsli" />
     <None Include="Shaders\ffx_a.h" />
     <None Include="Shaders\ffx_spd.h" />
     <ClInclude Include="Source\Core\Application.h" />
     <ClInclude Include="Source\Core\GpuDebugMarkers.h" />
+    <ClInclude Include="Source\Core\LightingVisualizationShared.h" />
     <ClInclude Include="Source\Core\RendererConfig.h" />
     <ClInclude Include="Source\Core\ImGuiSupport.h" />
     <ClInclude Include="Source\Core\EngineTime.h" />
     <ClInclude Include="Source\Core\Logger.h" />
     <ClInclude Include="Source\Core\TaskSystem.h" />
     <ClInclude Include="Source\Core\Window.h" />
+    <ClInclude Include="Source\Render\ObjectId.h" />
     <ClInclude Include="Source\RHI\DX12CommandContext.h" />
     <ClInclude Include="Source\RHI\DX12CommandQueue.h" />
     <ClInclude Include="Source\RHI\DX12Commons.h" />
@@ -203,15 +233,15 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <ClInclude Include="Source\RHI\RayTracing.h" />
     <ClInclude Include="Source\Render\DeferredRenderer.h" />
     <ClInclude Include="Source\Render\Deferred\DeferredFrameOrchestrator.h" />
-    <ClInclude Include="Source\Render\Deferred\DeferredGeometryPasses.h" />
-    <ClInclude Include="Source\Render\Deferred\DeferredLightingPasses.h" />
+    <ClInclude Include="Source\Render\Deferred\DeferredBasePass.h" />
+    <ClInclude Include="Source\Render\Deferred\DeferredLightingPass.h" />
+    <ClInclude Include="Source\Render\Deferred\Hzb.h" />
     <ClInclude Include="Source\Render\Deferred\AutoExposure.h" />
     <ClInclude Include="Source\Render\Deferred\Cas.h" />
-    <ClInclude Include="Source\Render\Deferred\DeferredPostProcessPasses.h" />
+    <ClInclude Include="Source\Render\Deferred\ClusterDagRuntime.h" />
     <ClInclude Include="Source\Render\Deferred\Taa.h" />
     <ClInclude Include="Source\Render\Deferred\DeferredPassContext.h" />
     <ClInclude Include="Source\Render\Deferred\DeferredResourceImporter.h" />
-    <ClInclude Include="Source\Render\Deferred\DeferredVisibilityPasses.h" />
     <ClInclude Include="Source\Render\Deferred\Gtao.h" />
     <ClInclude Include="Source\Render\Deferred\RayTracingShadow.h" />
     <ClInclude Include="Source\Render\Deferred\Ssr.h" />
@@ -220,18 +250,26 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <ClInclude Include="Source\Render\Deferred\PathTracing.h" />
     <ClInclude Include="Source\Render\Deferred\Tonemap.h" />
     <ClInclude Include="Source\Render\DebugPrintFont.h" />
+    <ClInclude Include="Source\Render\GpuDebug.h" />
+    <ClInclude Include="Source\Render\GpuDrivenCulling.h" />
     <ClInclude Include="Source\Render\RendererUtils.h" />
+    <ClInclude Include="Source\Render\SceneModelResource.h" />
+    <ClInclude Include="Source\Render\SceneModelResourceLoader.h" />
+    <ClInclude Include="Source\Render\RayTracingRuntime.h" />
+    <ClInclude Include="Source\Render\SkyAtmosphere.h" />
     <ClInclude Include="Source\Render\TextureLoader.h" />
     <ClInclude Include="Source\Render\Renderer.h" />
+    <ClInclude Include="Source\Render\EnvironmentMap.h" />
     <ClInclude Include="Source\Render\ForwardRenderer.h" />
     <ClInclude Include="Source\Render\RenderGraph.h" />
-    <ClInclude Include="Source\Render\RenderPass.h" />
     <ClInclude Include="Source\Render\ShaderCompiler.h" />
     <ClInclude Include="Source\Scene\Camera.h" />
+    <ClInclude Include="Source\Scene\ClusterDAG.h" />
     <ClInclude Include="Source\Scene\GltfAnimation.h" />
     <ClInclude Include="Source\Scene\GltfLoader.h" />
     <ClInclude Include="Source\Scene\Material.h" />
     <ClInclude Include="Source\Scene\Mesh.h" />
+    <ClInclude Include="Source\Scene\PositionQemReducer.h" />
     <ClInclude Include="Source\Scene\SceneJsonLoader.h" />
     <ClInclude Include="Source\Scene\Transform.h" />
     <ClInclude Include="Source\Math\MathTypes.h" />
@@ -263,7 +301,7 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <None Include="Shaders\ForwardVS.hlsl" />
     <None Include="Shaders\FullscreenTriangle.hlsl" />
     <None Include="Shaders\ObjectId.hlsl" />
-    <None Include="Shaders\RestirGIReservoir.hlsli" />
+    <None Include="Shaders\RestirGI\RestirGIReservoir.hlsli" />
     <None Include="ThirdParty\ddspp\LICENSE" />
   </ItemGroup>
   <ItemGroup>
@@ -286,7 +324,7 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <None Include="Shaders\TemporalAA.hlsl">
       <FileType>Document</FileType>
     </None>
-    <None Include="Shaders\PathTracingAccumulation.hlsl">
+    <None Include="Shaders\PathTracing\PathTracingAccumulation.hlsl">
       <FileType>Document</FileType>
     </None>
     <None Include="Shaders\BuildHZB.hlsl">
@@ -299,13 +337,13 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     </None>
   </ItemGroup>
   <ItemGroup>
-    <None Include="Shaders\GpuDebugPrintCommon.hlsl">
+    <None Include="Shaders\GpuDebug\GpuDebugPrintCommon.hlsl">
       <FileType>Document</FileType>
     </None>
-    <None Include="Shaders\GpuDebugPrint.hlsl">
+    <None Include="Shaders\GpuDebug\GpuDebugPrint.hlsl">
       <FileType>Document</FileType>
     </None>
-    <None Include="Shaders\GpuDebugPrintStats.hlsl">
+    <None Include="Shaders\GpuDebug\GpuDebugPrintStats.hlsl">
       <FileType>Document</FileType>
     </None>
   </ItemGroup>
@@ -330,13 +368,16 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     </None>
   </ItemGroup>
   <ItemGroup>
-    <None Include="Shaders\BuildMeshletRunsAppend.hlsl">
+    <None Include="Shaders\GpuDrivenCulling\BuildMeshletRunsAppend.hlsl">
       <FileType>Document</FileType>
     </None>
-    <None Include="Shaders\ClearMeshletRunCounts.hlsl">
+    <None Include="Shaders\ClusterDag\BuildClusterDagRunsAppend.hlsl">
       <FileType>Document</FileType>
     </None>
-    <None Include="Shaders\CullMeshletVisibility.hlsl">
+    <None Include="Shaders\GpuDrivenCulling\ClearMeshletRunCounts.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\GpuDrivenCulling\CullMeshletVisibility.hlsl">
       <FileType>Document</FileType>
     </None>
   </ItemGroup>
@@ -351,16 +392,16 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     </None>
   </ItemGroup>
   <ItemGroup>
-    <None Include="Shaders\BuildEarlyRejectList.hlsl">
+    <None Include="Shaders\GpuDrivenCulling\BuildEarlyRejectList.hlsl">
       <FileType>Document</FileType>
     </None>
-    <None Include="Shaders\BuildVisibilityLists.hlsl">
+    <None Include="Shaders\GpuDrivenCulling\BuildVisibilityLists.hlsl">
       <FileType>Document</FileType>
     </None>
-    <None Include="Shaders\ClearVisibilityCounts.hlsl">
+    <None Include="Shaders\GpuDrivenCulling\ClearVisibilityCounts.hlsl">
       <FileType>Document</FileType>
     </None>
-    <None Include="Shaders\ClearVisibilityFlags.hlsl">
+    <None Include="Shaders\GpuDrivenCulling\ClearVisibilityFlags.hlsl">
       <FileType>Document</FileType>
     </None>
     <None Include="Shaders\CullingConstants.hlsl">
@@ -369,90 +410,126 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <None Include="Shaders\CullMeshletCommon.hlsl">
       <FileType>Document</FileType>
     </None>
-    <None Include="Shaders\CullMeshletVisibilityList.hlsl">
+    <None Include="Shaders\GpuDrivenCulling\CullMeshletVisibilityList.hlsl">
       <FileType>Document</FileType>
     </None>
-    <None Include="Shaders\MergeVisibilityLists.hlsl">
+    <None Include="Shaders\ClusterDag\SelectClusterLOD.hlsl">
       <FileType>Document</FileType>
     </None>
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="Shaders\PathTracing.hlsl">
-      <FileType>Document</FileType>
-    </None>
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="Shaders\SsrBuildIndirectArgs.hlsl">
-      <FileType>Document</FileType>
-    </None>
-    <None Include="Shaders\SsrHWTraceCS.hlsl">
-      <FileType>Document</FileType>
-    </None>
-    <None Include="Shaders\SsrRayGather.hlsl">
-      <FileType>Document</FileType>
-    </None>
-    <None Include="Shaders\SsrResolve.hlsl">
-      <FileType>Document</FileType>
-    </None>
-    <None Include="Shaders\SsrShared.hlsl">
-      <FileType>Document</FileType>
-    </None>
-    <None Include="Shaders\SsrSWTraceCS.hlsl">
-      <FileType>Document</FileType>
-    </None>
-    <None Include="Shaders\SsrSWTracePS.hlsl">
+    <None Include="Shaders\GpuDrivenCulling\MergeVisibilityLists.hlsl">
       <FileType>Document</FileType>
     </None>
   </ItemGroup>
   <ItemGroup>
-    <None Include="Shaders\SsrRayFallback.hlsl">
+    <None Include="Shaders\PathTracing\PathTracing.hlsl">
       <FileType>Document</FileType>
     </None>
   </ItemGroup>
   <ItemGroup>
-    <None Include="Shaders\RestirGI.hlsl">
+    <None Include="Shaders\Ssr\SsrBuildIndirectArgs.hlsl">
       <FileType>Document</FileType>
     </None>
-    <None Include="Shaders\GpuDebugLine.hlsl">
+    <None Include="Shaders\Ssr\SsrHWTraceCS.hlsl">
       <FileType>Document</FileType>
     </None>
-    <None Include="Shaders\GpuDebugLineCommon.hlsl">
+    <None Include="Shaders\Ssr\SsrRayGather.hlsl">
       <FileType>Document</FileType>
     </None>
-    <None Include="Shaders\PathBrdfCommon.hlsli">
+    <None Include="Shaders\Ssr\SsrResolve.hlsl">
       <FileType>Document</FileType>
     </None>
-    <None Include="Shaders\EnvCubemapBasis.hlsli">
+    <None Include="Shaders\Ssr\SsrShared.hlsl">
       <FileType>Document</FileType>
     </None>
-    <None Include="Shaders\EnvEquirectToCubeCS.hlsl">
+    <None Include="Shaders\Ssr\SsrSWTraceCS.hlsl">
       <FileType>Document</FileType>
     </None>
-    <None Include="Shaders\EnvCubeMipGenCS.hlsl">
-      <FileType>Document</FileType>
-    </None>
-    <None Include="Shaders\EnvSpecularPrefilterCS.hlsl">
-      <FileType>Document</FileType>
-    </None>
-    <None Include="Shaders\RestirGISamplingCommon.hlsli">
+    <None Include="Shaders\Ssr\SsrSWTracePS.hlsl">
       <FileType>Document</FileType>
     </None>
   </ItemGroup>
   <ItemGroup>
-    <None Include="Shaders\RestirGiLinearDepthMipGenSpd.hlsl">
-      <FileType>Document</FileType>
-    </None>
-    <None Include="Shaders\RestirGiMipGenSpd.hlsl">
+    <None Include="Shaders\Ssr\SsrRayFallback.hlsl">
       <FileType>Document</FileType>
     </None>
   </ItemGroup>
   <ItemGroup>
-    <None Include="Shaders\RestirGIDenoiser.hlsl">
+    <None Include="Shaders\RestirGI\RestirGI.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\GpuDebug\GpuDebugLine.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\GpuDebug\GpuDebugLineCommon.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\EnvironmentMap\EnvCubemapBasis.hlsli">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\EnvironmentMap\EnvEquirectToCubeCS.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\EnvironmentMap\EnvCubeMipGenCS.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\EnvironmentMap\EnvSpecularPrefilterCS.hlsl">
+      <FileType>Document</FileType>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Shaders\RestirGI\RestirGiLinearDepthMipGenSpd.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\RestirGI\RestirGiMipGenSpd.hlsl">
+      <FileType>Document</FileType>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Shaders\RestirGI\RestirGIDenoiser.hlsl">
       <FileType>Document</FileType>
     </None>
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\ExtractHalfDepthNormal.hlsl">
+      <FileType>Document</FileType>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Shaders\ClusterDag\PersistentClusterDagCull.hlsl">
+      <FileType>Document</FileType>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Shaders\ClusterDag\ClusterDagClusterCull.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\ClusterDag\ClusterDagCommon.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\ClusterDag\ClusterDagLevelSplitClusterCull.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\ClusterDag\ClusterDagLevelSplitNodeCull.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\ClusterDag\ClusterDagNodeCull.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\ClusterDag\ClusterDagTraversalCommon.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\ClusterDag\InitClusterDagLevelSplitQueues.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\ClusterDag\InitClusterDagQueues.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\ClusterDag\PrepareClusterDagLevelSplitClusterArgs.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\ClusterDag\PrepareClusterDagLevelSplitNodeArgs.hlsl">
       <FileType>Document</FileType>
     </None>
   </ItemGroup>

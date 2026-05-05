@@ -33,6 +33,7 @@
 #include <chrono>
 #include <cwchar>
 #include <fstream>
+#include <unordered_set>
 #include <vector>
 #include <d3dx12.h>
 
@@ -71,6 +72,28 @@ namespace
     const char* RestirRandomModeToConfigString(ERestirGIRandomMode Mode)
     {
         return (Mode == ERestirGIRandomMode::BlueNoiseSobol) ? "BlueNoiseSobol" : "Hash";
+    }
+
+    const char* DeferredLightingVisualizationModeToConfigString(EDeferredLightingVisualizationMode Mode)
+    {
+        switch (Mode)
+        {
+        case EDeferredLightingVisualizationMode::DiffuseIndirect:
+            return "DiffuseIndirect";
+        case EDeferredLightingVisualizationMode::AO:
+            return "AO";
+        case EDeferredLightingVisualizationMode::DirectLighting:
+            return "DirectLighting";
+        case EDeferredLightingVisualizationMode::SpecularIndirect:
+            return "SpecularIndirect";
+            case EDeferredLightingVisualizationMode::ClusterDagClusters:
+            return "ClusterDagClusters";
+        case EDeferredLightingVisualizationMode::ClusterDagMip:
+            return "ClusterDagMip";
+        case EDeferredLightingVisualizationMode::Off:
+        default:
+            return "Off";
+        }
     }
 
     void UpsertConfigValue(const std::filesystem::path& ConfigPath, const std::string& Key, const std::string& Value)
@@ -232,61 +255,8 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
 
     const std::filesystem::path ConfigPath = GetRendererConfigPath();
     RendererConfig = FRendererConfigLoader::LoadOrDefault(ConfigPath);
-    bTaskSystemEnabled = RendererConfig.bEnableTaskSystem;
-    bFrameOverlapEnabled = RendererConfig.bEnableFrameOverlap;
-    bVSyncEnabled = RendererConfig.bEnableVSync;
-    bDepthPrepassEnabled = RendererConfig.bUseDepthPrepass;
-    bShadowsEnabled = RendererConfig.bEnableShadows;
-    bRayTracedShadowsEnabled = RendererConfig.bEnableRayTracedShadows;
-    bPathTracingEnabled = RendererConfig.bEnablePathTracing;
-    bPathTracingAccumulationEnabled = RendererConfig.bEnablePathTracingAccumulation;
-    bPathTracingVndfEnabled = RendererConfig.bEnablePathTracingVndf;
-    bGpuTimingEnabled = RendererConfig.bEnableGpuTiming;
-    bGpuDebugPrintEnabled = RendererConfig.bEnableGpuDebugPrint;
-    ShadowBias = RendererConfig.ShadowBias;
-    bTonemapEnabled = RendererConfig.bEnableTonemap;
-    TonemapExposure = RendererConfig.TonemapExposure;
-    TonemapGamma = RendererConfig.TonemapGamma;
-    bCasEnabled = RendererConfig.bEnableCas;
-    CasSharpness = RendererConfig.CasSharpness;
-    bAutoExposureEnabled = RendererConfig.bEnableAutoExposure;
-    AutoExposureKey = RendererConfig.AutoExposureKey;
-    AutoExposureMin = RendererConfig.AutoExposureMin;
-    AutoExposureMax = RendererConfig.AutoExposureMax;
-    AutoExposureSpeedUp = RendererConfig.AutoExposureSpeedUp;
-    AutoExposureSpeedDown = RendererConfig.AutoExposureSpeedDown;
-    bTaaEnabled = RendererConfig.bEnableTAA;
-    TaaHistoryWeight = RendererConfig.TaaHistoryWeight;
-    bGtaoEnabled = RendererConfig.bEnableGtao;
-    bGtaoJitterEnabled = RendererConfig.bEnableGtaoJitter;
-    GtaoRadius = RendererConfig.GtaoRadius;
-    GtaoThickness = RendererConfig.GtaoThickness;
-    bSsrSwEnabled = RendererConfig.bEnableSsrSw;
-    bSsrHwEnabled = RendererConfig.bEnableSsrHw;
-    bSsrHzbEnabled = RendererConfig.bEnableSsrHzb;
-    bSsrRefineEnabled = RendererConfig.bEnableSsrRefine;
-    bSsrDenoiseEnabled = RendererConfig.bEnableSsrDenoise;
-    SsrMaxSteps = RendererConfig.SsrMaxSteps;
-    SsrMaxDistance = RendererConfig.SsrMaxDistance;
-    SsrThickness = RendererConfig.SsrThickness;
-    SsrStride = RendererConfig.SsrStride;
-    SsrRoughnessCutoff = RendererConfig.SsrRoughnessCutoff;
-    SsrIntensity = RendererConfig.SsrIntensity;
-    SsrMode = RendererConfig.SsrMode;
-    SsrSamplesPerQuad = RendererConfig.SsrSamplesPerQuad;
-    bRestirGIEnabled = RendererConfig.bEnableRestirGI;
-    bRestirGIDenoiserEnabled = RendererConfig.bEnableRestirGIDenoiser;
-    bRestirGIShowOnly = false;
-    bRestirGITemporalReuseEnabled = RendererConfig.bEnableRestirGITemporalReuse;
-    bRestirGISpatialReuseEnabled = RendererConfig.bEnableRestirGISpatialReuse;
-    RestirGITemporalAdditionalScale = RendererConfig.RestirGITemporalAdditionalScale;
-    RestirGISpatialAdditionalScale = RendererConfig.RestirGISpatialAdditionalScale;
-    bRestirGIUseVisibility = RendererConfig.bRestirGIUseVisibility;
-    bRestirGIUseBrdf = RendererConfig.bRestirGIUseBrdf;
-    bRestirGIUseHistoryIndirect = RendererConfig.bRestirGIUseHistoryIndirect;
-    RestirGIRandomMode = RendererConfig.RestirGIRandomMode;
 
-    if (bTaskSystemEnabled)
+    if (RendererConfig.bEnableTaskSystem)
     {
         // Initialize task system early
         FTaskScheduler::Get().Initialize();
@@ -307,10 +277,7 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     ForwardRenderer = std::make_unique<FForwardRenderer>();
     DeferredRenderer = std::make_unique<FDeferredRenderer>();
     Camera = std::make_unique<FCamera>();
-    bIndirectDrawEnabled = RendererConfig.bEnableIndirectDraw;
-    bSkinningIndirectDrawEnabled = RendererConfig.bEnableSkinningIndirectDraw;
-    bPbrResearchEnabled = RendererConfig.bEnablePbrResearch;
-    SetModelPixEventsEnabled(bModelPixEventsEnabled);
+    SetModelPixEventsEnabled(RendererConfig.bEnableModelPixEvents);
 
     const std::wstring SceneFilePath = RendererConfig.SceneFile.empty() ? L"Assets/Scenes/Scene.json" : RendererConfig.SceneFile;
     CurrentScenePath = SceneFilePath;
@@ -331,16 +298,14 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
         return false;
     }
 
-    if (bRayTracedShadowsEnabled && !Device->IsRayTracingSupported())
+    if (RendererConfig.bEnableRayTracedShadows && !Device->IsRayTracingSupported())
     {
-        bRayTracedShadowsEnabled = false;
         RendererConfig.bEnableRayTracedShadows = false;
         LogWarning("Ray traced shadows requested, but DXR is not supported. Falling back to raster shadows.");
     }
 
-    if (bPathTracingEnabled && !Device->IsRayTracingSupported())
+    if (RendererConfig.bEnablePathTracing && !Device->IsRayTracingSupported())
     {
-        bPathTracingEnabled = false;
         RendererConfig.bEnablePathTracing = false;
         LogWarning("Path tracing requested, but DXR is not supported. Disabling path tracing.");
     }
@@ -348,8 +313,6 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     if (RendererConfig.bEnableIndirectDraw && !Device->IsShaderModelForIndirectDrawSupported())
     {
         RendererConfig.bEnableIndirectDraw = false;
-        bIndirectDrawEnabled = false;
-        bSkinningIndirectDrawEnabled = false;
         RendererConfig.bEnableSkinningIndirectDraw = false;
         LogWarning("Indirect draw disabled because the device does not support Shader Model 6.8.");
     }
@@ -413,8 +376,11 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
         return false;
     }
 
+    SyncRendererDepthPrepassConfig();
+    SyncDeferredHzbConfig();
     UpdateRendererLighting();
     ApplySceneCameraFromJson(RendererConfig.SceneFile);
+    SyncDeferredRestirGITransientState();
 
     if (!InitializeImGui(WindowWidth, WindowHeight))
     {
@@ -459,7 +425,7 @@ bool FApplication::RenderFrame()
         CompleteAsyncSceneReload();
     }
 
-    if (!PendingScenePath.empty())
+    if (!bAsyncSceneLoadInProgress.load(std::memory_order_acquire) && !PendingScenePath.empty())
     {
         const std::wstring SceneToLoad = std::move(PendingScenePath);
         PendingScenePath.clear();
@@ -479,7 +445,7 @@ bool FApplication::RenderFrame()
 
     const D3D12_RESOURCE_STATES PreviousState = SwapChain->GetBackBufferState(BackBufferIndex);
 
-    if (bGpuTimingEnabled && Device && Device->GetGraphicsQueue())
+    if (RendererConfig.bEnableGpuTiming && Device && Device->GetGraphicsQueue())
     {
         ID3D12Device* D3DDevice = Device->GetDevice();
         ID3D12CommandQueue* Queue = Device->GetGraphicsQueue()->GetD3DQueue();
@@ -549,7 +515,7 @@ bool FApplication::RenderFrame()
         swprintf_s(FrameLabel, L"Frame %llu", static_cast<unsigned long long>(FrameIndex));
         FScopedPixEvent FrameEvent(CommandContext->GetCommandList(), FrameLabel);
 
-        if (bGpuTimingEnabled && FrameTimingQueryHeap && FrameTimingReadback)
+        if (RendererConfig.bEnableGpuTiming && FrameTimingQueryHeap && FrameTimingReadback)
         {
             const uint32 QueryIndex = BackBufferIndex * 2;
             CommandContext->GetCommandList()->EndQuery(FrameTimingQueryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, QueryIndex);
@@ -572,11 +538,13 @@ bool FApplication::RenderFrame()
         const float ClearColor[4] = { 0.05f, 0.10f, 0.20f, 1.0f };
         CommandContext->ClearRenderTarget(RtvHandle, ClearColor);
 
-        if (ActiveRenderer && Camera)
-        {
-            if (bPendingObjectIdReadback)
-            {
-                ActiveRenderer->RequestObjectIdReadback(PendingObjectIdX, PendingObjectIdY);
+          if (ActiveRenderer && Camera)
+          {
+              UpdateDebugPrimitives();
+
+              if (bPendingObjectIdReadback)
+              {
+                  ActiveRenderer->RequestObjectIdReadback(PendingObjectIdX, PendingObjectIdY);
             }
 
             if (bFreezeCamera)
@@ -600,7 +568,7 @@ bool FApplication::RenderFrame()
 
         FScopedPixEvent PresentEvent(CommandContext->GetCommandList(), L"Present");
 
-        if (bGpuTimingEnabled && FrameTimingQueryHeap && FrameTimingReadback)
+        if (RendererConfig.bEnableGpuTiming && FrameTimingQueryHeap && FrameTimingReadback)
         {
             const uint32 QueryIndex = BackBufferIndex * 2;
             CommandContext->GetCommandList()->EndQuery(FrameTimingQueryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, QueryIndex + 1);
@@ -650,8 +618,8 @@ bool FApplication::RenderFrame()
 
     SwapChain->SetBackBufferState(BackBufferIndex, D3D12_RESOURCE_STATE_PRESENT);
 
-    const UINT SyncInterval = bVSyncEnabled ? 1u : 0u;
-    const UINT PresentFlags = (!bVSyncEnabled && SwapChain->AllowsTearing()) ? DXGI_PRESENT_ALLOW_TEARING : 0u;
+    const UINT SyncInterval = RendererConfig.bEnableVSync ? 1u : 0u;
+    const UINT PresentFlags = (!RendererConfig.bEnableVSync && SwapChain->AllowsTearing()) ? DXGI_PRESENT_ALLOW_TEARING : 0u;
     LogVerbose("Present called (SyncInterval: " + std::to_string(SyncInterval) + ", Flags: " + std::to_string(PresentFlags) + ")");
     const HRESULT PresentHr = SwapChain->GetSwapChain()->Present(SyncInterval, PresentFlags);
     if (FAILED(PresentHr))
@@ -661,7 +629,7 @@ bool FApplication::RenderFrame()
     }
 
     const uint64 FenceValue = Device->GetGraphicsQueue()->Signal();
-    if (!bFrameOverlapEnabled)
+    if (!RendererConfig.bEnableFrameOverlap)
     {
         Device->GetGraphicsQueue()->Wait(FenceValue);
     }
@@ -674,11 +642,31 @@ bool FApplication::RenderFrame()
     {
         FrameTimingFenceValues[BackBufferIndex] = FenceValue;
     }
+#if WITH_BINDLESS_DESCRIPTOR_STATS
+    UpdateBindlessDescriptorStatsSnapshot();
+#endif
 
     LogVerbose("Frame completed: " + std::to_string(FrameIndex));
 
     return true;
 }
+
+#if WITH_BINDLESS_DESCRIPTOR_STATS
+void FApplication::UpdateBindlessDescriptorStatsSnapshot()
+{
+    if (!Device)
+    {
+        bCachedBindlessDescriptorStatsValid = false;
+        CachedBindlessDescriptorStats = {};
+        return;
+    }
+
+    Device->PumpTransientBindlessDescriptorReclaim();
+    CachedBindlessDescriptorStats = Device->GetBindlessDescriptorStats();
+    Device->ResetBindlessDescriptorFrameStats();
+    bCachedBindlessDescriptorStatsValid = true;
+}
+#endif
 
 void FApplication::HandleCameraInput(float DeltaSeconds)
 {
@@ -846,78 +834,223 @@ void FApplication::UpdateSelectionFromMouseClick()
 
     RestirGIDebugPixelX = (CursorPos.x > 0) ? static_cast<int>(CursorPos.x / 2) : 0;
     RestirGIDebugPixelY = (CursorPos.y > 0) ? static_cast<int>(CursorPos.y / 2) : 0;
+        SyncDeferredRestirGITransientState();
+}
+
+void FApplication::SyncDeferredPostProcessConfig()
+{
+    if (!DeferredRenderer || ActiveRenderer != DeferredRenderer.get())
+    {
+        return;
+    }
+
+    DeferredRenderer->ApplyPostProcessConfig(RendererConfig);
+}
+
+void FApplication::SyncRendererDepthPrepassConfig()
+{
+    if (ForwardRenderer)
+    {
+        ForwardRenderer->SetDepthPrepassEnabled(RendererConfig.bUseDepthPrepass);
+    }
+
     if (DeferredRenderer)
     {
-        DeferredRenderer->SetRestirGIDebugPixel(static_cast<uint32_t>(RestirGIDebugPixelX), static_cast<uint32_t>(RestirGIDebugPixelY));
+        DeferredRenderer->SetDepthPrepassEnabled(RendererConfig.bUseDepthPrepass);
     }
 }
 
-void FApplication::DrawSelectionBounds(float DisplayWidth, float DisplayHeight)
+void FApplication::SyncDeferredLightingPassConfig()
 {
-#if WITH_IMGUI
-    if (!Camera || !ActiveRenderer || SelectedModelIndex < 0)
+    if (!DeferredRenderer)
     {
         return;
     }
+
+    DeferredRenderer->ApplyLightingPassConfig(RendererConfig);
+}
+
+void FApplication::SyncDeferredHzbConfig()
+{
+    if (DeferredRenderer)
+    {
+        DeferredRenderer->SetHZBEnabled(RendererConfig.bEnableHZB);
+        DeferredRenderer->SetHzbTwoPassEnabled(RendererConfig.bEnableHzbTwoPass);
+    }
+}
+
+void FApplication::SyncRendererGtaoConfig()
+{
+    if (DeferredRenderer)
+    {
+        DeferredRenderer->ApplyGtaoConfig(RendererConfig);
+    }
+
+    if (ForwardRenderer)
+    {
+        ForwardRenderer->ApplyGtaoConfig(RendererConfig);
+    }
+}
+
+void FApplication::SyncRendererPathTracingConfig()
+{
+    if (DeferredRenderer)
+    {
+        DeferredRenderer->ApplyPathTracingConfig(RendererConfig);
+    }
+
+    if (ForwardRenderer)
+    {
+        ForwardRenderer->ApplyPathTracingConfig(RendererConfig);
+    }
+}
+
+void FApplication::SyncDeferredClusterDagConfig()
+{
+    if (!DeferredRenderer)
+    {
+        return;
+    }
+
+    DeferredRenderer->ApplyClusterDAGConfig(RendererConfig);
+}
+
+void FApplication::SyncDeferredSsrConfig()
+{
+    if (!DeferredRenderer || ActiveRenderer != DeferredRenderer.get())
+    {
+        return;
+    }
+
+    DeferredRenderer->ApplySsrConfig(RendererConfig);
+}
+
+void FApplication::SyncDeferredRestirGIConfig()
+{
+    if (!DeferredRenderer || ActiveRenderer != DeferredRenderer.get())
+    {
+        return;
+    }
+
+    DeferredRenderer->ApplyRestirGIConfig(RendererConfig);
+    SyncDeferredRestirGITransientState();
+}
+
+void FApplication::SyncDeferredRestirGITransientState()
+{
+    if (!DeferredRenderer || ActiveRenderer != DeferredRenderer.get())
+    {
+        return;
+    }
+
+    RestirGIDebugPixelX = (std::max)(0, RestirGIDebugPixelX);
+    RestirGIDebugPixelY = (std::max)(0, RestirGIDebugPixelY);
+
+    FDeferredRenderer::FRestirGITransientState TransientState;
+    TransientState.bFreezeFrame = bRestirGIFreezeFrame;
+    TransientState.bDebugRayEnabled = bRestirGIDebugRayEnabled;
+    TransientState.DebugPixelX = static_cast<uint32_t>(RestirGIDebugPixelX);
+    TransientState.DebugPixelY = static_cast<uint32_t>(RestirGIDebugPixelY);
+    DeferredRenderer->ApplyRestirGITransientState(TransientState);
+}
+
+void FApplication::UpdateDebugPrimitives()
+{
+    if (!ActiveRenderer)
+    {
+        return;
+    }
+
+    std::vector<FRenderer::FGpuDebugLineEntry> DebugLines;
+    std::vector<FRenderer::FGpuDebugBoxEntry> DebugBoxes;
 
     const std::vector<FSceneModelResource>* Models = ActiveRenderer->GetSceneModels();
-    if (!Models || SelectedModelIndex >= static_cast<int32_t>(Models->size()))
+    const bool bHasSceneModels = Models && !Models->empty();
+    const bool bHasSelectedModel =
+        bHasSceneModels
+        && SelectedModelIndex >= 0
+        && SelectedModelIndex < static_cast<int32_t>(Models->size());
+
+    if (!bHasSelectedModel)
     {
+        ActiveRenderer->GetGpuDebugState().SetCpuDebugLines(DebugLines);
+        ActiveRenderer->GetGpuDebugState().SetCpuDebugBoxes(DebugBoxes);
         return;
     }
 
-    const FSceneModelResource& Model = (*Models)[SelectedModelIndex];
-    const DirectX::XMMATRIX View = Camera->GetViewMatrix();
-    const DirectX::XMMATRIX Projection = Camera->GetProjectionMatrix();
-    const DirectX::XMMATRIX ViewProjection = DirectX::XMMatrixMultiply(View, Projection);
-
-    const DirectX::XMFLOAT3 Min = Model.BoundsMin;
-    const DirectX::XMFLOAT3 Max = Model.BoundsMax;
-
-    const std::array<DirectX::XMVECTOR, 8> Corners =
+    const size_t MaxDebugLines = FRenderer::GpuDebugLineMaxEntries;
+    const size_t MaxDebugBoxes = FRenderer::GpuDebugBoxMaxEntries;
+    DebugLines.reserve(MaxDebugLines);
+    DebugBoxes.reserve(MaxDebugBoxes);
+    const auto PackColor = [](uint8_t Alpha, uint8_t Red, uint8_t Green, uint8_t Blue) -> uint32_t
     {
-        DirectX::XMVectorSet(Min.x, Min.y, Min.z, 1.0f),
-        DirectX::XMVectorSet(Max.x, Min.y, Min.z, 1.0f),
-        DirectX::XMVectorSet(Min.x, Max.y, Min.z, 1.0f),
-        DirectX::XMVectorSet(Max.x, Max.y, Min.z, 1.0f),
-        DirectX::XMVectorSet(Min.x, Min.y, Max.z, 1.0f),
-        DirectX::XMVectorSet(Max.x, Min.y, Max.z, 1.0f),
-        DirectX::XMVectorSet(Min.x, Max.y, Max.z, 1.0f),
-        DirectX::XMVectorSet(Max.x, Max.y, Max.z, 1.0f)
+        return (static_cast<uint32_t>(Alpha) << 24)
+            | (static_cast<uint32_t>(Red) << 16)
+            | (static_cast<uint32_t>(Green) << 8)
+            | static_cast<uint32_t>(Blue);
     };
 
-    std::array<ImVec2, 8> ScreenPoints{};
-    std::array<bool, 8> ScreenValid{};
-    for (size_t Index = 0; Index < Corners.size(); ++Index)
+    const auto AppendLine = [&](const DirectX::XMFLOAT3& P0, const DirectX::XMFLOAT3& P1, uint32_t PackedColor) -> bool
     {
-        ScreenValid[Index] = ProjectWorldToScreen(Corners[Index], ViewProjection, DisplayWidth, DisplayHeight, ScreenPoints[Index]);
-    }
-
-    ImDrawList* DrawList = ImGui::GetForegroundDrawList();
-    const ImU32 Color = IM_COL32(255, 200, 64, 220);
-    const float Thickness = 2.0f;
-
-    const auto DrawEdge = [&](int32_t A, int32_t B)
-    {
-        if (ScreenValid[A] && ScreenValid[B])
+        if (DebugLines.size() >= MaxDebugLines)
         {
-            DrawList->AddLine(ScreenPoints[A], ScreenPoints[B], Color, Thickness);
+            return false;
         }
+
+        FRenderer::FGpuDebugLineEntry Entry;
+        Entry.P0 = P0;
+        Entry.P1 = P1;
+        Entry.PackedColor = PackedColor;
+        DebugLines.push_back(Entry);
+        return true;
     };
 
-    DrawEdge(0, 1);
-    DrawEdge(1, 3);
-    DrawEdge(3, 2);
-    DrawEdge(2, 0);
-    DrawEdge(4, 5);
-    DrawEdge(5, 7);
-    DrawEdge(7, 6);
-    DrawEdge(6, 4);
-    DrawEdge(0, 4);
-    DrawEdge(1, 5);
-    DrawEdge(2, 6);
-    DrawEdge(3, 7);
-#endif
+    const auto AppendSelectionBounds = [&](const FSceneModelResource& Model)
+    {
+        if (DebugLines.size() + 12u > MaxDebugLines)
+        {
+            return;
+        }
+
+        const DirectX::XMFLOAT3& Min = Model.BoundsMin;
+        const DirectX::XMFLOAT3& Max = Model.BoundsMax;
+        const std::array<DirectX::XMFLOAT3, 8> Corners =
+        {
+            DirectX::XMFLOAT3(Min.x, Min.y, Min.z),
+            DirectX::XMFLOAT3(Max.x, Min.y, Min.z),
+            DirectX::XMFLOAT3(Min.x, Max.y, Min.z),
+            DirectX::XMFLOAT3(Max.x, Max.y, Min.z),
+            DirectX::XMFLOAT3(Min.x, Min.y, Max.z),
+            DirectX::XMFLOAT3(Max.x, Min.y, Max.z),
+            DirectX::XMFLOAT3(Min.x, Max.y, Max.z),
+            DirectX::XMFLOAT3(Max.x, Max.y, Max.z)
+        };
+        const uint32_t SelectionBoundsColor = PackColor(220u, 255u, 200u, 64u);
+
+        const auto DrawEdge = [&](size_t A, size_t B)
+        {
+            AppendLine(Corners[A], Corners[B], SelectionBoundsColor);
+        };
+
+        DrawEdge(0u, 1u);
+        DrawEdge(1u, 3u);
+        DrawEdge(3u, 2u);
+        DrawEdge(2u, 0u);
+        DrawEdge(4u, 5u);
+        DrawEdge(5u, 7u);
+        DrawEdge(7u, 6u);
+        DrawEdge(6u, 4u);
+        DrawEdge(0u, 4u);
+        DrawEdge(1u, 5u);
+        DrawEdge(2u, 6u);
+        DrawEdge(3u, 7u);
+    };
+
+    const FSceneModelResource& SelectedModel = (*Models)[SelectedModelIndex];
+    AppendSelectionBounds(SelectedModel);
+
+    ActiveRenderer->GetGpuDebugState().SetCpuDebugLines(DebugLines);
+    ActiveRenderer->GetGpuDebugState().SetCpuDebugBoxes(DebugBoxes);
 }
 
 void FApplication::PositionCameraForScene()
@@ -1027,16 +1160,16 @@ void FApplication::ApplySceneLightingFromJson(const std::wstring& ScenePath)
         return;
     }
 
-    LightIntensity = SceneLight.Intensity;
-    LightColor = DirectX::XMFLOAT3(SceneLight.Color.x, SceneLight.Color.y, SceneLight.Color.z);
+    RendererConfig.LightIntensity = SceneLight.Intensity;
+    RendererConfig.LightColor = DirectX::XMFLOAT3(SceneLight.Color.x, SceneLight.Color.y, SceneLight.Color.z);
 
     DirectX::XMFLOAT3 Direction(SceneLight.Direction.x, SceneLight.Direction.y, SceneLight.Direction.z);
     const DirectX::XMVECTOR DirectionVec = DirectX::XMVector3Normalize(DirectX::XMLoadFloat3(&Direction));
     const float LengthSq = DirectX::XMVectorGetX(DirectX::XMVector3LengthSq(DirectionVec));
     if (LengthSq > 0.0f)
     {
-        LightPitch = asinf(DirectX::XMVectorGetY(DirectionVec));
-        LightYaw = atan2f(DirectX::XMVectorGetX(DirectionVec), DirectX::XMVectorGetZ(DirectionVec));
+        RendererConfig.LightPitch = asinf(DirectX::XMVectorGetY(DirectionVec));
+        RendererConfig.LightYaw = atan2f(DirectX::XMVectorGetX(DirectionVec), DirectX::XMVectorGetZ(DirectionVec));
     }
 }
 
@@ -1062,38 +1195,7 @@ bool FApplication::ReloadScene(const std::wstring& ScenePath)
     // Create a temporary config for scene reloading
     FRendererConfig ReloadConfig = RendererConfig;
     ReloadConfig.SceneFile = ScenePath;
-    ReloadConfig.bUseDepthPrepass = bDepthPrepassEnabled;
-    ReloadConfig.bEnableShadows = bShadowsEnabled;
-    ReloadConfig.bEnableRayTracedShadows = bRayTracedShadowsEnabled;
-    ReloadConfig.bEnablePathTracing = bPathTracingEnabled;
-    ReloadConfig.bEnablePathTracingVndf = bPathTracingVndfEnabled;
-    ReloadConfig.ShadowBias = ShadowBias;
-    ReloadConfig.bEnableHZB = bHZBEnabled;
-    ReloadConfig.bEnableGtao = bGtaoEnabled;
-    ReloadConfig.bEnableGtaoJitter = bGtaoJitterEnabled;
-    ReloadConfig.GtaoRadius = GtaoRadius;
-    ReloadConfig.GtaoThickness = GtaoThickness;
-    ReloadConfig.bEnableSsrSw = bSsrSwEnabled;
-    ReloadConfig.bEnableSsrHw = bSsrHwEnabled;
-    ReloadConfig.bEnableSsrHzb = bSsrHzbEnabled;
-    ReloadConfig.bEnableSsrRefine = bSsrRefineEnabled;
-    ReloadConfig.bEnableSsrDenoise = bSsrDenoiseEnabled;
-    ReloadConfig.SsrMaxSteps = SsrMaxSteps;
-    ReloadConfig.SsrMaxDistance = SsrMaxDistance;
-    ReloadConfig.SsrThickness = SsrThickness;
-    ReloadConfig.SsrStride = SsrStride;
-    ReloadConfig.SsrRoughnessCutoff = SsrRoughnessCutoff;
-    ReloadConfig.SsrIntensity = SsrIntensity;
-    ReloadConfig.SsrMode = SsrMode;
-    ReloadConfig.SsrSamplesPerQuad = SsrSamplesPerQuad;
-    ReloadConfig.bEnableIndirectDraw = bIndirectDrawEnabled;
-    ReloadConfig.bEnableSkinningIndirectDraw = bSkinningIndirectDrawEnabled;
-    ReloadConfig.bEnablePbrResearch = bPbrResearchEnabled;
-    ReloadConfig.bEnableGpuDebugPrint = bGpuDebugPrintEnabled;
-    ReloadConfig.bEnableTAA = bTaaEnabled;
-    ReloadConfig.TaaHistoryWeight = TaaHistoryWeight;
-    ReloadConfig.bEnableCas = bCasEnabled;
-    ReloadConfig.CasSharpness = CasSharpness;
+    ReloadConfig.ShadowBias = ActiveRenderer ? ActiveRenderer->GetShadowBias() : RendererConfig.ShadowBias;
     ReloadConfig.FramesInFlight = SwapChain ? SwapChain->GetBackBufferCount() : 2u;
 
     const uint32_t Width = static_cast<uint32_t>(MainWindow->GetWidth());
@@ -1146,6 +1248,10 @@ bool FApplication::ReloadScene(const std::wstring& ScenePath)
     CurrentScenePath = ScenePath;
     RendererConfig.SceneFile = ScenePath;
 
+    SyncRendererDepthPrepassConfig();
+    SyncDeferredHzbConfig();
+    SyncDeferredRestirGITransientState();
+
     ApplySceneLightingFromJson(ScenePath);
     UpdateRendererLighting();
     ApplySceneCameraFromJson(ScenePath);
@@ -1183,6 +1289,14 @@ void FApplication::StartAsyncSceneReload(const std::wstring& ScenePath)
         return;
     }
 
+    bool bExpected = false;
+    if (!bAsyncSceneLoadInProgress.compare_exchange_strong(bExpected, true, std::memory_order_acq_rel))
+    {
+        LogWarning("Async scene reload already in progress, keeping pending request for: " + PathToUtf8String(ScenePath));
+        PendingScenePath = ScenePath;
+        return;
+    }
+
     // Flush GPU before starting async load
     if (Device->GetGraphicsQueue())
     {
@@ -1203,43 +1317,7 @@ void FApplication::StartAsyncSceneReload(const std::wstring& ScenePath)
     // Create a temporary config for async scene loading
     FRendererConfig AsyncConfig = RendererConfig;
     AsyncConfig.SceneFile = ScenePath;
-    AsyncConfig.bUseDepthPrepass = bDepthPrepassEnabled;
-    AsyncConfig.bEnableShadows = bShadowsEnabled;
-    AsyncConfig.bEnableRayTracedShadows = bRayTracedShadowsEnabled;
-    AsyncConfig.bEnablePathTracing = bPathTracingEnabled;
-    AsyncConfig.bEnablePathTracingVndf = bPathTracingVndfEnabled;
-    AsyncConfig.ShadowBias = ShadowBias;
-    AsyncConfig.bEnableTonemap = bTonemapEnabled;
-    AsyncConfig.TonemapExposure = TonemapExposure;
-    AsyncConfig.TonemapWhitePoint = TonemapWhitePoint;
-    AsyncConfig.TonemapGamma = TonemapGamma;
-    AsyncConfig.bEnableCas = bCasEnabled;
-    AsyncConfig.CasSharpness = CasSharpness;
-    AsyncConfig.bEnableTAA = bTaaEnabled;
-    AsyncConfig.TaaHistoryWeight = TaaHistoryWeight;
-    AsyncConfig.bEnableGpuTiming = bGpuTimingEnabled;
-    AsyncConfig.bEnableGpuDebugPrint = bGpuDebugPrintEnabled;
-    AsyncConfig.bEnableHZB = bHZBEnabled;
-    AsyncConfig.bEnableGtao = bGtaoEnabled;
-    AsyncConfig.bEnableGtaoJitter = bGtaoJitterEnabled;
-    AsyncConfig.GtaoRadius = GtaoRadius;
-    AsyncConfig.GtaoThickness = GtaoThickness;
-    AsyncConfig.bEnableSsrSw = bSsrSwEnabled;
-    AsyncConfig.bEnableSsrHw = bSsrHwEnabled;
-    AsyncConfig.bEnableSsrHzb = bSsrHzbEnabled;
-    AsyncConfig.bEnableSsrRefine = bSsrRefineEnabled;
-    AsyncConfig.bEnableSsrDenoise = bSsrDenoiseEnabled;
-    AsyncConfig.SsrMaxSteps = SsrMaxSteps;
-    AsyncConfig.SsrMaxDistance = SsrMaxDistance;
-    AsyncConfig.SsrThickness = SsrThickness;
-    AsyncConfig.SsrStride = SsrStride;
-    AsyncConfig.SsrRoughnessCutoff = SsrRoughnessCutoff;
-    AsyncConfig.SsrIntensity = SsrIntensity;
-    AsyncConfig.SsrMode = SsrMode;
-    AsyncConfig.SsrSamplesPerQuad = SsrSamplesPerQuad;
-    AsyncConfig.bEnableIndirectDraw = bIndirectDrawEnabled;
-    AsyncConfig.bEnableSkinningIndirectDraw = bSkinningIndirectDrawEnabled;
-    AsyncConfig.bEnablePbrResearch = bPbrResearchEnabled;
+    AsyncConfig.ShadowBias = ActiveRenderer ? ActiveRenderer->GetShadowBias() : RendererConfig.ShadowBias;
     AsyncConfig.FramesInFlight = SwapChain ? SwapChain->GetBackBufferCount() : 2u;
 
     const bool bPreferDeferred = ActiveRenderer == DeferredRenderer.get() || RendererConfig.RendererType == ERendererType::Deferred;
@@ -1281,6 +1359,7 @@ void FApplication::StartAsyncSceneReload(const std::wstring& ScenePath)
             AsyncForwardRenderer.reset();
             AsyncDeferredRenderer.reset();
             AsyncActiveRenderer = nullptr;
+            bAsyncSceneLoadComplete.store(true, std::memory_order_release);
             return;
         }
 
@@ -1302,6 +1381,7 @@ void FApplication::CompleteAsyncSceneReload()
     }
 
     bAsyncSceneLoadComplete.store(false, std::memory_order_release);
+    bAsyncSceneLoadInProgress.store(false, std::memory_order_release);
 
     if (!AsyncActiveRenderer || (!AsyncForwardRenderer && !AsyncDeferredRenderer))
     {
@@ -1328,6 +1408,10 @@ void FApplication::CompleteAsyncSceneReload()
     
     CurrentScenePath = AsyncScenePath;
     RendererConfig.SceneFile = AsyncScenePath;
+
+    SyncRendererDepthPrepassConfig();
+    SyncDeferredHzbConfig();
+    SyncDeferredRestirGITransientState();
 
     ApplySceneLightingFromJson(AsyncScenePath);
     UpdateRendererLighting();
@@ -1395,7 +1479,7 @@ std::wstring FApplication::OpenSceneFileDialog(const std::wstring& InitialDirect
 DirectX::XMVECTOR FApplication::GetLightDirectionVector() const
 {
     const DirectX::XMVECTOR Forward = DirectX::XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
-    const DirectX::XMMATRIX Rotation = DirectX::XMMatrixRotationRollPitchYaw(LightPitch, LightYaw, 0.0f);
+    const DirectX::XMMATRIX Rotation = DirectX::XMMatrixRotationRollPitchYaw(RendererConfig.LightPitch, RendererConfig.LightYaw, 0.0f);
     return DirectX::XMVector3Normalize(DirectX::XMVector3TransformNormal(Forward, Rotation));
 }
 
@@ -1407,15 +1491,15 @@ void FApplication::UpdateRendererLighting() const
     if (ForwardRenderer)
     {
         ForwardRenderer->SetLightDirection(Direction);
-        ForwardRenderer->SetLightIntensity(LightIntensity);
-        ForwardRenderer->SetLightColor(LightColor);
+        ForwardRenderer->SetLightIntensity(RendererConfig.LightIntensity);
+        ForwardRenderer->SetLightColor(RendererConfig.LightColor);
     }
 
     if (DeferredRenderer)
     {
         DeferredRenderer->SetLightDirection(Direction);
-        DeferredRenderer->SetLightIntensity(LightIntensity);
-        DeferredRenderer->SetLightColor(LightColor);
+        DeferredRenderer->SetLightIntensity(RendererConfig.LightIntensity);
+        DeferredRenderer->SetLightColor(RendererConfig.LightColor);
     }
 }
 
@@ -1491,7 +1575,7 @@ bool FApplication::InitializeImGui(int32_t Width, int32_t Height)
 
     D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
     HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    HeapDesc.NumDescriptors = 1;
+    HeapDesc.NumDescriptors = 8;
     HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     HeapDesc.NodeMask = 0;
 
@@ -1636,6 +1720,17 @@ void FApplication::RenderUI()
         const std::vector<FRenderGraph::FGpuPassTimingStats>& TimingStats = FRenderGraph::GetGpuTimingStats();
         const uint32 MaxDisplay = FRenderGraph::GetGpuTimingDisplayCount();
         const uint32 DisplayCount = (std::min)(MaxDisplay, static_cast<uint32>(TimingStats.size()));
+        constexpr int GpuTimingNameDisplayWidth = 24;
+        const auto FormatGpuTimingName = [GpuTimingNameDisplayWidth](const std::string& Name)
+        {
+            if (static_cast<int>(Name.size()) <= GpuTimingNameDisplayWidth)
+            {
+                return Name;
+            }
+
+            return Name.substr(0, GpuTimingNameDisplayWidth - 3) + "...";
+        };
+
         for (uint32 Index = 1; Index < DisplayCount + 1; ++Index)
         {
             if (TimingStats.size() <= Index)
@@ -1643,8 +1738,10 @@ void FApplication::RenderUI()
                 break;
 			}
             const FRenderGraph::FGpuPassTimingStats& Stats = TimingStats[Index];
-            ImGui::Text("%s: %.3f / %.3f / %.3f (n=%u)",
-                Stats.Name.c_str(),
+            const std::string DisplayName = FormatGpuTimingName(Stats.Name);
+            ImGui::Text("%-*s: %.3f / %.3f / %.3f (n=%u)",
+                GpuTimingNameDisplayWidth,
+                DisplayName.c_str(),
                 Stats.AvgMs,
                 Stats.MinMs,
                 Stats.MaxMs,
@@ -1667,7 +1764,6 @@ void FApplication::RenderUI()
 
         const char* SelectedName = SelectedModelIndex >= 0 ? SelectedModelName.c_str() : "None";
         ImGui::Text("Selected: %s [%d]", SelectedName, SelectedModelIndex);
-
         DXGI_QUERY_VIDEO_MEMORY_INFO LocalMemoryInfo = {};
         if (Device && Device->QueryLocalVideoMemory(LocalMemoryInfo))
         {
@@ -1680,21 +1776,104 @@ void FApplication::RenderUI()
             ImGui::Text("GPU Memory (Local)");
             ImGui::Text("Usage/Budget: %.1f / %.1f MB", UsageMB, BudgetMB);
             ImGui::Text("Available/Reserved: %.1f / %.1f MB", AvailableMB, ReservedMB);
+        } 
+#if WITH_BINDLESS_DESCRIPTOR_STATS
+        if (Device)
+        {
+            const FDX12Device::FBindlessDescriptorStats BindlessStats = bCachedBindlessDescriptorStatsValid
+                ? CachedBindlessDescriptorStats
+                : Device->GetBindlessDescriptorStats();
+            const uint32_t UsedDescriptors = (std::min)(BindlessStats.NextIndex, BindlessStats.DescriptorCount);
+            const float UsedPercent = (BindlessStats.DescriptorCount > 0u)
+                ? (100.0f * static_cast<float>(UsedDescriptors) / static_cast<float>(BindlessStats.DescriptorCount))
+                : 0.0f;
+
+            ImGui::Separator();
+            if (ImGui::TreeNode("Bindless Descriptor Stats"))
+            {
+                ImGui::TextUnformatted(bCachedBindlessDescriptorStatsValid ? "Snapshot: post Signal/Wait from previous frame" : "Snapshot: live (pre-frame)");
+                bool bTrackOwners = bTrackLiveTransientBindlessOwners;
+                if (ImGui::Checkbox("Track Live Transient Owners", &bTrackOwners))
+                {
+                    bTrackLiveTransientBindlessOwners = bTrackOwners;
+                    Device->SetLiveTransientBindlessOwnerTrackingEnabled(bTrackLiveTransientBindlessOwners);
+                    bCachedBindlessDescriptorStatsValid = false;
+                }
+                const uint64_t InFlightFenceLag = (BindlessStats.LastSignaledFenceValue > BindlessStats.CompletedFenceValue)
+                    ? (BindlessStats.LastSignaledFenceValue - BindlessStats.CompletedFenceValue)
+                    : 0u;
+                ImGui::Text("Allocated Slots: %u / %u (%.1f%%)", UsedDescriptors, BindlessStats.DescriptorCount, UsedPercent);
+                ImGui::Text("Permanent Allocations: %llu", static_cast<unsigned long long>(BindlessStats.PermanentAllocationCount));
+                ImGui::Text("Transient Heap High Watermark: %llu", static_cast<unsigned long long>(BindlessStats.TransientHeapAllocationCount));
+                ImGui::Text("Transient Heap Allocs This Frame: %llu", static_cast<unsigned long long>(BindlessStats.TransientHeapAllocsThisFrame));
+                ImGui::Text("Transient Reuse Count: %llu", static_cast<unsigned long long>(BindlessStats.TransientReuseCount));
+                ImGui::Text("Transient Retired Count: %llu", static_cast<unsigned long long>(BindlessStats.TransientRetireCount));
+                ImGui::Text("Transient Reclaimed Count: %llu", static_cast<unsigned long long>(BindlessStats.TransientReclaimCount));
+                ImGui::Text("Reusable Transient Slots: %u", BindlessStats.FreeTransientCount);
+                ImGui::Text("Min Reusable Slots This Frame: %u", BindlessStats.MinFreeTransientThisFrame);
+                ImGui::Text("Peak Live Transient Slots This Frame: %u", BindlessStats.PeakTransientLiveThisFrame);
+                ImGui::Text("Live Transient Descriptor Owners: %u", BindlessStats.LiveTransientDescriptorCount);
+                ImGui::Text("Retired Transient: %u", BindlessStats.RetiredTransientCount);
+                ImGui::Text("Reclaimable Now: %u", BindlessStats.ReclaimableTransientCount);
+                ImGui::Text("Fence: completed=%llu signaled=%llu",
+                    static_cast<unsigned long long>(BindlessStats.CompletedFenceValue),
+                    static_cast<unsigned long long>(BindlessStats.LastSignaledFenceValue));
+                ImGui::Text("In-flight Fence Lag: %llu", static_cast<unsigned long long>(InFlightFenceLag));
+                if (BindlessStats.RetiredTransientCount > 0u)
+                {
+                    ImGui::Text("Retired Fence Range: %llu -> %llu",
+                        static_cast<unsigned long long>(BindlessStats.OldestRetiredFenceValue),
+                        static_cast<unsigned long long>(BindlessStats.NewestRetiredFenceValue));
+                }
+
+                if (BindlessStats.ReclaimableTransientCount > 0u && BindlessStats.FreeTransientCount == 0u)
+                {
+                    ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "Reclaimable descriptors exist but are not in the free list yet.");
+                }
+                else if (BindlessStats.RetiredTransientCount > 0u && BindlessStats.ReclaimableTransientCount == 0u)
+                {
+                    ImGui::TextColored(ImVec4(0.7f, 0.8f, 1.0f, 1.0f), "Retired descriptors are waiting on GPU fence completion.");
+                }
+                else if (BindlessStats.FreeTransientCount == 0u && BindlessStats.RetiredTransientCount == 0u)
+                {
+                    ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "No transient descriptors are currently reusable.");
+                }
+
+                if (!bTrackLiveTransientBindlessOwners)
+                {
+                    ImGui::TextDisabled("Owner sampling is disabled.");
+                }
+                else if (!BindlessStats.LiveTransientOwnerSamples.empty() && ImGui::TreeNode("Live Transient Owner Samples"))
+                {
+                    if (BindlessStats.LiveTransientDescriptorCount > BindlessStats.LiveTransientOwnerSamples.size())
+                    {
+                        ImGui::Text("Showing %zu of %u live transient descriptors.",
+                            BindlessStats.LiveTransientOwnerSamples.size(),
+                            BindlessStats.LiveTransientDescriptorCount);
+                    }
+
+                    for (const std::string& OwnerSample : BindlessStats.LiveTransientOwnerSamples)
+                    {
+                        ImGui::BulletText("%s", OwnerSample.c_str());
+                    }
+
+                    ImGui::TreePop();
+                }
+
+                ImGui::TreePop();
+            }
         }
+#endif
+
 	    ImGui::Separator();
 
-        bool bFrameOverlap = bFrameOverlapEnabled;
-        if (ImGui::Checkbox("Frame Overlap", &bFrameOverlap))
+        if (ImGui::Checkbox("Frame Overlap", &RendererConfig.bEnableFrameOverlap))
         {
-            bFrameOverlapEnabled = bFrameOverlap;
         }
 
         ImGui::SameLine();
-        bool bVSync = bVSyncEnabled;
-        if (ImGui::Checkbox("VSync", &bVSync))
+        if (ImGui::Checkbox("VSync", &RendererConfig.bEnableVSync))
         {
-            bVSyncEnabled = bVSync;
-            RendererConfig.bEnableVSync = bVSyncEnabled;
         }
 
         if (Device && Device->GetGraphicsQueue())
@@ -1708,20 +1887,14 @@ void FApplication::RenderUI()
     //        ImGui::Text("GPU fences: completed %llu / last signaled %llu", static_cast<unsigned long long>(CompletedFence), static_cast<unsigned long long>(LastSignaledFence));
         }
 
-        bool bDepthPrepass = bDepthPrepassEnabled;
-        if (ImGui::Checkbox("Depth Prepass", &bDepthPrepass))
+        const auto ApplyDepthPrepassConfig = [this]()
         {
-            bDepthPrepassEnabled = bDepthPrepass;
+            SyncRendererDepthPrepassConfig();
+        };
 
-            if (ForwardRenderer)
-            {
-                ForwardRenderer->SetDepthPrepassEnabled(bDepthPrepassEnabled);
-            }
-
-            if (DeferredRenderer)
-            {
-                DeferredRenderer->SetDepthPrepassEnabled(bDepthPrepassEnabled);
-            }
+        if (ImGui::Checkbox("Depth Prepass", &RendererConfig.bUseDepthPrepass))
+        {
+            ApplyDepthPrepassConfig();
         }
 
         ImGui::SameLine();
@@ -1737,465 +1910,295 @@ void FApplication::RenderUI()
         }
 
         ImGui::Separator();
-        bool bBuildHZB = bHZBEnabled;
-        if (ImGui::Checkbox("Build HZB", &bBuildHZB))
+        const auto ApplyDeferredHzbConfig = [this]()
         {
-            bHZBEnabled = bBuildHZB;
+            SyncDeferredHzbConfig();
+        };
 
-            if (DeferredRenderer)
-            {
-                DeferredRenderer->SetHZBEnabled(bHZBEnabled);
-            }
+        if (ImGui::Checkbox("Build HZB", &RendererConfig.bEnableHZB))
+        {
+            ApplyDeferredHzbConfig();
         }
 
         ImGui::SameLine();
-        bool bHzbTwoPass = bHzbTwoPassEnabled;
-        if (ImGui::Checkbox("HZB Two Pass", &bHzbTwoPass))
+        if (ImGui::Checkbox("HZB Two Pass", &RendererConfig.bEnableHzbTwoPass))
         {
-            bHzbTwoPassEnabled = bHzbTwoPass;
-
-            if (DeferredRenderer)
-            {
-                DeferredRenderer->SetHzbTwoPassEnabled(bHzbTwoPassEnabled);
-            }
+            ApplyDeferredHzbConfig();
         }
 
-        bool bGtao = bGtaoEnabled;
-        if (ImGui::Checkbox("GTAO", &bGtao))
+		ImGui::Separator();
+        if (ImGui::Checkbox("GTAO", &RendererConfig.bEnableGtao))
         {
-            bGtaoEnabled = bGtao;
-            RendererConfig.bEnableGtao = bGtaoEnabled;
+			SyncRendererGtaoConfig();
         }
 
-        ImGui::SameLine();
-        bool bGtaoJitter = bGtaoJitterEnabled;
-        if (ImGui::Checkbox("GTAO Jitter", &bGtaoJitter))
+        if (RendererConfig.bEnableGtao)
         {
-            bGtaoJitterEnabled = bGtaoJitter;
-            RendererConfig.bEnableGtaoJitter = bGtaoJitterEnabled;
-        }
+			ImGui::SameLine();
+			if (ImGui::Checkbox("GTAO Jitter", &RendererConfig.bEnableGtaoJitter))
+			{
+				SyncRendererGtaoConfig();
+			}
 
-        if (DeferredRenderer)
-        {
-            DeferredRenderer->SetGtaoEnabled(bGtaoEnabled);
-            DeferredRenderer->SetGtaoJitterEnabled(bGtaoJitterEnabled);
-        }
+			if (ImGui::SliderFloat("GTAO Radius", &RendererConfig.GtaoRadius, 0.05f, 3.0f, "%.2f"))
+			{
+				SyncRendererGtaoConfig();
+			}
 
-        if (ForwardRenderer)
-        {
-            ForwardRenderer->SetGtaoJitterEnabled(bGtaoJitterEnabled);
-        }
-
-        float GtaoRadiusValue = GtaoRadius;
-        if (ImGui::SliderFloat("GTAO Radius", &GtaoRadiusValue, 0.05f, 3.0f, "%.2f"))
-        {
-            GtaoRadius = GtaoRadiusValue;
-            RendererConfig.GtaoRadius = GtaoRadius;
-
-            if (DeferredRenderer)
-            {
-                DeferredRenderer->SetGtaoRadius(GtaoRadius);
-            }
-
-            if (ForwardRenderer)
-            {
-                ForwardRenderer->SetGtaoRadius(GtaoRadius);
-            }
-        }
-
-        float GtaoThicknessValue = GtaoThickness;
-        if (ImGui::SliderFloat("GTAO Thickness", &GtaoThicknessValue, 0.0f, 1.0f, "%.2f"))
-        {
-            GtaoThickness = GtaoThicknessValue;
-            RendererConfig.GtaoThickness = GtaoThickness;
-
-            if (DeferredRenderer)
-            {
-                DeferredRenderer->SetGtaoThickness(GtaoThickness);
-            }
-
-            if (ForwardRenderer)
-            {
-                ForwardRenderer->SetGtaoThickness(GtaoThickness);
-            }
+			if (ImGui::SliderFloat("GTAO Thickness", &RendererConfig.GtaoThickness, 0.0f, 1.0f, "%.2f"))
+			{
+				SyncRendererGtaoConfig();
+			}
         }
 
         ImGui::Separator();
-        bool bRestirGI = bRestirGIEnabled;
-        if (ImGui::Checkbox("ReSTIR GI", &bRestirGI))
+        static const char* LightingDebugViewItems[] =
         {
-            bRestirGIEnabled = bRestirGI;
-            RendererConfig.bEnableRestirGI = bRestirGIEnabled;
-
-            if (DeferredRenderer)
-            {
-                DeferredRenderer->SetRestirGIEnabled(bRestirGIEnabled);
-            }
+            "Off",
+            "DiffuseIndirect",
+            "AO",
+            "DirectLighting",
+            "SpecularIndirect",
+            "ClusterDagClusters",
+            "ClusterDagMip"
+        };
+        int LightingDebugViewIndex = static_cast<int>(RendererConfig.DeferredLightingVisualizationMode);
+        ImGui::SetNextItemWidth(180.0f);
+        if (ImGui::Combo("Lighting Debug View", &LightingDebugViewIndex, LightingDebugViewItems, IM_ARRAYSIZE(LightingDebugViewItems)))
+        {
+            RendererConfig.DeferredLightingVisualizationMode = static_cast<EDeferredLightingVisualizationMode>(
+                std::clamp(LightingDebugViewIndex, 0, static_cast<int>(EDeferredLightingVisualizationMode::ClusterDagMip)));
+            UpsertConfigValue(GetRendererConfigPath(), "DeferredLightingVisualizationMode", DeferredLightingVisualizationModeToConfigString(RendererConfig.DeferredLightingVisualizationMode));
+            SyncDeferredLightingPassConfig();
         }
 
-		ImGui::SameLine();
-        bool bRestirGIOnly = bRestirGIShowOnly;
-        if (ImGui::Checkbox("GI Only", &bRestirGIOnly))
+        ImGui::Separator();
+        if (ImGui::Checkbox("ReSTIR GI", &RendererConfig.bEnableRestirGI))
         {
-            bRestirGIShowOnly = bRestirGIOnly;
-            if (DeferredRenderer)
-            {
-                DeferredRenderer->SetRestirGIShowOnly(bRestirGIShowOnly);
-            }
+            SyncDeferredRestirGIConfig();
         }
 
-        ImGui::SameLine();
-        bool bRestirGIDenoiser = bRestirGIDenoiserEnabled;
-        if (ImGui::Checkbox("GI Denoiser", &bRestirGIDenoiser))
+        if (RendererConfig.bEnableRestirGI)
         {
-            bRestirGIDenoiserEnabled = bRestirGIDenoiser;
-            RendererConfig.bEnableRestirGIDenoiser = bRestirGIDenoiserEnabled;
-            if (DeferredRenderer)
+		    const auto ApplyRestirGIConfig = [this]()
+		    {
+		        SyncDeferredRestirGIConfig();
+		    };
+
+		    const auto ApplyRestirGITransientState = [this]()
+		    {
+		        SyncDeferredRestirGITransientState();
+		    };
+
+		    ImGui::SameLine();
+            if (ImGui::Checkbox("GI Denoiser", &RendererConfig.bEnableRestirGIDenoiser))
             {
-                DeferredRenderer->SetRestirGIDenoiserEnabled(bRestirGIDenoiserEnabled);
+                ApplyRestirGIConfig();
             }
-        }
 
-        bool bRestirGIUseVisibilityUI = bRestirGIUseVisibility;
-        if (ImGui::Checkbox("Use Visibility", &bRestirGIUseVisibilityUI))
-        {
-            bRestirGIUseVisibility = bRestirGIUseVisibilityUI;
-            RendererConfig.bRestirGIUseVisibility = bRestirGIUseVisibilityUI;
-
-            if (DeferredRenderer)
+            if (ImGui::Checkbox("Use Visibility", &RendererConfig.bRestirGIUseVisibility))
             {
-                DeferredRenderer->SetRestirGIUseVisibility(bRestirGIUseVisibilityUI);
+                ApplyRestirGIConfig();
             }
-        }
 
-		ImGui::SameLine();
-        bool bRestirGIUseBrdfUI = bRestirGIUseBrdf;
-        if (ImGui::Checkbox("Use BRDF", &bRestirGIUseBrdfUI))
-        {
-            bRestirGIUseBrdf = bRestirGIUseBrdfUI;
-            RendererConfig.bRestirGIUseBrdf = bRestirGIUseBrdfUI;
-
-            if (DeferredRenderer)
+		    ImGui::SameLine();
+            if (ImGui::Checkbox("Use BRDF", &RendererConfig.bRestirGIUseBrdf))
             {
-                DeferredRenderer->SetRestirGIUseBrdf(bRestirGIUseBrdfUI);
+                ApplyRestirGIConfig();
             }
-        }
 
-        bool bRestirGIUseHistoryIndirectUI = bRestirGIUseHistoryIndirect;
-        if (ImGui::Checkbox("Use History Indirect", &bRestirGIUseHistoryIndirectUI))
-        {
-            bRestirGIUseHistoryIndirect = bRestirGIUseHistoryIndirectUI;
-            RendererConfig.bRestirGIUseHistoryIndirect = bRestirGIUseHistoryIndirectUI;
-
-            if (DeferredRenderer)
+            if (ImGui::Checkbox("Use History Indirect", &RendererConfig.bRestirGIUseHistoryIndirect))
             {
-                DeferredRenderer->SetRestirGIUseHistoryIndirect(bRestirGIUseHistoryIndirectUI);
+                ApplyRestirGIConfig();
             }
-        }
 
-        int RestirRandomModeIndex = (RestirGIRandomMode == ERestirGIRandomMode::BlueNoiseSobol) ? 1 : 0;
-        static const char* RestirRandomModeItems[] = { "Hash", "BlueNoiseSobol" };
-        ImGui::SetNextItemWidth(160.0f);
-        if (ImGui::Combo("Random Mode", &RestirRandomModeIndex, RestirRandomModeItems, IM_ARRAYSIZE(RestirRandomModeItems)))
-        {
-            RestirGIRandomMode = (RestirRandomModeIndex == 1) ? ERestirGIRandomMode::BlueNoiseSobol : ERestirGIRandomMode::Hash;
-            RendererConfig.RestirGIRandomMode = RestirGIRandomMode;
-            UpsertConfigValue(GetRendererConfigPath(), "RestirGIRandomMode", RestirRandomModeToConfigString(RestirGIRandomMode));
-
-            if (DeferredRenderer)
+            int RestirRandomModeIndex = (RendererConfig.RestirGIRandomMode == ERestirGIRandomMode::BlueNoiseSobol) ? 1 : 0;
+            static const char* RestirRandomModeItems[] = { "Hash", "BlueNoiseSobol" };
+            ImGui::SetNextItemWidth(160.0f);
+            if (ImGui::Combo("Random Mode", &RestirRandomModeIndex, RestirRandomModeItems, IM_ARRAYSIZE(RestirRandomModeItems)))
             {
-                DeferredRenderer->SetRestirGIRandomMode(RestirGIRandomMode);
+                RendererConfig.RestirGIRandomMode = (RestirRandomModeIndex == 1) ? ERestirGIRandomMode::BlueNoiseSobol : ERestirGIRandomMode::Hash;
+                UpsertConfigValue(GetRendererConfigPath(), "RestirGIRandomMode", RestirRandomModeToConfigString(RendererConfig.RestirGIRandomMode));
+                ApplyRestirGIConfig();
             }
-        }
 
-
-        bool bRestirGIFreezeFrameUI = bRestirGIFreezeFrame;
-        if (ImGui::Checkbox("Freeze ReSTIR GI", &bRestirGIFreezeFrameUI))
-        {
-            bRestirGIFreezeFrame = bRestirGIFreezeFrameUI;
-            if (DeferredRenderer)
+            bool bRestirGIFreezeFrameUI = bRestirGIFreezeFrame;
+            if (ImGui::Checkbox("Freeze ReSTIR GI", &bRestirGIFreezeFrameUI))
             {
-                DeferredRenderer->SetRestirGIFreezeFrame(bRestirGIFreezeFrameUI);
+                bRestirGIFreezeFrame = bRestirGIFreezeFrameUI;
+                ApplyRestirGITransientState();
             }
-        }
 
-        ImGui::SameLine();
-        if (ImGui::Button("Step ReSTIR GI"))
-        {
-            if (DeferredRenderer)
+            ImGui::SameLine();
+            if (ImGui::Button("Step ReSTIR GI"))
             {
-                DeferredRenderer->StepRestirGIFreezeFrame();
+                if (DeferredRenderer)
+                {
+                    DeferredRenderer->GetRestirGI()->StepFreezeFrame();
+                }
             }
-        }
 
-        ImGui::SameLine();
-        ImGui::Text("%u", DeferredRenderer ? DeferredRenderer->GetRestirGIFrozenSequenceFrame() : 0u);
+            ImGui::SameLine();
+            ImGui::Text("%u", DeferredRenderer ? DeferredRenderer->GetRestirGI()->GetFreezeStartFrameNumber() : 0u);
 
-        bool bRestirGIDebugRay = bRestirGIDebugRayEnabled;
-        if (ImGui::Checkbox("Debug ReSTIR GI Ray", &bRestirGIDebugRay))
-        {
-            bRestirGIDebugRayEnabled = bRestirGIDebugRay;
-            if (DeferredRenderer)
+            bool bRestirGIDebugRay = bRestirGIDebugRayEnabled;
+            if (ImGui::Checkbox("Debug ReSTIR GI Ray", &bRestirGIDebugRay))
             {
-                DeferredRenderer->SetRestirGIDebugRayEnabled(bRestirGIDebugRayEnabled);
+                bRestirGIDebugRayEnabled = bRestirGIDebugRay;
+                ApplyRestirGITransientState();
             }
-        }
 
-        int RestirDebugPixel[2] = { RestirGIDebugPixelX, RestirGIDebugPixelY };
-        if (ImGui::InputInt2("Debug Pixel", RestirDebugPixel))
-        {
-            RestirGIDebugPixelX = (std::max)(0, RestirDebugPixel[0]);
-            RestirGIDebugPixelY = (std::max)(0, RestirDebugPixel[1]);
-            if (DeferredRenderer)
+            int RestirDebugPixel[2] = { RestirGIDebugPixelX, RestirGIDebugPixelY };
+            if (ImGui::InputInt2("Debug Pixel", RestirDebugPixel))
             {
-                DeferredRenderer->SetRestirGIDebugPixel(static_cast<uint32_t>(RestirGIDebugPixelX), static_cast<uint32_t>(RestirGIDebugPixelY));
+                RestirGIDebugPixelX = (std::max)(0, RestirDebugPixel[0]);
+                RestirGIDebugPixelY = (std::max)(0, RestirDebugPixel[1]);
+                ApplyRestirGITransientState();
             }
-        }
-        bool bRestirTemporal = bRestirGITemporalReuseEnabled;
-        if (ImGui::Checkbox("Temporal Reuse", &bRestirTemporal))
-        {
-            bRestirGITemporalReuseEnabled = bRestirTemporal;
-            RendererConfig.bEnableRestirGITemporalReuse = bRestirGITemporalReuseEnabled;
-
-            if (DeferredRenderer)
+            if (ImGui::Checkbox("Temporal Reuse", &RendererConfig.bEnableRestirGITemporalReuse))
             {
-                DeferredRenderer->SetRestirGITemporalReuseEnabled(bRestirGITemporalReuseEnabled);
+                ApplyRestirGIConfig();
             }
-        }
 
-		ImGui::SameLine();
-        bool bRestirSpatial = bRestirGISpatialReuseEnabled;
-        if (ImGui::Checkbox("Spatial Reuse", &bRestirSpatial))
-        {
-            bRestirGISpatialReuseEnabled = bRestirSpatial;
-            RendererConfig.bEnableRestirGISpatialReuse = bRestirGISpatialReuseEnabled;
-
-            if (DeferredRenderer)
+		    ImGui::SameLine();
+            if (ImGui::Checkbox("Spatial Reuse", &RendererConfig.bEnableRestirGISpatialReuse))
             {
-                DeferredRenderer->SetRestirGISpatialReuseEnabled(bRestirGISpatialReuseEnabled);
+                ApplyRestirGIConfig();
             }
-        }
 
-
-        float RestirTemporalScaleValue = RestirGITemporalAdditionalScale;
-        if (ImGui::SliderFloat("Temporal Add Scale", &RestirTemporalScaleValue, 0.0f, 1.0f, "%.2f"))
-        {
-            RestirGITemporalAdditionalScale = RestirTemporalScaleValue;
-            RendererConfig.RestirGITemporalAdditionalScale = RestirGITemporalAdditionalScale;
-
-            if (DeferredRenderer)
+            if (ImGui::SliderFloat("Temporal Add Scale", &RendererConfig.RestirGITemporalAdditionalScale, 0.0f, 1.0f, "%.2f"))
             {
-                DeferredRenderer->SetRestirGITemporalAdditionalScale(RestirGITemporalAdditionalScale);
+                ApplyRestirGIConfig();
             }
-        }
 
-        float RestirSpatialScaleValue = RestirGISpatialAdditionalScale;
-        if (ImGui::SliderFloat("Spatial Add Scale", &RestirSpatialScaleValue, 0.0f, 1.0f, "%.2f"))
-        {
-            RestirGISpatialAdditionalScale = RestirSpatialScaleValue;
-            RendererConfig.RestirGISpatialAdditionalScale = RestirGISpatialAdditionalScale;
-
-            if (DeferredRenderer)
+            if (ImGui::SliderFloat("Spatial Add Scale", &RendererConfig.RestirGISpatialAdditionalScale, 0.0f, 1.0f, "%.2f"))
             {
-                DeferredRenderer->SetRestirGISpatialAdditionalScale(RestirGISpatialAdditionalScale);
+                ApplyRestirGIConfig();
             }
         }
 
 		ImGui::Separator();
-        bool bSsrSw = bSsrSwEnabled;
-        if (ImGui::Checkbox("SW SSR", &bSsrSw))
-        {
-            bSsrSwEnabled = bSsrSw;
-            RendererConfig.bEnableSsrSw = bSsrSwEnabled;
 
-            if (DeferredRenderer)
-            {
-                DeferredRenderer->SetSsrSwEnabled(bSsrSwEnabled);
-            }
+        if (ImGui::Checkbox("SW SSR", &RendererConfig.bEnableSsrSw))
+        {
+            SyncDeferredSsrConfig();
         }
 
         ImGui::SameLine();
 
-        bool bSsrHw = bSsrHwEnabled;
-        if (ImGui::Checkbox("HW", &bSsrHw))
+        if (ImGui::Checkbox("HW SSR", &RendererConfig.bEnableSsrHw))
         {
-            bSsrHwEnabled = bSsrHw;
-            RendererConfig.bEnableSsrHw = bSsrHwEnabled;
-
-            if (DeferredRenderer)
-            {
-                DeferredRenderer->SetSsrHwEnabled(bSsrHwEnabled);
-            }
+            SyncDeferredSsrConfig();
         }
 
-        ImGui::SameLine();
-
-        bool bSsrHzb = bSsrHzbEnabled;
-        if (ImGui::Checkbox("HZB", &bSsrHzb))
+        const bool bSsrEnabled = RendererConfig.bEnableSsrSw || RendererConfig.bEnableSsrHw;
+        if (bSsrEnabled)
         {
-            bSsrHzbEnabled = bSsrHzb;
-            RendererConfig.bEnableSsrHzb = bSsrHzbEnabled;
+            ImGui::SameLine();
 
-            if (DeferredRenderer)
+            if (ImGui::Checkbox("HZB", &RendererConfig.bEnableSsrHzb))
             {
-                DeferredRenderer->SetSsrHzbEnabled(bSsrHzbEnabled);
+                SyncDeferredSsrConfig();
             }
-        }
 
-        ImGui::SameLine();
+            ImGui::SameLine();
 
-        bool bSsrRefine = bSsrRefineEnabled;
-        if (ImGui::Checkbox("Refine", &bSsrRefine))
-        {
-            bSsrRefineEnabled = bSsrRefine;
-            RendererConfig.bEnableSsrRefine = bSsrRefineEnabled;
-
-            if (DeferredRenderer)
+            if (ImGui::Checkbox("Full Res Depth", &RendererConfig.bEnableSsrHzbFullResDepth))
             {
-                DeferredRenderer->SetSsrRefineEnabled(bSsrRefineEnabled);
+                SyncDeferredSsrConfig();
             }
-        }
 
-        ImGui::SameLine();
+            ImGui::SameLine();
 
-        bool bSsrDenoise = bSsrDenoiseEnabled;
-        if (ImGui::Checkbox("Denoise", &bSsrDenoise))
-        {
-            bSsrDenoiseEnabled = bSsrDenoise;
-            RendererConfig.bEnableSsrDenoise = bSsrDenoiseEnabled;
-
-            if (DeferredRenderer)
+            if (ImGui::Checkbox("Refine", &RendererConfig.bEnableSsrRefine))
             {
-                DeferredRenderer->SetSsrDenoiseEnabled(bSsrDenoiseEnabled);
+                SyncDeferredSsrConfig();
             }
-        }
 
-        const char* SsrModeItems[] = { "PS", "CS" };
-        int SsrModeIndex = (SsrMode == ESSRMode::CS) ? 1 : 0;
-        ImGui::SetNextItemWidth(80.0f);
-        if (ImGui::Combo("SSR Mode", &SsrModeIndex, SsrModeItems, IM_ARRAYSIZE(SsrModeItems)))
-        {
-            SsrMode = (SsrModeIndex == 1) ? ESSRMode::CS : ESSRMode::PS;
-            RendererConfig.SsrMode = SsrMode;
+            ImGui::SameLine();
 
-            if (DeferredRenderer)
+            if (ImGui::Checkbox("Denoise", &RendererConfig.bEnableSsrDenoise))
             {
-                DeferredRenderer->SetSsrMode(SsrMode);
+                SyncDeferredSsrConfig();
             }
-        }
 
-        ImGui::SameLine();
-
-        const int SampleOptions[] = { 4, 2, 1 };
-        int SampleIndex = 2;
-        for (int OptionIndex = 0; OptionIndex < 3; ++OptionIndex)
-        {
-            if (SsrSamplesPerQuad == static_cast<uint32_t>(SampleOptions[OptionIndex]))
+            const char* SsrModeItems[] = { "PS", "CS" };
+            int SsrModeIndex = (RendererConfig.SsrMode == ESSRMode::CS) ? 1 : 0;
+            ImGui::SetNextItemWidth(80.0f);
+            if (ImGui::Combo("SSR Mode", &SsrModeIndex, SsrModeItems, IM_ARRAYSIZE(SsrModeItems)))
             {
-                SampleIndex = OptionIndex;
-                break;
+                RendererConfig.SsrMode = (SsrModeIndex == 1) ? ESSRMode::CS : ESSRMode::PS;
+                SyncDeferredSsrConfig();
             }
-        }
-        const char* SampleLabels[] = { "4", "2", "1" };
-        ImGui::SetNextItemWidth(80.0f);
-        if (ImGui::Combo("Samples Per Quad", &SampleIndex, SampleLabels, IM_ARRAYSIZE(SampleLabels)))
-        {
-            SsrSamplesPerQuad = static_cast<uint32_t>(SampleOptions[SampleIndex]);
-            RendererConfig.SsrSamplesPerQuad = SsrSamplesPerQuad;
 
-            if (DeferredRenderer)
+            ImGui::SameLine();
+
+            const int SampleOptions[] = { 4, 2, 1 };
+            int SampleIndex = 2;
+            for (int OptionIndex = 0; OptionIndex < 3; ++OptionIndex)
             {
-                DeferredRenderer->SetSsrSamplesPerQuad(SsrSamplesPerQuad);
+                if (RendererConfig.SsrSamplesPerQuad == static_cast<uint32_t>(SampleOptions[OptionIndex]))
+                {
+                    SampleIndex = OptionIndex;
+                    break;
+                }
             }
-        }
-
-        int SsrMaxStepsValue = static_cast<int>(SsrMaxSteps);
-        if (ImGui::SliderInt("SSR Max Steps", &SsrMaxStepsValue, 8, 256))
-        {
-            SsrMaxSteps = static_cast<uint32_t>(SsrMaxStepsValue);
-            RendererConfig.SsrMaxSteps = SsrMaxSteps;
-
-            if (DeferredRenderer)
+            const char* SampleLabels[] = { "4", "2", "1" };
+            ImGui::SetNextItemWidth(80.0f);
+            if (ImGui::Combo("Samples Per Quad", &SampleIndex, SampleLabels, IM_ARRAYSIZE(SampleLabels)))
             {
-                DeferredRenderer->SetSsrMaxSteps(SsrMaxSteps);
+                RendererConfig.SsrSamplesPerQuad = static_cast<uint32_t>(SampleOptions[SampleIndex]);
+                SyncDeferredSsrConfig();
             }
-        }
 
-        float SsrDistanceValue = SsrMaxDistance;
-        if (ImGui::SliderFloat("SSR Max Distance", &SsrDistanceValue, 1.0f, 200.0f, "%.1f"))
-        {
-            SsrMaxDistance = SsrDistanceValue;
-            RendererConfig.SsrMaxDistance = SsrMaxDistance;
-
-            if (DeferredRenderer)
+            int SsrMaxStepsValue = static_cast<int>(RendererConfig.SsrMaxSteps);
+            if (ImGui::SliderInt("SSR Max Steps", &SsrMaxStepsValue, 8, 256))
             {
-                DeferredRenderer->SetSsrMaxDistance(SsrMaxDistance);
+                RendererConfig.SsrMaxSteps = static_cast<uint32_t>(SsrMaxStepsValue);
+                SyncDeferredSsrConfig();
             }
-        }
 
-        float SsrThicknessValue = SsrThickness;
-        if (ImGui::SliderFloat("SSR Thickness", &SsrThicknessValue, 0.01f, 1.0f, "%.2f"))
-        {
-            SsrThickness = SsrThicknessValue;
-            RendererConfig.SsrThickness = SsrThickness;
-
-            if (DeferredRenderer)
+            if (ImGui::SliderFloat("SSR Max Distance", &RendererConfig.SsrMaxDistance, 1.0f, 200.0f, "%.1f"))
             {
-                DeferredRenderer->SetSsrThickness(SsrThickness);
+                SyncDeferredSsrConfig();
             }
-        }
 
-        float SsrStrideValue = SsrStride;
-        if (ImGui::SliderFloat("SSR Stride", &SsrStrideValue, 0.05f, 2.0f, "%.2f"))
-        {
-            SsrStride = SsrStrideValue;
-            RendererConfig.SsrStride = SsrStride;
-
-            if (DeferredRenderer)
+            if (ImGui::SliderFloat("SSR Thickness", &RendererConfig.SsrThickness, 0.01f, 1.0f, "%.2f"))
             {
-                DeferredRenderer->SetSsrStride(SsrStride);
+                SyncDeferredSsrConfig();
             }
-        }
 
-        float SsrRoughnessCutoffValue = SsrRoughnessCutoff;
-        if (ImGui::SliderFloat("SSR Roughness Cutoff", &SsrRoughnessCutoffValue, 0.0f, 1.0f, "%.2f"))
-        {
-            SsrRoughnessCutoff = SsrRoughnessCutoffValue;
-            RendererConfig.SsrRoughnessCutoff = SsrRoughnessCutoff;
-
-            if (DeferredRenderer)
+            if (ImGui::SliderFloat("SSR Stride", &RendererConfig.SsrStride, 0.05f, 2.0f, "%.2f"))
             {
-                DeferredRenderer->SetSsrRoughnessCutoff(SsrRoughnessCutoff);
+                SyncDeferredSsrConfig();
             }
-        }
 
-        float SsrIntensityValue = SsrIntensity;
-        if (ImGui::SliderFloat("SSR Intensity", &SsrIntensityValue, 0.0f, 2.0f, "%.2f"))
-        {
-            SsrIntensity = SsrIntensityValue;
-            RendererConfig.SsrIntensity = SsrIntensity;
-
-            if (DeferredRenderer)
+            if (ImGui::SliderFloat("SSR Roughness Cutoff", &RendererConfig.SsrRoughnessCutoff, 0.0f, 1.0f, "%.2f"))
             {
-                DeferredRenderer->SetSsrIntensity(SsrIntensity);
+                SyncDeferredSsrConfig();
+            }
+
+            if (ImGui::SliderFloat("SSR Intensity", &RendererConfig.SsrIntensity, 0.0f, 2.0f, "%.2f"))
+            {
+                SyncDeferredSsrConfig();
             }
         }
 
         const bool bIndirectDrawSupported = Device && Device->IsShaderModelForIndirectDrawSupported();
-        bool bIndirectDraw = bIndirectDrawEnabled;
+        bool bIndirectDraw = RendererConfig.bEnableIndirectDraw;
+		ImGui::Separator();
         if (ImGui::Checkbox("Indirect Draw", &bIndirectDraw))
         {
-            bIndirectDrawEnabled = bIndirectDrawSupported && bIndirectDraw;
-            RendererConfig.bEnableIndirectDraw = bIndirectDrawEnabled;
+            RendererConfig.bEnableIndirectDraw = bIndirectDrawSupported && bIndirectDraw;
 
             if (DeferredRenderer)
             {
-                DeferredRenderer->SetIndirectDrawEnabled(bIndirectDrawEnabled);
+                DeferredRenderer->SetIndirectDrawEnabled(RendererConfig.bEnableIndirectDraw);
             }
 
             if (ForwardRenderer)
             {
-                ForwardRenderer->SetIndirectDrawEnabled(bIndirectDrawEnabled);
+                ForwardRenderer->SetIndirectDrawEnabled(RendererConfig.bEnableIndirectDraw);
             }
 
             if (bIndirectDraw && !bIndirectDrawSupported)
@@ -2205,154 +2208,149 @@ void FApplication::RenderUI()
         }
 
 		ImGui::SameLine();
-        bool bSkinningIndirectDraw = bSkinningIndirectDrawEnabled;
+        bool bSkinningIndirectDraw = RendererConfig.bEnableSkinningIndirectDraw;
         if (ImGui::Checkbox("Skinning", &bSkinningIndirectDraw))
         {
-            bSkinningIndirectDrawEnabled = bSkinningIndirectDraw;
-            RendererConfig.bEnableSkinningIndirectDraw = bSkinningIndirectDrawEnabled;
+            RendererConfig.bEnableSkinningIndirectDraw = bSkinningIndirectDraw;
 
             if (DeferredRenderer)
             {
-                DeferredRenderer->SetSkinningIndirectDrawEnabled(bSkinningIndirectDrawEnabled);
+                DeferredRenderer->SetSkinningIndirectDrawEnabled(RendererConfig.bEnableSkinningIndirectDraw);
             }
 
             if (ForwardRenderer)
             {
-                ForwardRenderer->SetSkinningIndirectDrawEnabled(bSkinningIndirectDrawEnabled);
+                ForwardRenderer->SetSkinningIndirectDrawEnabled(RendererConfig.bEnableSkinningIndirectDraw);
             }
         }
-
+        /*
         ImGui::SameLine();
-        bool bPbrResearch = bPbrResearchEnabled;
+        bool bPbrResearch = RendererConfig.bEnablePbrResearch;
         if (ImGui::Checkbox("PBR 2", &bPbrResearch))
         {
-            bPbrResearchEnabled = bPbrResearch;
-            RendererConfig.bEnablePbrResearch = bPbrResearchEnabled;
-
-            if (DeferredRenderer)
+            RendererConfig.bEnablePbrResearch = bPbrResearch;
+            SyncDeferredLightingPassConfig();
+        }
+        */
+        if (DeferredRenderer)
+        {
+            const bool bClusterDagRuntimeEnabled = RendererConfig.bEnableClusterDAGRuntime;
+            if (bClusterDagRuntimeEnabled)
             {
-                DeferredRenderer->SetPbrResearchEnabled(bPbrResearchEnabled);
+				ImGui::Separator();
+				bool bClusterDagForceMip = RendererConfig.bEnableClusterDAGForceMip;
+				if (ImGui::Checkbox("Cluster DAG Force Mip", &bClusterDagForceMip))
+				{
+					RendererConfig.bEnableClusterDAGForceMip = bClusterDagForceMip;
+					SyncDeferredClusterDagConfig();
+				}
+
+                if (bClusterDagForceMip)
+                {
+					ImGui::SetNextItemWidth(160.0f);
+					int ClusterDagForceMipLevelValue = static_cast<int>(RendererConfig.ClusterDAGForceMipLevel);
+					if (ImGui::InputInt("Cluster DAG Force Mip Level", &ClusterDagForceMipLevelValue))
+					{
+						RendererConfig.ClusterDAGForceMipLevel = static_cast<uint32_t>((std::max)(0, ClusterDagForceMipLevelValue));
+						SyncDeferredClusterDagConfig();
+					}
+                }
             }
         }
 
         ImGui::Separator();
-        bool bShadows = bShadowsEnabled;
+        bool bShadows = RendererConfig.bEnableShadows;
         if (ImGui::Checkbox("Shadows", &bShadows))
         {
-            bShadowsEnabled = bShadows;
+            RendererConfig.bEnableShadows = bShadows;
 
             if (DeferredRenderer)
             {
-                DeferredRenderer->SetShadowsEnabled(bShadowsEnabled);
+                DeferredRenderer->SetShadowsEnabled(RendererConfig.bEnableShadows);
             }
 
             if (ForwardRenderer)
             {
-                ForwardRenderer->SetShadowsEnabled(bShadowsEnabled);
+                ForwardRenderer->SetShadowsEnabled(RendererConfig.bEnableShadows);
             }
         }
 
 		ImGui::SameLine();
         const bool bRayTracingSupported = Device && Device->IsRayTracingSupported();
-        bool bRayTracedShadows = bRayTracedShadowsEnabled;
+        bool bRayTracedShadows = RendererConfig.bEnableRayTracedShadows;
         if (ImGui::Checkbox("Ray Traced Shadows", &bRayTracedShadows))
         {
             if (bRayTracedShadows && !bRayTracingSupported)
             {
-                bRayTracedShadowsEnabled = false;
                 RendererConfig.bEnableRayTracedShadows = false;
                 LogWarning("Ray traced shadows requested, but DXR is not supported. Falling back to raster shadows.");
             }
             else
             {
-                bRayTracedShadowsEnabled = bRayTracedShadows;
-                RendererConfig.bEnableRayTracedShadows = bRayTracedShadowsEnabled;
+                RendererConfig.bEnableRayTracedShadows = bRayTracedShadows;
             }
 
             if (DeferredRenderer)
             {
-                DeferredRenderer->SetRayTracedShadowsEnabled(bRayTracedShadowsEnabled);
+                DeferredRenderer->SetRayTracedShadowsEnabled(RendererConfig.bEnableRayTracedShadows);
             }
 
             if (ForwardRenderer)
             {
-                ForwardRenderer->SetRayTracedShadowsEnabled(bRayTracedShadowsEnabled);
+                ForwardRenderer->SetRayTracedShadowsEnabled(RendererConfig.bEnableRayTracedShadows);
             }
         }
 
-        bool bPathTracing = bPathTracingEnabled;
+		//float ShadowBiasValue = ActiveRenderer ? ActiveRenderer->GetShadowBias() : 0.0f;
+        //if (ImGui::SliderFloat("Shadow Bias", &ShadowBiasValue, 0.0f, 0.01f, "%.5f"))
+        //{
+        //    if (DeferredRenderer)
+        //    {
+        //        DeferredRenderer->SetShadowBias(ShadowBiasValue);
+        //    }
+
+        //    if (ForwardRenderer)
+        //    {
+        //        ForwardRenderer->SetShadowBias(ShadowBiasValue);
+        //    }
+        //}
+
+        bool bPathTracing = RendererConfig.bEnablePathTracing;
+        ImGui::Separator();
         if (ImGui::Checkbox("Path Tracing", &bPathTracing))
         {
             if (bPathTracing && !bRayTracingSupported)
             {
-                bPathTracingEnabled = false;
                 RendererConfig.bEnablePathTracing = false;
                 LogWarning("Path tracing requested, but DXR is not supported. Disabling path tracing.");
             }
             else
             {
-                bPathTracingEnabled = bPathTracing;
-                RendererConfig.bEnablePathTracing = bPathTracingEnabled;
+                RendererConfig.bEnablePathTracing = bPathTracing;
             }
 
-            if (DeferredRenderer)
-            {
-                DeferredRenderer->SetPathTracingEnabled(bPathTracingEnabled);
-            }
-
-            if (ForwardRenderer)
-            {
-                ForwardRenderer->SetPathTracingEnabled(bPathTracingEnabled);
-            }
+            SyncRendererPathTracingConfig();
         }
 
-        if (bPathTracingEnabled)
+        if (RendererConfig.bEnablePathTracing)
         {
             ImGui::SameLine();
-            bool bPathTracingAccumulation = bPathTracingAccumulationEnabled;
-            if (ImGui::Checkbox("Accumulation", &bPathTracingAccumulation))
+            if (ImGui::Checkbox("Accumulation", &RendererConfig.bEnablePathTracingAccumulation))
             {
-                bPathTracingAccumulationEnabled = bPathTracingAccumulation;
-                RendererConfig.bEnablePathTracingAccumulation = bPathTracingAccumulationEnabled;
-
-                if (DeferredRenderer)
-                {
-                    DeferredRenderer->SetPathTracingAccumulationEnabled(bPathTracingAccumulationEnabled);
-                }
-
-                if (ForwardRenderer)
-                {
-                    ForwardRenderer->SetPathTracingAccumulationEnabled(bPathTracingAccumulationEnabled);
-                }
+                SyncRendererPathTracingConfig();
             }
 
-			ImGui::SameLine();
-			bool bPathTracingVndf = bPathTracingVndfEnabled;
-			if (ImGui::Checkbox("PT GGX VNDF", &bPathTracingVndf))
-			{
-				bPathTracingVndfEnabled = bPathTracingVndf;
-				RendererConfig.bEnablePathTracingVndf = bPathTracingVndfEnabled;
-
-				if (DeferredRenderer)
-				{
-					DeferredRenderer->SetPathTracingVndfEnabled(bPathTracingVndfEnabled);
-				}
-
-				if (ForwardRenderer)
-				{
-					ForwardRenderer->SetPathTracingVndfEnabled(bPathTracingVndfEnabled);
-				}
-			}
+		    ImGui::SameLine();
+		    if (ImGui::Checkbox("PT GGX VNDF", &RendererConfig.bEnablePathTracingVndf))
+		    {
+			    SyncRendererPathTracingConfig();
+		    }
 
             int PathTracingMaxBounces = static_cast<int>(RendererConfig.PathTracingMaxBounces);
-            if (ImGui::SliderInt("Max Bounces", &PathTracingMaxBounces, 1, 16))
+            if (ImGui::SliderInt("Max Bounces", &PathTracingMaxBounces, 0, 16))
             {
                 RendererConfig.PathTracingMaxBounces = static_cast<uint32_t>(PathTracingMaxBounces);
-
-                if (DeferredRenderer)
-                {
-                    DeferredRenderer->SetPathTracingMaxBounces(RendererConfig.PathTracingMaxBounces);
-                }
+                SyncRendererPathTracingConfig();
             }
 
             // Path Tracing Debug Mode
@@ -2374,207 +2372,120 @@ void FApplication::RenderUI()
             int CurrentDebugMode = 0;
             if (DeferredRenderer)
             {
-                CurrentDebugMode = DeferredRenderer->GetPathTracingDebugMode();
+                CurrentDebugMode = DeferredRenderer->GetPathTracing()->GetDebugMode();
             }
             if (ImGui::Combo("PT Debug Mode", &CurrentDebugMode, DebugModeNames, IM_ARRAYSIZE(DebugModeNames)))
             {
                 if (DeferredRenderer)
                 {
-                    DeferredRenderer->SetPathTracingDebugMode(CurrentDebugMode);
+                    DeferredRenderer->GetPathTracing()->SetDebugMode(CurrentDebugMode);
                 }
             }
         }
 
-        //float ShadowBiasValue = ShadowBias;
-        //if (ImGui::SliderFloat("Shadow Bias", &ShadowBiasValue, 0.0f, 0.01f, "%.5f"))
-        //{
-        //    ShadowBias = ShadowBiasValue;
-
-        //    if (DeferredRenderer)
-        //    {
-        //        DeferredRenderer->SetShadowBias(ShadowBias);
-        //    }
-
-        //    if (ForwardRenderer)
-        //    {
-        //        ForwardRenderer->SetShadowBias(ShadowBias);
-        //    }
-        //}
-
-		bool bModelPixEvents = bModelPixEventsEnabled;
-		if (ImGui::Checkbox("Model Pix Events", &bModelPixEvents))
-		{
-			bModelPixEventsEnabled = bModelPixEvents;
-			SetModelPixEventsEnabled(bModelPixEventsEnabled);
-		}
+		//if (ImGui::Checkbox("Model Pix Events", &RendererConfig.bEnableModelPixEvents))
+		//{
+		//	SetModelPixEventsEnabled(RendererConfig.bEnableModelPixEvents);
+		//}
 
         ImGui::Separator();
-        bool bTonemap = bTonemapEnabled;
-        if (ImGui::Checkbox("Tonemap", &bTonemap))
+        if (ImGui::Checkbox("Tonemap", &RendererConfig.bEnableTonemap))
         {
-            bTonemapEnabled = bTonemap;
-
-            if (DeferredRenderer)
-            {
-                DeferredRenderer->SetTonemapEnabled(bTonemapEnabled);
-            }
+            SyncDeferredPostProcessConfig();
         }
-
 		ImGui::SameLine();
-        bool bAutoExposure = bAutoExposureEnabled;
-        if (ImGui::Checkbox("Auto Exposure", &bAutoExposure))
-        {
-            bAutoExposureEnabled = bAutoExposure;
+		if (ImGui::Checkbox("Auto Exposure", &RendererConfig.bEnableAutoExposure))
+		{
+			SyncDeferredPostProcessConfig();
+		}
+		ImGui::SameLine();
+		if (ImGui::Checkbox("CAS", &RendererConfig.bEnableCas))
+		{
+			SyncDeferredPostProcessConfig();
+		}
+		ImGui::SameLine();
+		if (ImGui::Checkbox("TAA", &RendererConfig.bEnableTAA))
+		{
+			SyncDeferredPostProcessConfig();
+		}
 
-            if (DeferredRenderer)
-            {
-                DeferredRenderer->SetAutoExposureEnabled(bAutoExposureEnabled);
-            }
+        if (RendererConfig.bEnableTonemap)
+        {
+			if (ImGui::SliderFloat("Tonemap Exposure", &RendererConfig.TonemapExposure, 0.1f, 5.0f, "%.2f"))
+			{
+				SyncDeferredPostProcessConfig();
+			}
+
+			if (ImGui::SliderFloat("Tonemap Gamma", &RendererConfig.TonemapGamma, 1.0f, 3.0f, "%.2f"))
+			{
+				SyncDeferredPostProcessConfig();
+			}
         }
 
-        ImGui::SameLine();
-        bool bTaa = bTaaEnabled;
-        if (ImGui::Checkbox("TAA", &bTaa))
+        if (RendererConfig.bEnableAutoExposure)
         {
-            bTaaEnabled = bTaa;
+			if (ImGui::SliderFloat("Exposure Key", &RendererConfig.AutoExposureKey, 0.05f, 1.0f, "%.2f"))
+			{
+				SyncDeferredPostProcessConfig();
+			}
 
-            if (DeferredRenderer)
-            {
-                DeferredRenderer->SetTaaEnabled(bTaaEnabled);
-            }
+			if (ImGui::SliderFloat("Exposure Min", &RendererConfig.AutoExposureMin, 0.01f, 2.0f, "%.2f"))
+			{
+				RendererConfig.AutoExposureMax = (std::max)(RendererConfig.AutoExposureMax, RendererConfig.AutoExposureMin + 0.01f);
+				SyncDeferredPostProcessConfig();
+			}
+
+			if (ImGui::SliderFloat("Exposure Max", &RendererConfig.AutoExposureMax, 0.1f, 10.0f, "%.2f"))
+			{
+				RendererConfig.AutoExposureMax = (std::max)(RendererConfig.AutoExposureMax, RendererConfig.AutoExposureMin + 0.01f);
+				SyncDeferredPostProcessConfig();
+			}
+
+			if (ImGui::SliderFloat("Exposure Speed Up", &RendererConfig.AutoExposureSpeedUp, 0.1f, 10.0f, "%.2f"))
+			{
+				SyncDeferredPostProcessConfig();
+			}
+
+			if (ImGui::SliderFloat("Exposure Speed Down", &RendererConfig.AutoExposureSpeedDown, 0.1f, 10.0f, "%.2f"))
+			{
+				SyncDeferredPostProcessConfig();
+			}
         }
 
-        ImGui::SameLine();
-        bool bCas = bCasEnabled;
-        if (ImGui::Checkbox("CAS", &bCas))
+        if (RendererConfig.bEnableCas)
         {
-            bCasEnabled = bCas;
-
-            if (DeferredRenderer)
-            {
-                DeferredRenderer->SetCasEnabled(bCasEnabled);
-            }
+			if (ImGui::SliderFloat("CAS Sharpness", &RendererConfig.CasSharpness, 0.0f, 1.0f, "%.2f"))
+			{
+				SyncDeferredPostProcessConfig();
+			}
         }
 
-        float CasSharpnessValue = CasSharpness;
-        if (ImGui::SliderFloat("CAS Sharpness", &CasSharpnessValue, 0.0f, 1.0f, "%.2f"))
+        if (RendererConfig.bEnableTAA)
         {
-            CasSharpness = CasSharpnessValue;
-
-            if (DeferredRenderer)
-            {
-                DeferredRenderer->SetCasSharpness(CasSharpness);
-            }
-        }
-
-        float TonemapExposureValue = TonemapExposure;
-        if (ImGui::SliderFloat("Tonemap Exposure", &TonemapExposureValue, 0.1f, 5.0f, "%.2f"))
-        {
-            TonemapExposure = TonemapExposureValue;
-
-            if (DeferredRenderer)
-            {
-                DeferredRenderer->SetTonemapExposure(TonemapExposure);
-            }
-        }
-
-        float TonemapGammaValue = TonemapGamma;
-        if (ImGui::SliderFloat("Tonemap Gamma", &TonemapGammaValue, 1.0f, 3.0f, "%.2f"))
-        {
-            TonemapGamma = TonemapGammaValue;
-
-            if (DeferredRenderer)
-            {
-                DeferredRenderer->SetTonemapGamma(TonemapGamma);
-            }
-        }
-
-        float AutoExposureKeyValue = AutoExposureKey;
-        if (ImGui::SliderFloat("Exposure Key", &AutoExposureKeyValue, 0.05f, 1.0f, "%.2f"))
-        {
-            AutoExposureKey = AutoExposureKeyValue;
-
-            if (DeferredRenderer)
-            {
-                DeferredRenderer->SetAutoExposureKey(AutoExposureKey);
-            }
-        }
-
-        float AutoExposureMinValue = AutoExposureMin;
-        if (ImGui::SliderFloat("Exposure Min", &AutoExposureMinValue, 0.01f, 2.0f, "%.2f"))
-        {
-            AutoExposureMin = AutoExposureMinValue;
-            AutoExposureMax = (std::max)(AutoExposureMax, AutoExposureMin + 0.01f);
-
-            if (DeferredRenderer)
-            {
-                DeferredRenderer->SetAutoExposureMin(AutoExposureMin);
-                DeferredRenderer->SetAutoExposureMax(AutoExposureMax);
-            }
-        }
-
-        float AutoExposureMaxValue = AutoExposureMax;
-        if (ImGui::SliderFloat("Exposure Max", &AutoExposureMaxValue, 0.1f, 10.0f, "%.2f"))
-        {
-            AutoExposureMax = (std::max)(AutoExposureMaxValue, AutoExposureMin + 0.01f);
-
-            if (DeferredRenderer)
-            {
-                DeferredRenderer->SetAutoExposureMax(AutoExposureMax);
-            }
-        }
-
-        float AutoExposureSpeedUpValue = AutoExposureSpeedUp;
-        if (ImGui::SliderFloat("Exposure Speed Up", &AutoExposureSpeedUpValue, 0.1f, 10.0f, "%.2f"))
-        {
-            AutoExposureSpeedUp = AutoExposureSpeedUpValue;
-
-            if (DeferredRenderer)
-            {
-                DeferredRenderer->SetAutoExposureSpeedUp(AutoExposureSpeedUp);
-            }
-        }
-
-        float AutoExposureSpeedDownValue = AutoExposureSpeedDown;
-        if (ImGui::SliderFloat("Exposure Speed Down", &AutoExposureSpeedDownValue, 0.1f, 10.0f, "%.2f"))
-        {
-            AutoExposureSpeedDown = AutoExposureSpeedDownValue;
-
-            if (DeferredRenderer)
-            {
-                DeferredRenderer->SetAutoExposureSpeedDown(AutoExposureSpeedDown);
-            }
-        }
-
-        float TaaHistoryValue = TaaHistoryWeight;
-        if (ImGui::SliderFloat("TAA History Weight", &TaaHistoryValue, 0.0f, 0.98f, "%.2f"))
-        {
-            TaaHistoryWeight = TaaHistoryValue;
-
-            if (DeferredRenderer)
-            {
-                DeferredRenderer->SetTaaHistoryWeight(TaaHistoryWeight);
-            }
+			if (ImGui::SliderFloat("TAA History Weight", &RendererConfig.TaaHistoryWeight, 0.0f, 0.98f, "%.2f"))
+			{
+				SyncDeferredPostProcessConfig();
+			}
         }
 
         ImGui::Separator();
         bool bLightingChanged = false;
 
-        float YawDegrees = DirectX::XMConvertToDegrees(LightYaw);
+        float YawDegrees = DirectX::XMConvertToDegrees(RendererConfig.LightYaw);
         if (ImGui::SliderFloat("Light Yaw", &YawDegrees, -180.0f, 180.0f, "%.1f deg"))
         {
-            LightYaw = DirectX::XMConvertToRadians(YawDegrees);
+            RendererConfig.LightYaw = DirectX::XMConvertToRadians(YawDegrees);
             bLightingChanged = true;
         }
 
-        float PitchDegrees = DirectX::XMConvertToDegrees(LightPitch);
+        float PitchDegrees = DirectX::XMConvertToDegrees(RendererConfig.LightPitch);
         if (ImGui::SliderFloat("Light Pitch", &PitchDegrees, -89.0f, 89.0f, "%.1f deg"))
         {
-            LightPitch = DirectX::XMConvertToRadians(PitchDegrees);
+            RendererConfig.LightPitch = DirectX::XMConvertToRadians(PitchDegrees);
             bLightingChanged = true;
         }
 
-        if (ImGui::SliderFloat("Light Intensity", &LightIntensity, 0.0f, 5.0f, "%.2f"))
+        if (ImGui::SliderFloat("Light Intensity", &RendererConfig.LightIntensity, 0.0f, 5.0f, "%.2f"))
         {
             bLightingChanged = true;
         }
@@ -2590,7 +2501,6 @@ void FApplication::RenderUI()
     if (Camera)
     {
         DrawAxisGizmo(Camera->GetViewMatrix(), Io.DisplaySize);
-        DrawSelectionBounds(Io.DisplaySize.x, Io.DisplaySize.y);
     }
 
     ImGui::Render();

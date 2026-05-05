@@ -1,4 +1,7 @@
 #include "SceneConstants.hlsl"
+#include "Common.hlsli"
+#include "ClusterDagPackedVertex.hlsli"
+#include "../Source/Core/LightingVisualizationShared.h"
 
 #ifndef USE_SKINNING
 #define USE_SKINNING 0
@@ -7,7 +10,6 @@
 struct VSInput
 {
     uint VertexId : SV_VertexID;
-	uint StartVertexLocation : SV_StartVertexLocation;
 };
 
 struct VSOutput
@@ -19,6 +21,9 @@ struct VSOutput
     float3 PrevWorldPos : TEXCOORD2;
     float4 Tangent  : TEXCOORD3;
     float4 CurrentClipPos : TEXCOORD4;
+#if USE_CLUSTER_DAG_DEBUG_VIEW
+    float4 ClusterDagDebug : TEXCOORD5;
+#endif
     float4 Color    : COLOR0;
 };
 
@@ -53,6 +58,9 @@ struct VSOutput
 #define USE_DOUBLE_SIDED 0
 #endif
 
+#ifndef USE_CLUSTER_DAG_DEBUG_VIEW
+#define USE_CLUSTER_DAG_DEBUG_VIEW 0
+#endif
 
 cbuffer BasePassBindlessConstants : register(b1)
 {
@@ -67,32 +75,37 @@ cbuffer BasePassBindlessConstants : register(b1)
     uint ClearcoatNormalTextureIndex;
     uint AnisotropyTextureIndex;
 };
+
+cbuffer DrawCommandConstants : register(b2)
+{
+    uint DrawIndexStart;
+};
 SamplerState AlbedoSampler : register(s0);
 
-cbuffer VelocityPassConstants : register(b2)
+float4 DecodeDebugColor(uint packedColor)
+{
+    const float inv255 = 1.0f / 255.0f;
+    return float4(
+        (packedColor & 0xffu) * inv255,
+        ((packedColor >> 8) & 0xffu) * inv255,
+        ((packedColor >> 16) & 0xffu) * inv255,
+        ((packedColor >> 24) & 0xffu) * inv255);
+}
+
+cbuffer VelocityPassConstants : register(b3)
 {
     row_major float4x4 CurrentUnjitteredViewProjection;
     row_major float4x4 PreviousUnjitteredViewProjection;
     uint HasPreviousUnjitteredViewProjection;
 };
 
-float2 ApplyTextureTransform(float2 uv, float4 offsetScale, float4 rotation)
-{
-    float2 scaled = uv * offsetScale.zw;
-    float2 rotated = float2(
-        scaled.x * rotation.x - scaled.y * rotation.y,
-        scaled.x * rotation.y + scaled.y * rotation.x);
-    return rotated + offsetScale.xy;
-}
-
-VSOutput VSMain(VSInput Input)
+VSOutput DeferredBasePassVS(VSInput Input)
 {
     VSOutput Output;
     StructuredBuffer<float3> PositionBuffer = ResourceDescriptorHeap[VertexBufferBindlessIndices.x];
     StructuredBuffer<float3> NormalBuffer = ResourceDescriptorHeap[VertexBufferBindlessIndices.y];
-    StructuredBuffer<float2> TexCoordBuffer = ResourceDescriptorHeap[VertexBufferBindlessIndices.z];
-    StructuredBuffer<float4> TangentBuffer = ResourceDescriptorHeap[VertexBufferBindlessIndices.w];
-    StructuredBuffer<float4> ColorBuffer = ResourceDescriptorHeap[ExtraBindlessIndices.x];
+    StructuredBuffer<ClusterDagPackedPosition> PackedPositionBuffer = ResourceDescriptorHeap[VertexBufferBindlessIndices.x];
+    StructuredBuffer<uint> PackedNormalBuffer = ResourceDescriptorHeap[VertexBufferBindlessIndices.y];
     StructuredBuffer<uint> IndexBuffer = ResourceDescriptorHeap[ExtraBindlessIndices.y];
 #if USE_SKINNING
     StructuredBuffer<uint4> JointBuffer = ResourceDescriptorHeap[SkinningBindlessIndices.x];
@@ -101,14 +114,69 @@ VSOutput VSMain(VSInput Input)
     StructuredBuffer<float3> SkinnedPositionBuffer = ResourceDescriptorHeap[SkinningBindlessIndices.w];
 #endif
 
-    uint vertexIndex = IndexBuffer[Input.VertexId + Input.StartVertexLocation];
-    float3 basePosition = PositionBuffer[vertexIndex];
+    uint vertexIndex = IndexBuffer[Input.VertexId + DrawIndexStart];
+    const bool usePackedClusterDagVertices = ClusterDagVertexPackingMode != 0u;
+    float3 basePosition = usePackedClusterDagVertices
+        ? DecodeClusterDagPackedPosition(PackedPositionBuffer[vertexIndex])
+        : PositionBuffer[vertexIndex];
     float3 currentPosition = basePosition;
     float3 previousPosition = basePosition;
-    float3 normal = NormalBuffer[vertexIndex];
-    float2 uv = TexCoordBuffer[vertexIndex];
-    float4 tangent = TangentBuffer[vertexIndex];
-    float4 color = ColorBuffer[vertexIndex];
+    float3 normal = usePackedClusterDagVertices
+        ? DecodeOctahedral16x2(PackedNormalBuffer[vertexIndex])
+        : NormalBuffer[vertexIndex];
+    float2 uv = 0.0f.xx;
+    float4 tangent = 0.0f.xxxx;
+    float4 color = 1.0f.xxxx;
+    if (usePackedClusterDagVertices)
+    {
+        if (VertexBufferBindlessIndices.z != 0xffffffffu)
+        {
+            StructuredBuffer<uint> PackedTexCoordBuffer = ResourceDescriptorHeap[VertexBufferBindlessIndices.z];
+            uv = DecodeClusterDagPackedUV(PackedTexCoordBuffer[vertexIndex]);
+        }
+        else
+        {
+            uv = ClusterDagPackedConstantUV.xy;
+        }
+
+        if (VertexBufferBindlessIndices.w != 0xffffffffu)
+        {
+            StructuredBuffer<uint> PackedTangentBuffer = ResourceDescriptorHeap[VertexBufferBindlessIndices.w];
+            tangent = DecodeClusterDagPackedTangent(PackedTangentBuffer[vertexIndex]);
+        }
+        else
+        {
+            tangent = BuildClusterDagFallbackTangent(normal);
+        }
+
+        if (ExtraBindlessIndices.x != 0xffffffffu)
+        {
+            StructuredBuffer<uint> PackedColorBuffer = ResourceDescriptorHeap[ExtraBindlessIndices.x];
+            color = DecodeClusterDagPackedColor(PackedColorBuffer[vertexIndex]);
+        }
+        else
+        {
+            color = ClusterDagPackedConstantColor;
+        }
+    }
+    else
+    {
+        StructuredBuffer<float2> TexCoordBuffer = ResourceDescriptorHeap[VertexBufferBindlessIndices.z];
+        StructuredBuffer<float4> TangentBuffer = ResourceDescriptorHeap[VertexBufferBindlessIndices.w];
+        StructuredBuffer<float4> ColorBuffer = ResourceDescriptorHeap[ExtraBindlessIndices.x];
+        uv = TexCoordBuffer[vertexIndex];
+        tangent = TangentBuffer[vertexIndex];
+        color = ColorBuffer[vertexIndex];
+    }
+#if USE_CLUSTER_DAG_DEBUG_VIEW
+    float4 clusterDagDebug = 0.0f.xxxx;
+    if (ExtraBindlessIndices.z != 0xffffffffu)
+    {
+        StructuredBuffer<uint> ClusterDebugColorBuffer = ResourceDescriptorHeap[ExtraBindlessIndices.z];
+        const uint packedDebugColor = ClusterDebugColorBuffer[DrawIndexStart];
+        clusterDagDebug = DecodeDebugColor(packedDebugColor);
+    }
+#endif
 
 #if USE_SKINNING
     uint4 joints = JointBuffer[vertexIndex];
@@ -145,6 +213,9 @@ VSOutput VSMain(VSInput Input)
     Output.WorldPos = WorldPos.xyz;
     Output.PrevWorldPos = PreviousWorldPos.xyz;
     Output.Tangent = float4(normalize(mul(tangent.xyz, (float3x3)WorldInverseTranspose)), tangent.w);
+#if USE_CLUSTER_DAG_DEBUG_VIEW
+    Output.ClusterDagDebug = clusterDagDebug;
+#endif
     Output.Color = color;
     return Output;
 }
@@ -157,50 +228,6 @@ struct PSOutput
     float4 GBufferD : SV_Target3; // CustomData
     float4 SceneColor : SV_Target4; // Emissive
 };
-
-float3 ComputeWorldNormal(VSOutput Input, float2 normalUV)
-{
-    float3 vertexNormal = normalize(Input.Normal);
-
-#if USE_NORMAL_MAP
-    Texture2D NormalTexture = ResourceDescriptorHeap[NormalTextureIndex];
-    float3 tangent = normalize(Input.Tangent.xyz - vertexNormal * dot(vertexNormal, Input.Tangent.xyz));
-    float3 bitangent = normalize(cross(vertexNormal, tangent)) * Input.Tangent.w;
-
-    float2 tangentNormalRG = NormalTexture.Sample(AlbedoSampler, normalUV).rg * 2.0f - 1.0f;
-    float tangentNormalZ = sqrt(saturate(1.0f - dot(tangentNormalRG, tangentNormalRG)));
-    float3 tangentNormal = float3(tangentNormalRG, tangentNormalZ);
-    const float tangentEpsilon = 1e-5f;
-    float tangentNormalLength = length(tangentNormal);
-    tangentNormal = tangentNormalLength < tangentEpsilon ? float3(0.0f, 0.0f, 1.0f) : tangentNormal;
-
-    float3x3 TBN = float3x3(tangent, bitangent, vertexNormal);
-    float3 worldNormal = mul(tangentNormal, TBN);
-
-    return normalize(worldNormal);
-#else
-    return normalize(vertexNormal);
-#endif
-}
-
-float3 ComputeWorldNormalFromTexture(VSOutput Input, Texture2D NormalTexture, float2 normalUV)
-{
-    float3 vertexNormal = normalize(Input.Normal);
-
-    float3 tangent = normalize(Input.Tangent.xyz - vertexNormal * dot(vertexNormal, Input.Tangent.xyz));
-    float3 bitangent = normalize(cross(vertexNormal, tangent)) * Input.Tangent.w;
-
-    float2 tangentNormalRG = NormalTexture.Sample(AlbedoSampler, normalUV).rg * 2.0f - 1.0f;
-    float tangentNormalZ = sqrt(saturate(1.0f - dot(tangentNormalRG, tangentNormalRG)));
-    float3 tangentNormal = float3(tangentNormalRG, tangentNormalZ);
-    const float tangentEpsilon = 1e-5f;
-    float tangentNormalLength = length(tangentNormal);
-    tangentNormal = tangentNormalLength < tangentEpsilon ? float3(0.0f, 0.0f, 1.0f) : tangentNormal;
-
-    float3x3 TBN = float3x3(tangent, bitangent, vertexNormal);
-    float3 worldNormal = mul(tangentNormal, TBN);
-    return normalize(worldNormal);
-}
 
 
 struct PSOutputVelocity
@@ -247,7 +274,7 @@ PSOutputVelocity PSMainVelocity(VSOutput Input)
     return Output;
 }
 
-PSOutput PSMain(VSOutput Input, bool IsFrontFace : SV_IsFrontFace)
+PSOutput DeferredBasePassPS(VSOutput Input, bool IsFrontFace : SV_IsFrontFace)
 {
     PSOutput Output;
     Texture2D AlbedoTexture = ResourceDescriptorHeap[AlbedoTextureIndex];
@@ -267,12 +294,20 @@ PSOutput PSMain(VSOutput Input, bool IsFrontFace : SV_IsFrontFace)
     float2 anisotropyUV = ApplyTextureTransform(Input.UV, AnisotropyTransformOffsetScale, AnisotropyTransformRotation);
 #endif
 
-    float3 worldNormal = ComputeWorldNormal(Input, normalUV);
+    float3 worldNormal = normalize(Input.Normal);
+#if USE_NORMAL_MAP
+    Texture2D NormalTexture = ResourceDescriptorHeap[NormalTextureIndex];
+    float2 tangentNormalRG = NormalTexture.Sample(AlbedoSampler, normalUV).rg * 2.0f - 1.0f;
+    float3 tangentNormal = DecodeTangentNormalRG(tangentNormalRG);
+    worldNormal = ComputeWorldNormal(Input.Normal, Input.Tangent, tangentNormal);
+#endif
 #if SHADINGMODEL_CLEARCOAT
     if (ClearcoatNormalTextureIndex != 0xFFFFFFFFu)
     {
         Texture2D ClearcoatNormalTexture = ResourceDescriptorHeap[ClearcoatNormalTextureIndex];
-        worldNormal = ComputeWorldNormalFromTexture(Input, ClearcoatNormalTexture, clearcoatNormalUV);
+        float2 clearcoatTangentNormalRG = ClearcoatNormalTexture.Sample(AlbedoSampler, clearcoatNormalUV).rg * 2.0f - 1.0f;
+        float3 clearcoatTangentNormal = DecodeTangentNormalRG(clearcoatTangentNormalRG);
+        worldNormal = ComputeWorldNormal(Input.Normal, Input.Tangent, clearcoatTangentNormal);
     }
 #endif
 #if USE_DOUBLE_SIDED
@@ -311,6 +346,60 @@ PSOutput PSMain(VSOutput Input, bool IsFrontFace : SV_IsFrontFace)
     Output.GBufferC = float4(albedo, 1.0);
 
     float4 customData = 0.0f;
+#if USE_CLUSTER_DAG_DEBUG_VIEW
+    const bool bClusterDagDebugView =
+        DeferredLightingVisualizationMode == LIGHTING_VISUALIZATION_CLUSTER_DAG_CLUSTERS
+        || DeferredLightingVisualizationMode == LIGHTING_VISUALIZATION_CLUSTER_DAG_MIP;
+    if (bClusterDagDebugView)
+    {
+        customData = (ExtraBindlessIndices.z != 0xffffffffu) ? Input.ClusterDagDebug : 0.0f.xxxx;
+    }
+#if !SHADINGMODEL_SHEEN && !SHADINGMODEL_CLEARCOAT && !SHADINGMODEL_ANISOTROPY
+#else
+    else
+    {
+#if SHADINGMODEL_SHEEN
+        float3 sheenColor = SheenColorFactor;
+        float sheenRoughness = SheenRoughnessFactor;
+        if (SheenColorTextureIndex != 0xFFFFFFFFu)
+        {
+            Texture2D SheenColorTexture = ResourceDescriptorHeap[SheenColorTextureIndex];
+            sheenColor *= SheenColorTexture.Sample(AlbedoSampler, sheenColorUV).rgb;
+        }
+        if (SheenRoughnessTextureIndex != 0xFFFFFFFFu)
+        {
+            Texture2D SheenRoughnessTexture = ResourceDescriptorHeap[SheenRoughnessTextureIndex];
+            sheenRoughness *= SheenRoughnessTexture.Sample(AlbedoSampler, sheenRoughnessUV).a;
+        }
+        customData = float4(sheenColor, sheenRoughness);
+#endif
+#if SHADINGMODEL_CLEARCOAT
+        float clearcoat = ClearcoatFactor;
+        float clearcoatRoughness = ClearcoatRoughnessFactor;
+        if (ClearcoatTextureIndex != 0xFFFFFFFFu)
+        {
+            Texture2D ClearcoatTexture = ResourceDescriptorHeap[ClearcoatTextureIndex];
+            clearcoat *= ClearcoatTexture.Sample(AlbedoSampler, clearcoatUV).r;
+        }
+        if (ClearcoatRoughnessTextureIndex != 0xFFFFFFFFu)
+        {
+            Texture2D ClearcoatRoughnessTexture = ResourceDescriptorHeap[ClearcoatRoughnessTextureIndex];
+            clearcoatRoughness *= ClearcoatRoughnessTexture.Sample(AlbedoSampler, clearcoatRoughnessUV).g;
+        }
+        customData = float4(clearcoat, clearcoatRoughness, 0.0f, 0.0f);
+#endif
+#if SHADINGMODEL_ANISOTROPY
+        float anisotropyValue = 1.0f;
+        if (AnisotropyTextureIndex != 0xFFFFFFFFu)
+        {
+            Texture2D AnisotropyTexture = ResourceDescriptorHeap[AnisotropyTextureIndex];
+            anisotropyValue = AnisotropyTexture.Sample(AlbedoSampler, anisotropyUV).r;
+        }
+        customData = float4(anisotropyValue, AnisotropyStrength, 0.0f, 0.0f);
+#endif
+    }
+#endif
+#else
 #if SHADINGMODEL_SHEEN
     float3 sheenColor = SheenColorFactor;
     float sheenRoughness = SheenRoughnessFactor;
@@ -349,6 +438,7 @@ PSOutput PSMain(VSOutput Input, bool IsFrontFace : SV_IsFrontFace)
         anisotropyValue = AnisotropyTexture.Sample(AlbedoSampler, anisotropyUV).r;
     }
     customData = float4(anisotropyValue, AnisotropyStrength, 0.0f, 0.0f);
+#endif
 #endif
     Output.GBufferD = customData;
 
