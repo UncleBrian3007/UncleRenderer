@@ -84,16 +84,8 @@ namespace
         D3D12_HEAP_PROPERTIES HeapProps = {};
         HeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
 
-        D3D12_RESOURCE_DESC Desc = {};
-        Desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        Desc.Width = AlignRayTracingBufferSize(SizeInBytes);
-        Desc.Height = 1;
-        Desc.DepthOrArraySize = 1;
-        Desc.MipLevels = 1;
-        Desc.SampleDesc.Count = 1;
-        Desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-        Desc.Flags = Flags;
-
+		const D3D12_RESOURCE_DESC Desc = CreateBufferResourceDesc(AlignRayTracingBufferSize(SizeInBytes), Flags);
+ 
         HR_CHECK(Device->GetDevice()->CreateCommittedResource(
             &HeapProps,
             D3D12_HEAP_FLAG_NONE,
@@ -221,9 +213,7 @@ bool FRayTracingRuntime::BuildSceneModelBlas(FDX12Device* Device, std::vector<FS
 
         CommandList4->BuildRaytracingAccelerationStructure(&BuildDesc, 0, nullptr);
 
-        D3D12_RESOURCE_BARRIER Barrier = {};
-        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-        Barrier.UAV.pResource = Model.BlasResultBuffer.Get();
+        const auto Barrier = CD3DX12_RESOURCE_BARRIER::UAV(Model.BlasResultBuffer.Get());
         CommandList4->ResourceBarrier(1, &Barrier);
 
         Model.BlasGeometryDesc = GeometryDesc;
@@ -257,13 +247,7 @@ uint32_t FRayTracingRuntime::UpdateDepthSrv(FRenderer& Owner, uint32_t FrameInde
         return UINT32_MAX;
     }
 
-    D3D12_SHADER_RESOURCE_VIEW_DESC DepthSrvDesc = {};
-    DepthSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    DepthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    DepthSrvDesc.Format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
-    DepthSrvDesc.Texture2D.MipLevels = 1;
-    DepthSrvDesc.Texture2D.MostDetailedMip = 0;
-    DepthSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+    const auto DepthSrvDesc = CD3DX12_SHADER_RESOURCE_VIEW_DESC::Tex2D(DXGI_FORMAT_R24_UNORM_X8_TYPELESS, 1);
 
     if (FrameIndex < RayTracingDepthResources.size() && RayTracingDepthResources[FrameIndex] != DepthBuffer)
     {
@@ -301,12 +285,7 @@ uint32_t FRayTracingRuntime::UpdateGBufferSrv(FRenderer& Owner, EGBufferSlot Slo
         return UINT32_MAX;
     }
 
-    D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc = {};
-    SrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    SrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    SrvDesc.Format = GBuffer->GetDesc().Format;
-    SrvDesc.Texture2D.MipLevels = 1;
-    SrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+    const auto SrvDesc = CD3DX12_SHADER_RESOURCE_VIEW_DESC::Tex2D(GBuffer->GetDesc().Format, 1);
 
     if (*BindlessIndex == UINT32_MAX)
     {
@@ -328,9 +307,7 @@ uint32_t FRayTracingRuntime::UpdateLightingUav(FRenderer& Owner, ID3D12Resource*
         return UINT32_MAX;
     }
 
-    D3D12_UNORDERED_ACCESS_VIEW_DESC UavDesc = {};
-    UavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-    UavDesc.Format = OutputTarget->GetDesc().Format;
+    const auto UavDesc = CD3DX12_UNORDERED_ACCESS_VIEW_DESC::Tex2D(OutputTarget->GetDesc().Format);
 
     if (RayTracingLightingUavBindlessIndex == UINT32_MAX)
     {
@@ -352,9 +329,7 @@ uint32_t FRayTracingRuntime::UpdateShadowMaskUav(FRenderer& Owner, ID3D12Resourc
         return UINT32_MAX;
     }
 
-    D3D12_UNORDERED_ACCESS_VIEW_DESC UavDesc = {};
-    UavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-    UavDesc.Format = DXGI_FORMAT_R8_UNORM;
+    const auto UavDesc = CD3DX12_UNORDERED_ACCESS_VIEW_DESC::Tex2D(DXGI_FORMAT_R8_UNORM);
 
     if (RayTracingShadowMaskUavBindlessIndex == UINT32_MAX)
     {
@@ -376,11 +351,7 @@ uint32_t FRayTracingRuntime::UpdateShadowMaskSrv(FRenderer& Owner, ID3D12Resourc
         return UINT32_MAX;
     }
 
-    D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc = {};
-    SrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    SrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    SrvDesc.Format = DXGI_FORMAT_R8_UNORM;
-    SrvDesc.Texture2D.MipLevels = 1;
+    const auto SrvDesc = CD3DX12_SHADER_RESOURCE_VIEW_DESC::Tex2D(DXGI_FORMAT_R8_UNORM, 1);
 
     if (Owner.ShadowMaskBindlessIndex == UINT32_MAX)
     {
@@ -415,7 +386,7 @@ bool FRayTracingRuntime::CreatePipeline(FRenderer& Owner, FDX12Device* Device)
     CD3DX12_ROOT_PARAMETER RootParameters[3] = {};
     RootParameters[0].InitAsShaderResourceView(0);
     RootParameters[1].InitAsConstantBufferView(0);
-    RootParameters[2].InitAsConstants(13, 1);
+    RootParameters[2].InitAsConstants(FRayTracingRuntime::RayQueryRootConstantDwordCount, 1);
 
     D3D12_ROOT_SIGNATURE_DESC GlobalRootDesc = {};
     GlobalRootDesc.NumParameters = _countof(RootParameters);
@@ -587,12 +558,7 @@ bool FRayTracingRuntime::CreatePipeline(FRenderer& Owner, FDX12Device* Device)
     RayTracingLightingResource = nullptr;
     RayTracingShadowMaskUavResource = nullptr;
 
-    D3D12_SHADER_RESOURCE_VIEW_DESC DepthSrvDesc = {};
-    DepthSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    DepthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    DepthSrvDesc.Format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
-    DepthSrvDesc.Texture2D.MipLevels = 1;
-    DepthSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+    const auto DepthSrvDesc = CD3DX12_SHADER_RESOURCE_VIEW_DESC::Tex2D(DXGI_FORMAT_R24_UNORM_X8_TYPELESS, 1);
 
     for (uint32_t FrameIndex = 0; FrameIndex < Owner.FramesInFlight; ++FrameIndex)
     {
@@ -633,9 +599,7 @@ void FRayTracingRuntime::UpdateBlasRefit(FRenderer& Owner, FDX12CommandContext& 
 	FScopedPixEvent BlasRefitEvent(CommandList4, L"UpdateRayTracingBlasRefit");
 
     bool bHasUpdates = false;
-    D3D12_RESOURCE_BARRIER SkinningBarrier = {};
-    SkinningBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-    SkinningBarrier.UAV.pResource = nullptr;
+    const auto SkinningBarrier = CD3DX12_RESOURCE_BARRIER::UAV(nullptr);
     CommandList4->ResourceBarrier(1, &SkinningBarrier);
 
     const uint32_t FrameIndex = CmdContext.GetCurrentFrameIndex();
@@ -686,18 +650,14 @@ void FRayTracingRuntime::UpdateBlasRefit(FRenderer& Owner, FDX12CommandContext& 
 
         CommandList4->BuildRaytracingAccelerationStructure(&BuildDesc, 0, nullptr);
 
-        D3D12_RESOURCE_BARRIER Barrier = {};
-        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-        Barrier.UAV.pResource = Model.BlasResultBuffer.Get();
+        const auto Barrier = CD3DX12_RESOURCE_BARRIER::UAV(Model.BlasResultBuffer.Get());
         CommandList4->ResourceBarrier(1, &Barrier);
         bHasUpdates = true;
     }
 
     if (bHasUpdates)
     {
-        D3D12_RESOURCE_BARRIER Barrier = {};
-        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-        Barrier.UAV.pResource = nullptr;
+        const auto Barrier = CD3DX12_RESOURCE_BARRIER::UAV(nullptr);
         CommandList4->ResourceBarrier(1, &Barrier);
     }
 }
@@ -1002,9 +962,7 @@ void FRayTracingRuntime::BuildTlas(FRenderer& Owner, FDX12CommandContext& CmdCon
 	FScopedPixEvent TlasEvent(CommandList4, L"Build TLAS");
     CommandList4->BuildRaytracingAccelerationStructure(&BuildDesc, 0, nullptr);
 
-    D3D12_RESOURCE_BARRIER Barrier = {};
-    Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-    Barrier.UAV.pResource = TlasResultBuffers[FrameIndex].Get();
+    const auto Barrier = CD3DX12_RESOURCE_BARRIER::UAV(TlasResultBuffers[FrameIndex].Get());
     CommandList4->ResourceBarrier(1, &Barrier);
 
     TlasBuilt[FrameIndex] = true;

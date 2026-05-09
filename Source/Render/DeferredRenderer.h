@@ -23,6 +23,7 @@
 #include "Deferred/PathTracing.h"
 #include "Deferred/AutoExposure.h"
 #include "Deferred/Cas.h"
+#include "Deferred/ClusterDagVisibilityPass.h"
 #include "Deferred/ClusterDagRuntime.h"
 #include "Deferred/Taa.h"
 #include "Deferred/Tonemap.h"
@@ -149,6 +150,7 @@ public:
         FRGResourceHandle ObjectIdHandle{};
         FRGResourceHandle VelocityHandle{};
         std::array<FRGResourceHandle, 4> GBufferHandles{};
+        FClusterDagVisibilityFrameResources ClusterDagVisibility;
         FRGResourceHandle LinearDepthHandle{};
         FGtaoFrameResources Gtao;
             FRestirGIFrameResources RestirGI;
@@ -172,7 +174,7 @@ private:
     bool InitializeEnvironmentAndDescriptorResources(FDX12Device* Device, const FRendererConfig& Config);
     bool InitializeGpuDebugResources(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateDescriptorHeap(FDX12Device* Device);
-    bool CreateClusterDagSceneConstantBuffersPerFrame(FDX12Device* Device, uint64_t BufferSize);
+    bool CreateClusterDagSceneConstantBuffersPerFrame(FDX12Device* Device, uint32_t ModelCount);
     bool CreateSceneTextures(FDX12Device* Device, const std::vector<FSceneModelResource>& Models);
     bool CreateGpuDrivenResources(FDX12Device* Device);
 
@@ -186,6 +188,7 @@ private:
     void WriteSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, uint64_t ConstantBufferOffset, uint8_t* ConstantBufferMapped, bool bUseClusterDagIndexBuffer);
     void UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, size_t ModelIndex, uint64_t ConstantBufferOffset, bool bUseClusterDagIndexBuffer = false);
     void UpdateClusterDagSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, size_t ModelIndex, uint64_t ConstantBufferOffset);
+    void EnsureClusterDagSceneConstantsPrepared(const FCamera& Camera);
     uint8_t* GetClusterDagSceneConstantBufferMapped() const;
 
     // Config / state helpers
@@ -198,6 +201,7 @@ private:
     friend class FDeferredFrameOrchestrator;
     friend class FDeferredBasePass;
     friend class FDeferredLightingPass;
+    friend class FClusterDagVisibilityPass;
     friend class FDeferredResourceImporter;
     friend class FGpuDebug;
     friend class FObjectId;
@@ -218,6 +222,7 @@ private:
     std::unique_ptr<FDeferredFrameOrchestrator> FrameOrchestrator;
     std::unique_ptr<FDeferredBasePass>          BasePass;
     std::unique_ptr<FDeferredLightingPass>      LightingPass;
+    std::unique_ptr<FClusterDagVisibilityPass>  ClusterDagVisibilityPass;
     std::unique_ptr<FGtao>                      Gtao;
     std::unique_ptr<FRayTracingShadow>          RayTracingShadow;
     std::unique_ptr<FSsr>                       Ssr;
@@ -285,8 +290,9 @@ private:
     ID3D12Resource* DirectLightingResource = nullptr;
 
     // ClusterDAG constant buffers
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> ClusterDagSceneConstantBuffers;
+    std::vector<FBindlessBuffer>                        ClusterDagSceneConstantBuffers;
     std::vector<uint8_t*>                               ClusterDagSceneConstantBufferMapped;
+    uint32_t                                            ClusterDagSceneConstantsPreparedFrame = UINT32_MAX;
 
     // Scene and animation data
     std::vector<FGltfScene>         GltfScenes;
@@ -297,8 +303,6 @@ private:
     // Camera and view matrices
     DirectX::XMFLOAT3   PreviousCameraPosition{ 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT4X4 PreviousCameraViewMatrix{};
-    DirectX::XMFLOAT4X4 PreviousViewProjectionMatrix{};
-    DirectX::XMFLOAT4X4 CurrentViewProjectionMatrix{};
     DirectX::XMFLOAT4X4 PreviousUnjitteredViewProjectionMatrix{};
     DirectX::XMFLOAT4X4 CurrentUnjitteredViewProjectionMatrix{};
     DirectX::XMFLOAT4X4 LightViewProjection{};

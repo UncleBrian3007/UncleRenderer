@@ -330,20 +330,12 @@ bool FRestirGI::CreatePipeline(FDX12Device* Device)
 
 DXGI_FORMAT FRestirGI::ResolveRadianceFormat(FDX12Device* Device) const
 {
-    if (!Device || !Device->GetDevice())
-    {
-        return DXGI_FORMAT_R16G16B16A16_FLOAT;
-    }
-
-    D3D12_FEATURE_DATA_FORMAT_SUPPORT FormatSupport = {};
-    FormatSupport.Format = DXGI_FORMAT_R11G11B10_FLOAT;
-    if (SUCCEEDED(Device->GetDevice()->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &FormatSupport, sizeof(FormatSupport)))
-        && (FormatSupport.Support1 & D3D12_FORMAT_SUPPORT1_TEXTURE2D) != 0
-        && (FormatSupport.Support1 & D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW) != 0)
+    constexpr D3D12_FORMAT_SUPPORT1 RequiredFlags = static_cast<D3D12_FORMAT_SUPPORT1>(
+        D3D12_FORMAT_SUPPORT1_TEXTURE2D | D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW);
+    if (CheckFormatSupport(Device, DXGI_FORMAT_R11G11B10_FLOAT, RequiredFlags))
     {
         return DXGI_FORMAT_R11G11B10_FLOAT;
     }
-
     return DXGI_FORMAT_R16G16B16A16_FLOAT;
 }
 

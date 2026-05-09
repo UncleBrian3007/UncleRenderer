@@ -814,7 +814,7 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
         }
         else
         {
-            OutConfig.ClusterDAGTraversalMode = EClusterDAGTraversalMode::Legacy;
+            OutConfig.ClusterDAGTraversalMode = EClusterDAGTraversalMode::LevelSplitQueue;
         }
     }
 
@@ -824,6 +824,14 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
         || LowerKey == "enableclusterdagtrusteddata")
     {
         OutConfig.bEnableClusterDAGFastShader = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+
+    if (LowerKey == "clusterdagvisibilitybuffer"
+        || LowerKey == "enableclusterdagvisibilitybuffer"
+        || LowerKey == "clusterdagvisibility"
+        || LowerKey == "enableclusterdagvisibility")
+    {
+        OutConfig.bEnableClusterDAGVisibilityBuffer = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
 
     if (LowerKey == "forcerebuildclusterdagcache"

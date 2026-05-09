@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <array>
 
@@ -422,6 +423,8 @@ void FForwardRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCamer
             DispatchWidth,
             DispatchHeight
         };
+        static_assert(_countof(BindlessIndices) <= FRayTracingRuntime::RayQueryRootConstantDwordCount, "Ray query root constants exceed root signature capacity.");
+        assert(_countof(BindlessIndices) <= FRayTracingRuntime::RayQueryRootConstantDwordCount);
         CommandList4->SetComputeRoot32BitConstants(2, _countof(BindlessIndices), BindlessIndices, 0);
 
         CommandList4->Dispatch(GroupCountX, GroupCountY, 1);
@@ -1067,12 +1070,7 @@ void FForwardRenderer::AddObjectIdPass(FRenderGraph& Graph, const FCamera& Camer
         const uint32_t ReadX = (std::min)(ObjectId->GetReadbackX(), Width > 0 ? Width - 1 : 0);
         const uint32_t ReadY = (std::min)(ObjectId->GetReadbackY(), Height > 0 ? Height - 1 : 0);
 
-        D3D12_RESOURCE_BARRIER Barrier = {};
-        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        Barrier.Transition.pResource = ObjectId->GetTexture();
-        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        D3D12_RESOURCE_BARRIER Barrier = CD3DX12_RESOURCE_BARRIER::Transition(ObjectId->GetTexture(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
         LocalCommandList->ResourceBarrier(1, &Barrier);
 
         D3D12_TEXTURE_COPY_LOCATION Src = {};
@@ -1164,8 +1162,8 @@ bool FForwardRenderer::CreateRootSignature(FDX12Device* Device)
     RootParams[0].InitAsConstantBufferView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE, D3D12_SHADER_VISIBILITY_ALL);
     // RootParams[1]: Forward bindless indices (b1), used in Shaders/ForwardPS.hlsl PSMain
     RootParams[1].InitAsConstants(9, 1, 0, D3D12_SHADER_VISIBILITY_PIXEL);
-    // RootParams[2]: Draw command constants (b2), used in vertex shaders that manually index into the bindless index buffer.
-    RootParams[2].InitAsConstants(1, 2, 0, D3D12_SHADER_VISIBILITY_VERTEX);
+    // RootParams[2]: Per-draw constants (b2): DrawIndexStart (dword0) + DrawDataIndex (dword1)
+    RootParams[2].InitAsConstants(2, 2, 0, D3D12_SHADER_VISIBILITY_VERTEX);
 
     CD3DX12_STATIC_SAMPLER_DESC Samplers[3];
     CD3DX12_STATIC_SAMPLER_DESC::Init(Samplers[0], 0,
@@ -1571,43 +1569,22 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
 
         const D3D12_RESOURCE_DESC TextureDesc = Texture->GetDesc();
 
-        D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc = {};
-        SrvDesc.Format = TextureDesc.Format;
-        SrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        SrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        SrvDesc.Texture2D.MipLevels = TextureDesc.MipLevels;
-        SrvDesc.Texture2D.MostDetailedMip = 0;
-        SrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
-
-        return Device->CreateBindlessSrv(Texture, SrvDesc);
+        return Device->CreateBindlessSrv(Texture,
+            CD3DX12_SHADER_RESOURCE_VIEW_DESC::Tex2D(TextureDesc.Format, TextureDesc.MipLevels));
     };
 
-    D3D12_SHADER_RESOURCE_VIEW_DESC ShadowSrvDesc = {};
-    ShadowSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
-    ShadowSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    ShadowSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    ShadowSrvDesc.Texture2D.MipLevels = 1;
-    ShadowSrvDesc.Texture2D.MostDetailedMip = 0;
-    ShadowSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+    const auto ShadowSrvDesc = CD3DX12_SHADER_RESOURCE_VIEW_DESC::Tex2D(DXGI_FORMAT_R32_FLOAT, 1);
 
     ID3D12Resource* EnvironmentCube = GetEnvironmentCubeTexture();
     ID3D12Resource* BrdfLut = GetBrdfLutTexture();
 
-    D3D12_SHADER_RESOURCE_VIEW_DESC EnvSrvDesc = {};
-    EnvSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
-    EnvSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    EnvSrvDesc.Format = EnvironmentCube ? EnvironmentCube->GetDesc().Format : DXGI_FORMAT_UNKNOWN;
-    EnvSrvDesc.TextureCube.MipLevels = EnvironmentCube ? EnvironmentCube->GetDesc().MipLevels : 1;
-    EnvSrvDesc.TextureCube.MostDetailedMip = 0;
-    EnvSrvDesc.TextureCube.ResourceMinLODClamp = 0.0f;
+    const auto EnvSrvDesc = CD3DX12_SHADER_RESOURCE_VIEW_DESC::TexCube(
+        EnvironmentCube ? EnvironmentCube->GetDesc().Format : DXGI_FORMAT_UNKNOWN,
+        EnvironmentCube ? EnvironmentCube->GetDesc().MipLevels : 1);
 
-    D3D12_SHADER_RESOURCE_VIEW_DESC BrdfSrvDesc = {};
-    BrdfSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    BrdfSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    BrdfSrvDesc.Format = BrdfLut ? BrdfLut->GetDesc().Format : DXGI_FORMAT_R8G8B8A8_UNORM;
-    BrdfSrvDesc.Texture2D.MipLevels = BrdfLut ? BrdfLut->GetDesc().MipLevels : 1;
-    BrdfSrvDesc.Texture2D.MostDetailedMip = 0;
-    BrdfSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+    const auto BrdfSrvDesc = CD3DX12_SHADER_RESOURCE_VIEW_DESC::Tex2D(
+        BrdfLut ? BrdfLut->GetDesc().Format : DXGI_FORMAT_R8G8B8A8_UNORM,
+        BrdfLut ? BrdfLut->GetDesc().MipLevels : 1);
 
     for (size_t Index = 0; Index < Models.size(); ++Index)
     {

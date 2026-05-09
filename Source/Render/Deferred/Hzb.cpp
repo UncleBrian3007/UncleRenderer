@@ -183,13 +183,7 @@ void FHzb::AddPass(FDeferredPassContext& Context)
 
                 if (SourceMipIndex < MipStates.size() && MipStates[SourceMipIndex] != D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
                 {
-                    D3D12_RESOURCE_BARRIER ToSrvBarrier = {};
-                    ToSrvBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                    ToSrvBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-                    ToSrvBarrier.Transition.pResource = HzbTexture.Get();
-                    ToSrvBarrier.Transition.StateBefore = MipStates[SourceMipIndex];
-                    ToSrvBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-                    ToSrvBarrier.Transition.Subresource = D3D12CalcSubresource(SourceMipIndex, 0, 0, Data.MipCount, 1);
+                    const D3D12_RESOURCE_BARRIER ToSrvBarrier = CD3DX12_RESOURCE_BARRIER::Transition(HzbTexture.Get(), MipStates[SourceMipIndex], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12CalcSubresource(SourceMipIndex, 0, 0, Data.MipCount, 1));
                     if (Owner.bLogResourceBarriers)
                     {
                         LogInfo("HZB Barrier: Mip " + std::to_string(SourceMipIndex) + " "
@@ -256,14 +250,11 @@ void FHzb::AddPass(FDeferredPassContext& Context)
             std::vector<D3D12_RESOURCE_BARRIER> Barriers;
             Barriers.reserve(MipsThisDispatch + 1);
 
-            D3D12_RESOURCE_BARRIER UavBarrier = {};
-            UavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-            UavBarrier.UAV.pResource = HzbTexture.Get();
             if (Owner.bLogResourceBarriers)
             {
                 LogInfo("HZB Barrier: UAV sync");
             }
-            Barriers.push_back(UavBarrier);
+            Barriers.push_back(CD3DX12_RESOURCE_BARRIER::UAV(HzbTexture.Get()));
 
             for (uint32_t LocalMip = 0; LocalMip < MipsThisDispatch; ++LocalMip)
             {
@@ -273,13 +264,7 @@ void FHzb::AddPass(FDeferredPassContext& Context)
                     break;
                 }
 
-                D3D12_RESOURCE_BARRIER Barrier = {};
-                Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                Barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-                Barrier.Transition.pResource = HzbTexture.Get();
-                Barrier.Transition.StateBefore = MipStates[TargetMip];
-                Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-                Barrier.Transition.Subresource = D3D12CalcSubresource(TargetMip, 0, 0, Data.MipCount, 1);
+                const D3D12_RESOURCE_BARRIER Barrier = CD3DX12_RESOURCE_BARRIER::Transition(HzbTexture.Get(), MipStates[TargetMip], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12CalcSubresource(TargetMip, 0, 0, Data.MipCount, 1));
                 if (Owner.bLogResourceBarriers)
                 {
                     LogInfo("HZB Barrier: Mip " + std::to_string(TargetMip) + " "

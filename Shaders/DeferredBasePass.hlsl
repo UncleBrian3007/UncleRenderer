@@ -79,6 +79,7 @@ cbuffer BasePassBindlessConstants : register(b1)
 cbuffer DrawCommandConstants : register(b2)
 {
     uint DrawIndexStart;
+    uint DrawDataIndex;
 };
 SamplerState AlbedoSampler : register(s0);
 

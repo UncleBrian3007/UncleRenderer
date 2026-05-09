@@ -4,6 +4,7 @@
 #include "../DeferredRenderer.h"
 #include "../../Core/GpuDebugMarkers.h"
 #include "../../RHI/DX12Device.h"
+#include <cassert>
 
 void FRayTracingShadow::AddPass(FDeferredPassContext& Context) const
 {
@@ -134,6 +135,8 @@ void FRayTracingShadow::AddPass(FDeferredPassContext& Context) const
             DispatchWidth,
             DispatchHeight
         };
+        static_assert(_countof(BindlessIndices) <= FRayTracingRuntime::RayQueryRootConstantDwordCount, "Ray query root constants exceed root signature capacity.");
+        assert(_countof(BindlessIndices) <= FRayTracingRuntime::RayQueryRootConstantDwordCount);
         CommandList4->SetComputeRoot32BitConstants(2, _countof(BindlessIndices), BindlessIndices, 0);
 
         CommandList4->Dispatch(GroupCountX, GroupCountY, 1);

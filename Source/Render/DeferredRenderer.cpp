@@ -9,6 +9,7 @@
 #include "Deferred/DeferredPassContext.h"
 #include "Deferred/DeferredFrameOrchestrator.h"
 #include "Deferred/DeferredBasePass.h"
+#include "Deferred/ClusterDagVisibilityPass.h"
 #include "Deferred/DeferredLightingPass.h"
 #include "Deferred/Gtao.h"
 #include "Deferred/RayTracingShadow.h"
@@ -63,6 +64,7 @@ FDeferredRenderer::FDeferredRenderer()
     : FrameOrchestrator(std::make_unique<FDeferredFrameOrchestrator>())
     , BasePass(std::make_unique<FDeferredBasePass>())
     , LightingPass(std::make_unique<FDeferredLightingPass>())
+    , ClusterDagVisibilityPass(std::make_unique<FClusterDagVisibilityPass>())
     , Gtao(std::make_unique<FGtao>())
     , Hzb(std::make_unique<FHzb>())
     , RayTracingShadow(std::make_unique<FRayTracingShadow>())
@@ -246,6 +248,7 @@ void FDeferredRenderer::ApplySsrConfig(const FRendererConfig& Config)
 void FDeferredRenderer::ApplyClusterDAGConfig(const FRendererConfig& Config)
 {
     ClusterDagRuntime->ApplyConfig(Config);
+    ClusterDagVisibilityPass->SetEnabled(Config.bEnableClusterDAGVisibilityBuffer);
 }
 
 void FDeferredRenderer::ApplyRestirGIConfig(const FRendererConfig& Config)
@@ -325,6 +328,12 @@ bool FDeferredRenderer::InitializePipelineDomains(FDX12Device* Device, DXGI_FORM
     if (!BasePass->InitializePipelines(*this, Device, LightingBufferFormat))
     {
         LogError("Deferred renderer initialization failed: geometry domain pipeline creation failed");
+        return false;
+    }
+
+    if (!ClusterDagVisibilityPass->InitializePipelines(*this, Device))
+    {
+        LogError("Deferred renderer initialization failed: ClusterDag visibility pipeline creation failed");
         return false;
     }
 
@@ -409,6 +418,11 @@ bool FDeferredRenderer::InitializeFrameResources(FDX12Device* Device, uint32_t W
     {
         LogError("Deferred renderer initialization failed: geometry domain resource creation failed");
         return false;
+    }
+
+    if (!ClusterDagVisibilityPass->InitializeResources(*this, Device, Width, Height))
+    {
+        LogWarning("Deferred renderer ClusterDag visibility resource creation failed; visibility pass will stay disabled.");
     }
 
     if (!Taa->InitializeResources(*this, Device, Width, Height, Config.FramesInFlight))
@@ -567,7 +581,7 @@ bool FDeferredRenderer::InitializeSceneModelResources(FDX12Device* Device, const
         LogError("Deferred renderer initialization failed: constant buffer creation failed");
         return false;
     }
-    if (!CreateClusterDagSceneConstantBuffersPerFrame(Device, ConstantBufferSize))
+    if (!CreateClusterDagSceneConstantBuffersPerFrame(Device, static_cast<uint32_t>((std::max<size_t>)(1, SceneModels.size()))))
     {
         LogError("Deferred renderer initialization failed: Cluster DAG constant buffer creation failed");
         return false;
@@ -668,26 +682,29 @@ bool FDeferredRenderer::InitializeEnvironmentAndDescriptorResources(FDX12Device*
     return true;
 }
 
-bool FDeferredRenderer::CreateClusterDagSceneConstantBuffersPerFrame(FDX12Device* Device, uint64_t BufferSize)
+bool FDeferredRenderer::CreateClusterDagSceneConstantBuffersPerFrame(FDX12Device* Device, uint32_t ModelCount)
 {
     ClusterDagSceneConstantBuffers.clear();
     ClusterDagSceneConstantBufferMapped.clear();
     ClusterDagSceneConstantBuffers.resize(GetFramesInFlight());
     ClusterDagSceneConstantBufferMapped.resize(GetFramesInFlight(), nullptr);
 
+    const FRGBufferDesc Desc = CreateStructuredBufferDesc<FSceneConstants>((std::max)(1u, ModelCount));
     for (uint32_t Index = 0; Index < GetFramesInFlight(); ++Index)
     {
-        FMappedConstantBuffer ConstantBufferResource;
-        if (!CreateMappedConstantBuffer(Device, BufferSize, ConstantBufferResource))
+        void* MappedData = nullptr;
+        if (!CreateMappedBindlessBuffer(
+            Device,
+            L"ClusterDagSceneConstantBuffer_Frame" + std::to_wstring(Index),
+            Desc,
+            ClusterDagSceneConstantBuffers[Index],
+            MappedData))
         {
             return false;
         }
 
-        ClusterDagSceneConstantBuffers[Index] = ConstantBufferResource.Resource;
-        ClusterDagSceneConstantBufferMapped[Index] = ConstantBufferResource.MappedData;
-
-        const std::wstring Name = L"ClusterDagSceneConstantBuffer_Frame" + std::to_wstring(Index);
-        ClusterDagSceneConstantBuffers[Index]->SetName(Name.c_str());
+        CreateBindlessBufferSrv(Device, ClusterDagSceneConstantBuffers[Index]);
+        ClusterDagSceneConstantBufferMapped[Index] = static_cast<uint8_t*>(MappedData);
     }
 
     return true;
@@ -705,8 +722,7 @@ D3D12_GPU_VIRTUAL_ADDRESS FDeferredRenderer::GetClusterDagSceneConstantBufferAdd
         return 0;
     }
 
-    ID3D12Resource* Buffer = ClusterDagSceneConstantBuffers[FrameIndex].Get();
-    return Buffer ? Buffer->GetGPUVirtualAddress() : 0;
+    return ClusterDagSceneConstantBuffers[FrameIndex].GetGPUVirtualAddress();
 }
 
 uint8_t* FDeferredRenderer::GetClusterDagSceneConstantBufferMapped() const
@@ -719,6 +735,7 @@ uint8_t* FDeferredRenderer::GetClusterDagSceneConstantBufferMapped() const
 
     return ClusterDagSceneConstantBufferMapped[FrameIndex];
 }
+
 
 bool FDeferredRenderer::InitializeGpuDebugResources(FDX12Device* Device, DXGI_FORMAT BackBufferFormat)
 {
@@ -747,6 +764,8 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         CmdContext.ClearRenderTarget(RtvHandle, FatalClearColor);
         return;
     }
+
+    ClusterDagSceneConstantsPreparedFrame = UINT32_MAX;
 
     const bool bAnySkinningUpdated = RendererUtils::UpdateGltfSceneAnimation(SceneModels, GltfScenes, GltfScenePoses, GltfSceneTimes, DeltaTime);
 
@@ -871,11 +890,6 @@ void FDeferredRenderer::PrepareFrameState(const FCamera& Camera, bool bAnySkinni
         OutState.PathTracingAccumulationReadIndex,
         OutState.PathTracingAccumulationWriteIndex);
 
-    const bool bUseTaaJitter = Taa->UsesJitter();
-    const DirectX::XMMATRIX CurrentProjection = bUseTaaJitter ? Taa->GetProjection() : Camera.GetProjectionMatrix();
-    const DirectX::XMMATRIX CurrentViewProjection = Camera.GetViewMatrix() * CurrentProjection;
-    DirectX::XMStoreFloat4x4(&CurrentViewProjectionMatrix, CurrentViewProjection);
-
     const DirectX::XMMATRIX CurrentUnjitteredProjection = Camera.GetProjectionMatrix();
     const DirectX::XMMATRIX CurrentUnjitteredViewProjection = Camera.GetViewMatrix() * CurrentUnjitteredProjection;
     DirectX::XMStoreFloat4x4(&CurrentUnjitteredViewProjectionMatrix, CurrentUnjitteredViewProjection);
@@ -912,7 +926,6 @@ void FDeferredRenderer::FinalizeFrameState(const FDeferredFrameState& FrameState
     Taa->FinalizeFrameState(FrameState.bTaaActive, FrameState.bGtaoJitterActive);
     AutoExposure->FinalizeFrame();
 
-    PreviousViewProjectionMatrix = CurrentViewProjectionMatrix;
     bHasPreviousViewProjection = true;
     PreviousUnjitteredViewProjectionMatrix = CurrentUnjitteredViewProjectionMatrix;
     bHasPreviousUnjitteredViewProjection = true;
@@ -1130,8 +1143,6 @@ void FDeferredRenderer::WriteSceneConstants(const FCamera& Camera, const FSceneM
     Params.GtaoIntensity = Gtao->GetIntensity();
     Params.ConstantBufferMapped = ConstantBufferMapped;
     Params.ConstantBufferOffset = ConstantBufferOffset;
-    Params.PreviousViewProjection = DirectX::XMLoadFloat4x4(&PreviousViewProjectionMatrix);
-    Params.bHasPreviousViewProjection = bHasPreviousViewProjection;
     Params.PreviousWorld = PreviousWorld;
     Params.bHasPreviousWorld = bHasPreviousWorld;
     Params.PreviousSkinnedPositionBindlessIndex = PreviousSkinnedPositionBindlessIndex;
@@ -1164,6 +1175,34 @@ void FDeferredRenderer::UpdateClusterDagSceneConstants(const FCamera& Camera, co
         ConstantBufferOffset,
         GetClusterDagSceneConstantBufferMapped(),
         true);
+}
+
+void FDeferredRenderer::EnsureClusterDagSceneConstantsPrepared(const FCamera& Camera)
+{
+    if (ClusterDagSceneConstantsPreparedFrame == GetFrameIndex())
+    {
+        return;
+    }
+
+    if (ClusterDagRuntime == nullptr
+        || GetClusterDagSceneConstantBufferMapped() == nullptr)
+    {
+        return;
+    }
+
+    for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+    {
+        const FSceneModelResource& Model = SceneModels[ModelIndex];
+        if (!ClusterDagRuntime->UsesRuntimePath(*this, Model))
+        {
+            continue;
+        }
+
+        const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
+        UpdateClusterDagSceneConstants(Camera, Model, ModelIndex, ConstantBufferOffset);
+    }
+
+    ClusterDagSceneConstantsPreparedFrame = GetFrameIndex();
 }
 
 void FDeferredRenderer::UpdateCullingVisibility(const FCamera& Camera)

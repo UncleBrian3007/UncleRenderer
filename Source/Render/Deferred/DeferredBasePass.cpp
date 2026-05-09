@@ -267,8 +267,8 @@ bool FDeferredBasePass::CreateBasePassRootSignature(FDX12Device* InDevice)
     RootParams[0].InitAsConstantBufferView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE, D3D12_SHADER_VISIBILITY_ALL);
     // RootParams[1]: Base pass bindless indices (b1), used in Shaders/DeferredBasePass.hlsl PSMain
     RootParams[1].InitAsConstants(10, 1, 0, D3D12_SHADER_VISIBILITY_PIXEL);
-    // RootParams[2]: Per-draw index-buffer start (b2), used in Shaders/DeferredBasePass.hlsl VSMain
-    RootParams[2].InitAsConstants(1, 2, 0, D3D12_SHADER_VISIBILITY_VERTEX);
+    // RootParams[2]: Per-draw constants (b2): DrawIndexStart (dword0) + DrawDataIndex (dword1)
+    RootParams[2].InitAsConstants(2, 2, 0, D3D12_SHADER_VISIBILITY_VERTEX);
 
 
     CD3DX12_STATIC_SAMPLER_DESC SamplerDesc;
@@ -584,7 +584,7 @@ bool FDeferredBasePass::CreateVelocityRootSignature(FDX12Device* InDevice)
     CD3DX12_ROOT_PARAMETER1 RootParams[4] = {};
     RootParams[0].InitAsConstantBufferView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE, D3D12_SHADER_VISIBILITY_ALL);
     RootParams[1].InitAsConstants(10, 1, 0, D3D12_SHADER_VISIBILITY_PIXEL);
-    RootParams[2].InitAsConstants(1, 2, 0, D3D12_SHADER_VISIBILITY_VERTEX);
+    RootParams[2].InitAsConstants(2, 2, 0, D3D12_SHADER_VISIBILITY_VERTEX);
     RootParams[3].InitAsConstants(33, 3, 0, D3D12_SHADER_VISIBILITY_PIXEL);
 
 
@@ -857,22 +857,25 @@ void FDeferredBasePass::AddDepthPrepass(FDeferredPassContext& Context) const
         const D3D12_CPU_DESCRIPTOR_HANDLE& DepthHandle = Owner.GetDSVHandle();
         LocalCommandList->OMSetRenderTargets(0, nullptr, FALSE, &DepthHandle);
 
+        Owner.EnsureClusterDagSceneConstantsPrepared(*Data.Camera);
         for (size_t ModelIndex = 0; ModelIndex < Owner.SceneModels.size(); ++ModelIndex)
         {
             const FSceneModelResource& Model = Owner.SceneModels[ModelIndex];
             const uint64_t ConstantBufferOffset = Owner.SceneConstantBufferStride * ModelIndex;
             const bool bUseClusterDagIndexBuffer = Owner.ClusterDagRuntime && Owner.ClusterDagRuntime->UsesRuntimePath(Owner, Model);
-            if (bUseClusterDagIndexBuffer)
-            {
-                Owner.UpdateClusterDagSceneConstants(*Data.Camera, Model, ModelIndex, ConstantBufferOffset);
-            }
-            else
+            if (!bUseClusterDagIndexBuffer)
             {
                 Owner.UpdateSceneConstants(*Data.Camera, Model, ModelIndex, ConstantBufferOffset);
             }
         }
 
-        if (Owner.ClusterDagRuntime && Owner.IndirectCommandSignature && Owner.ClusterDagRuntime->HasResources())
+        const bool bUseClusterDagVisibilityPath =
+            Owner.ClusterDagVisibilityPass
+            && Owner.ClusterDagVisibilityPass->IsReady();
+        if (!bUseClusterDagVisibilityPath
+            && Owner.ClusterDagRuntime
+            && Owner.IndirectCommandSignature
+            && Owner.ClusterDagRuntime->HasResources())
         {
             ID3D12Resource* DagIndirectBuffer = Owner.ClusterDagRuntime->GetIndirectCommandBuffer(Owner);
             ID3D12Resource* DagRunCountBuffer = Owner.ClusterDagRuntime->GetRunCountBuffer(Owner);
@@ -1021,22 +1024,25 @@ void FDeferredBasePass::AddBasePass(FDeferredPassContext& Context, bool bClearTa
         const D3D12_CPU_DESCRIPTOR_HANDLE& DepthHandle = Owner.GetDSVHandle();
         LocalCommandList->OMSetRenderTargets(_countof(BasePassRTVs), BasePassRTVs, FALSE, &DepthHandle);
 
+        Owner.EnsureClusterDagSceneConstantsPrepared(*Data.Camera);
         for (size_t ModelIndex = 0; ModelIndex < Owner.SceneModels.size(); ++ModelIndex)
         {
             const FSceneModelResource& Model = Owner.SceneModels[ModelIndex];
             const uint64_t ConstantBufferOffset = Owner.SceneConstantBufferStride * ModelIndex;
             const bool bUseClusterDagIndexBuffer = Owner.ClusterDagRuntime && Owner.ClusterDagRuntime->UsesRuntimePath(Owner, Model);
-            if (bUseClusterDagIndexBuffer)
-            {
-                Owner.UpdateClusterDagSceneConstants(*Data.Camera, Model, ModelIndex, ConstantBufferOffset);
-            }
-            else
+            if (!bUseClusterDagIndexBuffer)
             {
                 Owner.UpdateSceneConstants(*Data.Camera, Model, ModelIndex, ConstantBufferOffset);
             }
         }
 
-        if (Owner.ClusterDagRuntime && Owner.IndirectCommandSignature && Owner.ClusterDagRuntime->HasResources())
+        const bool bUseClusterDagVisibilityPath =
+            Owner.ClusterDagVisibilityPass
+            && Owner.ClusterDagVisibilityPass->IsReady();
+        if (!bUseClusterDagVisibilityPath
+            && Owner.ClusterDagRuntime
+            && Owner.IndirectCommandSignature
+            && Owner.ClusterDagRuntime->HasResources())
         {
             ID3D12Resource* DagIndirectBuffer = Owner.ClusterDagRuntime->GetIndirectCommandBuffer(Owner);
             ID3D12Resource* DagRunCountBuffer = Owner.ClusterDagRuntime->GetRunCountBuffer(Owner);

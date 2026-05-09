@@ -161,6 +161,7 @@ bool FDX12Device::Initialize()
     if (!PickAdapter())   { LogError("No suitable adapter found"); return false; }
     if (!CreateDevice())  { LogError("Failed to create D3D12 device"); return false; }
     if (!QueryRayTracingSupport()) { LogError("Failed to query DXR support"); return false; }
+    if (!QueryBarycentricsSupport()) { LogError("Failed to query barycentrics support"); return false; }
     if (!QueryEnhancedBarrierSupport()) { LogError("Failed to query enhanced barrier support"); return false; }
     if (!CreateBindlessDescriptorHeap()) { LogError("Failed to create bindless descriptor heap"); return false; }
     if (!CreateSamplerDescriptorHeap()) { LogError("Failed to create sampler descriptor heap"); return false; }
@@ -188,6 +189,22 @@ bool FDX12Device::QueryRayTracingSupport()
     Oss << "DXR support: " << (bSupportsRayTracing ? "Enabled" : "Disabled")
         << " (Tier " << RaytracingTierToString(Options5.RaytracingTier) << ")";
     LogInfo(Oss.str());
+    return true;
+}
+
+bool FDX12Device::QueryBarycentricsSupport()
+{
+    bSupportsBarycentrics = false;
+
+    D3D12_FEATURE_DATA_D3D12_OPTIONS3 Options3 = {};
+    if (FAILED(Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS3, &Options3, sizeof(Options3))))
+    {
+        LogWarning("Failed to query D3D12 options3; barycentrics support disabled.");
+        return true;
+    }
+
+    bSupportsBarycentrics = Options3.BarycentricsSupported == TRUE;
+    LogInfo(std::string("Barycentrics: ") + (bSupportsBarycentrics ? "Enabled" : "Disabled"));
     return true;
 }
 

@@ -15,6 +15,8 @@ struct FSceneModelResource;
 class FRayTracingRuntime
 {
 public:
+    static constexpr uint32_t RayQueryRootConstantDwordCount = 13u;
+
     enum class EGBufferSlot : uint32_t
     {
         A = 0,

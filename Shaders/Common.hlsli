@@ -11,7 +11,7 @@ float3 GetPerpendicularVector(float3 u)
     return cross(u, float3(xm, ym, zm));
 }
 
-float2 ApplyTextureTransform(float2 uv, float4 offsetScale, float4 rotation)
+float2 ApplyTextureTransform(float2 uv, float4 offsetScale, float2 rotation)
 {
     float2 scaled = uv * offsetScale.zw;
     float2 rotated = float2(

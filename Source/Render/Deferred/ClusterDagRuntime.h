@@ -20,6 +20,8 @@ struct FRendererConfig;
 
 class FClusterDagRuntime
 {
+    friend class FClusterDagVisibilityPass;
+
 public:
     bool InitializePipelines(FDeferredRenderer& Owner, FDX12Device* Device);
     bool InitializeResources(FDeferredRenderer& Owner, FDX12Device* Device);
@@ -32,6 +34,8 @@ public:
     D3D12_RESOURCE_STATES& GetIndirectCommandState(FDeferredRenderer& Owner);
     ID3D12Resource* GetRunCountBuffer(const FDeferredRenderer& Owner) const;
     D3D12_RESOURCE_STATES& GetRunCountState(FDeferredRenderer& Owner);
+    ID3D12Resource* GetDrawDataBuffer() const;
+    D3D12_RESOURCE_STATES& GetDrawDataState();
 
     const std::vector<FRenderer::FIndirectDrawRange>& GetIndirectDrawRanges() const { return IndirectDrawRanges; }
 
@@ -82,6 +86,7 @@ private:
         uint32_t IndexCount = 0;        // Number of indices (= triangles * 3) to draw for this cluster
         uint32_t RangeIndex = 0;        // Which IndirectDrawRange (material/pipeline group) this packet belongs to; used as RunCounts array index
         uint32_t RangeCommandStart = 0; // IndirectDrawRanges[RangeIndex].Start; base slot in the output command buffer for this range, combined with the per-range atomic counter to produce the final output slot
+        uint32_t ModelIndex = 0;        // Scene-model index used by the visibility resolve path to recover per-model shading data
     };
 
     struct FPreparedData
@@ -99,8 +104,6 @@ private:
     bool ValidatePreparedRuntimeData(const FPreparedData& Data) const;
     bool CreateRuntimeResources(FDeferredRenderer& Owner, FDX12Device* Device, const FPreparedData& Data);
     void PopulateCullingConstants(FDeferredRenderer& Owner, const FCamera& Camera) const;
-    void AddSelectPass(FDeferredPassContext& Context, const char* PassName) const;
-    void AddBuildRunsPass(FDeferredPassContext& Context, const char* PassName) const;
     void AddInitQueuePass(FDeferredPassContext& Context, const char* PassName) const;
     void AddPersistentCullPass(FDeferredPassContext& Context, const char* PassName) const;
     void AddSplitNodeCullPass(FDeferredPassContext& Context, const char* PassName) const;
@@ -111,8 +114,6 @@ private:
     void AddLevelSplitPrepareClusterPass(FDeferredPassContext& Context, const char* PassName) const;
     void AddLevelSplitClusterCullPass(FDeferredPassContext& Context, const char* PassName) const;
     void AddFinalizeIndirectArgsPass(FDeferredPassContext& Context, const char* PassName, const char* PixGroupName = nullptr) const;
-    void DispatchSelectLod(FDeferredRenderer& Owner, FDX12CommandContext& CmdContext, const FCamera& Camera, const char* PassName) const;
-    void DispatchBuildRuns(FDeferredRenderer& Owner, FDX12CommandContext& CmdContext, const char* PassName) const;
     void DispatchInitQueues(FDeferredRenderer& Owner, FDX12CommandContext& CmdContext, const FCamera& Camera, const char* PassName) const;
     void DispatchPersistentCull(FDeferredRenderer& Owner, FDX12CommandContext& CmdContext, const char* PassName) const;
     void DispatchSplitNodeCull(FDeferredRenderer& Owner, FDX12CommandContext& CmdContext, const char* PassName) const;
@@ -148,8 +149,6 @@ private:
     FBindlessBuffer DrawDataBuffer;
     FUploadBuffer DrawDataUpload;
 
-    std::vector<FBindlessBuffer> VisibleClusterBuffers;
-    std::vector<FBindlessBuffer> VisibleClusterCountBuffers;
     std::vector<FBindlessBuffer> QueueStateBuffers;
     std::vector<FBindlessBuffer> GroupQueueBuffers;
     std::vector<FBindlessBuffer> CandidateClusterQueueBuffers;
@@ -168,7 +167,7 @@ private:
     bool bForceMipEnabled = false;
     uint32_t ForceMipLevel = 0;
     bool bForceMipSkipFrustumCull = false;
-    EClusterDAGTraversalMode ActiveTraversalMode = EClusterDAGTraversalMode::Legacy;
+    EClusterDAGTraversalMode ActiveTraversalMode = EClusterDAGTraversalMode::LevelSplitQueue;
     uint32_t VisibleRootCount = 0;
     uint32_t ClusterCount = 0;
     uint32_t RuntimeGroupCount = 0;

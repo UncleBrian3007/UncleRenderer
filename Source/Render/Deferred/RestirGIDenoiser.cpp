@@ -270,9 +270,7 @@ void FRestirGIDenoiser::AddShMipGenPass(FDeferredRenderer& Owner, FRenderGraph& 
         const D3D12_CPU_DESCRIPTOR_HANDLE CounterCpuHandle = Owner.GetBindlessCpuClearHandle(AtomicCounterUavBindlessIndex);
         LocalCommandList->ClearUnorderedAccessViewUint(CounterGpuHandle, CounterCpuHandle, AtomicCounterResource, ClearValues, 0, nullptr);
 
-        D3D12_RESOURCE_BARRIER CounterBarrier = {};
-        CounterBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-        CounterBarrier.UAV.pResource = AtomicCounterResource;
+        const auto CounterBarrier = CD3DX12_RESOURCE_BARRIER::UAV(AtomicCounterResource);
         LocalCommandList->ResourceBarrier(1, &CounterBarrier);
         LocalCommandList->SetComputeRoot32BitConstants(0, _countof(SpdConstants), SpdConstants, 0);
         LocalCommandList->Dispatch(DispatchThreadGroupCountXY[0], DispatchThreadGroupCountXY[1], 1);
@@ -280,9 +278,7 @@ void FRestirGIDenoiser::AddShMipGenPass(FDeferredRenderer& Owner, FRenderGraph& 
         ID3D12Resource* DestinationResource = Graph.GetTextureResource(Data.DestinationHandle);
         if (DestinationResource)
         {
-            D3D12_RESOURCE_BARRIER MipBarrier = {};
-            MipBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-            MipBarrier.UAV.pResource = DestinationResource;
+            const auto MipBarrier = CD3DX12_RESOURCE_BARRIER::UAV(DestinationResource);
             LocalCommandList->ResourceBarrier(1, &MipBarrier);
         }
     });
@@ -377,9 +373,7 @@ void FRestirGIDenoiser::AddLinearDepthMipGenPass(FDeferredRenderer& Owner, FRend
         const D3D12_CPU_DESCRIPTOR_HANDLE CounterCpuHandle = Owner.GetBindlessCpuClearHandle(AtomicCounterUavBindlessIndex);
         LocalCommandList->ClearUnorderedAccessViewUint(CounterGpuHandle, CounterCpuHandle, AtomicCounterResource, ClearValues, 0, nullptr);
 
-        D3D12_RESOURCE_BARRIER CounterBarrier = {}; 
-        CounterBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV; 
-        CounterBarrier.UAV.pResource = AtomicCounterResource; 
+        const auto CounterBarrier = CD3DX12_RESOURCE_BARRIER::UAV(AtomicCounterResource);
         LocalCommandList->ResourceBarrier(1, &CounterBarrier);
         LocalCommandList->SetComputeRoot32BitConstants(0, _countof(SpdConstants), SpdConstants, 0);
         LocalCommandList->Dispatch(DispatchThreadGroupCountXY[0], DispatchThreadGroupCountXY[1], 1);
@@ -387,9 +381,7 @@ void FRestirGIDenoiser::AddLinearDepthMipGenPass(FDeferredRenderer& Owner, FRend
         ID3D12Resource* DestinationResource = Graph.GetTextureResource(Data.DestinationHandle);
         if (DestinationResource)
         {
-            D3D12_RESOURCE_BARRIER MipBarrier = {};
-            MipBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-            MipBarrier.UAV.pResource = DestinationResource;
+            const auto MipBarrier = CD3DX12_RESOURCE_BARRIER::UAV(DestinationResource);
             LocalCommandList->ResourceBarrier(1, &MipBarrier);
         }
     });

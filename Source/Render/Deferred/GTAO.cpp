@@ -370,12 +370,7 @@ bool FGtao::CreateHilbertLutResources(FDX12Device* Device)
 
     UploadList->CopyTextureRegion(&DstLocation, 0, 0, 0, &SrcLocation, nullptr);
 
-    D3D12_RESOURCE_BARRIER Barrier = {};
-    Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    Barrier.Transition.pResource = HilbertLutTexture.Get();
-    Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(HilbertLutTexture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     UploadList->ResourceBarrier(1, &Barrier);
 
     HR_CHECK(UploadList->Close());

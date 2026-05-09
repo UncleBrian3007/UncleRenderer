@@ -38,7 +38,6 @@ enum class EDeferredLightingVisualizationMode : uint32_t
 
 enum class EClusterDAGTraversalMode : uint32_t
 {
-    Legacy = 0,
     PersistentQueue = 1,
     SplitQueue = 2,
     LevelSplitQueue = 3
@@ -119,7 +118,8 @@ struct FRendererConfig
     bool bForceRebuildClusterDAGCache = false;
     bool bEnableSkinningIndirectDraw = false;
     bool bEnableClusterDAGFastShader = false;
-    EClusterDAGTraversalMode ClusterDAGTraversalMode = EClusterDAGTraversalMode::Legacy;
+    bool bEnableClusterDAGVisibilityBuffer = true;
+    EClusterDAGTraversalMode ClusterDAGTraversalMode = EClusterDAGTraversalMode::LevelSplitQueue;
     float ClusterDAGTargetErrorPixels = 1.0f;
     bool bEnableClusterDAGForceMip = false;
     uint32_t ClusterDAGForceMipLevel = 0;

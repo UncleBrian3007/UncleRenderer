@@ -23,6 +23,7 @@ struct VSOutput
 cbuffer DrawCommandConstants : register(b2)
 {
     uint DrawIndexStart;
+    uint DrawDataIndex;
 };
 
 

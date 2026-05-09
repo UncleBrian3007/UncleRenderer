@@ -57,11 +57,11 @@ namespace
         return DirectX::XMFLOAT4(Transform.Offset.x, Transform.Offset.y, Transform.Scale.x, Transform.Scale.y);
     }
 
-    DirectX::XMFLOAT4 BuildRotationConstants(const FGltfTextureTransform& Transform)
+    DirectX::XMFLOAT2 BuildRotationConstants(const FGltfTextureTransform& Transform)
     {
         const float CosR = std::cos(Transform.Rotation);
         const float SinR = std::sin(Transform.Rotation);
-        return DirectX::XMFLOAT4(CosR, SinR, 0.0f, 0.0f);
+        return DirectX::XMFLOAT2(CosR, SinR);
     }
 
     void ComputeMeshBounds(const FMesh& Mesh, FFloat3& OutCenter, float& OutRadius, FFloat3& OutMin, FFloat3& OutMax)
@@ -159,15 +159,8 @@ namespace
             return UINT32_MAX;
         }
 
-        D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc = {};
-        SrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        SrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        SrvDesc.Format = DXGI_FORMAT_UNKNOWN;
-        SrvDesc.Buffer.FirstElement = 0;
-        SrvDesc.Buffer.NumElements = static_cast<UINT>(ElementCount);
-        SrvDesc.Buffer.StructureByteStride = Stride;
-        SrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-        return Device->CreateBindlessSrv(Buffer, SrvDesc);
+        return Device->CreateBindlessSrv(Buffer,
+            CD3DX12_SHADER_RESOURCE_VIEW_DESC::StructuredBuffer(static_cast<UINT>(ElementCount), Stride));
     }
 
     bool CreatePrimitiveGeometry(

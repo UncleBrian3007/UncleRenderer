@@ -2238,6 +2238,17 @@ void FApplication::RenderUI()
             if (bClusterDagRuntimeEnabled)
             {
 				ImGui::Separator();
+				bool bClusterDagVisibilityBuffer = RendererConfig.bEnableClusterDAGVisibilityBuffer;
+				if (ImGui::Checkbox("Cluster DAG Visibility Buffer", &bClusterDagVisibilityBuffer))
+				{
+					RendererConfig.bEnableClusterDAGVisibilityBuffer = bClusterDagVisibilityBuffer;
+                    UpsertConfigValue(
+                        GetRendererConfigPath(),
+                        "EnableClusterDAGVisibilityBuffer",
+                        RendererConfig.bEnableClusterDAGVisibilityBuffer ? "true" : "false");
+					SyncDeferredClusterDagConfig();
+				}
+
 				bool bClusterDagForceMip = RendererConfig.bEnableClusterDAGForceMip;
 				if (ImGui::Checkbox("Cluster DAG Force Mip", &bClusterDagForceMip))
 				{

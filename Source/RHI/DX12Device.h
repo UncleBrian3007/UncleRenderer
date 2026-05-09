@@ -85,6 +85,7 @@ public:
     bool                 QueryLocalVideoMemory(DXGI_QUERY_VIDEO_MEMORY_INFO& OutInfo) const;
     bool                 IsShaderModelForIndirectDrawSupported() const { return bIndirectDrawSupported; }
     bool                 IsRayTracingSupported() const { return bSupportsRayTracing; }
+    bool                 IsBarycentricsSupported() const { return bSupportsBarycentrics; }
     bool                 SupportsEnhancedBarriers() const { return bSupportsEnhancedBarriers && !bForceLegacyBarriers; }
     bool                 IsEnhancedBarrierFeatureSupported() const { return bSupportsEnhancedBarriers; }
     void                 SetForceLegacyBarriers(bool bEnable) { bForceLegacyBarriers = bEnable; }
@@ -96,6 +97,7 @@ private:
     bool PickAdapter();
     bool CreateDevice();
     bool QueryRayTracingSupport();
+    bool QueryBarycentricsSupport();
     bool QueryEnhancedBarrierSupport();
     bool CreateBindlessDescriptorHeap();
     bool CreateSamplerDescriptorHeap();
@@ -154,6 +156,7 @@ private:
     bool bAllowTearing = false;
     bool bIndirectDrawSupported = true;
     bool bSupportsRayTracing = false;
+    bool bSupportsBarycentrics = false;
     bool bSupportsEnhancedBarriers = false;
     bool bForceLegacyBarriers = false;
     D3D_SHADER_MODEL ShaderModel = D3D_SHADER_MODEL_6_6;

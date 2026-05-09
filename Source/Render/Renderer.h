@@ -191,7 +191,7 @@ public:
     virtual bool IsClusterDagEnabled() const { return false; }
     virtual bool IsClusterDagFastShaderEnabled() const { return false; }
     virtual bool IsClusterDagDebugEnabled() const { return false; }
-    virtual EClusterDAGTraversalMode GetClusterDagTraversalMode() const { return EClusterDAGTraversalMode::Legacy; }
+    virtual EClusterDAGTraversalMode GetClusterDagTraversalMode() const { return EClusterDAGTraversalMode::LevelSplitQueue; }
     virtual float GetClusterDagTargetErrorPixels() const { return 1.0f; }
     virtual bool IsClusterDagForceMipEnabled() const { return false; }
     virtual uint32_t GetClusterDagForceMipLevel() const { return 0; }

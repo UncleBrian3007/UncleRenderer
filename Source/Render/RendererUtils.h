@@ -27,9 +27,8 @@ struct FSceneConstants
     DirectX::XMFLOAT4X4 ViewInverse;
     DirectX::XMFLOAT4X4 Projection;
     DirectX::XMFLOAT4X4 ViewProjectionInverse;
-    DirectX::XMFLOAT4X4 PreviousViewProjection;
     DirectX::XMFLOAT4X4 PreviousWorld;
-    uint32_t HasPreviousViewProjection = 0;
+    uint32_t PaddingPrevVP = 0;
     uint32_t HasPreviousWorld = 0;
     uint32_t HasPreviousSkinning = 0;
     uint32_t PreviousSkinnedPositionBindlessIndex = UINT32_MAX;
@@ -63,26 +62,28 @@ struct FSceneConstants
     float AnisotropyStrength = 0.0f;
     float AnisotropyRotation = 0.0f;
     DirectX::XMFLOAT2 PaddingAnisotropy{ 0.0f, 0.0f };
+    // UV transform offset+scale (all 10 grouped together)
     DirectX::XMFLOAT4 BaseColorTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
-    DirectX::XMFLOAT4 BaseColorTransformRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT4 MetallicRoughnessTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
-    DirectX::XMFLOAT4 MetallicRoughnessTransformRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT4 NormalTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
-    DirectX::XMFLOAT4 NormalTransformRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT4 EmissiveTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
-    DirectX::XMFLOAT4 EmissiveTransformRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT4 SheenColorTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
-    DirectX::XMFLOAT4 SheenColorTransformRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT4 SheenRoughnessTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
-    DirectX::XMFLOAT4 SheenRoughnessTransformRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT4 ClearcoatTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
-    DirectX::XMFLOAT4 ClearcoatTransformRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT4 ClearcoatRoughnessTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
-    DirectX::XMFLOAT4 ClearcoatRoughnessTransformRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT4 ClearcoatNormalTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
-    DirectX::XMFLOAT4 ClearcoatNormalTransformRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT4 AnisotropyTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
-    DirectX::XMFLOAT4 AnisotropyTransformRotation{ 1.0f, 0.0f, 0.0f, 0.0f };
+    // UV transform rotation cos/sin (all 10 grouped as float2 - .zw unused)
+    DirectX::XMFLOAT2 BaseColorTransformRotation{ 1.0f, 0.0f };
+    DirectX::XMFLOAT2 MetallicRoughnessTransformRotation{ 1.0f, 0.0f };
+    DirectX::XMFLOAT2 NormalTransformRotation{ 1.0f, 0.0f };
+    DirectX::XMFLOAT2 EmissiveTransformRotation{ 1.0f, 0.0f };
+    DirectX::XMFLOAT2 SheenColorTransformRotation{ 1.0f, 0.0f };
+    DirectX::XMFLOAT2 SheenRoughnessTransformRotation{ 1.0f, 0.0f };
+    DirectX::XMFLOAT2 ClearcoatTransformRotation{ 1.0f, 0.0f };
+    DirectX::XMFLOAT2 ClearcoatRoughnessTransformRotation{ 1.0f, 0.0f };
+    DirectX::XMFLOAT2 ClearcoatNormalTransformRotation{ 1.0f, 0.0f };
+    DirectX::XMFLOAT2 AnisotropyTransformRotation{ 1.0f, 0.0f };
     DirectX::XMUINT4 VertexBufferBindlessIndices{ 0, 0, 0, 0 };
     DirectX::XMUINT4 ExtraBindlessIndices{ 0, 0, 0, 0 };
     DirectX::XMUINT4 SkinningBindlessIndices{ 0, 0, 0, 0 };
@@ -92,12 +93,27 @@ struct FSceneConstants
     DirectX::XMFLOAT4 ClusterDagPackedConstantColor{ 1.0f, 1.0f, 1.0f, 1.0f };
     uint32_t ClusterDagVertexPackingMode = 0;
     DirectX::XMUINT3 PaddingClusterDagPacking{ 0, 0, 0 };
+    DirectX::XMUINT4 MaterialTextureIndices0{ UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX };
+    DirectX::XMUINT4 MaterialTextureIndices1{ UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX };
+    DirectX::XMUINT4 MaterialTextureIndices2{ UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX };
+    uint32_t ClusterDagMaterialPipelineKey = 0;
+    DirectX::XMUINT3 PaddingClusterDagResolve{ 0, 0, 0 };
     float EnvMapMipCount = 1.0f;
     DirectX::XMFLOAT3 PaddingEnvMap{ 0.0f, 0.0f, 0.0f };
     float GtaoIntensity = 1.0f;
     uint32_t DeferredLightingVisualizationMode = 0;
     float Pad = 0.0f;
+    // Padding to reach 1280 bytes (256-byte CBV alignment)
+    uint32_t CbvPad0 = 0;
+    DirectX::XMUINT4 CbvPad1{};
+    DirectX::XMUINT4 CbvPad2{};
+    DirectX::XMUINT4 CbvPad3{};
+    DirectX::XMUINT4 CbvPad4{};
+    DirectX::XMUINT4 CbvPad5{};
+    DirectX::XMUINT4 CbvPad6{};
 };
+static_assert(sizeof(FSceneConstants) == 1280, "FSceneConstants must be 1280 bytes for 256-byte CBV alignment.");
+static_assert(sizeof(FSceneConstants) % 256 == 0, "FSceneConstants must be 256-byte aligned for shared CBV+SRV use.");
 
 enum class EAlphaMode : uint32_t
 {
@@ -110,18 +126,19 @@ struct FIndirectDrawCommand
 {
     D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = 0;
     uint32_t DrawIndexStart = 0;
+    uint32_t DrawDataIndex = 0;
     D3D12_DRAW_ARGUMENTS DrawArguments{};
-    uint32_t Padding = 0;
 };
 
 static_assert(sizeof(FIndirectDrawCommand) == 32, "Indirect command layout must be 32 bytes.");
 static_assert(offsetof(FIndirectDrawCommand, ConstantBufferAddress) == 0, "Indirect command constant buffer offset mismatch.");
 static_assert(offsetof(FIndirectDrawCommand, DrawIndexStart) == 8, "Indirect command draw index start offset mismatch.");
-static_assert(offsetof(FIndirectDrawCommand, DrawArguments) == 12, "Indirect command draw arguments offset mismatch.");
-static_assert(offsetof(FIndirectDrawCommand, DrawArguments.VertexCountPerInstance) == 12, "Indirect command vertex count offset mismatch.");
-static_assert(offsetof(FIndirectDrawCommand, DrawArguments.InstanceCount) == 16, "Indirect command instance count offset mismatch.");
-static_assert(offsetof(FIndirectDrawCommand, DrawArguments.StartVertexLocation) == 20, "Indirect command start vertex offset mismatch.");
-static_assert(offsetof(FIndirectDrawCommand, DrawArguments.StartInstanceLocation) == 24, "Indirect command start instance offset mismatch.");
+static_assert(offsetof(FIndirectDrawCommand, DrawDataIndex) == 12, "Indirect command draw data index offset mismatch.");
+static_assert(offsetof(FIndirectDrawCommand, DrawArguments) == 16, "Indirect command draw arguments offset mismatch.");
+static_assert(offsetof(FIndirectDrawCommand, DrawArguments.VertexCountPerInstance) == 16, "Indirect command vertex count offset mismatch.");
+static_assert(offsetof(FIndirectDrawCommand, DrawArguments.InstanceCount) == 20, "Indirect command instance count offset mismatch.");
+static_assert(offsetof(FIndirectDrawCommand, DrawArguments.StartVertexLocation) == 24, "Indirect command start vertex offset mismatch.");
+static_assert(offsetof(FIndirectDrawCommand, DrawArguments.StartInstanceLocation) == 28, "Indirect command start instance offset mismatch.");
 
 
 namespace RendererUtils
@@ -144,8 +161,6 @@ namespace RendererUtils
         float GtaoIntensity = 1.0f;
         uint8_t* ConstantBufferMapped = nullptr;
         uint64_t ConstantBufferOffset = 0u;
-        DirectX::XMMATRIX PreviousViewProjection = DirectX::XMMatrixIdentity();
-        bool bHasPreviousViewProjection = false;
         DirectX::XMMATRIX PreviousWorld = DirectX::XMMatrixIdentity();
         bool bHasPreviousWorld = false;
         uint32_t PreviousSkinnedPositionBindlessIndex = UINT32_MAX;

@@ -326,6 +326,9 @@
     <ClCompile Include="Source\Render\ObjectId.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Source\Render\Deferred\ClusterDagVisibilityPass.cpp">
+      <Filter>Source Files\Render</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Source\Core\Application.h">
@@ -550,6 +553,12 @@
     <ClInclude Include="Source\Render\ObjectId.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="Source\Render\Deferred\ClusterDagVisibilityPass.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Render\GpuResource.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\DeferredBasePass.hlsl">
@@ -605,6 +614,9 @@
       <Filter>Source Files\ThirdParty\ddspp</Filter>
     </None>
     <None Include="Shaders\SceneConstants.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\ClusterDagResolve.hlsl">
       <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\GpuDebug\GpuDebugPrintCommon.hlsl">
@@ -716,9 +728,6 @@
     <None Include="Shaders\GpuDebug\GpuDebugLineCommon.hlsl">
       <Filter>Shaders\GpuDebug</Filter>
     </None>
-    <None Include="Shaders\PathBrdfCommon.hlsli">
-      <Filter>Shaders</Filter>
-    </None>
     <None Include="Shaders\EnvironmentMap\EnvCubemapBasis.hlsli">
       <Filter>Shaders\EnvironmentMap</Filter>
     </None>
@@ -730,9 +739,6 @@
     </None>
     <None Include="Shaders\EnvironmentMap\EnvSpecularPrefilterCS.hlsl">
       <Filter>Shaders\EnvironmentMap</Filter>
-    </None>
-    <None Include="Shaders\RestirGISamplingCommon.hlsli">
-      <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\ffx_a.h">
       <Filter>Shaders</Filter>
@@ -805,6 +811,12 @@
     </None>
     <None Include="Assets\Scenes\metal_spheres.json">
       <Filter>Assets</Filter>
+    </None>
+    <None Include="Shaders\Common.hlsli">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\ClusterDagVisibility.hlsl">
+      <Filter>Shaders</Filter>
     </None>
   </ItemGroup>
 </Project>

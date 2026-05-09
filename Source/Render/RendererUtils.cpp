@@ -643,9 +643,7 @@ void RendererUtils::UpdateSceneConstants(const FUpdateSceneConstantsParams& Para
     XMStoreFloat4x4(&Constants.Projection, Params.Projection);
     const XMMATRIX ViewProjection = View * Params.Projection;
     XMStoreFloat4x4(&Constants.ViewProjectionInverse, XMMatrixInverse(nullptr, ViewProjection));
-    XMStoreFloat4x4(&Constants.PreviousViewProjection, Params.PreviousViewProjection);
     XMStoreFloat4x4(&Constants.PreviousWorld, Params.PreviousWorld);
-    Constants.HasPreviousViewProjection = Params.bHasPreviousViewProjection ? 1u : 0u;
     Constants.HasPreviousWorld = Params.bHasPreviousWorld ? 1u : 0u;
     Constants.HasPreviousSkinning = Params.bHasPreviousSkinning ? 1u : 0u;
     Constants.PreviousSkinnedPositionBindlessIndex = Params.PreviousSkinnedPositionBindlessIndex;
@@ -708,6 +706,22 @@ void RendererUtils::UpdateSceneConstants(const FUpdateSceneConstantsParams& Para
         bUseClusterDagVertexBuffers
         ? Model.ClusterDagVertexPackingMode
         : 0u;
+    Constants.MaterialTextureIndices0 = DirectX::XMUINT4(
+        Model.BaseColorBindlessIndex,
+        Model.MetallicRoughnessBindlessIndex,
+        Model.NormalBindlessIndex,
+        Model.EmissiveBindlessIndex);
+    Constants.MaterialTextureIndices1 = DirectX::XMUINT4(
+        Model.SheenColorBindlessIndex,
+        Model.SheenRoughnessBindlessIndex,
+        Model.ClearcoatBindlessIndex,
+        Model.ClearcoatRoughnessBindlessIndex);
+    Constants.MaterialTextureIndices2 = DirectX::XMUINT4(
+        Model.ClearcoatNormalBindlessIndex,
+        Model.AnisotropyBindlessIndex,
+        UINT32_MAX,
+        UINT32_MAX);
+    Constants.ClusterDagMaterialPipelineKey = BuildPipelineKey(Model);
     Constants.GtaoIntensity = Params.bGtaoEnabled ? Params.GtaoIntensity : 0.0f;
 
     Constants.DeferredLightingVisualizationMode = Params.DeferredLightingVisualizationMode;

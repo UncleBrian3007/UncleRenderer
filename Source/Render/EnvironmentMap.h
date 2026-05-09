@@ -19,7 +19,6 @@ public:
     float GetMipCount() const { return EnvironmentMipCount; }
 
 private:
-    bool CreateBuildPipelines(FDX12Device* Device);
     DXGI_FORMAT ResolveBuildFormat(FDX12Device* Device) const;
     bool BuildFromEquirect(FRenderer& Owner, FDX12Device* Device, FTextureLoader& TextureLoader, const FRendererConfig& Config);
 

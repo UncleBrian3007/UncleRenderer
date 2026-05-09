@@ -256,12 +256,7 @@ bool FTextureLoader::LoadHdrTexture(const std::wstring& TexturePath, ComPtr<ID3D
 
     UploadList->CopyTextureRegion(&DstLocation, 0, 0, 0, &SrcLocation, nullptr);
 
-    D3D12_RESOURCE_BARRIER Barrier = {};
-    Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    Barrier.Transition.pResource = OutTexture.Get();
-    Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-    Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(OutTexture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     UploadList->ResourceBarrier(1, &Barrier);
 
     HR_CHECK(UploadList->Close());
@@ -485,12 +480,7 @@ bool FTextureLoader::LoadTextureInternal(const std::wstring& FilePath, ComPtr<ID
             UploadList->CopyTextureRegion(&DstLocation, 0, 0, 0, &SrcLocation, nullptr);
         }
 
-        D3D12_RESOURCE_BARRIER Barrier = {};
-        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        Barrier.Transition.pResource = OutTexture.Get();
-        Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(OutTexture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         UploadList->ResourceBarrier(1, &Barrier);
 
         HR_CHECK(UploadList->Close());
@@ -618,12 +608,7 @@ bool FTextureLoader::LoadTextureInternal(const std::wstring& FilePath, ComPtr<ID
 
     UploadList->CopyTextureRegion(&DstLocation, 0, 0, 0, &SrcLocation, nullptr);
 
-    D3D12_RESOURCE_BARRIER Barrier = {};
-    Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    Barrier.Transition.pResource = OutTexture.Get();
-    Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(OutTexture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     UploadList->ResourceBarrier(1, &Barrier);
 
     HR_CHECK(UploadList->Close());
@@ -753,12 +738,7 @@ bool FTextureLoader::CreateDefaultGridTexture(ComPtr<ID3D12Resource>& OutTexture
 
     UploadList->CopyTextureRegion(&DstLocation, 0, 0, 0, &SrcLocation, nullptr);
 
-    D3D12_RESOURCE_BARRIER Barrier = {};
-    Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    Barrier.Transition.pResource = OutTexture.Get();
-    Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(OutTexture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     UploadList->ResourceBarrier(1, &Barrier);
 
     HR_CHECK(UploadList->Close());
@@ -869,12 +849,7 @@ bool FTextureLoader::CreateSolidColorTexture(uint32_t Color, ComPtr<ID3D12Resour
 
     UploadList->CopyTextureRegion(&DstLocation, 0, 0, 0, &SrcLocation, nullptr);
 
-    D3D12_RESOURCE_BARRIER Barrier = {};
-    Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    Barrier.Transition.pResource = OutTexture.Get();
-    Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(OutTexture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     UploadList->ResourceBarrier(1, &Barrier);
 
     HR_CHECK(UploadList->Close());

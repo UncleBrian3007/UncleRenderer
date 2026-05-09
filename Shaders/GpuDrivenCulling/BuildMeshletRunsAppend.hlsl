@@ -23,9 +23,21 @@ static const uint kCommandStride = 32;
 // 20	DrawArguments.StartVertexLocation
 // 24	DrawArguments.StartInstanceLocation 
 
+// Updated FIndirectDrawCommand layout:
+// IndirectArgs[0] = CONSTANT_BUFFER_VIEW   8 bytes (GPU VA)
+// IndirectArgs[1] = CONSTANT (2)           8 bytes, DrawIndexStart + DrawDataIndex (b2 register)
+// IndirectArgs[2] = DRAW                   16 bytes (D3D12_DRAW_ARGUMENTS)
+//
+// 0  ConstantBufferAddress (8 bytes)
+// 8  DrawIndexStart (b2 shader constant, dword 0)
+// 12 DrawDataIndex (b2 shader constant, dword 1)
+// 16 DrawArguments.VertexCountPerInstance
+// 20 DrawArguments.InstanceCount
+// 24 DrawArguments.StartVertexLocation
+// 28 DrawArguments.StartInstanceLocation
 static const uint kStartIndexOffset = 8;
-static const uint kIndexCountOffset = 12;
-static const uint kInstanceCountOffset = 16;
+static const uint kIndexCountOffset = 16;
+static const uint kInstanceCountOffset = 20;
 
 /*
 struct FMeshletDrawData   // → shader에서 uint4로 읽힘

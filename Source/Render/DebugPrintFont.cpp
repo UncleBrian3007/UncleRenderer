@@ -197,17 +197,10 @@ bool CreateDebugPrintFontResources(
     HR_CHECK(Device->GetDevice()->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, UploadAllocator.Get(), nullptr, IID_PPV_ARGS(UploadList.GetAddressOf())));
     UploadList->SetName(L"DebugPrintFont_Upload_CL");
 
-    D3D12_RESOURCE_BARRIER PreCopyBarriers[2] = {};
-    PreCopyBarriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    PreCopyBarriers[0].Transition.pResource = FontTexture.Get();
-    PreCopyBarriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
-    PreCopyBarriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-    PreCopyBarriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    PreCopyBarriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    PreCopyBarriers[1].Transition.pResource = GlyphBuffer.Get();
-    PreCopyBarriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
-    PreCopyBarriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-    PreCopyBarriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    const D3D12_RESOURCE_BARRIER PreCopyBarriers[] = {
+        CD3DX12_RESOURCE_BARRIER::Transition(FontTexture.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST),
+        CD3DX12_RESOURCE_BARRIER::Transition(GlyphBuffer.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST),
+    };
     UploadList->ResourceBarrier(_countof(PreCopyBarriers), PreCopyBarriers);
 
     D3D12_TEXTURE_COPY_LOCATION DstLocation = {};
@@ -223,18 +216,11 @@ bool CreateDebugPrintFontResources(
     UploadList->CopyTextureRegion(&DstLocation, 0, 0, 0, &SrcLocation, nullptr);
     UploadList->CopyBufferRegion(GlyphBuffer.Get(), 0, GlyphUpload.Get(), 0, GlyphBufferSize);
 
-    D3D12_RESOURCE_BARRIER Barriers[2] = {};
-    Barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    Barriers[0].Transition.pResource = FontTexture.Get();
-    Barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    Barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-    Barriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    Barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    Barriers[1].Transition.pResource = GlyphBuffer.Get();
-    Barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-    Barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-    Barriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    UploadList->ResourceBarrier(2, Barriers);
+    const D3D12_RESOURCE_BARRIER Barriers[] = {
+        CD3DX12_RESOURCE_BARRIER::Transition(FontTexture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+        CD3DX12_RESOURCE_BARRIER::Transition(GlyphBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+    };
+    UploadList->ResourceBarrier(_countof(Barriers), Barriers);
 
     HR_CHECK(UploadList->Close());
     ID3D12CommandList* Lists[] = { UploadList.Get() };

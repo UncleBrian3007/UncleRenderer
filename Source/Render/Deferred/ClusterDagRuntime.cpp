@@ -139,13 +139,6 @@ namespace
         return static_cast<uint32_t>((Owner.GetFrameNumber() & GClusterDagTraversalEpochMask) + 1u);
     }
 
-    bool IsQueueBasedClusterDagTraversalMode(EClusterDAGTraversalMode Mode)
-    {
-        return Mode == EClusterDAGTraversalMode::PersistentQueue
-            || Mode == EClusterDAGTraversalMode::SplitQueue
-            || Mode == EClusterDAGTraversalMode::LevelSplitQueue;
-    }
-
 }
 
 void FClusterDagRuntime::ApplyConfig(const FRendererConfig& Config)
@@ -373,6 +366,16 @@ bool FClusterDagRuntime::InitializeResources(FDeferredRenderer& Owner, FDX12Devi
     return bCreateSucceeded;
 }
 
+ID3D12Resource* FClusterDagRuntime::GetDrawDataBuffer() const
+{
+    return DrawDataBuffer.Get();
+}
+
+D3D12_RESOURCE_STATES& FClusterDagRuntime::GetDrawDataState()
+{
+    return DrawDataBuffer.State;
+}
+
 void FClusterDagRuntime::AddPasses(FDeferredPassContext& Context) const
 {
     if (ActiveTraversalMode == EClusterDAGTraversalMode::PersistentQueue)
@@ -399,12 +402,6 @@ void FClusterDagRuntime::AddPasses(FDeferredPassContext& Context) const
         AddLevelSplitPrepareClusterPass(Context, "Level Split ClusterDAG Prepare Cluster");
         AddLevelSplitClusterCullPass(Context, "Level Split ClusterDAG Cluster Cull");
         AddFinalizeIndirectArgsPass(Context, "Level Split ClusterDAG Finalize Indirect Args", "Level Split ClusterDAG");
-    }
-    else
-    {
-        AddSelectPass(Context, "Select ClusterDAG LOD");
-        AddBuildRunsPass(Context, "Build ClusterDAG Runs");
-        AddFinalizeIndirectArgsPass(Context, "Finalize ClusterDAG Indirect Args");
     }
 }
 
@@ -864,7 +861,9 @@ bool FClusterDagRuntime::PrepareRuntimeData(FDeferredRenderer& Owner, FPreparedD
             DrawData.IndexCount = RuntimeDrawData.IndexCount;
             DrawData.RangeIndex = RangeIndex;
             DrawData.RangeCommandStart = IndirectDrawRanges[RangeIndex].Start;
+            DrawData.ModelIndex = SortedIndex;
             OutData.DrawDatas.push_back(DrawData);
+            const uint32_t DrawDataIndex = static_cast<uint32_t>(OutData.DrawDatas.size() - 1);
 
             FIndirectDrawCommand Command;
             Command.ConstantBufferAddress = ConstantBufferBase + SceneConstantBufferStride * SortedIndex;
@@ -872,7 +871,8 @@ bool FClusterDagRuntime::PrepareRuntimeData(FDeferredRenderer& Owner, FPreparedD
             Command.DrawArguments.VertexCountPerInstance = RuntimeDrawData.IndexCount;
             Command.DrawArguments.InstanceCount = 1;
             Command.DrawArguments.StartVertexLocation = 0;
-            Command.DrawArguments.StartInstanceLocation = SortedIndex;
+            Command.DrawArguments.StartInstanceLocation = 0;
+            Command.DrawDataIndex = DrawDataIndex;
             OutData.CommandTemplates.push_back(Command);
             // This is a template, not a directly issued draw call; BuildClusterDagRunsAppend copies it into the output buffer based on GPU LOD selection results
             IndirectDrawRanges.back().Count += 1;
@@ -934,8 +934,6 @@ bool FClusterDagRuntime::CreateRuntimeResources(FDeferredRenderer& Owner, FDX12D
         ClearAndResize(LevelSplitNodeArgsBuffers[BufferIndex]);
     }
     ClearAndResize(LevelSplitClusterArgsBuffers);
-    ClearAndResize(VisibleClusterBuffers);
-    ClearAndResize(VisibleClusterCountBuffers);
     ClearAndResize(IndirectCommandBuffers);
     ClearAndResize(IndirectCommandTemplateBuffers);
     ClearAndResize(RunCountBuffers);
@@ -1023,7 +1021,6 @@ bool FClusterDagRuntime::CreateRuntimeResources(FDeferredRenderer& Owner, FDX12D
     std::vector<FUploadBuffer> IndirectTemplateUploads(Frames);
     for (uint32_t FrameIndex = 0; FrameIndex < Frames; ++FrameIndex)
     {
-        if (IsQueueBasedClusterDagTraversalMode(ActiveTraversalMode))
         {
             CreatePerFrameBuffer(
                 FrameIndex,
@@ -1086,23 +1083,6 @@ bool FClusterDagRuntime::CreateRuntimeResources(FDeferredRenderer& Owner, FDX12D
                     true);
             }
         }
-        else
-        {
-            CreatePerFrameBuffer(
-                FrameIndex,
-                L"ClusterDagVisibleClusters",
-                CreateRWStructuredBufferDesc<uint32_t>(Data.Clusters.size()),
-                VisibleClusterBuffers[FrameIndex],
-                true,
-                true);
-            CreatePerFrameBuffer(
-                FrameIndex,
-                L"ClusterDagVisibleClusterCount",
-                CreateRawBufferDesc(VisibleClusterCountBufferSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
-                VisibleClusterCountBuffers[FrameIndex],
-                true,
-                true);
-        }
 
         CreatePerFrameBuffer(
             FrameIndex,
@@ -1132,7 +1112,11 @@ bool FClusterDagRuntime::CreateRuntimeResources(FDeferredRenderer& Owner, FDX12D
         const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferBase = Owner.GetClusterDagSceneConstantBufferAddress(FrameIndex);
         for (FIndirectDrawCommand& Command : FrameCommands)
         {
-            const uint32_t InstanceIndex = Command.DrawArguments.StartInstanceLocation;
+            const uint32_t DrawDataIndex = Command.DrawDataIndex;
+            const uint32_t InstanceIndex =
+                DrawDataIndex < Data.DrawDatas.size()
+                ? Data.DrawDatas[DrawDataIndex].ModelIndex
+                : 0u;
             Command.ConstantBufferAddress = ConstantBufferBase + SceneConstantBufferStride * InstanceIndex;
         }
 
@@ -1153,13 +1137,7 @@ bool FClusterDagRuntime::CreateRuntimeResources(FDeferredRenderer& Owner, FDX12D
     std::vector<D3D12_RESOURCE_BARRIER> PreCopyBarriers;
     auto AddCopyBarrier = [&](ID3D12Resource* Resource)
     {
-        D3D12_RESOURCE_BARRIER Barrier = {};
-        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        Barrier.Transition.pResource = Resource;
-        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
-        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-        PreCopyBarriers.push_back(Barrier);
+        PreCopyBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(Resource, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST));
     };
 
     AddCopyBarrier(GroupBuffer.Get());
@@ -1191,13 +1169,7 @@ bool FClusterDagRuntime::CreateRuntimeResources(FDeferredRenderer& Owner, FDX12D
     std::vector<D3D12_RESOURCE_BARRIER> PostCopyBarriers;
     auto AddSrvBarrier = [&](ID3D12Resource* Resource)
     {
-        D3D12_RESOURCE_BARRIER Barrier = {};
-        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        Barrier.Transition.pResource = Resource;
-        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-        PostCopyBarriers.push_back(Barrier);
+        PostCopyBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(Resource, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
     };
 
     AddSrvBarrier(GroupBuffer.Get());
@@ -1262,43 +1234,6 @@ void FClusterDagRuntime::PopulateCullingConstants(FDeferredRenderer& Owner, cons
     {
         std::memcpy(CullingConstantsMapped, Constants.data(), sizeof(Constants));
     }
-}
-
-void FClusterDagRuntime::AddSelectPass(FDeferredPassContext& Context, const char* PassName) const
-{
-    FDeferredRenderer& Owner = Context.Owner;
-
-    struct FClusterDagSelectPassData
-    {
-        bool bEnabled = false;
-        const FCamera* Camera = nullptr;
-    };
-
-    Context.Graph.AddPass<FClusterDagSelectPassData>(PassName, [this, &Owner, &Context](FClusterDagSelectPassData& Data, FRGPassBuilder& Builder)
-    {
-        Data.bEnabled = HasResources();
-        Data.Camera = &Context.Camera;
-        if (Data.bEnabled)
-        {
-            const uint32_t FrameIndex = Context.FrameIndex;
-            FClusterDagRuntime& MutableThis = *const_cast<FClusterDagRuntime*>(this);
-            const FRGBufferHandle VisibleClusterHandle = ImportBindlessBuffer(Context.Graph, "ClusterDAG_VisibleClusters", MutableThis.VisibleClusterBuffers[FrameIndex]);
-            const FRGBufferHandle VisibleCountHandle = ImportBindlessBuffer(Context.Graph, "ClusterDAG_VisibleClusterCount", MutableThis.VisibleClusterCountBuffers[FrameIndex]);
-            Builder.WriteBuffer(VisibleClusterHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-            Builder.WriteBuffer(VisibleCountHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-            Builder.UavBarrier(VisibleClusterHandle);
-            Builder.UavBarrier(VisibleCountHandle);
-            Builder.KeepAlive();
-        }
-    }, [this, &Owner, PassName](const FClusterDagSelectPassData& Data, FDX12CommandContext& Cmd)
-    {
-        if (!Data.bEnabled)
-        {
-            return;
-        }
-
-        DispatchSelectLod(Owner, Cmd, *Data.Camera, PassName);
-    });
 }
 
 void FClusterDagRuntime::AddInitQueuePass(FDeferredPassContext& Context, const char* PassName) const
@@ -1699,45 +1634,6 @@ void FClusterDagRuntime::AddLevelSplitClusterCullPass(FDeferredPassContext& Cont
     });
 }
 
-void FClusterDagRuntime::AddBuildRunsPass(FDeferredPassContext& Context, const char* PassName) const
-{
-    FDeferredRenderer& Owner = Context.Owner;
-
-    struct FClusterDagBuildRunsPassData
-    {
-        bool bEnabled = false;
-    };
-
-    Context.Graph.AddPass<FClusterDagBuildRunsPassData>(PassName, [this, &Owner, &Context](FClusterDagBuildRunsPassData& Data, FRGPassBuilder& Builder)
-    {
-        Data.bEnabled = HasResources();
-        if (Data.bEnabled)
-        {
-            const uint32_t FrameIndex = Context.FrameIndex;
-            FClusterDagRuntime& MutableThis = *const_cast<FClusterDagRuntime*>(this);
-            const FRGBufferHandle VisibleClusterHandle = ImportBindlessBuffer(Context.Graph, "ClusterDAG_VisibleClusters", MutableThis.VisibleClusterBuffers[FrameIndex]);
-            const FRGBufferHandle VisibleCountHandle = ImportBindlessBuffer(Context.Graph, "ClusterDAG_VisibleClusterCount", MutableThis.VisibleClusterCountBuffers[FrameIndex]);
-            const FRGBufferHandle IndirectHandle = ImportBindlessBuffer(Context.Graph, "ClusterDAG_IndirectCommands", MutableThis.IndirectCommandBuffers[FrameIndex]);
-            const FRGBufferHandle RunCountHandle = ImportBindlessBuffer(Context.Graph, "ClusterDAG_RunCounts", MutableThis.RunCountBuffers[FrameIndex]);
-            Builder.ReadBuffer(VisibleClusterHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            Builder.ReadBuffer(VisibleCountHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            Builder.WriteBuffer(IndirectHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-            Builder.WriteBuffer(RunCountHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-            Builder.UavBarrier(IndirectHandle);
-            Builder.UavBarrier(RunCountHandle);
-            Builder.KeepAlive();
-        }
-    }, [this, &Owner, PassName](const FClusterDagBuildRunsPassData& Data, FDX12CommandContext& Cmd)
-    {
-        if (!Data.bEnabled)
-        {
-            return;
-        }
-
-        DispatchBuildRuns(Owner, Cmd, PassName);
-    });
-}
-
 void FClusterDagRuntime::AddFinalizeIndirectArgsPass(FDeferredPassContext& Context, const char* PassName, const char* PixGroupName) const
 {
     FDeferredRenderer& Owner = Context.Owner;
@@ -1770,78 +1666,6 @@ void FClusterDagRuntime::AddFinalizeIndirectArgsPass(FDeferredPassContext& Conte
         (void)Data;
         (void)Cmd;
     });
-}
-
-void FClusterDagRuntime::DispatchSelectLod(FDeferredRenderer& Owner, FDX12CommandContext& CmdContext, const FCamera& Camera, const char* PassName) const
-{
-    const FRenderer::FGpuDrivenCullingProvider GpuDrivenCullingProvider = Owner.GetGpuDrivenCullingProvider();
-    const bool bClusterDagDebugEnabled = GpuDrivenCullingProvider.bClusterDagDebugEnabled;
-    const bool bClusterDagGpuDebugEnabled = GpuDrivenCullingProvider.bClusterDagGpuDebugEnabled;
-    const bool bClusterDagFastEnabled = GpuDrivenCullingProvider.bClusterDagFastShaderEnabled;
-    const uint32_t SelectPipelineIndex = GetClusterDagSelectPermutationIndex(ResolveClusterDagSelectPermutation(bClusterDagDebugEnabled, bClusterDagFastEnabled));
-    ID3D12PipelineState* SelectPipelineState = SelectPipelines[SelectPipelineIndex].Get();
-
-    const uint32_t FrameIndex = Owner.GetFrameIndex();
-    ID3D12Resource* VisibleCountBuffer = VisibleClusterCountBuffers[FrameIndex].Get();
-    PopulateCullingConstants(Owner, Camera);
-
-    ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
-
-    const uint32_t VisibleCountUavIndex = VisibleClusterCountBuffers[FrameIndex].UavBindlessIndex;
-    if (VisibleCountUavIndex == UINT32_MAX)
-    {
-        return;
-    }
-
-    ID3D12DescriptorHeap* Heaps[] = { GpuDrivenCullingProvider.BindlessDescriptorHeap };
-    CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
-
-    const UINT ClearValues[4] = { 0u, 0u, 0u, 0u };
-    CommandList->ClearUnorderedAccessViewUint(
-        GpuDrivenCullingProvider.GetBindlessGpuHandle(VisibleCountUavIndex),
-        GpuDrivenCullingProvider.GetBindlessCpuClearHandle(VisibleCountUavIndex),
-        VisibleCountBuffer,
-        ClearValues,
-        0,
-        nullptr);
-
-    CommandList->SetPipelineState(SelectPipelineState);
-    CommandList->SetComputeRootSignature(GpuDrivenCullingProvider.CullingRootSignature);
-    CommandList->SetComputeRootConstantBufferView(0, GpuDrivenCullingProvider.CullingConstantBufferAddress);
-
-    struct FClusterDagSelectBindlessConstants
-    {
-        uint32_t GroupBufferIndex;
-        uint32_t ClusterBufferIndex;
-        uint32_t ChildRefBufferIndex;
-        uint32_t RootGroupBufferIndex;
-        uint32_t VisibleClusterBufferIndex;
-        uint32_t VisibleClusterCountBufferIndex;
-        uint32_t GroupCount;
-        uint32_t ClusterCount;
-        uint32_t ChildRefCount;
-        uint32_t DebugPrintStatsIndex;
-        uint32_t DebugLineBufferIndex;
-    };
-
-    const FClusterDagSelectBindlessConstants BindlessConstants =
-    {
-        GroupBuffer.SrvBindlessIndex,
-        ClusterBuffer.SrvBindlessIndex,
-        ChildRefBuffer.SrvBindlessIndex,
-        RootGroupBuffer.SrvBindlessIndex,
-        VisibleClusterBuffers[FrameIndex].UavBindlessIndex,
-        VisibleCountUavIndex,
-        RuntimeGroupCount,
-        GpuDrivenCullingProvider.ClusterDagClusterCount,
-        RuntimeChildRefCount,
-        GpuDrivenCullingProvider.GpuDebugPrintStatsUavBindlessIndex,
-        GpuDrivenCullingProvider.GpuDebugLineBufferUavBindlessIndex
-    };
-
-    CommandList->SetComputeRoot32BitConstants(1, sizeof(BindlessConstants) / sizeof(uint32_t), &BindlessConstants, 0);
-    const uint32_t DispatchCount = (GpuDrivenCullingProvider.ClusterDagVisibleRootCount + 63u) / 64u;
-    CommandList->Dispatch((std::max)(1u, DispatchCount), 1, 1);
 }
 
 void FClusterDagRuntime::DispatchInitQueues(FDeferredRenderer& Owner, FDX12CommandContext& CmdContext, const FCamera& Camera, const char* PassName) const
@@ -2344,61 +2168,3 @@ void FClusterDagRuntime::DispatchLevelSplitClusterCull(FDeferredRenderer& Owner,
     CommandList->ExecuteIndirect(DispatchCommandSignature.Get(), 1, ClusterArgsBuffer, 0u, nullptr, 0u);
 }
 
-void FClusterDagRuntime::DispatchBuildRuns(FDeferredRenderer& Owner, FDX12CommandContext& CmdContext, const char* PassName) const
-{
-    const uint32_t FrameIndex = Owner.GetFrameIndex();
-    ID3D12Resource* RunCountBuffer = GetRunCountBuffer(Owner);
-
-    ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
-
-    const uint32_t RunCountUavIndex = RunCountBuffers[FrameIndex].UavBindlessIndex;
-    if (RunCountUavIndex == UINT32_MAX)
-    {
-        return;
-    }
-
-    const FRenderer::FGpuDrivenCullingProvider GpuDrivenCullingProvider = Owner.GetGpuDrivenCullingProvider();
-
-    ID3D12DescriptorHeap* Heaps[] = { GpuDrivenCullingProvider.BindlessDescriptorHeap };
-    CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
-
-    const UINT ClearValues[4] = { 0u, 0u, 0u, 0u };
-    CommandList->ClearUnorderedAccessViewUint(
-        GpuDrivenCullingProvider.GetBindlessGpuHandle(RunCountUavIndex),
-        GpuDrivenCullingProvider.GetBindlessCpuClearHandle(RunCountUavIndex),
-        RunCountBuffer,
-        ClearValues,
-        0,
-        nullptr);
-    CommandList->SetPipelineState(RunAppendPipeline.Get());
-    CommandList->SetComputeRootSignature(GpuDrivenCullingProvider.MeshletRunRootSignature);
-    CommandList->SetComputeRootConstantBufferView(0, GpuDrivenCullingProvider.CullingConstantBufferAddress);
-
-    struct FClusterDagRunBindlessConstants
-    {
-        uint32_t VisibleClustersIndex;
-        uint32_t VisibleClusterCountIndex;
-        uint32_t ClusterDataIndex;
-        uint32_t DrawDataIndex;
-        uint32_t CommandTemplatesIndex;
-        uint32_t OutputCommandsIndex;
-        uint32_t RunCountsIndex;
-        uint32_t Padding;
-    };
-
-    const FClusterDagRunBindlessConstants BindlessConstants =
-    {
-        VisibleClusterBuffers[FrameIndex].SrvBindlessIndex,
-        VisibleClusterCountBuffers[FrameIndex].SrvBindlessIndex,
-        ClusterBuffer.SrvBindlessIndex,
-        DrawDataBuffer.SrvBindlessIndex,
-        IndirectCommandTemplateBuffers[FrameIndex].SrvBindlessIndex,
-        IndirectCommandBuffers[FrameIndex].UavBindlessIndex,
-        RunCountUavIndex,
-        0u
-    };
-
-    CommandList->SetComputeRoot32BitConstants(1, sizeof(BindlessConstants) / sizeof(uint32_t), &BindlessConstants, 0);
-    const uint32_t DispatchCount = (GpuDrivenCullingProvider.ClusterDagClusterCount + 63u) / 64u;
-    CommandList->Dispatch((std::max)(1u, DispatchCount), 1, 1);
-}

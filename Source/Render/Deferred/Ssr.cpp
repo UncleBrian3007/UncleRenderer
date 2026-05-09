@@ -9,6 +9,7 @@
 #include "Taa.h"
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -1189,10 +1190,8 @@ void FSsr::AddSsrSwTracePass(FDeferredPassContext& Context)
             return;
         }
 
-        D3D12_RESOURCE_BARRIER UavBarrier = {};
-        UavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-        UavBarrier.UAV.pResource = IndirectArgsBuffer;
-        Cmd.GetCommandList()->ResourceBarrier(1, &UavBarrier);
+        const auto UavBarrier = CD3DX12_RESOURCE_BARRIER::UAV(IndirectArgsBuffer);
+Cmd.GetCommandList()->ResourceBarrier(1, &UavBarrier);
 
         ID3D12Resource* SsrOutput = Graph.GetTextureResource(Data.SsrHandle);
         if (!SsrOutput)
@@ -1373,10 +1372,8 @@ void FSsr::AddSsrHwTracePass(FDeferredPassContext& Context)
             return;
         }
 
-        D3D12_RESOURCE_BARRIER UavBarrier = {};
-        UavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-        UavBarrier.UAV.pResource = IndirectArgsBuffer;
-        CommandList4->ResourceBarrier(1, &UavBarrier);
+        const auto UavBarrier = CD3DX12_RESOURCE_BARRIER::UAV(IndirectArgsBuffer);
+CommandList4->ResourceBarrier(1, &UavBarrier);
 
         ID3D12Resource* SsrOutput = Graph.GetTextureResource(Data.SsrHandle);
         if (!SsrOutput)
@@ -1421,7 +1418,7 @@ void FSsr::AddSsrHwTracePass(FDeferredPassContext& Context)
             return;
         }
 
-        std::array<uint32_t, 13> BindlessIndices =
+        std::array<uint32_t, FRayTracingRuntime::RayQueryRootConstantDwordCount> BindlessIndices =
         {
             RayListHwMissIndex,
             RayCounterHwMissIndex,
@@ -1438,8 +1435,10 @@ void FSsr::AddSsrHwTracePass(FDeferredPassContext& Context)
             0u
         };
         static_assert(sizeof(float) == sizeof(uint32_t), "Float size mismatch.");
+        static_assert(std::tuple_size_v<decltype(BindlessIndices)> <= FRayTracingRuntime::RayQueryRootConstantDwordCount, "Ray query root constants exceed root signature capacity.");
         std::memcpy(&BindlessIndices[10], &SsrIntensity, sizeof(float));
         std::memcpy(&BindlessIndices[11], &SsrRoughnessCutoff, sizeof(float));
+        assert(BindlessIndices.size() <= FRayTracingRuntime::RayQueryRootConstantDwordCount);
         CommandList4->SetComputeRoot32BitConstants(2, static_cast<UINT>(BindlessIndices.size()), BindlessIndices.data(), 0);
 
         CommandList4->ExecuteIndirect(SsrDispatchCommandSignature.Get(), 1, IndirectArgsBuffer, 0, nullptr, 0);
@@ -1858,7 +1857,7 @@ void FSsr::AddSsrFallbackPass(FDeferredPassContext& Context)
             return;
         }
 
-        std::array<uint32_t, 13> BindlessIndices =
+        std::array<uint32_t, FRayTracingRuntime::RayQueryRootConstantDwordCount> BindlessIndices =
         {
             RayListIndex,
             RayCounterIndex,
@@ -1875,8 +1874,10 @@ void FSsr::AddSsrFallbackPass(FDeferredPassContext& Context)
             0u
         };
         static_assert(sizeof(float) == sizeof(uint32_t), "Float size mismatch.");
+        static_assert(std::tuple_size_v<decltype(BindlessIndices)> <= FRayTracingRuntime::RayQueryRootConstantDwordCount, "Ray query root constants exceed root signature capacity.");
         std::memcpy(&BindlessIndices[10], &SsrIntensity, sizeof(float));
         std::memcpy(&BindlessIndices[11], &SsrRoughnessCutoff, sizeof(float));
+        assert(BindlessIndices.size() <= FRayTracingRuntime::RayQueryRootConstantDwordCount);
         CommandList4->SetComputeRoot32BitConstants(2, static_cast<UINT>(BindlessIndices.size()), BindlessIndices.data(), 0);
         CommandList4->Dispatch(DispatchCount, 1, 1);
     });

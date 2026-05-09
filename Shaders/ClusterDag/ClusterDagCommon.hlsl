@@ -39,6 +39,7 @@ struct ClusterDagDrawData
     uint IndexCount;
     uint RangeIndex;
     uint RangeCommandStart;
+    uint ModelIndex;
 };
 
 void CopyClusterDagCommandTemplate(uint srcIndex, uint dstIndex, ByteAddressBuffer CommandTemplates, RWByteAddressBuffer OutputCommands)

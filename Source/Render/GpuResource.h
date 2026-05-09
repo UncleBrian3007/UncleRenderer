@@ -610,3 +610,49 @@ inline void CreateBindlessTexture(
     InitializeBindlessTexture(OutTexture, Desc, InitialState);
     CreateBindlessTextureViews(Device, OutTexture, bCreateSrv, bCreateUav);
 }
+
+inline bool CheckFormatSupport(FDX12Device* Device, DXGI_FORMAT Format, D3D12_FORMAT_SUPPORT1 RequiredFlags)
+{
+    if (!Device || !Device->GetDevice())
+    {
+        return false;
+    }
+    D3D12_FEATURE_DATA_FORMAT_SUPPORT FormatSupport = {};
+    FormatSupport.Format = Format;
+    if (FAILED(Device->GetDevice()->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &FormatSupport, sizeof(FormatSupport))))
+    {
+        return false;
+    }
+    return (FormatSupport.Support1 & RequiredFlags) == RequiredFlags;
+}
+
+inline bool CreateCubeTexture(
+    FDX12Device* Device,
+    const wchar_t* Name,
+    uint32_t Resolution,
+    uint16_t MipLevels,
+    DXGI_FORMAT Format,
+    Microsoft::WRL::ComPtr<ID3D12Resource>& OutResource)
+{
+    D3D12_RESOURCE_DESC Desc = {};
+    Desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    Desc.Width = Resolution;
+    Desc.Height = Resolution;
+    Desc.DepthOrArraySize = 6;
+    Desc.MipLevels = MipLevels;
+    Desc.Format = Format;
+    Desc.SampleDesc.Count = 1;
+    Desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    Desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    const D3D12_HEAP_PROPERTIES HeapProps = CreateHeapProperties(D3D12_HEAP_TYPE_DEFAULT);
+    const HRESULT Hr = Device->GetDevice()->CreateCommittedResource(
+        &HeapProps, D3D12_HEAP_FLAG_NONE, &Desc,
+        D3D12_RESOURCE_STATE_COMMON, nullptr,
+        IID_PPV_ARGS(OutResource.ReleaseAndGetAddressOf()));
+    if (FAILED(Hr))
+    {
+        return false;
+    }
+    OutResource->SetName(Name);
+    return true;
+}

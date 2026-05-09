@@ -599,13 +599,7 @@ void FGpuDrivenCulling::AddSharedInputUploadPreCopyBarriers(std::vector<D3D12_RE
             return;
         }
 
-        D3D12_RESOURCE_BARRIER Barrier = {};
-        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        Barrier.Transition.pResource = Resource;
-        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
-        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-        Barriers.push_back(Barrier);
+        Barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(Resource, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST));
     };
 
     AddBarrier(MeshletDrawDataBuffer.Get());
@@ -653,13 +647,7 @@ void FGpuDrivenCulling::AddSharedInputUploadPostCopyBarriers(std::vector<D3D12_R
             return;
         }
 
-        D3D12_RESOURCE_BARRIER Barrier = {};
-        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        Barrier.Transition.pResource = Resource;
-        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-        Barriers.push_back(Barrier);
+        Barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(Resource, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
     };
 
     AddBarrier(ModelBoundsBuffer.Get());
@@ -860,12 +848,10 @@ void FGpuDrivenCulling::DispatchBuildVisibilityLists(
     CommandList->SetComputeRoot32BitConstants(1, sizeof(ClearConstants) / sizeof(uint32_t), &ClearConstants, 0);
     CommandList->Dispatch(1, 1, 1);
 
-    D3D12_RESOURCE_BARRIER CountBarrier = {};
-    CountBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-    CountBarrier.UAV.pResource = VisibleCountBuffer;
-    CommandList->ResourceBarrier(1, &CountBarrier);
-    CountBarrier.UAV.pResource = InvisibleCountBuffer;
-    CommandList->ResourceBarrier(1, &CountBarrier);
+    const auto VisibleBarrier = CD3DX12_RESOURCE_BARRIER::UAV(VisibleCountBuffer);
+    CommandList->ResourceBarrier(1, &VisibleBarrier);
+    const auto InvisibleBarrier = CD3DX12_RESOURCE_BARRIER::UAV(InvisibleCountBuffer);
+    CommandList->ResourceBarrier(1, &InvisibleBarrier);
 
     struct FBuildListsConstants
     {
@@ -930,9 +916,7 @@ void FGpuDrivenCulling::DispatchBuildEarlyRejectList(
     CommandList->SetComputeRoot32BitConstants(1, sizeof(ClearConstants) / sizeof(uint32_t), &ClearConstants, 0);
     CommandList->Dispatch(1, 1, 1);
 
-    D3D12_RESOURCE_BARRIER CountBarrier = {};
-    CountBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-    CountBarrier.UAV.pResource = RejectCountBuffer;
+    const auto CountBarrier = CD3DX12_RESOURCE_BARRIER::UAV(RejectCountBuffer);
     CommandList->ResourceBarrier(1, &CountBarrier);
 
     struct FEarlyRejectConstants
@@ -1010,9 +994,7 @@ void FGpuDrivenCulling::DispatchMergeVisibilityLists(
     const uint32_t FlagDispatchCount = (IndirectCommandCount + 63) / 64;
     CommandList->Dispatch(FlagDispatchCount, 1, 1);
 
-    D3D12_RESOURCE_BARRIER FlagsBarrier = {};
-    FlagsBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-    FlagsBarrier.UAV.pResource = FlagsBuffer;
+    const auto FlagsBarrier = CD3DX12_RESOURCE_BARRIER::UAV(FlagsBuffer);
     CommandList->ResourceBarrier(1, &FlagsBarrier);
 
     struct FMergeConstants
@@ -1042,9 +1024,7 @@ void FGpuDrivenCulling::DispatchMergeVisibilityLists(
     CommandList->SetComputeRoot32BitConstants(1, sizeof(ClearConstants) / sizeof(uint32_t), &ClearConstants, 0);
     CommandList->Dispatch(1, 1, 1);
 
-    D3D12_RESOURCE_BARRIER CountBarrier = {};
-    CountBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-    CountBarrier.UAV.pResource = OutputCountBuffer;
+    const auto CountBarrier = CD3DX12_RESOURCE_BARRIER::UAV(OutputCountBuffer);
     CommandList->ResourceBarrier(1, &CountBarrier);
 
     CommandList->SetPipelineState(MergeVisibilityListsPipeline.Get());
@@ -1143,24 +1123,14 @@ void FGpuDrivenCulling::DispatchGpuCulling(
     D3D12_RESOURCE_STATES& IndirectState = *FrameData.IndirectState;
     if (IndirectState != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
     {
-        D3D12_RESOURCE_BARRIER Barrier = {};
-        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        Barrier.Transition.pResource = FrameData.IndirectBuffer;
-        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        Barrier.Transition.StateBefore = IndirectState;
-        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(FrameData.IndirectBuffer, IndirectState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         CommandList->ResourceBarrier(1, &Barrier);
         IndirectState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     }
 
     if (*VisibilityState != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
     {
-        D3D12_RESOURCE_BARRIER Barrier = {};
-        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        Barrier.Transition.pResource = VisibilityFrame.Buffer;
-        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        Barrier.Transition.StateBefore = *VisibilityState;
-        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(VisibilityFrame.Buffer, *VisibilityState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         CommandList->ResourceBarrier(1, &Barrier);
         *VisibilityState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     }
@@ -1171,12 +1141,7 @@ void FGpuDrivenCulling::DispatchGpuCulling(
         D3D12_RESOURCE_STATES* InputState = GetMeshletVisibilityState(VisibilityInputFrameIndex);
         if (InputVisibilityFrame.Buffer && InputState && *InputState != D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
         {
-            D3D12_RESOURCE_BARRIER Barrier = {};
-            Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-            Barrier.Transition.pResource = InputVisibilityFrame.Buffer;
-            Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-            Barrier.Transition.StateBefore = *InputState;
-            Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+            const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(InputVisibilityFrame.Buffer, *InputState, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             CommandList->ResourceBarrier(1, &Barrier);
             *InputState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
         }
@@ -1185,12 +1150,7 @@ void FGpuDrivenCulling::DispatchGpuCulling(
     D3D12_RESOURCE_STATES& RunCountState = *FrameData.RunCountState;
     if (RunCountState != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
     {
-        D3D12_RESOURCE_BARRIER Barrier = {};
-        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        Barrier.Transition.pResource = FrameData.RunCountBuffer;
-        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        Barrier.Transition.StateBefore = RunCountState;
-        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(FrameData.RunCountBuffer, RunCountState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         CommandList->ResourceBarrier(1, &Barrier);
         RunCountState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     }
@@ -1229,9 +1189,7 @@ void FGpuDrivenCulling::DispatchGpuCulling(
     CommandList->SetComputeRoot32BitConstants(1, sizeof(RunBindlessConstants) / sizeof(uint32_t), &RunBindlessConstants, 0);
     CommandList->Dispatch((Config.RangeCount + 63u) / 64u, 1, 1);
 
-    D3D12_RESOURCE_BARRIER RunCountBarrier = {};
-    RunCountBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-    RunCountBarrier.UAV.pResource = FrameData.RunCountBuffer;
+    const auto RunCountBarrier = CD3DX12_RESOURCE_BARRIER::UAV(FrameData.RunCountBuffer);
     CommandList->ResourceBarrier(1, &RunCountBarrier);
 
     struct FGpuCullingBindlessConstants
@@ -1279,12 +1237,7 @@ void FGpuDrivenCulling::DispatchGpuCulling(
 
     if (*VisibilityState != D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
     {
-        D3D12_RESOURCE_BARRIER Barrier = {};
-        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        Barrier.Transition.pResource = VisibilityFrame.Buffer;
-        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        Barrier.Transition.StateBefore = *VisibilityState;
-        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(VisibilityFrame.Buffer, *VisibilityState, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         CommandList->ResourceBarrier(1, &Barrier);
         *VisibilityState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     }
@@ -1295,23 +1248,13 @@ void FGpuDrivenCulling::DispatchGpuCulling(
     CommandList->SetComputeRoot32BitConstants(1, sizeof(RunBindlessConstants) / sizeof(uint32_t), &RunBindlessConstants, 0);
     CommandList->Dispatch(DispatchCount, 1, 1);
 
-    D3D12_RESOURCE_BARRIER Barrier = {};
-    Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    Barrier.Transition.pResource = FrameData.IndirectBuffer;
-    Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    Barrier.Transition.StateBefore = IndirectState;
-    Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+    const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(FrameData.IndirectBuffer, IndirectState, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
     CommandList->ResourceBarrier(1, &Barrier);
     IndirectState = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
 
     if (RunCountState != D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT)
     {
-        D3D12_RESOURCE_BARRIER CountBarrier = {};
-        CountBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        CountBarrier.Transition.pResource = FrameData.RunCountBuffer;
-        CountBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        CountBarrier.Transition.StateBefore = RunCountState;
-        CountBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+        const auto CountBarrier = CD3DX12_RESOURCE_BARRIER::Transition(FrameData.RunCountBuffer, RunCountState, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
         CommandList->ResourceBarrier(1, &CountBarrier);
         RunCountState = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
     }

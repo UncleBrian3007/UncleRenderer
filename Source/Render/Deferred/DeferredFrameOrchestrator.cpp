@@ -2,6 +2,7 @@
 
 #include "../DeferredRenderer.h"
 #include "DeferredBasePass.h"
+#include "ClusterDagVisibilityPass.h"
 #include "DeferredLightingPass.h"
 #include "Gtao.h"
 #include "RayTracingShadow.h"
@@ -99,6 +100,10 @@ void FDeferredFrameOrchestrator::BuildFrameGraph(FDeferredPassContext& Context) 
             !FrameState.bDoDepthPrepass,
             "GBuffer",
             true);
+        if (Owner.IsClusterDagEnabled())
+        {
+            Owner.ClusterDagVisibilityPass->AddPasses(Context);
+        }
     }
     if (FrameState.bUseHzbTwoPass)
     {
@@ -122,6 +127,10 @@ void FDeferredFrameOrchestrator::BuildFrameGraph(FDeferredPassContext& Context) 
             false,
             "GBuffer (Late)",
             false);
+        if (Owner.IsClusterDagEnabled())
+        {
+            Owner.ClusterDagVisibilityPass->AddPasses(Context);
+        }
     }
 
     Owner.BasePass->AddVelocityPass(Context);

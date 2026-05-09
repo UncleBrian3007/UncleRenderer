@@ -650,14 +650,8 @@ bool FRenderer::CreateSkinnedPositionBuffers()
             {
                 return UINT32_MAX;
             }
-            D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc = {};
-            SrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-            SrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            SrvDesc.Format = DXGI_FORMAT_UNKNOWN;
-            SrvDesc.Buffer.NumElements = static_cast<UINT>(ElementCount);
-            SrvDesc.Buffer.StructureByteStride = Stride;
-            SrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-            return Device->CreateBindlessSrv(Buffer, SrvDesc);
+            return Device->CreateBindlessSrv(Buffer,
+                CD3DX12_SHADER_RESOURCE_VIEW_DESC::StructuredBuffer(static_cast<UINT>(ElementCount), Stride));
         };
 
         const auto CreateStructuredBufferUav = [&](ID3D12Resource* Buffer, uint32_t Stride)
@@ -672,14 +666,8 @@ bool FRenderer::CreateSkinnedPositionBuffers()
             {
                 return UINT32_MAX;
             }
-            D3D12_UNORDERED_ACCESS_VIEW_DESC UavDesc = {};
-            UavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-            UavDesc.Format = DXGI_FORMAT_UNKNOWN;
-            UavDesc.Buffer.FirstElement = 0;
-            UavDesc.Buffer.NumElements = static_cast<UINT>(ElementCount);
-            UavDesc.Buffer.StructureByteStride = Stride;
-            UavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
-            return Device->CreateBindlessUav(Buffer, nullptr, UavDesc);
+            return Device->CreateBindlessUav(Buffer, nullptr,
+                CD3DX12_UNORDERED_ACCESS_VIEW_DESC::StructuredBuffer(static_cast<UINT>(ElementCount), Stride));
         };
 
         for (uint32_t FrameIndex = 0; FrameIndex < FramesInFlight; ++FrameIndex)
@@ -818,12 +806,7 @@ void FRenderer::DispatchSkinning(FDX12CommandContext& CmdContext, const DirectX:
 
         if (Model.SkinnedPositionStates[FrameIndex] != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
         {
-            D3D12_RESOURCE_BARRIER Barrier = {};
-            Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-            Barrier.Transition.pResource = SkinnedBuffer;
-            Barrier.Transition.StateBefore = Model.SkinnedPositionStates[FrameIndex];
-            Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-            Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(SkinnedBuffer, Model.SkinnedPositionStates[FrameIndex], D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             CommandList->ResourceBarrier(1, &Barrier);
             Model.SkinnedPositionStates[FrameIndex] = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
         }
@@ -842,17 +825,10 @@ void FRenderer::DispatchSkinning(FDX12CommandContext& CmdContext, const DirectX:
         const uint32_t DispatchCount = (VertexCount + 63) / 64;
         CommandList->Dispatch(DispatchCount, 1, 1);
 
-        D3D12_RESOURCE_BARRIER UavBarrier = {};
-        UavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-        UavBarrier.UAV.pResource = SkinnedBuffer;
+        const auto UavBarrier = CD3DX12_RESOURCE_BARRIER::UAV(SkinnedBuffer);
         CommandList->ResourceBarrier(1, &UavBarrier);
 
-        D3D12_RESOURCE_BARRIER Barrier = {};
-        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        Barrier.Transition.pResource = SkinnedBuffer;
-        Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(SkinnedBuffer, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         CommandList->ResourceBarrier(1, &Barrier);
         Model.SkinnedPositionStates[FrameIndex] = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     }
@@ -1239,13 +1215,7 @@ bool FRenderer::UploadGpuDrivenBuffers(FDX12Device* Device, const FGpuDrivenPrep
         for (uint32_t FrameIndex = 0; FrameIndex < GetFramesInFlight(); ++FrameIndex)
         {
             ID3D12Resource* TemplateBuffer = GpuDrivenCullingState.GetIndirectCommandTemplateBuffer(FrameIndex);
-            D3D12_RESOURCE_BARRIER Barrier = {};
-            Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-            Barrier.Transition.pResource = TemplateBuffer;
-            Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-            Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
-            Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-            PreCopyBarriers.push_back(Barrier);
+            PreCopyBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(TemplateBuffer, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST));
         }
     }
 
@@ -1290,13 +1260,7 @@ bool FRenderer::UploadGpuDrivenBuffers(FDX12Device* Device, const FGpuDrivenPrep
         for (uint32_t FrameIndex = 0; FrameIndex < GetFramesInFlight(); ++FrameIndex)
         {
             ID3D12Resource* TemplateBuffer = GpuDrivenCullingState.GetIndirectCommandTemplateBuffer(FrameIndex);
-            D3D12_RESOURCE_BARRIER Barrier = {};
-            Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-            Barrier.Transition.pResource = TemplateBuffer;
-            Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-            Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-            Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-            PostCopyBarriers.push_back(Barrier);
+            PostCopyBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(TemplateBuffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
         }
     }
 
@@ -1375,21 +1339,22 @@ bool FRenderer::CreateIndirectCommandSignature(FDX12Device* Device, ID3D12RootSi
 
     D3D12_INDIRECT_ARGUMENT_DESC IndirectArgs[3] = {};
 // IndirectArgs[0] = CONSTANT_BUFFER_VIEW   8 bytes (GPU VA)
-// IndirectArgs[1] = CONSTANT (1)           4 bytes, DrawIndexStart (b2 register)
+// IndirectArgs[1] = CONSTANT (2)           8 bytes, DrawIndexStart + DrawDataIndex (b2 register)
 // IndirectArgs[2] = DRAW                   16 bytes (D3D12_DRAW_ARGUMENTS)
     IndirectArgs[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT_BUFFER_VIEW;
     IndirectArgs[0].ConstantBufferView.RootParameterIndex = 0;
     IndirectArgs[1].Type = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
     IndirectArgs[1].Constant.RootParameterIndex = 2;
-    IndirectArgs[1].Constant.Num32BitValuesToSet = 1;
+    IndirectArgs[1].Constant.Num32BitValuesToSet = 2;
     IndirectArgs[2].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW;
 
     // 0	ConstantBufferAddress (8 bytes)
-    // 8	DrawIndexStart (b2 shader constant)
-    // 12	DrawArguments.VertexCountPerInstance
-    // 16	DrawArguments.InstanceCount
-    // 20	DrawArguments.StartVertexLocation
-    // 24	DrawArguments.StartInstanceLocation 
+    // 8	DrawIndexStart (b2 shader constant, dword 0)
+    // 12	DrawDataIndex (b2 shader constant, dword 1)
+    // 16	DrawArguments.VertexCountPerInstance
+    // 20	DrawArguments.InstanceCount
+    // 24	DrawArguments.StartVertexLocation
+    // 28	DrawArguments.StartInstanceLocation
 
     D3D12_COMMAND_SIGNATURE_DESC CommandDesc = {};
     CommandDesc.pArgumentDescs = IndirectArgs;

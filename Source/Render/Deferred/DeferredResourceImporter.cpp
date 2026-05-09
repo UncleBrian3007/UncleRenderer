@@ -10,7 +10,9 @@
 #include "Taa.h"
 #include "Tonemap.h"
 #include "PathTracing.h"
+#include "ClusterDagVisibilityPass.h"
 #include "../../RHI/DX12Device.h"
+#include <d3dx12.h>
 #include <algorithm>
 #include <string>
 
@@ -51,6 +53,7 @@ void FDeferredResourceImporter::ImportFrameResources(FDeferredPassContext& Conte
         Graph.ImportTexture("GBufferC", Owner.GBufferC.Get(), &Owner.GBufferStates[2], { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), FDeferredRenderer::GBufferFormats[2] }),
         Graph.ImportTexture("GBufferD", Owner.GBufferD.Get(), &Owner.GBufferStates[3], { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), FDeferredRenderer::GBufferFormats[3] }),
     };
+    Owner.ClusterDagVisibilityPass->ImportPersistentResources(Context);
 
     OutResources.LinearDepthHandle = Graph.ImportTexture(
         "LinearDepth",
@@ -90,15 +93,8 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
 
         const D3D12_RESOURCE_DESC TextureDesc = Texture->GetDesc();
 
-        D3D12_SHADER_RESOURCE_VIEW_DESC SceneSrvDesc = {};
-        SceneSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        SceneSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        SceneSrvDesc.Format = TextureDesc.Format;
-        SceneSrvDesc.Texture2D.MipLevels = TextureDesc.MipLevels;
-        SceneSrvDesc.Texture2D.MostDetailedMip = 0;
-        SceneSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
-
-        return Device->CreateBindlessSrv(Texture, SceneSrvDesc);
+        return Device->CreateBindlessSrv(Texture,
+            CD3DX12_SHADER_RESOURCE_VIEW_DESC::Tex2D(TextureDesc.Format, TextureDesc.MipLevels));
     };
 
     const auto CreateSceneTextureDescriptors = [&]()
@@ -122,19 +118,11 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
     ID3D12Resource* Buffers[4] = { GBufferA.Get(), GBufferB.Get(), GBufferC.Get(), GBufferD.Get() };
     for (int i = 0; i < 4; ++i)
     {
-        D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc = {};
-        SrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        SrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        SrvDesc.Format = FDeferredRenderer::GBufferFormats[i];
-        SrvDesc.Texture2D.MipLevels = 1;
-        GBufferBindlessIndices[i] = Device->CreateBindlessSrv(Buffers[i], SrvDesc);
+        GBufferBindlessIndices[i] = Device->CreateBindlessSrv(Buffers[i],
+            CD3DX12_SHADER_RESOURCE_VIEW_DESC::Tex2D(FDeferredRenderer::GBufferFormats[i], 1));
     }
 
-    D3D12_SHADER_RESOURCE_VIEW_DESC ShadowSrvDesc = {};
-    ShadowSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    ShadowSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    ShadowSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
-    ShadowSrvDesc.Texture2D.MipLevels = 1;
+    const auto ShadowSrvDesc = CD3DX12_SHADER_RESOURCE_VIEW_DESC::Tex2D(DXGI_FORMAT_R32_FLOAT, 1);
     if (ShadowMap.SrvBindlessIndex == UINT32_MAX)
     {
         ShadowMap.SrvBindlessIndex = Device->CreateBindlessSrv(ShadowMap.Get(), ShadowSrvDesc);
@@ -146,26 +134,14 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
 
     {
         ID3D12Resource* EnvironmentCube = GetEnvironmentCubeTexture();
-        D3D12_SHADER_RESOURCE_VIEW_DESC EnvSrvDesc = {};
-        EnvSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
-        EnvSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        EnvSrvDesc.Format = EnvironmentCube->GetDesc().Format;
-        EnvSrvDesc.TextureCube.MipLevels = EnvironmentCube->GetDesc().MipLevels;
-        EnvSrvDesc.TextureCube.MostDetailedMip = 0;
-        EnvSrvDesc.TextureCube.ResourceMinLODClamp = 0.0f;
-        EnvironmentCubeBindlessIndex = Device->CreateBindlessSrv(EnvironmentCube, EnvSrvDesc);
+        EnvironmentCubeBindlessIndex = Device->CreateBindlessSrv(EnvironmentCube,
+            CD3DX12_SHADER_RESOURCE_VIEW_DESC::TexCube(EnvironmentCube->GetDesc().Format, EnvironmentCube->GetDesc().MipLevels));
     }
 
     {
         ID3D12Resource* BrdfLut = GetBrdfLutTexture();
-        D3D12_SHADER_RESOURCE_VIEW_DESC BrdfSrvDesc = {};
-        BrdfSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        BrdfSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        BrdfSrvDesc.Format = BrdfLut->GetDesc().Format;
-        BrdfSrvDesc.Texture2D.MipLevels = BrdfLut->GetDesc().MipLevels;
-        BrdfSrvDesc.Texture2D.MostDetailedMip = 0;
-        BrdfSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
-        BrdfLutBindlessIndex = Device->CreateBindlessSrv(BrdfLut, BrdfSrvDesc);
+        BrdfLutBindlessIndex = Device->CreateBindlessSrv(BrdfLut,
+            CD3DX12_SHADER_RESOURCE_VIEW_DESC::Tex2D(BrdfLut->GetDesc().Format, BrdfLut->GetDesc().MipLevels));
     }
 
     {
@@ -199,15 +175,9 @@ bool FDeferredRenderer::CreateDescriptorHeap(FDX12Device* Device)
         DepthBindlessIndices.resize(GetFramesInFlight(), UINT32_MAX);
         for (uint32_t Index = 0; Index < DepthBindlessIndices.size(); ++Index)
         {
-            D3D12_SHADER_RESOURCE_VIEW_DESC DepthSrvDesc = {};
-            DepthSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-            DepthSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            DepthSrvDesc.Format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
-            DepthSrvDesc.Texture2D.MipLevels = 1;
-            DepthSrvDesc.Texture2D.MostDetailedMip = 0;
-            DepthSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
             ID3D12Resource* DepthBuffer = DepthResourcesPerFrame[Index].DepthBuffer.Get();
-            DepthBindlessIndices[Index] = Device->CreateBindlessSrv(DepthBuffer, DepthSrvDesc);
+            DepthBindlessIndices[Index] = Device->CreateBindlessSrv(DepthBuffer,
+                CD3DX12_SHADER_RESOURCE_VIEW_DESC::Tex2D(DXGI_FORMAT_R24_UNORM_X8_TYPELESS, 1));
         }
 
     };

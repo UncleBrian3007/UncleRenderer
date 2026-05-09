@@ -150,13 +150,7 @@ void FGpuDebug::AddUploadPreCopyBarriers(std::vector<D3D12_RESOURCE_BARRIER>& Ba
             return;
         }
 
-        D3D12_RESOURCE_BARRIER Barrier = {};
-        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        Barrier.Transition.pResource = Resource;
-        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
-        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-        Barriers.push_back(Barrier);
+        Barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(Resource, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST));
     };
 
     AddBarrier(PrintBuffer.Get());
@@ -194,13 +188,7 @@ void FGpuDebug::AddUploadPostCopyBarriers(std::vector<D3D12_RESOURCE_BARRIER>& B
             return;
         }
 
-        D3D12_RESOURCE_BARRIER Barrier = {};
-        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        Barrier.Transition.pResource = Resource;
-        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        Barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-        Barriers.push_back(Barrier);
+        Barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(Resource, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
     };
 
     AddBarrier(PrintBuffer.Get());
@@ -229,47 +217,27 @@ void FGpuDebug::PreparePrint(FDX12CommandContext& CmdContext)
 
     if (PrintBuffer.State != D3D12_RESOURCE_STATE_COPY_DEST)
     {
-        D3D12_RESOURCE_BARRIER Barrier = {};
-        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        Barrier.Transition.pResource = PrintBuffer.Get();
-        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        Barrier.Transition.StateBefore = PrintBuffer.State;
-        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+        const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(PrintBuffer.Get(), PrintBuffer.State, D3D12_RESOURCE_STATE_COPY_DEST);
         CommandList->ResourceBarrier(1, &Barrier);
         PrintBuffer.State = D3D12_RESOURCE_STATE_COPY_DEST;
     }
 
     CommandList->CopyBufferRegion(PrintBuffer.Get(), 0, PrintUpload.Get(), 0, sizeof(uint32_t));
 
-    D3D12_RESOURCE_BARRIER Barrier = {};
-    Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    Barrier.Transition.pResource = PrintBuffer.Get();
-    Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    Barrier.Transition.StateBefore = PrintBuffer.State;
-    Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    CommandList->ResourceBarrier(1, &Barrier);
+    const auto PrintBarrier = CD3DX12_RESOURCE_BARRIER::Transition(PrintBuffer.Get(), PrintBuffer.State, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    CommandList->ResourceBarrier(1, &PrintBarrier);
     PrintBuffer.State = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 
     if (PrintStatsBuffer.State != D3D12_RESOURCE_STATE_COPY_DEST)
     {
-        D3D12_RESOURCE_BARRIER StatsBarrier = {};
-        StatsBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        StatsBarrier.Transition.pResource = PrintStatsBuffer.Get();
-        StatsBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        StatsBarrier.Transition.StateBefore = PrintStatsBuffer.State;
-        StatsBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+        const auto StatsBarrier = CD3DX12_RESOURCE_BARRIER::Transition(PrintStatsBuffer.Get(), PrintStatsBuffer.State, D3D12_RESOURCE_STATE_COPY_DEST);
         CommandList->ResourceBarrier(1, &StatsBarrier);
         PrintStatsBuffer.State = D3D12_RESOURCE_STATE_COPY_DEST;
     }
 
     CommandList->CopyBufferRegion(PrintStatsBuffer.Get(), 0, PrintStatsUpload.Get(), 0, sizeof(uint32_t) * GpuDebug::GpuDebugPrintStatsCount);
 
-    D3D12_RESOURCE_BARRIER StatsBarrier = {};
-    StatsBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    StatsBarrier.Transition.pResource = PrintStatsBuffer.Get();
-    StatsBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    StatsBarrier.Transition.StateBefore = PrintStatsBuffer.State;
-    StatsBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    const auto StatsBarrier = CD3DX12_RESOURCE_BARRIER::Transition(PrintStatsBuffer.Get(), PrintStatsBuffer.State, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     CommandList->ResourceBarrier(1, &StatsBarrier);
     PrintStatsBuffer.State = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 }
@@ -298,12 +266,7 @@ void FGpuDebug::PrepareLine(FDX12CommandContext& CmdContext)
 
     if (LineBuffer.State != D3D12_RESOURCE_STATE_COPY_DEST)
     {
-        D3D12_RESOURCE_BARRIER Barrier = {};
-        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        Barrier.Transition.pResource = LineBuffer.Get();
-        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        Barrier.Transition.StateBefore = LineBuffer.State;
-        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+        const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(LineBuffer.Get(), LineBuffer.State, D3D12_RESOURCE_STATE_COPY_DEST);
         CommandList->ResourceBarrier(1, &Barrier);
         LineBuffer.State = D3D12_RESOURCE_STATE_COPY_DEST;
     }
@@ -311,13 +274,8 @@ void FGpuDebug::PrepareLine(FDX12CommandContext& CmdContext)
     const uint64_t CopySize = GpuDebug::GpuDebugLineHeaderSize + static_cast<uint64_t>(LineCount) * sizeof(GpuDebug::FGpuDebugLineEntry);
     CommandList->CopyBufferRegion(LineBuffer.Get(), 0, LineUpload.Get(), 0, CopySize);
 
-    D3D12_RESOURCE_BARRIER Barrier = {};
-    Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    Barrier.Transition.pResource = LineBuffer.Get();
-    Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    Barrier.Transition.StateBefore = LineBuffer.State;
-    Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    CommandList->ResourceBarrier(1, &Barrier);
+    const auto LineBarrier = CD3DX12_RESOURCE_BARRIER::Transition(LineBuffer.Get(), LineBuffer.State, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    CommandList->ResourceBarrier(1, &LineBarrier);
     LineBuffer.State = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 }
 
@@ -345,12 +303,7 @@ void FGpuDebug::PrepareBox(FDX12CommandContext& CmdContext)
 
     if (BoxBuffer.State != D3D12_RESOURCE_STATE_COPY_DEST)
     {
-        D3D12_RESOURCE_BARRIER Barrier = {};
-        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        Barrier.Transition.pResource = BoxBuffer.Get();
-        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        Barrier.Transition.StateBefore = BoxBuffer.State;
-        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+        const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(BoxBuffer.Get(), BoxBuffer.State, D3D12_RESOURCE_STATE_COPY_DEST);
         CommandList->ResourceBarrier(1, &Barrier);
         BoxBuffer.State = D3D12_RESOURCE_STATE_COPY_DEST;
     }
@@ -358,13 +311,8 @@ void FGpuDebug::PrepareBox(FDX12CommandContext& CmdContext)
     const uint64_t CopySize = GpuDebug::GpuDebugBoxHeaderSize + static_cast<uint64_t>(BoxCount) * sizeof(GpuDebug::FGpuDebugBoxEntry);
     CommandList->CopyBufferRegion(BoxBuffer.Get(), 0, BoxUpload.Get(), 0, CopySize);
 
-    D3D12_RESOURCE_BARRIER Barrier = {};
-    Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    Barrier.Transition.pResource = BoxBuffer.Get();
-    Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    Barrier.Transition.StateBefore = BoxBuffer.State;
-    Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    CommandList->ResourceBarrier(1, &Barrier);
+    const auto BoxBarrier = CD3DX12_RESOURCE_BARRIER::Transition(BoxBuffer.Get(), BoxBuffer.State, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    CommandList->ResourceBarrier(1, &BoxBarrier);
     BoxBuffer.State = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 }
 
@@ -609,23 +557,10 @@ bool FGpuDebug::CreateResources(FDX12Device* Device)
     PrintCharCount = FontResources.CharCount;
     PrintFontSize = FontResources.FontSize;
 
-    D3D12_SHADER_RESOURCE_VIEW_DESC GlyphSrvDesc = {};
-    GlyphSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-    GlyphSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    GlyphSrvDesc.Format = DXGI_FORMAT_UNKNOWN;
-    GlyphSrvDesc.Buffer.FirstElement = 0;
-    GlyphSrvDesc.Buffer.NumElements = 128;
-    GlyphSrvDesc.Buffer.StructureByteStride = sizeof(FDebugPrintGlyph);
-    GlyphSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-    PrintGlyphBindlessIndex = Device->CreateBindlessSrv(PrintGlyphBuffer.Get(), GlyphSrvDesc);
-
-    D3D12_SHADER_RESOURCE_VIEW_DESC FontSrvDesc = {};
-    FontSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    FontSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    FontSrvDesc.Format = DXGI_FORMAT_R8_UNORM;
-    FontSrvDesc.Texture2D.MostDetailedMip = 0;
-    FontSrvDesc.Texture2D.MipLevels = 1;
-    PrintFontBindlessIndex = Device->CreateBindlessSrv(PrintFontTexture.Get(), FontSrvDesc);
+    PrintGlyphBindlessIndex = Device->CreateBindlessSrv(PrintGlyphBuffer.Get(),
+        CD3DX12_SHADER_RESOURCE_VIEW_DESC::StructuredBuffer(128, sizeof(FDebugPrintGlyph)));
+    PrintFontBindlessIndex = Device->CreateBindlessSrv(PrintFontTexture.Get(),
+        CD3DX12_SHADER_RESOURCE_VIEW_DESC::Tex2D(DXGI_FORMAT_R8_UNORM, 1));
 
     CreateBindlessBufferViews(Device, PrintBuffer, true, true);
     CreateBindlessBufferViews(Device, PrintStatsBuffer, true, true);
@@ -768,36 +703,21 @@ void FGpuDebug::DispatchPrintStats(FDX12Device* Device, FDX12CommandContext& Cmd
 
     if (PrintStatsBuffer.State != D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
     {
-        D3D12_RESOURCE_BARRIER Barrier = {};
-        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        Barrier.Transition.pResource = PrintStatsBuffer.Get();
-        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        Barrier.Transition.StateBefore = PrintStatsBuffer.State;
-        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(PrintStatsBuffer.Get(), PrintStatsBuffer.State, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         CommandList->ResourceBarrier(1, &Barrier);
         PrintStatsBuffer.State = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     }
 
     if (PrintBuffer.State != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
     {
-        D3D12_RESOURCE_BARRIER Barrier = {};
-        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        Barrier.Transition.pResource = PrintBuffer.Get();
-        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        Barrier.Transition.StateBefore = PrintBuffer.State;
-        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(PrintBuffer.Get(), PrintBuffer.State, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         CommandList->ResourceBarrier(1, &Barrier);
         PrintBuffer.State = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     }
 
     if (LineBuffer.State != D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
     {
-        D3D12_RESOURCE_BARRIER Barrier = {};
-        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        Barrier.Transition.pResource = LineBuffer.Get();
-        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        Barrier.Transition.StateBefore = LineBuffer.State;
-        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(LineBuffer.Get(), LineBuffer.State, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         CommandList->ResourceBarrier(1, &Barrier);
         LineBuffer.State = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     }
@@ -823,12 +743,7 @@ void FGpuDebug::RenderPrint(FDX12Device* Device, const D3D12_VIEWPORT& Viewport,
 
     if (PrintBuffer.State != D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
     {
-        D3D12_RESOURCE_BARRIER Barrier = {};
-        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        Barrier.Transition.pResource = PrintBuffer.Get();
-        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        Barrier.Transition.StateBefore = PrintBuffer.State;
-        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(PrintBuffer.Get(), PrintBuffer.State, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         CommandList->ResourceBarrier(1, &Barrier);
         PrintBuffer.State = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     }
@@ -876,12 +791,7 @@ void FGpuDebug::RenderPrint(FDX12Device* Device, const D3D12_VIEWPORT& Viewport,
 
     if (PrintBuffer.State != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
     {
-        D3D12_RESOURCE_BARRIER Barrier = {};
-        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        Barrier.Transition.pResource = PrintBuffer.Get();
-        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        Barrier.Transition.StateBefore = PrintBuffer.State;
-        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(PrintBuffer.Get(), PrintBuffer.State, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         CommandList->ResourceBarrier(1, &Barrier);
         PrintBuffer.State = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     }
@@ -899,12 +809,7 @@ void FGpuDebug::RenderLine(FDX12Device* Device, const D3D12_VIEWPORT& Viewport, 
 
     if (LineBuffer.State != D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
     {
-        D3D12_RESOURCE_BARRIER Barrier = {};
-        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        Barrier.Transition.pResource = LineBuffer.Get();
-        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        Barrier.Transition.StateBefore = LineBuffer.State;
-        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(LineBuffer.Get(), LineBuffer.State, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         CommandList->ResourceBarrier(1, &Barrier);
         LineBuffer.State = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     }
@@ -924,12 +829,7 @@ void FGpuDebug::RenderLine(FDX12Device* Device, const D3D12_VIEWPORT& Viewport, 
 
     if (LineBuffer.State != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
     {
-        D3D12_RESOURCE_BARRIER Barrier = {};
-        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        Barrier.Transition.pResource = LineBuffer.Get();
-        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        Barrier.Transition.StateBefore = LineBuffer.State;
-        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(LineBuffer.Get(), LineBuffer.State, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         CommandList->ResourceBarrier(1, &Barrier);
         LineBuffer.State = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     }
@@ -947,12 +847,7 @@ void FGpuDebug::RenderBox(FDX12Device* Device, const D3D12_VIEWPORT& Viewport, c
 
     if (BoxBuffer.State != D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
     {
-        D3D12_RESOURCE_BARRIER Barrier = {};
-        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        Barrier.Transition.pResource = BoxBuffer.Get();
-        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        Barrier.Transition.StateBefore = BoxBuffer.State;
-        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(BoxBuffer.Get(), BoxBuffer.State, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         CommandList->ResourceBarrier(1, &Barrier);
         BoxBuffer.State = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     }
@@ -972,12 +867,7 @@ void FGpuDebug::RenderBox(FDX12Device* Device, const D3D12_VIEWPORT& Viewport, c
 
     if (BoxBuffer.State != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
     {
-        D3D12_RESOURCE_BARRIER Barrier = {};
-        Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        Barrier.Transition.pResource = BoxBuffer.Get();
-        Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        Barrier.Transition.StateBefore = BoxBuffer.State;
-        Barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(BoxBuffer.Get(), BoxBuffer.State, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         CommandList->ResourceBarrier(1, &Barrier);
         BoxBuffer.State = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     }

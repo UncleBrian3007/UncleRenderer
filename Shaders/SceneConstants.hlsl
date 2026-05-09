@@ -1,84 +1,11 @@
 #ifndef SCENE_CONSTANTS_HLSL
 #define SCENE_CONSTANTS_HLSL
 
+#include "SceneConstantsFields.hlsli"
+
 cbuffer SceneConstants : register(b0)
 {
-    row_major float4x4 World;
-    row_major float4x4 WorldInverseTranspose;
-    row_major float4x4 View;
-    row_major float4x4 ViewInverse;
-    row_major float4x4 Projection;
-    row_major float4x4 ViewProjectionInverse;
-    row_major float4x4 PreviousViewProjection;
-    row_major float4x4 PreviousWorld;
-    uint HasPreviousViewProjection;
-    uint HasPreviousWorld;
-    uint HasPreviousSkinning;
-    uint PreviousSkinnedPositionBindlessIndex;
-    float3 BaseColor;
-    float LightIntensity;
-    float3 LightDirection;
-    float LightRadius;
-    float3 CameraPosition;
-    float Padding2;
-    float3 LightColor;
-    float Padding3;
-    float3 EmissiveFactor;
-    float Padding4;
-    row_major float4x4 LightViewProjection;
-    float ShadowStrength;
-    float ShadowBias;
-    float2 ShadowMapSize;
-    float MetallicFactor;
-    float RoughnessFactor;
-    float BaseColorAlpha;
-    float AlphaCutoff;
-    uint AlphaMode;
-    uint3 PaddingMaterial;
-    float3 SheenColorFactor;
-    float SheenRoughnessFactor;
-    uint ShadingModelId;
-    uint3 PaddingShadingModel;
-    float ClearcoatFactor;
-    float ClearcoatRoughnessFactor;
-    float2 PaddingClearcoat;
-    float AnisotropyStrength;
-    float AnisotropyRotation;
-    float2 PaddingAnisotropy;
-    float4 BaseColorTransformOffsetScale;
-    float4 BaseColorTransformRotation;
-    float4 MetallicRoughnessTransformOffsetScale;
-    float4 MetallicRoughnessTransformRotation;
-    float4 NormalTransformOffsetScale;
-    float4 NormalTransformRotation;
-    float4 EmissiveTransformOffsetScale;
-    float4 EmissiveTransformRotation;
-    float4 SheenColorTransformOffsetScale;
-    float4 SheenColorTransformRotation;
-    float4 SheenRoughnessTransformOffsetScale;
-    float4 SheenRoughnessTransformRotation;
-    float4 ClearcoatTransformOffsetScale;
-    float4 ClearcoatTransformRotation;
-    float4 ClearcoatRoughnessTransformOffsetScale;
-    float4 ClearcoatRoughnessTransformRotation;
-    float4 ClearcoatNormalTransformOffsetScale;
-    float4 ClearcoatNormalTransformRotation;
-    float4 AnisotropyTransformOffsetScale;
-    float4 AnisotropyTransformRotation;
-    uint4 VertexBufferBindlessIndices;
-    uint4 ExtraBindlessIndices;
-    uint4 SkinningBindlessIndices;
-    float4 ClusterDagPackedPositionOffset;
-    float4 ClusterDagPackedPositionScale;
-    float4 ClusterDagPackedConstantUV;
-    float4 ClusterDagPackedConstantColor;
-    uint ClusterDagVertexPackingMode;
-    uint3 PaddingClusterDagPacking;
-    float EnvMapMipCount;
-    float3 PaddingEnvMap;
-    float GtaoIntensity;
-    uint DeferredLightingVisualizationMode;
-    float SceneConstantsPad;
+    SCENE_CONSTANTS_FIELDS
 };
 
 #endif

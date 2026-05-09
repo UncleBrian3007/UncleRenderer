@@ -9,6 +9,7 @@
 #include "../ShaderCompiler.h"
 #include <d3dx12.h>
 #include <algorithm>
+#include <cassert>
 #include <string>
 
 using Microsoft::WRL::ComPtr;
@@ -428,6 +429,8 @@ void FPathTracing::AddPathTracingPass(FDeferredPassContext& Context)
             Owner.EnvironmentCubeBindlessIndex,
             static_cast<uint32_t>(PathTracingDebugMode)
         };
+        static_assert(_countof(BindlessIndices) <= FRayTracingRuntime::RayQueryRootConstantDwordCount, "Ray query root constants exceed root signature capacity.");
+        assert(_countof(BindlessIndices) <= FRayTracingRuntime::RayQueryRootConstantDwordCount);
         CommandList4->SetComputeRoot32BitConstants(2, _countof(BindlessIndices), BindlessIndices, 0);
 
         CommandList4->Dispatch(GroupCountX, GroupCountY, 1);

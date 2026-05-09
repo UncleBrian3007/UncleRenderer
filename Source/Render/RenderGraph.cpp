@@ -804,10 +804,7 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
                     return;
                 }
 
-                D3D12_RESOURCE_BARRIER Barrier = {};
-                Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-                Barrier.UAV.pResource = Resource.Resource;
-                PendingBarriers.push_back(Barrier);
+                PendingBarriers.push_back(CD3DX12_RESOURCE_BARRIER::UAV(Resource.Resource));
                 TextureUavBarrierQueued[TextureIndex] = true;
                 TexturePendingUavWrite[TextureIndex] = false;
 
@@ -833,10 +830,7 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
                     return;
                 }
 
-                D3D12_RESOURCE_BARRIER Barrier = {};
-                Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-                Barrier.UAV.pResource = Resource.Resource;
-                PendingBarriers.push_back(Barrier);
+                PendingBarriers.push_back(CD3DX12_RESOURCE_BARRIER::UAV(Resource.Resource));
                 BufferUavBarrierQueued[BufferIndex] = true;
                 BufferPendingUavWrite[BufferIndex] = false;
 
@@ -875,13 +869,7 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
                 D3D12_RESOURCE_STATES& StateRef = Resource->ExternalState ? *Resource->ExternalState : Resource->CurrentState;
                 if (StateRef != Usage.RequiredState)
                 {
-                    D3D12_RESOURCE_BARRIER Barrier = {};
-                    Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                    Barrier.Transition.pResource = Resource->Resource;
-                    Barrier.Transition.StateBefore = StateRef;
-                    Barrier.Transition.StateAfter = Usage.RequiredState;
-                    Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                    PendingBarriers.push_back(Barrier);
+                    PendingBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(Resource->Resource, StateRef, Usage.RequiredState));
 
                     if (bEnableBarrierLogs)
                     {
@@ -924,13 +912,7 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
                 D3D12_RESOURCE_STATES& StateRef = Resource.ExternalState ? *Resource.ExternalState : Resource.CurrentState;
                 if (StateRef != Usage.RequiredState)
                 {
-                    D3D12_RESOURCE_BARRIER Barrier = {};
-                    Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                    Barrier.Transition.pResource = Resource.Resource;
-                    Barrier.Transition.StateBefore = StateRef;
-                    Barrier.Transition.StateAfter = Usage.RequiredState;
-                    Barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                    PendingBarriers.push_back(Barrier);
+                    PendingBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(Resource.Resource, StateRef, Usage.RequiredState));
 
                     if (bEnableBarrierLogs)
                     {
@@ -1373,20 +1355,13 @@ uint32 FRenderGraph::GetTextureViewBindlessIndex(FRGTextureResource& Texture, bo
     {
         if (bUav)
         {
-            D3D12_UNORDERED_ACCESS_VIEW_DESC UavDesc = {};
-            UavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-            UavDesc.Format = Texture.Resource->GetDesc().Format;
-            UavDesc.Texture2D.MipSlice = 0;
-            Device->WriteBindlessUav(BindlessIndex, Texture.Resource, nullptr, UavDesc);
+            Device->WriteBindlessUav(BindlessIndex, Texture.Resource, nullptr,
+                CD3DX12_UNORDERED_ACCESS_VIEW_DESC::Tex2D(Texture.Resource->GetDesc().Format));
         }
         else
         {
-            D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc = {};
-            SrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-            SrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            SrvDesc.Format = Texture.Resource->GetDesc().Format;
-            SrvDesc.Texture2D.MipLevels = Texture.Desc.MipLevels;
-            Device->WriteBindlessSrv(BindlessIndex, Texture.Resource, SrvDesc);
+            Device->WriteBindlessSrv(BindlessIndex, Texture.Resource,
+                CD3DX12_SHADER_RESOURCE_VIEW_DESC::Tex2D(Texture.Resource->GetDesc().Format, Texture.Desc.MipLevels));
         }
 
         ViewResource = Texture.Resource;
@@ -1437,21 +1412,13 @@ uint32 FRenderGraph::GetTextureMipViewBindlessIndex(FRGTextureResource& Texture,
     {
         if (bUav)
         {
-            D3D12_UNORDERED_ACCESS_VIEW_DESC UavDesc = {};
-            UavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-            UavDesc.Format = Texture.Resource->GetDesc().Format;
-            UavDesc.Texture2D.MipSlice = MipIndex;
-            Device->WriteBindlessUav(BindlessIndex, Texture.Resource, nullptr, UavDesc);
+            Device->WriteBindlessUav(BindlessIndex, Texture.Resource, nullptr,
+                CD3DX12_UNORDERED_ACCESS_VIEW_DESC::Tex2D(Texture.Resource->GetDesc().Format, MipIndex));
         }
         else
         {
-            D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc = {};
-            SrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-            SrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            SrvDesc.Format = Texture.Resource->GetDesc().Format;
-            SrvDesc.Texture2D.MostDetailedMip = MipIndex;
-            SrvDesc.Texture2D.MipLevels = 1;
-            Device->WriteBindlessSrv(BindlessIndex, Texture.Resource, SrvDesc);
+            Device->WriteBindlessSrv(BindlessIndex, Texture.Resource,
+                CD3DX12_SHADER_RESOURCE_VIEW_DESC::Tex2D(Texture.Resource->GetDesc().Format, 1, MipIndex));
         }
 
         ViewResource = Texture.Resource;
@@ -1500,15 +1467,7 @@ uint32 FRenderGraph::GetBufferUavBindlessIndex(FRGBufferResource& Buffer)
 
     if (Buffer.DefaultUavViewResource != Buffer.Resource)
     {
-        D3D12_UNORDERED_ACCESS_VIEW_DESC UavDesc = {};
-        UavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-        UavDesc.Format = Buffer.Desc.ViewFormat;
-        UavDesc.Buffer.FirstElement = 0;
-        UavDesc.Buffer.NumElements = Buffer.Desc.NumElements;
-        UavDesc.Buffer.StructureByteStride = Buffer.Desc.StructureByteStride;
-        UavDesc.Buffer.CounterOffsetInBytes = 0;
-        UavDesc.Buffer.Flags = Buffer.Desc.UavFlags;
-        Device->WriteBindlessUav(Buffer.DefaultUavBindlessIndex, Buffer.Resource, nullptr, UavDesc);
+        Device->WriteBindlessUav(Buffer.DefaultUavBindlessIndex, Buffer.Resource, nullptr, CreateBufferUavDesc(Buffer.Desc));
         Buffer.DefaultUavViewResource = Buffer.Resource;
     }
 
@@ -1550,15 +1509,7 @@ uint32 FRenderGraph::GetBufferSrvBindlessIndex(FRGBufferResource& Buffer)
 
     if (Buffer.DefaultSrvViewResource != Buffer.Resource)
     {
-        D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc = {};
-        SrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        SrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        SrvDesc.Format = Buffer.Desc.ViewFormat;
-        SrvDesc.Buffer.FirstElement = 0;
-        SrvDesc.Buffer.NumElements = Buffer.Desc.NumElements;
-        SrvDesc.Buffer.StructureByteStride = Buffer.Desc.StructureByteStride;
-        SrvDesc.Buffer.Flags = Buffer.Desc.SrvFlags;
-        Device->WriteBindlessSrv(Buffer.DefaultSrvBindlessIndex, Buffer.Resource, SrvDesc);
+        Device->WriteBindlessSrv(Buffer.DefaultSrvBindlessIndex, Buffer.Resource, CreateBufferSrvDesc(Buffer.Desc));
         Buffer.DefaultSrvViewResource = Buffer.Resource;
     }
 
