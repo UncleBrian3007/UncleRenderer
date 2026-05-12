@@ -20,6 +20,10 @@ namespace
     constexpr uint32_t GDeferredBasePassDoubleSidedBit = 1u << 8;
     constexpr uint32_t GDeferredBasePassClusterDagDebugBit = 1u << 9;
 
+    constexpr uint32_t kBasePassBindlessDwordCount          = 10;
+    constexpr uint32_t kBasePassPerDrawDwordCount           = 2;
+    constexpr uint32_t kBasePassVelocityConstantsDwordCount = 33;
+
     bool IsClusterDagLightingVisualizationMode(EDeferredLightingVisualizationMode Mode)
     {
         return Mode == EDeferredLightingVisualizationMode::ClusterDagClusters
@@ -266,9 +270,9 @@ bool FDeferredBasePass::CreateBasePassRootSignature(FDX12Device* InDevice)
     // RootParams[0]: Scene constant buffer (b0), used in Shaders/DeferredBasePass.hlsl VSMain and PSMain
     RootParams[0].InitAsConstantBufferView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE, D3D12_SHADER_VISIBILITY_ALL);
     // RootParams[1]: Base pass bindless indices (b1), used in Shaders/DeferredBasePass.hlsl PSMain
-    RootParams[1].InitAsConstants(10, 1, 0, D3D12_SHADER_VISIBILITY_PIXEL);
+    RootParams[1].InitAsConstants(kBasePassBindlessDwordCount, 1, 0, D3D12_SHADER_VISIBILITY_PIXEL);
     // RootParams[2]: Per-draw constants (b2): DrawIndexStart (dword0) + DrawDataIndex (dword1)
-    RootParams[2].InitAsConstants(2, 2, 0, D3D12_SHADER_VISIBILITY_VERTEX);
+    RootParams[2].InitAsConstants(kBasePassPerDrawDwordCount, 2, 0, D3D12_SHADER_VISIBILITY_VERTEX);
 
 
     CD3DX12_STATIC_SAMPLER_DESC SamplerDesc;
@@ -583,10 +587,9 @@ bool FDeferredBasePass::CreateVelocityRootSignature(FDX12Device* InDevice)
 {
     CD3DX12_ROOT_PARAMETER1 RootParams[4] = {};
     RootParams[0].InitAsConstantBufferView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE, D3D12_SHADER_VISIBILITY_ALL);
-    RootParams[1].InitAsConstants(10, 1, 0, D3D12_SHADER_VISIBILITY_PIXEL);
-    RootParams[2].InitAsConstants(2, 2, 0, D3D12_SHADER_VISIBILITY_VERTEX);
-    RootParams[3].InitAsConstants(33, 3, 0, D3D12_SHADER_VISIBILITY_PIXEL);
-
+    RootParams[1].InitAsConstants(kBasePassBindlessDwordCount, 1, 0, D3D12_SHADER_VISIBILITY_PIXEL);
+    RootParams[2].InitAsConstants(kBasePassPerDrawDwordCount, 2, 0, D3D12_SHADER_VISIBILITY_VERTEX);
+    RootParams[3].InitAsConstants(kBasePassVelocityConstantsDwordCount, 3, 0, D3D12_SHADER_VISIBILITY_PIXEL);
 
     CD3DX12_STATIC_SAMPLER_DESC SamplerDesc;
     SamplerDesc.Init(
@@ -628,8 +631,6 @@ bool FDeferredBasePass::CreateVelocityPipeline(FDX12Device* InDevice)
     std::vector<uint8_t> VSByteCode;
     std::vector<uint8_t> VSByteCodeSkinned;
 
-    const std::wstring PSTarget = RendererUtils::BuildShaderTarget(L"ps", InDevice->GetShaderModel());
-
     if (!RendererUtils::CompileVertexShader(Compiler, InDevice, L"Shaders/DeferredBasePass.hlsl", VSByteCode))
     {
         return false;
@@ -648,7 +649,7 @@ bool FDeferredBasePass::CreateVelocityPipeline(FDX12Device* InDevice)
             std::vector<std::wstring> Defines;
             Defines.push_back(Permutation != 0 ? L"USE_ALPHA_MASK=1" : L"USE_ALPHA_MASK=0");
             Defines.push_back(DoubleSidedVariant != 0 ? L"USE_DOUBLE_SIDED=1" : L"USE_DOUBLE_SIDED=0");
-            if (!Compiler.CompileFromFile(L"Shaders/DeferredBasePass.hlsl", L"PSMainVelocity", PSTarget, PSByteCodes[PipelineIndex], Defines))
+            if (!RendererUtils::CompilePixelShader(Compiler, InDevice, L"Shaders/DeferredBasePassVelocity.hlsl", PSByteCodes[PipelineIndex], Defines))
             {
                 return false;
             }
@@ -797,7 +798,9 @@ void FDeferredBasePass::AddShadowPass(FDeferredPassContext& Context) const
             const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = Owner.GetSceneConstantBufferAddress();
             LocalCommandList->SetGraphicsRootConstantBufferView(0, ConstantBufferAddress + ConstantBufferOffset);
             const uint32_t BindlessIndices[] = { 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u };
+            static_assert(_countof(BindlessIndices) <= kBasePassBindlessDwordCount);
             LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
+            static_assert(1u <= kBasePassPerDrawDwordCount);
             LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
 
             if (AreModelPixEventsEnabled())
@@ -884,10 +887,11 @@ void FDeferredBasePass::AddDepthPrepass(FDeferredPassContext& Context) const
             {
                 ID3D12PipelineState* CurrentDagPipeline = nullptr;
                 const uint32_t ZeroBindlessIndices[10] = {};
+                static_assert(_countof(ZeroBindlessIndices) <= kBasePassBindlessDwordCount);
                 for (size_t RangeIndex = 0; RangeIndex < DagRanges.size(); ++RangeIndex)
                 {
                     const FRenderer::FIndirectDrawRange& Range = DagRanges[RangeIndex];
-                    const bool bDoubleSided = (Range.PipelineKey & (1u << 9)) != 0;
+                    const bool bDoubleSided = (Range.PipelineKey & RendererUtils::GPipelineKeyDoubleSidedMask) != 0;
                     ID3D12PipelineState* DesiredPipeline = DepthPrepassPipelines[bDoubleSided ? 1u : 0u].Get();
                     if (DesiredPipeline != CurrentDagPipeline)
                     {
@@ -934,7 +938,9 @@ void FDeferredBasePass::AddDepthPrepass(FDeferredPassContext& Context) const
             const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = Owner.GetSceneConstantBufferAddress();
             LocalCommandList->SetGraphicsRootConstantBufferView(0, ConstantBufferAddress + ConstantBufferOffset);
             const uint32_t BindlessIndices[] = { 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u };
+            static_assert(_countof(BindlessIndices) <= kBasePassBindlessDwordCount);
             LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
+            static_assert(1u <= kBasePassPerDrawDwordCount);
             LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
 
             if (AreModelPixEventsEnabled())
@@ -1069,6 +1075,7 @@ void FDeferredBasePass::AddBasePass(FDeferredPassContext& Context, bool bClearTa
                         return;
                     }
                     LocalCommandList->SetPipelineState(Pipeline);
+                    assert(Range.MaterialBindlessIndices.size() <= kBasePassBindlessDwordCount);
                     LocalCommandList->SetGraphicsRoot32BitConstants(1, static_cast<UINT>(Range.MaterialBindlessIndices.size()), Range.MaterialBindlessIndices.data(), 0);
 
                     const uint64_t Offset = static_cast<uint64_t>(Range.Start) * sizeof(FIndirectDrawCommand);
@@ -1107,6 +1114,7 @@ void FDeferredBasePass::AddBasePass(FDeferredPassContext& Context, bool bClearTa
                     return;
                 }
                 LocalCommandList->SetPipelineState(Pipeline);
+                assert(Range.MaterialBindlessIndices.size() <= kBasePassBindlessDwordCount);
                 LocalCommandList->SetGraphicsRoot32BitConstants(1, static_cast<UINT>(Range.MaterialBindlessIndices.size()), Range.MaterialBindlessIndices.data(), 0);
 
                 const uint64_t Offset = static_cast<uint64_t>(Range.Start) * sizeof(FIndirectDrawCommand);
@@ -1165,7 +1173,9 @@ void FDeferredBasePass::AddBasePass(FDeferredPassContext& Context, bool bClearTa
                         Model.ClearcoatNormalBindlessIndex,
                         Model.AnisotropyBindlessIndex
                     };
+                    static_assert(_countof(BindlessIndices) <= kBasePassBindlessDwordCount);
                     LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
+                    static_assert(1u <= kBasePassPerDrawDwordCount);
                     LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
 
                     const uint32_t ModelPipelineKey = RendererUtils::BuildPipelineKey(Model);
@@ -1224,7 +1234,9 @@ void FDeferredBasePass::AddBasePass(FDeferredPassContext& Context, bool bClearTa
                     Model.ClearcoatNormalBindlessIndex,
                     Model.AnisotropyBindlessIndex
                 };
+                static_assert(_countof(BindlessIndices) <= kBasePassBindlessDwordCount);
                 LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
+                static_assert(1u <= kBasePassPerDrawDwordCount);
                 LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
 
                 const uint32_t ModelPipelineKey = RendererUtils::BuildPipelineKey(Model);
@@ -1298,6 +1310,7 @@ void FDeferredBasePass::AddVelocityPass(FDeferredPassContext& Context) const
         VelocityConstants.CurrentUnjitteredViewProjection = Owner.CurrentUnjitteredViewProjectionMatrix;
         VelocityConstants.PreviousUnjitteredViewProjection = Owner.PreviousUnjitteredViewProjectionMatrix;
         VelocityConstants.HasPreviousUnjitteredViewProjection = Owner.bHasPreviousUnjitteredViewProjection ? 1u : 0u;
+        static_assert(sizeof(FVelocityPassConstants) / sizeof(uint32_t) <= kBasePassVelocityConstantsDwordCount);
         LocalCommandList->SetGraphicsRoot32BitConstants(3, sizeof(FVelocityPassConstants) / sizeof(uint32_t), &VelocityConstants, 0);
 
         for (size_t ModelIndex = 0; ModelIndex < Owner.SceneModels.size(); ++ModelIndex)
@@ -1373,7 +1386,9 @@ void FDeferredBasePass::AddVelocityPass(FDeferredPassContext& Context) const
                 Model.ClearcoatNormalBindlessIndex,
                 Model.AnisotropyBindlessIndex
             };
+            static_assert(_countof(BindlessIndices) <= kBasePassBindlessDwordCount);
             LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
+            static_assert(1u <= kBasePassPerDrawDwordCount);
             LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
             LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, 0, 0);
         }

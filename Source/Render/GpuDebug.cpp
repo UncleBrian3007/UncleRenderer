@@ -16,6 +16,11 @@
 
 using Microsoft::WRL::ComPtr;
 
+constexpr uint32_t kDebugLineBoxConstantDwordCount      = 1;
+constexpr uint32_t kDebugPrintConstantsDwordCount       = 4;
+constexpr uint32_t kDebugPrintBindlessDwordCount        = 3;
+constexpr uint32_t kDebugPrintStatsBindlessDwordCount   = 3;
+
 FGpuDebug::~FGpuDebug()
 {
     ResetUploadMappings();
@@ -391,7 +396,7 @@ bool FGpuDebug::CreateLinePipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFo
 
     CD3DX12_ROOT_PARAMETER1 Params[2] = {};
     Params[0].InitAsConstantBufferView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE, D3D12_SHADER_VISIBILITY_VERTEX);
-    Params[1].InitAsConstants(1, 1, 0, D3D12_SHADER_VISIBILITY_VERTEX);
+    Params[1].InitAsConstants(kDebugLineBoxConstantDwordCount, 1, 0, D3D12_SHADER_VISIBILITY_VERTEX);
 
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC VersionedRootDesc;
     VersionedRootDesc.Init_1_1(_countof(Params), Params, 0, nullptr,
@@ -459,7 +464,7 @@ bool FGpuDebug::CreateBoxPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFor
 
     CD3DX12_ROOT_PARAMETER1 Params[2] = {};
     Params[0].InitAsConstantBufferView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE, D3D12_SHADER_VISIBILITY_VERTEX);
-    Params[1].InitAsConstants(1, 1, 0, D3D12_SHADER_VISIBILITY_VERTEX);
+    Params[1].InitAsConstants(kDebugLineBoxConstantDwordCount, 1, 0, D3D12_SHADER_VISIBILITY_VERTEX);
 
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC VersionedRootDesc;
     VersionedRootDesc.Init_1_1(_countof(Params), Params, 0, nullptr,
@@ -584,8 +589,8 @@ bool FGpuDebug::CreatePrintPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferF
     bPrintPersistentInputsValid = false;
 
     CD3DX12_ROOT_PARAMETER1 Params[2] = {};
-    Params[0].InitAsConstants(4, 0, 0, D3D12_SHADER_VISIBILITY_ALL);
-    Params[1].InitAsConstants(3, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+    Params[0].InitAsConstants(kDebugPrintConstantsDwordCount, 0, 0, D3D12_SHADER_VISIBILITY_ALL);
+    Params[1].InitAsConstants(kDebugPrintBindlessDwordCount, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
 
     CD3DX12_STATIC_SAMPLER_DESC Sampler;
     Sampler.Init(
@@ -665,7 +670,7 @@ bool FGpuDebug::CreatePrintStatsPipeline(FDX12Device* Device)
     bPrintStatsPersistentInputsValid = false;
 
     CD3DX12_ROOT_PARAMETER1 RootParams[1] = {};
-    RootParams[0].InitAsConstants(3, 0, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[0].InitAsConstants(kDebugPrintStatsBindlessDwordCount, 0, 0, D3D12_SHADER_VISIBILITY_ALL);
 
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC VersionedRootDesc;
     VersionedRootDesc.Init_1_1(_countof(RootParams), RootParams, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
@@ -727,6 +732,7 @@ void FGpuDebug::DispatchPrintStats(FDX12Device* Device, FDX12CommandContext& Cmd
     CommandList->SetPipelineState(PrintStatsPipeline.Get());
     CommandList->SetComputeRootSignature(PrintStatsRootSignature.Get());
     const uint32_t BindlessIndices[] = { PrintStatsBuffer.SrvBindlessIndex, PrintBuffer.UavBindlessIndex, LineBuffer.SrvBindlessIndex };
+    static_assert(_countof(BindlessIndices) <= kDebugPrintStatsBindlessDwordCount);
     CommandList->SetComputeRoot32BitConstants(0, _countof(BindlessIndices), BindlessIndices, 0);
     CommandList->Dispatch(1, 1, 1);
 }
@@ -785,6 +791,8 @@ void FGpuDebug::RenderPrint(FDX12Device* Device, const D3D12_VIEWPORT& Viewport,
     CommandList->RSSetViewports(1, &Viewport);
     CommandList->RSSetScissorRects(1, &ScissorRect);
     CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    static_assert(sizeof(FDebugPrintConstants) / sizeof(uint32_t) <= kDebugPrintConstantsDwordCount);
+    static_assert(sizeof(FDebugPrintBindlessConstants) / sizeof(uint32_t) <= kDebugPrintBindlessDwordCount);
     CommandList->SetGraphicsRoot32BitConstants(0, sizeof(Constants) / sizeof(uint32_t), &Constants, 0);
     CommandList->SetGraphicsRoot32BitConstants(1, sizeof(BindlessConstants) / sizeof(uint32_t), &BindlessConstants, 0);
     CommandList->DrawInstanced(6 * GpuDebug::GpuDebugPrintMaxEntries, 1, 0, 0);
@@ -824,6 +832,7 @@ void FGpuDebug::RenderLine(FDX12Device* Device, const D3D12_VIEWPORT& Viewport, 
     CommandList->RSSetScissorRects(1, &ScissorRect);
     CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_LINELIST);
     CommandList->SetGraphicsRootConstantBufferView(0, SceneConstantBufferAddress);
+    static_assert(1u <= kDebugLineBoxConstantDwordCount);
     CommandList->SetGraphicsRoot32BitConstant(1, LineBuffer.SrvBindlessIndex, 0);
     CommandList->DrawInstanced(2 * GpuDebug::GpuDebugLineMaxEntries, 1, 0, 0);
 
@@ -862,6 +871,7 @@ void FGpuDebug::RenderBox(FDX12Device* Device, const D3D12_VIEWPORT& Viewport, c
     CommandList->RSSetScissorRects(1, &ScissorRect);
     CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     CommandList->SetGraphicsRootConstantBufferView(0, SceneConstantBufferAddress);
+    static_assert(1u <= kDebugLineBoxConstantDwordCount);
     CommandList->SetGraphicsRoot32BitConstant(1, BoxBuffer.SrvBindlessIndex, 0);
     CommandList->DrawInstanced(36 * GpuDebug::GpuDebugBoxMaxEntries, 1, 0, 0);
 

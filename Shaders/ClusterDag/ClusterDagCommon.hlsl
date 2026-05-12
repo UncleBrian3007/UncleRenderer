@@ -1,7 +1,11 @@
 #ifndef CLUSTER_DAG_COMMON_HLSL
 #define CLUSTER_DAG_COMMON_HLSL
 
+#include "../PipelineKeyShared.h"
+
 static const uint kClusterDagCommandStride = 32u;
+static const uint kClusterDagPipelineKeyDoubleSidedBit = RENDER_PIPELINE_KEY_DOUBLE_SIDED_BIT;
+static const uint kClusterDagPipelineKeyDoubleSidedMask = RENDER_PIPELINE_KEY_DOUBLE_SIDED_MASK;
 
 struct ClusterDagGroupData
 {
@@ -19,6 +23,7 @@ struct ClusterDagClusterData
     float4 Bounds;
     float4 LodBounds;
     float LODError;
+    float MaxEdgeLength;
     uint GroupIndex;
     uint GeneratingGroupIndex;
     uint DrawDataStart;
@@ -40,6 +45,12 @@ struct ClusterDagDrawData
     uint RangeIndex;
     uint RangeCommandStart;
     uint ModelIndex;
+};
+
+struct ClusterDagVisibleEntry
+{
+    uint ClusterIndex;
+    uint DrawDataIndex;
 };
 
 void CopyClusterDagCommandTemplate(uint srcIndex, uint dstIndex, ByteAddressBuffer CommandTemplates, RWByteAddressBuffer OutputCommands)

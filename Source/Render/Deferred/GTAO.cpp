@@ -15,6 +15,9 @@ using Microsoft::WRL::ComPtr;
 
 namespace
 {
+    constexpr uint32_t kGtaoBindlessDwordCount  = 3;
+    constexpr uint32_t kGtaoConstantsDwordCount = 8;
+
     uint32_t HilbertIndex(uint32_t PosX, uint32_t PosY)
     {
         constexpr uint32_t HilbertLevel = 6u;
@@ -137,6 +140,7 @@ void FGtao::AddPass(FDeferredPassContext& Context) const
             Owner.LinearDepthTexture.SrvBindlessIndex,
             HilbertLutTexture.SrvBindlessIndex
         };
+        static_assert(_countof(GtaoBindlessIndices) <= kGtaoBindlessDwordCount);
         LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(GtaoBindlessIndices), GtaoBindlessIndices, 0);
 
         const uint32_t GtaoPassValues[8] =
@@ -150,6 +154,7 @@ void FGtao::AddPass(FDeferredPassContext& Context) const
             0u,
             0u
         };
+        static_assert(_countof(GtaoPassValues) <= kGtaoConstantsDwordCount);
         LocalCommandList->SetGraphicsRoot32BitConstants(2, 8, GtaoPassValues, 0);
 
         LocalCommandList->DrawInstanced(3, 1, 0, 0);
@@ -160,8 +165,8 @@ bool FGtao::CreateRootSignature(FDX12Device* Device)
 {
     CD3DX12_ROOT_PARAMETER1 RootParams[3] = {};
     RootParams[0].InitAsConstantBufferView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE, D3D12_SHADER_VISIBILITY_ALL);
-    RootParams[1].InitAsConstants(3, 1, 0, D3D12_SHADER_VISIBILITY_PIXEL);
-    RootParams[2].InitAsConstants(8, 2, 0, D3D12_SHADER_VISIBILITY_PIXEL);
+    RootParams[1].InitAsConstants(kGtaoBindlessDwordCount, 1, 0, D3D12_SHADER_VISIBILITY_PIXEL);
+    RootParams[2].InitAsConstants(kGtaoConstantsDwordCount, 2, 0, D3D12_SHADER_VISIBILITY_PIXEL);
 
     CD3DX12_STATIC_SAMPLER_DESC SamplerDesc;
     SamplerDesc.Init(

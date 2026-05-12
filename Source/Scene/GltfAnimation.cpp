@@ -1,100 +1,15 @@
 #include "GltfAnimation.h"
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <functional>
 
 namespace
 {
-    using FMatrix4 = std::array<float, 16>;
-
-    FMatrix4 MakeMirrorZMatrix()
-    {
-        return { 1.0f, 0.0f,  0.0f, 0.0f,
-                 0.0f, 1.0f,  0.0f, 0.0f,
-                 0.0f, 0.0f, -1.0f, 0.0f,
-                 0.0f, 0.0f,  0.0f, 1.0f };
-    }
-
-    FMatrix4 MultiplyMatrix(const FMatrix4& A, const FMatrix4& B)
-    {
-        FMatrix4 Result{};
-        for (int Col = 0; Col < 4; ++Col)
-        {
-            for (int Row = 0; Row < 4; ++Row)
-            {
-                float Sum = 0.0f;
-                for (int k = 0; k < 4; ++k)
-                {
-                    Sum += A[k * 4 + Row] * B[Col * 4 + k];
-                }
-                Result[Col * 4 + Row] = Sum;
-            }
-        }
-        return Result;
-    }
-
-    FMatrix4 ToLeftHandedMatrix(const FMatrix4& M)
-    {
-        const FMatrix4 MirrorZ = MakeMirrorZMatrix();
-        return MultiplyMatrix(MirrorZ, MultiplyMatrix(M, MirrorZ));
-    }
-
-    DirectX::XMFLOAT4X4 ToFloat4x4(const FMatrix4& M)
-    {
-        DirectX::XMFLOAT4X4 Result{};
-        for (int Row = 0; Row < 4; ++Row)
-        {
-            for (int Col = 0; Col < 4; ++Col)
-            {
-                Result.m[Row][Col] = M[Row * 4 + Col];
-            }
-        }
-
-        return Result;
-    }
-
-    FMatrix4 MatrixFromQuaternion(float x, float y, float z, float w)
-    {
-        const float xx = x * x;
-        const float yy = y * y;
-        const float zz = z * z;
-        const float xy = x * y;
-        const float xz = x * z;
-        const float yz = y * z;
-        const float wx = w * x;
-        const float wy = w * y;
-        const float wz = w * z;
-
-        return {
-            1.0f - 2.0f * (yy + zz), 2.0f * (xy + wz),       2.0f * (xz - wy),       0.0f,
-            2.0f * (xy - wz),       1.0f - 2.0f * (xx + zz), 2.0f * (yz + wx),       0.0f,
-            2.0f * (xz + wy),       2.0f * (yz - wx),       1.0f - 2.0f * (xx + yy), 0.0f,
-            0.0f,                   0.0f,                   0.0f,                   1.0f
-        };
-    }
-
-    FMatrix4 MatrixFromTRS(const FFloat3& Translation, const FFloat4& Rotation, const FFloat3& Scale)
-    {
-        const FMatrix4 T = { 1.0f, 0.0f, 0.0f, 0.0f,
-                             0.0f, 1.0f, 0.0f, 0.0f,
-                             0.0f, 0.0f, 1.0f, 0.0f,
-                             Translation.x, Translation.y, Translation.z, 1.0f };
-
-        const FMatrix4 S = { Scale.x, 0.0f, 0.0f, 0.0f,
-                             0.0f, Scale.y, 0.0f, 0.0f,
-                             0.0f, 0.0f, Scale.z, 0.0f,
-                             0.0f, 0.0f, 0.0f, 1.0f };
-
-        const FMatrix4 R = MatrixFromQuaternion(Rotation.x, Rotation.y, Rotation.z, Rotation.w);
-        return MultiplyMatrix(MultiplyMatrix(T, R), S);
-    }
-
     DirectX::XMFLOAT4X4 BuildLocalMatrixLH(const FFloat3& Translation, const FFloat4& Rotation, const FFloat3& Scale)
     {
-        const FMatrix4 Local = MatrixFromTRS(Translation, Rotation, Scale);
-        return ToFloat4x4(ToLeftHandedMatrix(Local));
+        const FMatrix4 Local = MatrixMath::FromTRS(Translation, Rotation, Scale);
+        return MatrixMath::ToFloat4x4(MatrixMath::ToLeftHanded(Local));
     }
 
     float WrapAnimationTime(const std::vector<float>& Times, float TimeSeconds)
@@ -148,14 +63,6 @@ namespace
         }
 
         return (TimeSeconds - t0) / (t1 - t0);
-    }
-
-    FFloat3 LerpVec3(const FFloat3& A, const FFloat3& B, float Alpha)
-    {
-        return FFloat3(
-            A.x + (B.x - A.x) * Alpha,
-            A.y + (B.y - A.y) * Alpha,
-            A.z + (B.z - A.z) * Alpha);
     }
 
     FFloat4 SlerpQuat(const FFloat4& A, const FFloat4& B, float Alpha)
@@ -300,7 +207,7 @@ void UpdateGltfAnimationPose(const FGltfScene& Scene, float TimeSeconds, FGltfAn
                 const FFloat3& B = Sampler.OutputVec3[std::min(KeyIndex + 1, Sampler.OutputVec3.size() - 1)];
                 Pose.Translation = (Sampler.Interpolation == EGltfAnimationInterpolation::Step)
                     ? A
-                    : LerpVec3(A, B, Alpha);
+                    : VectorMath::Lerp3(A, B, Alpha);
             }
             else if (Channel.Path == EGltfAnimationPath::Scale && Sampler.OutputVec3.size() > KeyIndex)
             {
@@ -308,7 +215,7 @@ void UpdateGltfAnimationPose(const FGltfScene& Scene, float TimeSeconds, FGltfAn
                 const FFloat3& B = Sampler.OutputVec3[std::min(KeyIndex + 1, Sampler.OutputVec3.size() - 1)];
                 Pose.Scale = (Sampler.Interpolation == EGltfAnimationInterpolation::Step)
                     ? A
-                    : LerpVec3(A, B, Alpha);
+                    : VectorMath::Lerp3(A, B, Alpha);
             }
             else if (Channel.Path == EGltfAnimationPath::Rotation && Sampler.OutputVec4.size() > KeyIndex)
             {

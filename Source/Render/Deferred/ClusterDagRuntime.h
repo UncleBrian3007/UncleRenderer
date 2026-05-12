@@ -48,6 +48,7 @@ public:
     bool IsForceMipEnabled() const { return bForceMipEnabled; }
     uint32_t GetForceMipLevel() const { return ForceMipLevel; }
     bool IsForceMipSkipFrustumCull() const { return bForceMipSkipFrustumCull; }
+    float GetSwRasterThresholdPixels() const { return SwRasterThresholdPixels; }
     uint32_t GetVisibleRootCount() const { return VisibleRootCount; }
     uint32_t GetClusterCount() const { return ClusterCount; }
 
@@ -69,6 +70,7 @@ private:
         DirectX::XMFLOAT4 Bounds{ 0.0f, 0.0f, 0.0f, 0.0f };
         DirectX::XMFLOAT4 LodBounds{ 0.0f, 0.0f, 0.0f, 0.0f };
         float LODError = 0.0f;
+        float MaxEdgeLength = 0.0f;
         uint32_t GroupIndex = GClusterDAGInvalidIndex;
         uint32_t GeneratingGroupIndex = GClusterDAGInvalidIndex;
         uint32_t DrawDataStart = 0;
@@ -76,7 +78,7 @@ private:
         uint32_t TriangleCount = 0;
         uint32_t MipLevel = 0;
     };
-    static_assert(sizeof(FSceneClusterData) == 60, "FSceneClusterData must match cluster DAG runtime shader layout");
+    static_assert(sizeof(FSceneClusterData) == 64, "FSceneClusterData must match cluster DAG runtime shader layout");
 
     // Per-cluster draw data uploaded to GPU and consumed by the cluster DAG runtime shaders.
     // Each cluster may have multiple entries (one per material range).
@@ -88,6 +90,13 @@ private:
         uint32_t RangeCommandStart = 0; // IndirectDrawRanges[RangeIndex].Start; base slot in the output command buffer for this range, combined with the per-range atomic counter to produce the final output slot
         uint32_t ModelIndex = 0;        // Scene-model index used by the visibility resolve path to recover per-model shading data
     };
+
+    struct FVisibleEntry
+    {
+        uint32_t ClusterIndex = 0;
+        uint32_t DrawDataIndex = 0;
+    };
+    static_assert(sizeof(FVisibleEntry) == 8, "FVisibleEntry must match cluster DAG visibility shader layout");
 
     struct FPreparedData
     {
@@ -125,7 +134,6 @@ private:
     void DispatchLevelSplitClusterCull(FDeferredRenderer& Owner, FDX12CommandContext& CmdContext, const char* PassName) const;
 
 private:
-    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> SelectPipelines;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> InitQueuePipelines;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> PersistentCullPipelines;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> SplitNodeCullPipelines;
@@ -156,17 +164,25 @@ private:
     std::array<std::vector<FBindlessBuffer>, 2> LevelSplitNodeCandidateBuffers;
     std::array<std::vector<FBindlessBuffer>, 2> LevelSplitNodeArgsBuffers;
     std::vector<FBindlessBuffer> LevelSplitClusterArgsBuffers;
+    std::vector<FBindlessBuffer> SwRasterDispatchArgsBuffers;
     std::vector<FBindlessBuffer> IndirectCommandBuffers;
     std::vector<FBindlessBuffer> IndirectCommandTemplateBuffers;
     std::vector<FBindlessBuffer> RunCountBuffers;
+    std::vector<FBindlessBuffer> VisibleEntryBuffers;
+    std::vector<FBindlessBuffer> VisibleEntryCounterBuffers;
+    std::vector<FBindlessBuffer> HwVisibleEntryIndexBuffers;
+    std::vector<FBindlessBuffer> SwVisibleEntryIndexBuffers;
+    std::vector<FBindlessBuffer> DrawDataVisibleEntryIndexBuffers;
 
     bool bEnabled = false;
     bool bFastShaderEnabled = false;
     bool bDebugEnabled = false;
     float TargetErrorPixels = 1.0f;
+    float SwRasterThresholdPixels = 16.0f;
     bool bForceMipEnabled = false;
     uint32_t ForceMipLevel = 0;
     bool bForceMipSkipFrustumCull = false;
+    bool bForceSoftwareRaster = false;
     EClusterDAGTraversalMode ActiveTraversalMode = EClusterDAGTraversalMode::LevelSplitQueue;
     uint32_t VisibleRootCount = 0;
     uint32_t ClusterCount = 0;

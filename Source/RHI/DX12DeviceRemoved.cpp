@@ -1,6 +1,7 @@
 #include "DX12DeviceRemoved.h"
 
 #include "../Core/Logger.h"
+#include "../Core/StringUtils.h"
 
 #include <algorithm>
 #include <atomic>
@@ -14,25 +15,6 @@ namespace
 {
     constexpr uint32 GDredLogNodeLimit = 200;
 
-    std::string NarrowFromWide(const wchar_t* Text)
-    {
-        if (!Text || Text[0] == L'\0')
-        {
-            return "";
-        }
-
-        const int WideLength = static_cast<int>(wcslen(Text));
-        const int RequiredBytes = WideCharToMultiByte(CP_UTF8, 0, Text, WideLength, nullptr, 0, nullptr, nullptr);
-        if (RequiredBytes <= 0)
-        {
-            return "";
-        }
-
-        std::string Result(static_cast<size_t>(RequiredBytes), '\0');
-        WideCharToMultiByte(CP_UTF8, 0, Text, WideLength, Result.data(), RequiredBytes, nullptr, nullptr);
-        return Result;
-    }
-
     std::string NarrowFromAnsi(const char* Text)
     {
         if (!Text)
@@ -45,7 +27,7 @@ namespace
 
     std::string ToUtf8(const wchar_t* WideText, const char* AnsiText)
     {
-        std::string Wide = NarrowFromWide(WideText);
+        std::string Wide = StringUtils::WideToUtf8(WideText);
         if (!Wide.empty())
         {
             return Wide;

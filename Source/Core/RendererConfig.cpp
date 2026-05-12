@@ -855,6 +855,30 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
         }
     }
 
+    if (LowerKey == "clusterdagswrasterthresholdpixels"
+        || LowerKey == "clusterdagsoftwarerasterthresholdpixels"
+        || LowerKey == "clusterdagminpixelsperedgesw")
+    {
+        try
+        {
+            OutConfig.ClusterDAGSwRasterThresholdPixels = (std::max)(0.0f, std::stof(Value));
+        }
+        catch (...)
+        {
+            LogWarning("Invalid Cluster DAG SW raster threshold pixels in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "clusterdagswrasterhzb"
+        || LowerKey == "clusterdagswrasterhzbreject"
+        || LowerKey == "clusterdagswrasterhzbocclusion"
+        || LowerKey == "enableclusterdagswrasterhzb"
+        || LowerKey == "enableclusterdagswrasterhzbreject"
+        || LowerKey == "enableclusterdagswrasterhzbocclusion")
+    {
+        OutConfig.bEnableClusterDAGSwRasterHzbReject = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+
     if (LowerKey == "clusterdagforcemip" || LowerKey == "enableclusterdagforcemip")
     {
         OutConfig.bEnableClusterDAGForceMip = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
@@ -878,6 +902,15 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
         || LowerKey == "enableclusterdagforcemipdisablefrustumcull")
     {
         OutConfig.bEnableClusterDAGForceMipSkipFrustumCull = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+
+    if (LowerKey == "clusterdagforcesoftwareraster"
+        || LowerKey == "enableclusterdagforcesoftwareraster"
+        || LowerKey == "clusterdagforceswraster"
+        || LowerKey == "enableclusterdagforceswraster"
+        || LowerKey == "clusterdagswrasteronly")
+    {
+        OutConfig.bEnableClusterDAGForceSoftwareRaster = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
 
     if (LowerKey == "clusterdagdebug"

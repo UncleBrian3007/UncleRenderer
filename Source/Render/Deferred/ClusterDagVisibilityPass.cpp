@@ -12,33 +12,34 @@
 #include <vector>
 #include <d3dx12.h>
 
-namespace
-{
-    constexpr DXGI_FORMAT GClusterDagVisibilityFormat0 = DXGI_FORMAT_R32G32_UINT;
-    constexpr DXGI_FORMAT GClusterDagVisibilityFormat1 = DXGI_FORMAT_R16G16_FLOAT;
-    constexpr uint32_t GClusterDagVisibilityDoubleSidedBit = 1u << 9;
-}
+constexpr DXGI_FORMAT GClusterDagVisibility64Format = DXGI_FORMAT_R32G32_UINT;
+
+constexpr uint32_t kVisibilityPassConstantsDwordCount = 4;
+constexpr uint32_t kSoftwareRasterArgsBindlessDwordCount = 2;
+constexpr uint32_t kSoftwareRasterBindlessDwordCount = 14;
+constexpr uint32_t kDepthExportBindlessDwordCount = 1;
+constexpr uint32_t kVisibilityResolveBindlessDwordCount = 4;
 
 bool FClusterDagVisibilityPass::InitializePipelines(FDeferredRenderer& Owner, FDX12Device* Device)
 {
     this->Owner = &Owner;
     this->Device = Device;
     bPipelinesReady = false;
-    bFeatureSupported = false;
     if (Device == nullptr)
     {
         return false;
     }
-
-    bFeatureSupported = Device->IsBarycentricsSupported();
-    if (!bFeatureSupported)
+    if (!Device->SupportsAtomicInt64OnTypedResource())
     {
-        LogWarning("Cluster DAG visibility buffer disabled: device does not support barycentrics required by Shaders/ClusterDagVisibility.hlsl.");
-        return true;
+        LogWarning("ClusterDag visibility Vis64 path disabled: AtomicInt64OnTypedResource is not supported.");
+        return false;
     }
 
     bPipelinesReady = CreateVisibilityRootSignature(Device)
         && CreateVisibilityPipeline(Device)
+        && CreateSoftwareRasterPipeline(Device)
+        && CreateDepthExportRootSignature(Device)
+        && CreateDepthExportPipeline(Device)
         && CreateResolveRootSignature(Device)
         && CreateResolvePipeline(Device)
         && CreateCommandSignature(Device);
@@ -54,10 +55,6 @@ bool FClusterDagVisibilityPass::InitializeResources(FDeferredRenderer& Owner, FD
     {
         return false;
     }
-    if (!bFeatureSupported)
-    {
-        return true;
-    }
     return CreateVisibilityResources(Device, Width, Height);
 }
 
@@ -68,18 +65,10 @@ void FClusterDagVisibilityPass::ImportPersistentResources(FDeferredPassContext& 
         return;
     }
 
-    Context.Resources.ClusterDagVisibility.VisibilityHandle0 = Context.Graph.ImportTexture(
-        "ClusterDagVisibility0",
-        VisibilityTexture0.Get(),
-        &VisibilityTexture0.State,
-        { static_cast<uint32>(Owner->Viewport.Width), static_cast<uint32>(Owner->Viewport.Height), GClusterDagVisibilityFormat0 },
-        VisibilityTexture0.SrvBindlessIndex);
-    Context.Resources.ClusterDagVisibility.VisibilityHandle1 = Context.Graph.ImportTexture(
-        "ClusterDagVisibility1",
-        VisibilityTexture1.Get(),
-        &VisibilityTexture1.State,
-        { static_cast<uint32>(Owner->Viewport.Width), static_cast<uint32>(Owner->Viewport.Height), GClusterDagVisibilityFormat1 },
-        VisibilityTexture1.SrvBindlessIndex);
+    Context.Resources.ClusterDagVisibility.Visibility64Handle = ImportBindlessTexture(
+        Context.Graph,
+        "ClusterDagVisibility64",
+        VisibilityTexture64);
 }
 
 void FClusterDagVisibilityPass::AddPasses(FDeferredPassContext& Context) const
@@ -90,6 +79,8 @@ void FClusterDagVisibilityPass::AddPasses(FDeferredPassContext& Context) const
     }
 
     AddVisibilityPass(Context);
+    AddSoftwareRasterPass(Context);
+    AddDepthExportPass(Context);
     AddResolvePass(Context);
 }
 
@@ -99,13 +90,15 @@ void FClusterDagVisibilityPass::AddVisibilityPass(FDeferredPassContext& Context)
     struct FPassData
     {
         bool bEnabled = false;
-        FRGResourceHandle VisibilityHandle0{};
-        FRGResourceHandle VisibilityHandle1{};
+        FRGResourceHandle Visibility64Handle{};
         FRGBufferHandle DagIndirectHandle{};
+        FRGBufferHandle DrawDataVisibleEntryHandle{};
         ID3D12Resource* DagIndirectBuffer = nullptr;
         ID3D12Resource* DagRunCountBuffer = nullptr;
         const std::vector<FRenderer::FIndirectDrawRange>* DagRanges = nullptr;
         const FCamera* Camera = nullptr;
+        uint32_t Visibility64UavIndex = UINT32_MAX;
+        uint32_t DrawDataVisibleEntrySrvIndex = UINT32_MAX;
     };
 
     Context.Graph.AddPass<FPassData>("ClusterDagVisibility", [this, &Context](FPassData& Data, FRGPassBuilder& Builder)
@@ -115,22 +108,23 @@ void FClusterDagVisibilityPass::AddVisibilityPass(FDeferredPassContext& Context)
         Data.DagRunCountBuffer = Runtime->RunCountBuffers[Context.FrameIndex].Get();
         Data.DagRanges = &Runtime->GetIndirectDrawRanges();
         Data.bEnabled =
-            Context.Resources.ClusterDagVisibility.VisibilityHandle0
-            && Context.Resources.ClusterDagVisibility.VisibilityHandle1
+            Context.Resources.ClusterDagVisibility.Visibility64Handle
             && Data.DagIndirectBuffer != nullptr
             && Data.DagRunCountBuffer != nullptr
             && !Data.DagRanges->empty();
-        Data.VisibilityHandle0 = Context.Resources.ClusterDagVisibility.VisibilityHandle0;
-        Data.VisibilityHandle1 = Context.Resources.ClusterDagVisibility.VisibilityHandle1;
+        Data.Visibility64Handle = Context.Resources.ClusterDagVisibility.Visibility64Handle;
         Data.Camera = &Context.Camera;
+        Data.Visibility64UavIndex = VisibilityTexture64.UavBindlessIndex;
+        Data.DrawDataVisibleEntrySrvIndex = Runtime->DrawDataVisibleEntryIndexBuffers[Context.FrameIndex].SrvBindlessIndex;
 
         if (Data.bEnabled)
         {
             Data.DagIndirectHandle = ImportBindlessBuffer(Context.Graph, "ClusterDagIndirectCommandsVisibility", Runtime->IndirectCommandBuffers[Context.FrameIndex]);
-            Builder.WriteTexture(Data.VisibilityHandle0, D3D12_RESOURCE_STATE_RENDER_TARGET);
-            Builder.WriteTexture(Data.VisibilityHandle1, D3D12_RESOURCE_STATE_RENDER_TARGET);
+            Data.DrawDataVisibleEntryHandle = ImportBindlessBuffer(Context.Graph, "ClusterDagDrawDataVisibleEntryVisibility", Runtime->DrawDataVisibleEntryIndexBuffers[Context.FrameIndex]);
+            Builder.WriteTexture(Data.Visibility64Handle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             Builder.WriteTexture(Context.Resources.DepthHandle, D3D12_RESOURCE_STATE_DEPTH_WRITE);
             Builder.ReadBuffer(Data.DagIndirectHandle, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
+            Builder.ReadBuffer(Data.DrawDataVisibleEntryHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         }
     }, [this](const FPassData& Data, FDX12CommandContext& Cmd)
     {
@@ -139,27 +133,40 @@ void FClusterDagVisibilityPass::AddVisibilityPass(FDeferredPassContext& Context)
             return;
         }
 
-        const float ClearValue[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-        Cmd.ClearRenderTarget(VisibilityRtvHandles[0], ClearValue);
-        Cmd.ClearRenderTarget(VisibilityRtvHandles[1], ClearValue);
-
         ID3D12GraphicsCommandList* CommandList = Cmd.GetCommandList();
         ID3D12DescriptorHeap* Heaps[] = { Owner->Device->GetBindlessDescriptorHeap() };
         CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        const uint32_t ClearValues[4] = { 0u, 0u, 0u, 0u };
+        CommandList->ClearUnorderedAccessViewUint(
+            Owner->GetBindlessGpuHandle(Data.Visibility64UavIndex),
+            Owner->GetBindlessCpuClearHandle(Data.Visibility64UavIndex),
+            VisibilityTexture64.Get(),
+            ClearValues,
+            0,
+            nullptr);
+        const D3D12_RESOURCE_BARRIER ClearBarrier = CD3DX12_RESOURCE_BARRIER::UAV(VisibilityTexture64.Get());
+        CommandList->ResourceBarrier(1, &ClearBarrier);
         CommandList->SetGraphicsRootSignature(VisibilityRootSignature.Get());
         CommandList->RSSetViewports(1, &Owner->Viewport);
         CommandList->RSSetScissorRects(1, &Owner->ScissorRect);
         CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
         const D3D12_CPU_DESCRIPTOR_HANDLE DepthHandle = Owner->GetDSVHandle();
-        CommandList->OMSetRenderTargets(static_cast<UINT>(VisibilityRtvHandles.size()), VisibilityRtvHandles.data(), FALSE, &DepthHandle);
+        CommandList->OMSetRenderTargets(0, nullptr, FALSE, &DepthHandle);
 
         Owner->EnsureClusterDagSceneConstantsPrepared(*Data.Camera);
+
+        const uint32_t VisibilityExtraConstants[] =
+        {
+            Data.Visibility64UavIndex,
+            Data.DrawDataVisibleEntrySrvIndex
+        };
+        CommandList->SetGraphicsRoot32BitConstants(1, _countof(VisibilityExtraConstants), VisibilityExtraConstants, 2);
 
         for (size_t RangeIndex = 0; RangeIndex < Data.DagRanges->size(); ++RangeIndex)
         {
             const FRenderer::FIndirectDrawRange& Range = (*Data.DagRanges)[RangeIndex];
-            const bool bDoubleSided = (Range.PipelineKey & GClusterDagVisibilityDoubleSidedBit) != 0;
+            const bool bDoubleSided = (Range.PipelineKey & RendererUtils::GPipelineKeyDoubleSidedMask) != 0;
             ID3D12PipelineState* Pipeline = VisibilityPipelines[bDoubleSided ? 1u : 0u].Get();
             CommandList->SetPipelineState(Pipeline);
             const uint64_t Offset = static_cast<uint64_t>(Range.Start) * sizeof(FIndirectDrawCommand);
@@ -169,17 +176,200 @@ void FClusterDagVisibilityPass::AddVisibilityPass(FDeferredPassContext& Context)
     });
 }
 
+void FClusterDagVisibilityPass::AddSoftwareRasterPass(FDeferredPassContext& Context) const
+{
+    struct FPreparePassData
+    {
+        bool bEnabled = false;
+        FRGBufferHandle VisibleEntryCounterHandle{};
+        FRGBufferHandle DispatchArgsHandle{};
+        uint32_t BindlessIndices[kSoftwareRasterArgsBindlessDwordCount] = {};
+    };
+
+    Context.Graph.AddPass<FPreparePassData>("ClusterDagPrepareSoftwareRasterArgs", [this, &Context](FPreparePassData& Data, FRGPassBuilder& Builder)
+    {
+        FClusterDagRuntime* Runtime = Owner->ClusterDagRuntime.get();
+        const uint32_t FrameIndex = Context.FrameIndex;
+        Data.bEnabled = static_cast<bool>(Context.Resources.ClusterDagVisibility.Visibility64Handle);
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        Data.VisibleEntryCounterHandle = ImportBindlessBuffer(Context.Graph, "ClusterDagPrepareSWVisibleEntryCounters", Runtime->VisibleEntryCounterBuffers[FrameIndex]);
+        Data.DispatchArgsHandle = ImportBindlessBuffer(Context.Graph, "ClusterDagPrepareSWDispatchArgs", Runtime->SwRasterDispatchArgsBuffers[FrameIndex]);
+        Data.BindlessIndices[0] = Runtime->VisibleEntryCounterBuffers[FrameIndex].SrvBindlessIndex;
+        Data.BindlessIndices[1] = Runtime->SwRasterDispatchArgsBuffers[FrameIndex].UavBindlessIndex;
+
+        Builder.ReadBuffer(Data.VisibleEntryCounterHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.WriteBuffer(Data.DispatchArgsHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.UavBarrier(Data.DispatchArgsHandle);
+    }, [this](const FPreparePassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        ID3D12GraphicsCommandList* CommandList = Cmd.GetCommandList();
+        ID3D12DescriptorHeap* Heaps[] = { Owner->Device->GetBindlessDescriptorHeap() };
+        CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        CommandList->SetComputeRootSignature(SoftwareRasterRootSignature.Get());
+        CommandList->SetPipelineState(PrepareSoftwareRasterArgsPipeline.Get());
+        CommandList->SetComputeRoot32BitConstants(0, kSoftwareRasterArgsBindlessDwordCount, Data.BindlessIndices, 0);
+        CommandList->Dispatch(1, 1, 1);
+    });
+
+    struct FPassData
+    {
+        bool bEnabled = false;
+        FRGResourceHandle Visibility64Handle{};
+        FRGResourceHandle DepthHandle{};
+        FRGBufferHandle VisibleEntryHandle{};
+        FRGBufferHandle SwVisibleEntryHandle{};
+        FRGBufferHandle VisibleEntryCounterHandle{};
+        FRGBufferHandle ClusterDataHandle{};
+        FRGBufferHandle DrawDataHandle{};
+        FRGBufferHandle SceneDataHandle{};
+        FRGBufferHandle DispatchArgsHandle{};
+        FRGResourceHandle HzbHandle{};
+        ID3D12Resource* DispatchArgsBuffer = nullptr;
+        bool bUseHzbReject = false;
+        uint32_t BindlessIndices[kSoftwareRasterBindlessDwordCount] = {};
+    };
+
+    Context.Graph.AddPass<FPassData>("ClusterDagSoftwareRaster", [this, &Context](FPassData& Data, FRGPassBuilder& Builder)
+    {
+        FClusterDagRuntime* Runtime = Owner->ClusterDagRuntime.get();
+        const uint32_t FrameIndex = Context.FrameIndex;
+        const uint32_t DepthIndex = Owner->DepthBindlessIndices.empty()
+            ? UINT32_MAX
+            : Owner->DepthBindlessIndices[FrameIndex % static_cast<uint32_t>(Owner->DepthBindlessIndices.size())];
+        Data.bEnabled = Context.Resources.ClusterDagVisibility.Visibility64Handle
+            && IsValidBindlessIndex(DepthIndex);
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        Data.bUseHzbReject = bSoftwareRasterHzbRejectEnabled
+            && Context.FrameState.bUseHZBOcclusion
+            && Context.Resources.Hzb.HzbHandle
+            && IsValidBindlessIndex(Owner->Hzb->GetSrvBindlessIndex())
+            && Owner->Hzb->GetWidth() > 0u
+            && Owner->Hzb->GetHeight() > 0u
+            && Owner->Hzb->GetMipCount() > 0u;
+        Data.Visibility64Handle = Context.Resources.ClusterDagVisibility.Visibility64Handle;
+        Data.DepthHandle = Context.Resources.DepthHandle;
+        Data.VisibleEntryHandle = ImportBindlessBuffer(Context.Graph, "ClusterDagSWVisibleEntries", Runtime->VisibleEntryBuffers[FrameIndex]);
+        Data.SwVisibleEntryHandle = ImportBindlessBuffer(Context.Graph, "ClusterDagSWVisibleEntryIndices", Runtime->SwVisibleEntryIndexBuffers[FrameIndex]);
+        Data.VisibleEntryCounterHandle = ImportBindlessBuffer(Context.Graph, "ClusterDagSWVisibleEntryCounters", Runtime->VisibleEntryCounterBuffers[FrameIndex]);
+        Data.ClusterDataHandle = ImportBindlessBuffer(Context.Graph, "ClusterDagSWClusterData", Runtime->ClusterBuffer);
+        Data.DrawDataHandle = ImportBindlessBuffer(Context.Graph, "ClusterDagSWDrawData", Runtime->DrawDataBuffer);
+        Data.SceneDataHandle = ImportBindlessBuffer(Context.Graph, "ClusterDagSWSceneData", Owner->ClusterDagSceneConstantBuffers[FrameIndex]);
+        Data.DispatchArgsHandle = ImportBindlessBuffer(Context.Graph, "ClusterDagSWDispatchArgs", Runtime->SwRasterDispatchArgsBuffers[FrameIndex]);
+        Data.DispatchArgsBuffer = Runtime->SwRasterDispatchArgsBuffers[FrameIndex].Get();
+        Data.BindlessIndices[0] = VisibilityTexture64.UavBindlessIndex;
+        Data.BindlessIndices[1] = Runtime->VisibleEntryBuffers[FrameIndex].SrvBindlessIndex;
+        Data.BindlessIndices[2] = Runtime->SwVisibleEntryIndexBuffers[FrameIndex].SrvBindlessIndex;
+        Data.BindlessIndices[3] = Runtime->VisibleEntryCounterBuffers[FrameIndex].SrvBindlessIndex;
+        Data.BindlessIndices[4] = Runtime->ClusterBuffer.SrvBindlessIndex;
+        Data.BindlessIndices[5] = Runtime->DrawDataBuffer.SrvBindlessIndex;
+        Data.BindlessIndices[6] = Owner->ClusterDagSceneConstantBuffers[FrameIndex].SrvBindlessIndex;
+        Data.BindlessIndices[7] = DepthIndex;
+        Data.BindlessIndices[8] = static_cast<uint32_t>(Owner->Viewport.Width);
+        Data.BindlessIndices[9] = static_cast<uint32_t>(Owner->Viewport.Height);
+        Data.BindlessIndices[10] = Data.bUseHzbReject ? Owner->Hzb->GetSrvBindlessIndex() : UINT32_MAX;
+        Data.BindlessIndices[11] = Data.bUseHzbReject ? Owner->Hzb->GetWidth() : 0u;
+        Data.BindlessIndices[12] = Data.bUseHzbReject ? Owner->Hzb->GetHeight() : 0u;
+        Data.BindlessIndices[13] = Data.bUseHzbReject ? Owner->Hzb->GetMipCount() : 0u;
+
+        Builder.WriteTexture(Data.Visibility64Handle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.ReadTexture(Data.DepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        if (Data.bUseHzbReject)
+        {
+            Data.HzbHandle = Context.Resources.Hzb.HzbHandle;
+            Builder.ReadTexture(Data.HzbHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        }
+        Builder.ReadBuffer(Data.VisibleEntryHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadBuffer(Data.SwVisibleEntryHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadBuffer(Data.VisibleEntryCounterHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadBuffer(Data.ClusterDataHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadBuffer(Data.DrawDataHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadBuffer(Data.SceneDataHandle, D3D12_RESOURCE_STATE_GENERIC_READ);
+        Builder.ReadBuffer(Data.DispatchArgsHandle, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
+        Builder.UavBarrier(Data.Visibility64Handle);
+    }, [this](const FPassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        ID3D12GraphicsCommandList* CommandList = Cmd.GetCommandList();
+        ID3D12DescriptorHeap* Heaps[] = { Owner->Device->GetBindlessDescriptorHeap() };
+        CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        CommandList->SetComputeRootSignature(SoftwareRasterRootSignature.Get());
+        CommandList->SetPipelineState(SoftwareRasterPipelines[Data.bUseHzbReject ? 1u : 0u].Get());
+        CommandList->SetComputeRoot32BitConstants(0, kSoftwareRasterBindlessDwordCount, Data.BindlessIndices, 0);
+        CommandList->ExecuteIndirect(Owner->ClusterDagRuntime->DispatchCommandSignature.Get(), 1, Data.DispatchArgsBuffer, 0u, nullptr, 0u);
+    });
+}
+
+void FClusterDagVisibilityPass::AddDepthExportPass(FDeferredPassContext& Context) const
+{
+    struct FPassData
+    {
+        bool bEnabled = false;
+        FRGResourceHandle Visibility64Handle{};
+        uint32_t Visibility64SrvIndex = UINT32_MAX;
+    };
+
+    Context.Graph.AddPass<FPassData>("ClusterDagDepthExport", [this, &Context](FPassData& Data, FRGPassBuilder& Builder)
+    {
+        Data.bEnabled = static_cast<bool>(Context.Resources.ClusterDagVisibility.Visibility64Handle);
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        Data.Visibility64Handle = Context.Resources.ClusterDagVisibility.Visibility64Handle;
+        Data.Visibility64SrvIndex = VisibilityTexture64.SrvBindlessIndex;
+        Builder.ReadTexture(Data.Visibility64Handle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Builder.WriteTexture(Context.Resources.DepthHandle, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    }, [this](const FPassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        ID3D12GraphicsCommandList* CommandList = Cmd.GetCommandList();
+        ID3D12DescriptorHeap* Heaps[] = { Owner->Device->GetBindlessDescriptorHeap() };
+        CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        CommandList->SetGraphicsRootSignature(DepthExportRootSignature.Get());
+        CommandList->SetPipelineState(DepthExportPipeline.Get());
+        CommandList->RSSetViewports(1, &Owner->Viewport);
+        CommandList->RSSetScissorRects(1, &Owner->ScissorRect);
+        CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        CommandList->SetGraphicsRoot32BitConstants(0, 1, &Data.Visibility64SrvIndex, 0);
+        const D3D12_CPU_DESCRIPTOR_HANDLE DepthHandle = Owner->GetDSVHandle();
+        CommandList->OMSetRenderTargets(0, nullptr, FALSE, &DepthHandle);
+        CommandList->DrawInstanced(3, 1, 0, 0);
+    });
+}
+
 void FClusterDagVisibilityPass::AddResolvePass(FDeferredPassContext& Context) const
 {
     struct FPassData
     {
         bool bEnabled = false;
-        FRGResourceHandle VisibilityHandle0{};
-        FRGResourceHandle VisibilityHandle1{};
+        FRGResourceHandle Visibility64Handle{};
+        FRGBufferHandle VisibleEntryHandle{};
         FRGBufferHandle DrawDataHandle{};
         FRGBufferHandle SceneDataHandle{};
-        uint32_t VisibilitySrvIndex0 = UINT32_MAX;
-        uint32_t VisibilitySrvIndex1 = UINT32_MAX;
+        uint32_t Visibility64SrvIndex = UINT32_MAX;
+        uint32_t VisibleEntrySrvIndex = UINT32_MAX;
         uint32_t DrawDataSrvIndex = UINT32_MAX;
         uint32_t SceneDataSrvIndex = UINT32_MAX;
     };
@@ -187,25 +377,23 @@ void FClusterDagVisibilityPass::AddResolvePass(FDeferredPassContext& Context) co
     Context.Graph.AddPass<FPassData>("ClusterDagResolve", [this, &Context](FPassData& Data, FRGPassBuilder& Builder)
     {
 		FClusterDagRuntime* Runtime = Owner->ClusterDagRuntime.get();
-		Data.bEnabled =
-			Context.Resources.ClusterDagVisibility.VisibilityHandle0
-			&& Context.Resources.ClusterDagVisibility.VisibilityHandle1;
+		Data.bEnabled = static_cast<bool>(Context.Resources.ClusterDagVisibility.Visibility64Handle);
         if (!Data.bEnabled)
         {
             return;
         }
 
-        Data.VisibilityHandle0 = Context.Resources.ClusterDagVisibility.VisibilityHandle0;
-        Data.VisibilityHandle1 = Context.Resources.ClusterDagVisibility.VisibilityHandle1;
+        Data.Visibility64Handle = Context.Resources.ClusterDagVisibility.Visibility64Handle;
+        Data.VisibleEntryHandle = ImportBindlessBuffer(Context.Graph, "ClusterDagResolveVisibleEntries", Runtime->VisibleEntryBuffers[Context.FrameIndex]);
         Data.DrawDataHandle = ImportBindlessBuffer(Context.Graph, "ClusterDagResolveDrawData", Runtime->DrawDataBuffer);
         Data.SceneDataHandle = ImportBindlessBuffer(Context.Graph, "ClusterDagSceneData", Owner->ClusterDagSceneConstantBuffers[Context.FrameIndex]);
-        Data.VisibilitySrvIndex0 = VisibilityTexture0.SrvBindlessIndex;
-        Data.VisibilitySrvIndex1 = VisibilityTexture1.SrvBindlessIndex;
+        Data.Visibility64SrvIndex = VisibilityTexture64.SrvBindlessIndex;
+        Data.VisibleEntrySrvIndex = Runtime->VisibleEntryBuffers[Context.FrameIndex].SrvBindlessIndex;
         Data.DrawDataSrvIndex = Runtime->DrawDataBuffer.SrvBindlessIndex;
         Data.SceneDataSrvIndex = Owner->ClusterDagSceneConstantBuffers[Context.FrameIndex].SrvBindlessIndex;
 
-        Builder.ReadTexture(Data.VisibilityHandle0, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        Builder.ReadTexture(Data.VisibilityHandle1, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(Data.Visibility64Handle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        Builder.ReadBuffer(Data.VisibleEntryHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadBuffer(Data.DrawDataHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadBuffer(Data.SceneDataHandle, D3D12_RESOURCE_STATE_GENERIC_READ);
         for (FRGResourceHandle GBufferHandle : Context.Resources.GBufferHandles)
@@ -229,10 +417,10 @@ void FClusterDagVisibilityPass::AddResolvePass(FDeferredPassContext& Context) co
         CommandList->RSSetScissorRects(1, &Owner->ScissorRect);
         CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-        const uint32_t ResolveIndices[] =
+        const uint32_t ResolveIndices[kVisibilityResolveBindlessDwordCount] =
         {
-            Data.VisibilitySrvIndex0,
-            Data.VisibilitySrvIndex1,
+            Data.Visibility64SrvIndex,
+            Data.VisibleEntrySrvIndex,
             Data.DrawDataSrvIndex,
             Data.SceneDataSrvIndex
         };
@@ -253,15 +441,12 @@ void FClusterDagVisibilityPass::AddResolvePass(FDeferredPassContext& Context) co
 
 bool FClusterDagVisibilityPass::IsReady() const
 {
-    if (!bFeatureSupported)
-    {
-        return false;
-    }
-
     return bEnabled
         && bPipelinesReady
         && bResourcesReady
         && Owner != nullptr
+        && Device != nullptr
+        && Device->SupportsAtomicInt64OnTypedResource()
         && Owner->ClusterDagRuntime != nullptr
         && Owner->ClusterDagRuntime->HasResources();
 }
@@ -270,7 +455,7 @@ bool FClusterDagVisibilityPass::CreateVisibilityRootSignature(FDX12Device* Devic
 {
     CD3DX12_ROOT_PARAMETER1 RootParams[2] = {};
     RootParams[0].InitAsConstantBufferView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE, D3D12_SHADER_VISIBILITY_ALL);
-    RootParams[1].InitAsConstants(2, 2, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[1].InitAsConstants(kVisibilityPassConstantsDwordCount, 2, 0, D3D12_SHADER_VISIBILITY_ALL);
 
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc;
     RootSigDesc.Init_1_1(
@@ -326,11 +511,7 @@ bool FClusterDagVisibilityPass::CreateVisibilityPipeline(FDX12Device* Device)
     PsoDesc.RasterizerState.DepthClipEnable = TRUE;
 
     PsoDesc.BlendState = {};
-    PsoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-    PsoDesc.BlendState.RenderTarget[1].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-    PsoDesc.NumRenderTargets = 2;
-    PsoDesc.RTVFormats[0] = GClusterDagVisibilityFormat0;
-    PsoDesc.RTVFormats[1] = GClusterDagVisibilityFormat1;
+    PsoDesc.NumRenderTargets = 0;
     PsoDesc.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
 
     PsoDesc.DepthStencilState = {};
@@ -348,10 +529,129 @@ bool FClusterDagVisibilityPass::CreateVisibilityPipeline(FDX12Device* Device)
     return true;
 }
 
+bool FClusterDagVisibilityPass::CreateSoftwareRasterPipeline(FDX12Device* Device)
+{
+    CD3DX12_ROOT_PARAMETER1 RootParams[1] = {};
+    RootParams[0].InitAsConstants(kSoftwareRasterBindlessDwordCount, 0, 0, D3D12_SHADER_VISIBILITY_ALL);
+
+    CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc;
+    RootSigDesc.Init_1_1(
+        _countof(RootParams),
+        RootParams,
+        0,
+        nullptr,
+        D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
+
+    Microsoft::WRL::ComPtr<ID3DBlob> SerializedSig;
+    Microsoft::WRL::ComPtr<ID3DBlob> ErrorBlob;
+    HR_CHECK(D3D12SerializeVersionedRootSignature(&RootSigDesc, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
+    if (ErrorBlob)
+    {
+        OutputDebugStringA(static_cast<const char*>(ErrorBlob->GetBufferPointer()));
+    }
+    HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(SoftwareRasterRootSignature.ReleaseAndGetAddressOf())));
+
+    FShaderCompiler Compiler;
+    std::vector<uint8_t> PrepareArgsByteCode;
+    if (!RendererUtils::CompileComputeShader(Compiler, Device, L"Shaders/ClusterDag/PrepareClusterDagSwRasterArgs.hlsl", PrepareArgsByteCode))
+    {
+        return false;
+    }
+
+    D3D12_COMPUTE_PIPELINE_STATE_DESC PsoDesc = {};
+    PsoDesc.pRootSignature = SoftwareRasterRootSignature.Get();
+    PsoDesc.CS = { PrepareArgsByteCode.data(), PrepareArgsByteCode.size() };
+    HR_CHECK(Device->GetDevice()->CreateComputePipelineState(&PsoDesc, IID_PPV_ARGS(PrepareSoftwareRasterArgsPipeline.ReleaseAndGetAddressOf())));
+
+    for (uint32_t HzbRejectVariant = 0; HzbRejectVariant < static_cast<uint32_t>(SoftwareRasterPipelines.size()); ++HzbRejectVariant)
+    {
+        const bool bUseHzbReject = HzbRejectVariant != 0u;
+        const std::vector<std::wstring> Defines =
+        {
+            bUseHzbReject
+                ? L"CLUSTER_DAG_SW_RASTER_HZB_REJECT=1"
+                : L"CLUSTER_DAG_SW_RASTER_HZB_REJECT=0"
+        };
+
+        std::vector<uint8_t> CsByteCode;
+        if (!RendererUtils::CompileComputeShader(Compiler, Device, L"Shaders/ClusterDag/RasterizeClusterSW.hlsl", CsByteCode, Defines))
+        {
+            return false;
+        }
+
+        PsoDesc.CS = { CsByteCode.data(), CsByteCode.size() };
+        HR_CHECK(Device->GetDevice()->CreateComputePipelineState(&PsoDesc, IID_PPV_ARGS(SoftwareRasterPipelines[HzbRejectVariant].ReleaseAndGetAddressOf())));
+    }
+    return true;
+}
+
+bool FClusterDagVisibilityPass::CreateDepthExportRootSignature(FDX12Device* Device)
+{
+    CD3DX12_ROOT_PARAMETER1 RootParams[1] = {};
+    RootParams[0].InitAsConstants(kDepthExportBindlessDwordCount, 0, 0, D3D12_SHADER_VISIBILITY_PIXEL);
+
+    CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc;
+    RootSigDesc.Init_1_1(
+        _countof(RootParams),
+        RootParams,
+        0,
+        nullptr,
+        D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+            | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
+
+    Microsoft::WRL::ComPtr<ID3DBlob> SerializedSig;
+    Microsoft::WRL::ComPtr<ID3DBlob> ErrorBlob;
+    HR_CHECK(D3D12SerializeVersionedRootSignature(&RootSigDesc, SerializedSig.GetAddressOf(), ErrorBlob.GetAddressOf()));
+    if (ErrorBlob)
+    {
+        OutputDebugStringA(static_cast<const char*>(ErrorBlob->GetBufferPointer()));
+    }
+
+    HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(DepthExportRootSignature.ReleaseAndGetAddressOf())));
+    return true;
+}
+
+bool FClusterDagVisibilityPass::CreateDepthExportPipeline(FDX12Device* Device)
+{
+    FShaderCompiler Compiler;
+    std::vector<uint8_t> VsByteCode;
+    std::vector<uint8_t> PsByteCode;
+    if (!RendererUtils::CompileVertexShader(Compiler, Device, L"Shaders/ClusterDagDepthExport.hlsl", VsByteCode))
+    {
+        return false;
+    }
+    if (!RendererUtils::CompilePixelShader(Compiler, Device, L"Shaders/ClusterDagDepthExport.hlsl", PsByteCode))
+    {
+        return false;
+    }
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
+    PsoDesc.pRootSignature = DepthExportRootSignature.Get();
+    PsoDesc.InputLayout = { nullptr, 0 };
+    PsoDesc.VS = { VsByteCode.data(), VsByteCode.size() };
+    PsoDesc.PS = { PsByteCode.data(), PsByteCode.size() };
+    PsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    PsoDesc.SampleDesc.Count = 1;
+    PsoDesc.SampleMask = UINT_MAX;
+    PsoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+    PsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    PsoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+    PsoDesc.DepthStencilState = {};
+    PsoDesc.DepthStencilState.DepthEnable = TRUE;
+    PsoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    PsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+    PsoDesc.DepthStencilState.StencilEnable = FALSE;
+    PsoDesc.NumRenderTargets = 0;
+    PsoDesc.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
+
+    HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(DepthExportPipeline.ReleaseAndGetAddressOf())));
+    return true;
+}
+
 bool FClusterDagVisibilityPass::CreateResolveRootSignature(FDX12Device* Device)
 {
     CD3DX12_ROOT_PARAMETER1 RootParams[1] = {};
-    RootParams[0].InitAsConstants(4, 0, 0, D3D12_SHADER_VISIBILITY_PIXEL);
+    RootParams[0].InitAsConstants(kVisibilityResolveBindlessDwordCount, 0, 0, D3D12_SHADER_VISIBILITY_PIXEL);
 
     CD3DX12_STATIC_SAMPLER_DESC SamplerDesc;
     SamplerDesc.Init(
@@ -466,67 +766,23 @@ bool FClusterDagVisibilityPass::CreateVisibilityResources(FDX12Device* Device, u
     {
         Width,
         Height,
-        GClusterDagVisibilityFormat0
-    };
-    const FRGTextureDesc Desc1 =
-    {
-        Width,
-        Height,
-        GClusterDagVisibilityFormat1
+        GClusterDagVisibility64Format
     };
 
-    const float ClearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-    const D3D12_CLEAR_VALUE ClearValue1 = CD3DX12_CLEAR_VALUE(Desc1.Format, ClearColor);
     CreateBindlessTexture(
         Device,
-        L"ClusterDagVisibility0",
+        L"ClusterDagVisibility64",
         Desc,
-        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
-        D3D12_RESOURCE_STATE_RENDER_TARGET,
-        VisibilityTexture0,
-        false,
-        false,
+        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        VisibilityTexture64,
+        true,
+        true,
         nullptr);
-    WriteOrCreateBindlessTextureSrv(Device, VisibilityTexture0);
-    CreateBindlessTexture(
-        Device,
-        L"ClusterDagVisibility1",
-        Desc1,
-        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
-        D3D12_RESOURCE_STATE_RENDER_TARGET,
-        VisibilityTexture1,
-        false,
-        false,
-        &ClearValue1);
-    WriteOrCreateBindlessTextureSrv(Device, VisibilityTexture1);
 
-    D3D12_DESCRIPTOR_HEAP_DESC RtvHeapDesc = {};
-    RtvHeapDesc.NumDescriptors = 2;
-    RtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    RtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-    HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&RtvHeapDesc, IID_PPV_ARGS(VisibilityRtvHeap.ReleaseAndGetAddressOf())));
-    if (VisibilityRtvHeap)
-    {
-        VisibilityRtvHeap->SetName(L"ClusterDagVisibilityRtvHeap");
-    }
-
-    const UINT DescriptorSize = Device->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-    VisibilityRtvHandles[0] = VisibilityRtvHeap->GetCPUDescriptorHandleForHeapStart();
-    VisibilityRtvHandles[1] = VisibilityRtvHandles[0];
-    VisibilityRtvHandles[1].ptr += DescriptorSize;
-
-    D3D12_RENDER_TARGET_VIEW_DESC RtvDesc = {};
-    RtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
-    RtvDesc.Format = Desc.Format;
-    Device->GetDevice()->CreateRenderTargetView(VisibilityTexture0.Get(), &RtvDesc, VisibilityRtvHandles[0]);
-    RtvDesc.Format = Desc1.Format;
-    Device->GetDevice()->CreateRenderTargetView(VisibilityTexture1.Get(), &RtvDesc, VisibilityRtvHandles[1]);
-
-    bResourcesReady = VisibilityTexture0
-        && VisibilityTexture1
-        && VisibilityRtvHeap
-        && IsValidBindlessIndex(VisibilityTexture0.SrvBindlessIndex)
-        && IsValidBindlessIndex(VisibilityTexture1.SrvBindlessIndex);
+    bResourcesReady = VisibilityTexture64
+        && IsValidBindlessIndex(VisibilityTexture64.SrvBindlessIndex)
+        && IsValidBindlessIndex(VisibilityTexture64.UavBindlessIndex);
     if (!bResourcesReady)
     {
         LogWarning("ClusterDag visibility resources are incomplete; visibility pass will remain disabled.");

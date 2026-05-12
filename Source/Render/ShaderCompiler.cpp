@@ -2,6 +2,7 @@
 
 #include "Core/Logger.h"
 #include "../Core/TaskSystem.h"
+#include "../Core/StringUtils.h"
 
 #include <cstring>
 #include <string>
@@ -11,23 +12,6 @@
 
 namespace
 {
-    std::string WStringToUtf8(const std::wstring& WStr)
-    {
-        if (WStr.empty())
-        {
-            return std::string();
-        }
-
-        int RequiredSize = WideCharToMultiByte(CP_UTF8, 0, WStr.c_str(), static_cast<int>(WStr.size()), nullptr, 0, nullptr, nullptr);
-        if (RequiredSize <= 0)
-        {
-            return std::string();
-        }
-
-        std::string Result(static_cast<size_t>(RequiredSize), '\0');
-        WideCharToMultiByte(CP_UTF8, 0, WStr.c_str(), static_cast<int>(WStr.size()), Result.data(), RequiredSize, nullptr, nullptr);
-        return Result;
-    }
 }
 
 FShaderCompiler::FShaderCompiler()
@@ -57,7 +41,7 @@ bool FShaderCompiler::CompileFromFile(
     Microsoft::WRL::ComPtr<IDxcBlobEncoding> SourceBlob;
     if (FAILED(Utils->LoadFile(FilePath.c_str(), nullptr, &SourceBlob)))
     {
-        const std::string NarrowPath = WStringToUtf8(FilePath);
+        const std::string NarrowPath = StringUtils::WideToUtf8(FilePath);
         LogError("Failed to load shader file: " + NarrowPath);
         return false;
     }
@@ -91,9 +75,9 @@ bool FShaderCompiler::CompileFromFile(
 #endif
 
     Microsoft::WRL::ComPtr<IDxcResult> CompileResult;
-    const std::string NarrowPath = WStringToUtf8(FilePath);
-    const std::string EntryPointUtf8 = WStringToUtf8(EntryPoint);
-    const std::string TargetUtf8 = WStringToUtf8(Target);
+    const std::string NarrowPath = StringUtils::WideToUtf8(FilePath);
+    const std::string EntryPointUtf8 = StringUtils::WideToUtf8(EntryPoint);
+    const std::string TargetUtf8 = StringUtils::WideToUtf8(Target);
     LogInfo("Compiling shader from file: " + NarrowPath + ", entry: " + EntryPointUtf8 + ", target: " + TargetUtf8);
 
     HRESULT hr = Compiler->Compile(&SourceBuffer, Arguments.data(), static_cast<uint32_t>(Arguments.size()), IncludeHandler.Get(), IID_PPV_ARGS(&CompileResult));
@@ -147,7 +131,7 @@ bool FShaderCompiler::CompileLibraryFromFile(
     Microsoft::WRL::ComPtr<IDxcBlobEncoding> SourceBlob;
     if (FAILED(Utils->LoadFile(FilePath.c_str(), nullptr, &SourceBlob)))
     {
-        const std::string NarrowPath = WStringToUtf8(FilePath);
+        const std::string NarrowPath = StringUtils::WideToUtf8(FilePath);
         LogError("Failed to load shader file: " + NarrowPath);
         return false;
     }
@@ -179,8 +163,8 @@ bool FShaderCompiler::CompileLibraryFromFile(
 #endif
 
     Microsoft::WRL::ComPtr<IDxcResult> CompileResult;
-    const std::string NarrowPath = WStringToUtf8(FilePath);
-    const std::string TargetUtf8 = WStringToUtf8(Target);
+    const std::string NarrowPath = StringUtils::WideToUtf8(FilePath);
+    const std::string TargetUtf8 = StringUtils::WideToUtf8(Target);
     LogInfo("Compiling shader library from file: " + NarrowPath + ", target: " + TargetUtf8);
 
     HRESULT hr = Compiler->Compile(&SourceBuffer, Arguments.data(), static_cast<uint32_t>(Arguments.size()), IncludeHandler.Get(), IID_PPV_ARGS(&CompileResult));
@@ -260,7 +244,7 @@ bool FShaderCompiler::CompileShadersParallel(std::vector<FShaderCompileRequest>&
         if (!Request.bSuccess)
         {
             bAllSuccess = false;
-            LogError("Failed to compile shader: " + WStringToUtf8(Request.FilePath));
+            LogError("Failed to compile shader: " + StringUtils::WideToUtf8(Request.FilePath));
         }
     }
 

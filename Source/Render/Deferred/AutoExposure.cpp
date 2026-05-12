@@ -12,6 +12,9 @@
 
 using Microsoft::WRL::ComPtr;
 
+constexpr uint32_t kAutoExposureConstantsDwordCount = 9;
+constexpr uint32_t kAutoExposureBindlessDwordCount  = 3;
+
 bool FAutoExposure::InitializePipelines(FDeferredRenderer& Owner, FDX12Device* Device)
 {
     (void)Owner;
@@ -116,6 +119,7 @@ void FAutoExposure::AddPass(FDeferredPassContext& Context) const
         LocalCommandList->SetPipelineState(Pipeline.Get());
         LocalCommandList->SetComputeRootSignature(RootSignature.Get());
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        static_assert(sizeof(FAutoExposureConstants) / sizeof(uint32_t) <= kAutoExposureConstantsDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(Constants) / sizeof(uint32_t), &Constants, 0);
         const uint32_t AutoExposureBindlessIndices[] =
         {
@@ -123,6 +127,7 @@ void FAutoExposure::AddPass(FDeferredPassContext& Context) const
             LuminanceTextures[Data.ReadIndex].SrvBindlessIndex,
             LuminanceTextures[Data.WriteIndex].UavBindlessIndex
         };
+        static_assert(_countof(AutoExposureBindlessIndices) <= kAutoExposureBindlessDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(1, _countof(AutoExposureBindlessIndices), AutoExposureBindlessIndices, 0);
         LocalCommandList->Dispatch(1, 1, 1);
     });
@@ -157,8 +162,8 @@ bool FAutoExposure::CreateResources(FDX12Device* Device)
 bool FAutoExposure::CreateRootSignature(FDX12Device* Device)
 {
     CD3DX12_ROOT_PARAMETER1 RootParams[2] = {};
-    RootParams[0].InitAsConstants(9, 0, 0, D3D12_SHADER_VISIBILITY_ALL);
-    RootParams[1].InitAsConstants(3, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[0].InitAsConstants(kAutoExposureConstantsDwordCount, 0, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[1].InitAsConstants(kAutoExposureBindlessDwordCount, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
 
     CD3DX12_STATIC_SAMPLER_DESC SamplerDesc;
     SamplerDesc.Init(

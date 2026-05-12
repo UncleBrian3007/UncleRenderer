@@ -62,6 +62,40 @@ float ProbabilityToSampleDiffuse(float3 diffuse, float3 specular)
     return lumDiffuse / max(lumDiffuse + lumSpecular, 0.0001f);
 }
 
+
+/*
+for each bounce:
+
+    // NEE
+    lightDir = sample_light_direction()
+    if visible(lightDir):
+        radiance += throughput / pdf
+                  * BRDF(lightDir, wo)
+                  * light
+                  * cosTheta
+
+    // BSDF bounce
+    if choose diffuse:
+        wi = sample_cosine_hemisphere()
+        throughput *= diffuseBRDF * cosTheta
+        pdf *= diffusePdf * diffuseProbability
+    else:
+        wi = sample_GGX_reflection()
+        throughput *= specularBRDF * cosTheta
+        pdf *= specularPdf * specularProbability
+
+    // trace next ray
+    if ray misses:
+        radiance += throughput / pdf * sky
+        break
+
+    // update hit info
+    position = nextPosition
+    normal   = nextNormal
+    material = nextMaterial
+    wo       = -wi
+*/
+
 [numthreads(RayQueryThreadGroupSize, RayQueryThreadGroupSize, 1)]
 void PathTracingCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 {

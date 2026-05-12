@@ -1,7 +1,8 @@
 #include "ClusterDAG.h"
 #include "Mesh.h"
-#include "PositionQemReducer.h"
+#include "MergedClusterSimplifier.h"
 #include "../Core/Logger.h"
+#include "../Core/StringUtils.h"
 
 #include <DirectXMath.h>
 #include <DirectXPackedVector.h>
@@ -29,16 +30,11 @@
 #define WITH_MESHOPTIMIZER 0
 #endif
 
-#ifndef CLUSTER_DAG_BUILD_LOGGING
-#define CLUSTER_DAG_BUILD_LOGGING 1
-#endif
-
 namespace
 {
-    constexpr uint32_t GVmeshVersion = 14;
-    constexpr uint32_t GClusterDAGBuildSemanticVersion = 2;
+    constexpr uint32_t GVmeshVersion = 15;
+    constexpr uint32_t GClusterDAGBuildSemanticVersion = 3;
     constexpr size_t GAttributeFloatCount = 5;
-    constexpr EClusterGroupReducerBackend GMeshoptScratchBackend = static_cast<EClusterGroupReducerBackend>(3);
     constexpr uint32_t GClusterDAGMinGroupSize = 8;
     constexpr uint32_t GClusterDAGMaxGroupSize = 32;
 
@@ -50,7 +46,6 @@ namespace
         uint64_t SourceFileSize = 0;
         uint64_t ParamsHash = 0;
         uint32_t MeshCount = 0;
-        uint32_t ReducerBackend = static_cast<uint32_t>(EClusterGroupReducerBackend::Meshopt);
     };
 
     struct FVmeshDagHeader
@@ -113,70 +108,11 @@ namespace
         uint32_t DistinctOwnerCount = 0;
     };
 
-    std::string BuildPrimitiveLogPrefix(size_t PrimitiveIndex)
-    {
-        std::ostringstream Stream;
-        Stream << "ClusterDAG Primitive[" << PrimitiveIndex << "]";
-        return Stream.str();
-    }
-
-    void LogPrimitiveInfo(size_t PrimitiveIndex, const std::string& Message)
-    {
-        LogInfo(BuildPrimitiveLogPrefix(PrimitiveIndex) + ": " + Message);
-    }
-
-    void LogPrimitiveWarning(size_t PrimitiveIndex, const std::string& Message)
-    {
-        LogWarning(BuildPrimitiveLogPrefix(PrimitiveIndex) + ": " + Message);
-    }
-
     std::string FormatFloat(float Value)
     {
         std::ostringstream Stream;
         Stream << std::fixed << std::setprecision(4) << Value;
         return Stream.str();
-    }
-
-    std::string ToUtf8String(const std::wstring& Wide)
-    {
-        if (Wide.empty())
-        {
-            return {};
-        }
-        return std::filesystem::path(Wide).u8string();
-    }
-
-    const char* ReducerBackendToString(EClusterGroupReducerBackend Backend)
-    {
-        if (Backend == GMeshoptScratchBackend)
-        {
-            return "MeshoptScratch";
-        }
-
-        switch (Backend)
-        {
-        case EClusterGroupReducerBackend::Auto:
-            return "Auto";
-        case EClusterGroupReducerBackend::Meshopt:
-            return "Meshopt";
-        case EClusterGroupReducerBackend::PositionQem:
-            return "PositionQem";
-        default:
-            return "Unknown";
-        }
-    }
-
-    bool IsSerializableReducerBackend(EClusterGroupReducerBackend Backend)
-    {
-        switch (Backend)
-        {
-        case EClusterGroupReducerBackend::Auto:
-        case EClusterGroupReducerBackend::Meshopt:
-        case EClusterGroupReducerBackend::PositionQem:
-            return true;
-        default:
-            return false;
-        }
     }
 
     std::string SummarizeGroupSizes(const std::vector<std::vector<uint32_t>>& ClusterGroups)
@@ -213,40 +149,7 @@ namespace
         return Stream.str();
     }
 
-#if CLUSTER_DAG_BUILD_LOGGING
-#define CLUSTER_DAG_LOG_INFO(PrimitiveIndex, StreamExpression) do { std::ostringstream Stream; Stream << StreamExpression; LogPrimitiveInfo((PrimitiveIndex), Stream.str()); } while(false)
-#define CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, StreamExpression) do { std::ostringstream Stream; Stream << StreamExpression; LogPrimitiveWarning((PrimitiveIndex), Stream.str()); } while(false)
-#else
-#define CLUSTER_DAG_LOG_INFO(PrimitiveIndex, MessageExpression) do { (void)(PrimitiveIndex); } while(false)
-#define CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, MessageExpression) do { (void)(PrimitiveIndex); } while(false)
-#endif
-
     using FAdjacencyList = std::vector<std::unordered_map<uint32_t, uint32_t>>;
-
-    struct FPositionKey
-    {
-        uint32_t X = 0;
-        uint32_t Y = 0;
-        uint32_t Z = 0;
-
-        bool operator==(const FPositionKey& Other) const
-        {
-            return X == Other.X && Y == Other.Y && Z == Other.Z;
-        }
-
-        bool operator<(const FPositionKey& Other) const
-        {
-            if (X != Other.X)
-            {
-                return X < Other.X;
-            }
-            if (Y != Other.Y)
-            {
-                return Y < Other.Y;
-            }
-            return Z < Other.Z;
-        }
-    };
 
     struct FPositionEdgeKey
     {
@@ -256,17 +159,6 @@ namespace
         bool operator==(const FPositionEdgeKey& Other) const
         {
             return A == Other.A && B == Other.B;
-        }
-    };
-
-    struct FPositionKeyHasher
-    {
-        size_t operator()(const FPositionKey& Key) const
-        {
-            size_t Hash = static_cast<size_t>(Key.X);
-            Hash ^= static_cast<size_t>(Key.Y) + 0x9e3779b9u + (Hash << 6) + (Hash >> 2);
-            Hash ^= static_cast<size_t>(Key.Z) + 0x9e3779b9u + (Hash << 6) + (Hash >> 2);
-            return Hash;
         }
     };
 
@@ -481,114 +373,6 @@ namespace
         }
     }
 
-    void EnsureVertexStreamSize(FBuilderVertexStreams& Streams)
-    {
-        const size_t VertexCount = Streams.Positions.size();
-        if (Streams.Normals.size() != VertexCount)
-        {
-            Streams.Normals.resize(VertexCount, FFloat3(0.0f, 0.0f, 1.0f));
-        }
-        if (Streams.UVs.size() != VertexCount)
-        {
-            Streams.UVs.resize(VertexCount, FFloat2(0.0f, 0.0f));
-        }
-        if (Streams.Tangents.size() != VertexCount)
-        {
-            Streams.Tangents.resize(VertexCount, FFloat4(0.0f, 0.0f, 0.0f, 1.0f));
-        }
-        if (Streams.Colors.size() != VertexCount)
-        {
-            Streams.Colors.resize(VertexCount, FFloat4(1.0f, 1.0f, 1.0f, 1.0f));
-        }
-    }
-
-#if WITH_MESHOPTIMIZER
-    void RemapBuilderStream(std::vector<FFloat3>& Stream, const std::vector<unsigned int>& Remap)
-    {
-        if (!Stream.empty())
-        {
-            meshopt_remapVertexBuffer(Stream.data(), Stream.data(), Stream.size(), sizeof(Stream[0]), Remap.data());
-        }
-    }
-
-    void RemapBuilderStream(std::vector<FFloat2>& Stream, const std::vector<unsigned int>& Remap)
-    {
-        if (!Stream.empty())
-        {
-            meshopt_remapVertexBuffer(Stream.data(), Stream.data(), Stream.size(), sizeof(Stream[0]), Remap.data());
-        }
-    }
-
-    void RemapBuilderStream(std::vector<FFloat4>& Stream, const std::vector<unsigned int>& Remap)
-    {
-        if (!Stream.empty())
-        {
-            meshopt_remapVertexBuffer(Stream.data(), Stream.data(), Stream.size(), sizeof(Stream[0]), Remap.data());
-        }
-    }
-
-    void ResizeBuilderStreams(FBuilderVertexStreams& Streams, size_t VertexCount)
-    {
-        Streams.Positions.resize(VertexCount);
-        Streams.Normals.resize(VertexCount);
-        Streams.UVs.resize(VertexCount);
-        Streams.Tangents.resize(VertexCount);
-        Streams.Colors.resize(VertexCount);
-    }
-
-    void CompactAndOptimizeGeometry(FBuilderVertexStreams& Streams, std::vector<uint32_t>& Indices)
-    {
-        EnsureVertexStreamSize(Streams);
-        if (Streams.Positions.empty() || Indices.size() < 3)
-        {
-            return;
-        }
-
-        std::vector<meshopt_Stream> MeshoptStreams;
-        MeshoptStreams.push_back({ Streams.Positions.data(), sizeof(FFloat3), sizeof(FFloat3) });
-        MeshoptStreams.push_back({ Streams.Normals.data(), sizeof(FFloat3), sizeof(FFloat3) });
-        MeshoptStreams.push_back({ Streams.UVs.data(), sizeof(FFloat2), sizeof(FFloat2) });
-        MeshoptStreams.push_back({ Streams.Tangents.data(), sizeof(FFloat4), sizeof(FFloat4) });
-        MeshoptStreams.push_back({ Streams.Colors.data(), sizeof(FFloat4), sizeof(FFloat4) });
-
-        std::vector<unsigned int> Remap(Streams.Positions.size());
-        const size_t UniqueVertexCount = meshopt_generateVertexRemapMulti(
-            Remap.data(),
-            Indices.data(),
-            Indices.size(),
-            Streams.Positions.size(),
-            MeshoptStreams.data(),
-            MeshoptStreams.size());
-
-        meshopt_remapIndexBuffer(Indices.data(), Indices.data(), Indices.size(), Remap.data());
-        RemapBuilderStream(Streams.Positions, Remap);
-        RemapBuilderStream(Streams.Normals, Remap);
-        RemapBuilderStream(Streams.UVs, Remap);
-        RemapBuilderStream(Streams.Tangents, Remap);
-        RemapBuilderStream(Streams.Colors, Remap);
-        ResizeBuilderStreams(Streams, UniqueVertexCount);
-
-        std::vector<uint32_t> CacheOptimizedIndices(Indices.size());
-        meshopt_optimizeVertexCache(CacheOptimizedIndices.data(), Indices.data(), Indices.size(), Streams.Positions.size());
-        Indices.swap(CacheOptimizedIndices);
-
-        std::vector<unsigned int> FetchRemap(Streams.Positions.size());
-        const size_t OptimizedVertexCount = meshopt_optimizeVertexFetchRemap(
-            FetchRemap.data(),
-            Indices.data(),
-            Indices.size(),
-            Streams.Positions.size());
-
-        meshopt_remapIndexBuffer(Indices.data(), Indices.data(), Indices.size(), FetchRemap.data());
-        RemapBuilderStream(Streams.Positions, FetchRemap);
-        RemapBuilderStream(Streams.Normals, FetchRemap);
-        RemapBuilderStream(Streams.UVs, FetchRemap);
-        RemapBuilderStream(Streams.Tangents, FetchRemap);
-        RemapBuilderStream(Streams.Colors, FetchRemap);
-        ResizeBuilderStreams(Streams, OptimizedVertexCount);
-    }
-#endif
-
     uint32_t AppendVertexStreams(FClusterDAG& Dag, const FBuilderVertexStreams& Streams)
     {
         const uint32_t BaseVertex = static_cast<uint32_t>(Dag.Positions.size());
@@ -668,6 +452,31 @@ namespace
         return Indices;
     }
 
+    float ComputeMaxEdgeLength(const std::vector<FFloat3>& Positions, const std::vector<uint32_t>& AbsoluteIndices)
+    {
+        float MaxEdgeLengthSq = 0.0f;
+        for (size_t Index = 0; Index + 2 < AbsoluteIndices.size(); Index += 3)
+        {
+            const uint32_t V0 = AbsoluteIndices[Index];
+            const uint32_t V1 = AbsoluteIndices[Index + 1];
+            const uint32_t V2 = AbsoluteIndices[Index + 2];
+            if (V0 >= Positions.size() || V1 >= Positions.size() || V2 >= Positions.size())
+            {
+                continue;
+            }
+
+            const FFloat3& P0 = Positions[V0];
+            const FFloat3& P1 = Positions[V1];
+            const FFloat3& P2 = Positions[V2];
+
+            MaxEdgeLengthSq = (std::max)(MaxEdgeLengthSq, VectorMath::DistanceSquared3(P0, P1));
+            MaxEdgeLengthSq = (std::max)(MaxEdgeLengthSq, VectorMath::DistanceSquared3(P1, P2));
+            MaxEdgeLengthSq = (std::max)(MaxEdgeLengthSq, VectorMath::DistanceSquared3(P2, P0));
+        }
+
+        return std::sqrt(MaxEdgeLengthSq);
+    }
+
     uint32_t AppendCluster(
         FBuildState& State,
         const std::vector<uint32_t>& AbsoluteIndices,
@@ -686,6 +495,7 @@ namespace
         Cluster.TriangleOffset = static_cast<uint32_t>(State.Dag.TriangleIndices.size());
         Cluster.TriangleCount = static_cast<uint32_t>(AbsoluteIndices.size() / 3);
         Cluster.LODError = LODError;
+        Cluster.MaxEdgeLength = ComputeMaxEdgeLength(State.Dag.Positions, AbsoluteIndices);
         Cluster.LodBoundsCenter = LodBoundsCenter;
         Cluster.LodBoundsRadius = LodBoundsRadius;
         Cluster.ExternalEdgeOffset = static_cast<uint32_t>(State.Dag.ExternalEdges.size());
@@ -983,6 +793,7 @@ namespace
             FRuntimeCluster RuntimeCluster;
             RuntimeCluster.Bounds = Cluster.Bounds;
             RuntimeCluster.LODError = Cluster.LODError;
+            RuntimeCluster.MaxEdgeLength = Cluster.MaxEdgeLength;
             RuntimeCluster.LodBoundsCenter = Cluster.LodBoundsCenter;
             RuntimeCluster.LodBoundsRadius = Cluster.LodBoundsRadius;
             RuntimeCluster.GroupIndex = Cluster.GroupIndex;
@@ -1089,7 +900,7 @@ namespace
         return (std::max)(1u, (SourceTriangleCount + ParentTriangleBudget - 1u) / ParentTriangleBudget);
     }
 
-    uint32_t ComputePositionQemMaxAllowedParentCount(uint32_t DesiredParentCount, uint32_t ChildClusterCount)
+    uint32_t ComputeMaxAllowedParentCount(uint32_t DesiredParentCount, uint32_t ChildClusterCount)
     {
         if (DesiredParentCount == 0u || ChildClusterCount <= 1u)
         {
@@ -1129,16 +940,6 @@ namespace
             ClusterRefs.emplace_back(ClusterIndex);
         }
         return ClusterRefs;
-    }
-
-    FPositionKey MakePositionKey(const FFloat3& Position)
-    {
-        FPositionKey Key;
-        static_assert(sizeof(float) == sizeof(uint32_t));
-        std::memcpy(&Key.X, &Position.x, sizeof(uint32_t));
-        std::memcpy(&Key.Y, &Position.y, sizeof(uint32_t));
-        std::memcpy(&Key.Z, &Position.z, sizeof(uint32_t));
-        return Key;
     }
 
     FPositionEdgeKey MakeUndirectedPositionEdgeKey(const FFloat3& A, const FFloat3& B)
@@ -1392,7 +1193,7 @@ namespace
             return false;
         }
 
-        CompactAndOptimizeGeometry(OutStreams, OutIndices);
+        CompactAndOptimizeBuilderGeometry(OutStreams, OutIndices);
         return !OutStreams.Positions.empty() && OutIndices.size() >= 3;
     }
 
@@ -1479,7 +1280,7 @@ namespace
         }
     }
 
-    bool SimplifyGroupGeometry(
+    bool SimplifyGroupGeometryWithAttributes(
         size_t PrimitiveIndex,
         uint32_t Level,
         size_t GroupOrdinal,
@@ -1500,7 +1301,7 @@ namespace
         OutIndices.clear();
         if (SourceStreams.Positions.empty() || SourceIndices.size() < 6)
         {
-            CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " SimplifyGroupGeometry skipped" << ", reason=insufficient_input" << ", vertices=" << SourceStreams.Positions.size() << ", indices=" << SourceIndices.size());
+            CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " SimplifyGroupGeometryWithAttributes skipped" << ", reason=insufficient_input" << ", vertices=" << SourceStreams.Positions.size() << ", indices=" << SourceIndices.size());
             return false;
         }
 
@@ -1527,18 +1328,15 @@ namespace
         const uint32_t MinimumTargetClusterTriangles = (std::max)(1u, Params.MaxClusterTriangles / 2u);
         if (DesiredParentCount == 0u || InitialTargetClusterTriangles == 0u)
         {
-            CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " SimplifyGroupGeometry skipped" << ", reason=invalid_parent_budget" << ", sourceTriangles=" << SourceTriangleCount << ", desiredParents=" << DesiredParentCount << ", targetClusterTriangles=" << InitialTargetClusterTriangles);
+            CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " SimplifyGroupGeometryWithAttributes skipped" << ", reason=invalid_parent_budget" << ", sourceTriangles=" << SourceTriangleCount << ", desiredParents=" << DesiredParentCount << ", targetClusterTriangles=" << InitialTargetClusterTriangles);
             return false;
         }
 
         std::vector<float> Attributes;
         BuildAttributeStream(SourceStreams, Attributes);
         const std::array<float, GAttributeFloatCount> AttributeWeights = {
-            Params.AttributeNormalWeight,
-            Params.AttributeNormalWeight,
-            Params.AttributeNormalWeight,
-            Params.AttributeUVWeight,
-            Params.AttributeUVWeight
+            0.5f, 0.5f, 0.5f,
+            1.0f, 1.0f
         };
         const std::vector<unsigned char> VertexLocks =
             SourceVertexLocks.size() == SourceStreams.Positions.size()
@@ -1590,7 +1388,7 @@ namespace
                 SimplifiedIndices.resize(SimplifiedIndexCount);
                 FBuilderVertexStreams CandidateStreams = SourceStreams;
                 std::vector<uint32_t> CandidateIndices = std::move(SimplifiedIndices);
-                CompactAndOptimizeGeometry(CandidateStreams, CandidateIndices);
+                CompactAndOptimizeBuilderGeometry(CandidateStreams, CandidateIndices);
 
                 if (CandidateIndices.size() >= 3 && CandidateIndices.size() < SourceIndexCount)
                 {
@@ -1632,7 +1430,7 @@ namespace
         return bValidOutput;
     }
 
-    bool SimplifyGroupGeometryWithMeshoptScratch(
+    bool SimplifyGroupGeometryPositionOnly(
         size_t PrimitiveIndex,
         uint32_t Level,
         size_t GroupOrdinal,
@@ -1655,7 +1453,7 @@ namespace
 
         if (!Scratch.IsValid())
         {
-            CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " MeshoptScratchReducer skipped" << ", reason=invalid_scratch");
+            CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " SimplifyGroupGeometryPositionOnly skipped" << ", reason=invalid_scratch");
             return false;
         }
 
@@ -1666,7 +1464,7 @@ namespace
         const uint32_t MinimumTargetClusterTriangles = (std::max)(1u, (std::min)(Params.MaxClusterTriangles / 2u, FlatShadedVertexBoundTriangles));
         if (DesiredParentCount == 0u || MaxAllowedParentCount == 0u || InitialTargetClusterTriangles == 0u)
         {
-            CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " MeshoptScratchReducer skipped" << ", reason=invalid_parent_budget" << ", sourceTriangles=" << SourceTriangleCount << ", desiredParents=" << DesiredParentCount << ", maxAllowedParents=" << MaxAllowedParentCount << ", targetClusterTriangles=" << InitialTargetClusterTriangles);
+            CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " SimplifyGroupGeometryPositionOnly skipped" << ", reason=invalid_parent_budget" << ", sourceTriangles=" << SourceTriangleCount << ", desiredParents=" << DesiredParentCount << ", maxAllowedParents=" << MaxAllowedParentCount << ", targetClusterTriangles=" << InitialTargetClusterTriangles);
             return false;
         }
 
@@ -1788,171 +1586,7 @@ namespace
         return false;
     }
 
-    bool SimplifyGroupGeometryWithPositionQem(
-        size_t PrimitiveIndex,
-        uint32_t Level,
-        size_t GroupOrdinal,
-        const FClusterDAG& Dag,
-        const FMergedClusterScratch& Scratch,
-        const FClusterDAGBuildParams& Params,
-        uint32_t DesiredParentCount,
-        uint32_t MaxAllowedParentCount,
-        uint32_t ChildClusterCount,
-        bool bAllowExternalPenaltyCollapses,
-        FBuilderVertexStreams& OutStreams,
-        std::vector<uint32_t>& OutIndices,
-        float& OutResultError,
-        uint32_t& OutPredictedParentCount)
-    {
-        OutStreams = {};
-        OutIndices.clear();
-        OutResultError = 0.0f;
-        OutPredictedParentCount = 0;
-
-        if (!Scratch.IsValid())
-        {
-            CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " PositionQemReducer skipped" << ", reason=invalid_scratch");
-            return false;
-        }
-
-        const uint32_t SourceTriangleCount = Scratch.ActiveTriangleCount;
-        const uint32_t SourcePositionCount = static_cast<uint32_t>(Scratch.PositionNodes.size());
-        const uint32_t InitialTargetClusterTriangles = Params.MaxClusterTriangles > 2u ? Params.MaxClusterTriangles - 2u : Params.MaxClusterTriangles;
-        const uint32_t FlatShadedVertexBoundTriangles = (std::max)(1u, Params.MaxClusterVertices / 3u);
-        const uint32_t MinimumTargetClusterTriangles = (std::max)(1u, (std::min)(Params.MaxClusterTriangles / 2u, FlatShadedVertexBoundTriangles));
-        if (DesiredParentCount == 0u || InitialTargetClusterTriangles == 0u)
-        {
-            CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " PositionQemReducer skipped" << ", reason=invalid_parent_budget" << ", sourceTriangles=" << SourceTriangleCount << ", desiredParents=" << DesiredParentCount << ", maxAllowedParents=" << MaxAllowedParentCount << ", targetClusterTriangles=" << InitialTargetClusterTriangles);
-            return false;
-        }
-
-        uint32_t AttemptCount = 0;
-        uint32_t FinalTargetClusterTriangles = InitialTargetClusterTriangles;
-        uint32_t LastCandidateEdges = 0;
-        uint32_t LastAcceptedCollapses = 0;
-        uint32_t LastOutputTriangles = SourceTriangleCount;
-        uint32_t LastPredictedParentCount = 0;
-        uint32_t LastOutputPositions = SourcePositionCount;
-        uint32_t LastActiveTriangles = SourceTriangleCount;
-        uint32_t LastTargetTriangles = 0;
-        uint32_t LastDynamicEdges = 0;
-        uint32_t LastCandidateCount = 0;
-        uint32_t LastFilteredExternalEdges = 0;
-        uint32_t LastFilteredInvalidEdges = 0;
-        uint32_t LastFilteredLockedEdges = 0;
-        uint32_t LastSolveFailedEdges = 0;
-        uint32_t LastLockedCandidates = 0;
-        uint32_t LastPenaltyCandidates = 0;
-        uint32_t LastRejectInvalidNodes = 0;
-        uint32_t LastRejectDegenerates = 0;
-        uint32_t LastRejectNormalFlips = 0;
-        std::string LastFailureReason = "no_attempt";
-
-        uint32_t TargetClusterTriangles = InitialTargetClusterTriangles;
-        FBuilderVertexStreams PendingStreams;
-        std::vector<uint32_t> PendingIndices;
-        float PendingResultError = 0.0f;
-        uint32_t PendingPredictedParentCount = 0;
-        uint32_t PendingOutputPositions = 0;
-        uint32_t PendingOutputTriangles = 0;
-        uint32_t PendingTargetClusterTriangles = 0;
-        uint32_t PendingLockedPositionCount = 0;
-        uint32_t PendingCandidateEdges = 0;
-        uint32_t PendingAcceptedCollapses = 0;
-        bool bHasPendingActualParentCheck = false;
-
-        while (TargetClusterTriangles > 0u)
-        {
-            ++AttemptCount;
-            FinalTargetClusterTriangles = TargetClusterTriangles;
-
-            FPositionQemReducerInput Input;
-            Input.DesiredParentCount = DesiredParentCount;
-            Input.MaxAllowedParentCount = MaxAllowedParentCount;
-            Input.TargetClusterTriangles = TargetClusterTriangles;
-            Input.MaxClusterVertices = Params.MaxClusterVertices;
-            Input.MaxClusterTriangles = Params.MaxClusterTriangles;
-            Input.ConeWeight = Params.ConeWeight;
-            Input.bAllowExternalPenaltyCollapses = bAllowExternalPenaltyCollapses;
-
-            FPositionQemReducerResult Result;
-            const bool bReduced = ReduceMergedClusterWithPositionQem(Dag, Scratch, Input, Result);
-            OutResultError = Result.ResultError;
-            LastCandidateEdges = Result.CandidateEdgeCount;
-            LastAcceptedCollapses = Result.AcceptedCollapseCount;
-            LastOutputTriangles = Result.OutputTriangleCount;
-            LastPredictedParentCount = Result.PredictedParentCount;
-            LastOutputPositions = Result.OutputPositionCount;
-            LastActiveTriangles = Result.LastActiveTriangleCount;
-            LastTargetTriangles = Result.LastTargetTriangleCount;
-            LastDynamicEdges = Result.LastDynamicEdgeCount;
-            LastCandidateCount = Result.LastCandidateCount;
-            LastFilteredExternalEdges = Result.LastFilteredExternalEdgeCount;
-            LastFilteredInvalidEdges = Result.LastFilteredInvalidEdgeCount;
-            LastFilteredLockedEdges = Result.LastFilteredLockedEdgeCount;
-            LastSolveFailedEdges = Result.LastSolveFailedCount;
-            LastLockedCandidates = Result.LastLockedCandidateCount;
-            LastPenaltyCandidates = Result.LastPenaltyCandidateCount;
-            LastRejectInvalidNodes = Result.LastRejectInvalidNodeCount;
-            LastRejectDegenerates = Result.LastRejectDegenerateCount;
-            LastRejectNormalFlips = Result.LastRejectNormalFlipCount;
-            LastFailureReason = Result.FailureReason.empty() ? "unknown" : Result.FailureReason;
-
-            if (IsReducerOutputCandidate(
-                bReduced,
-                Result.bValidOutput,
-                SourceTriangleCount,
-                Result.OutputTriangleCount,
-                Result.PredictedParentCount,
-                ChildClusterCount,
-                LastFailureReason))
-            {
-                if (Result.bValidOutput)
-                {
-                    OutStreams = std::move(Result.Streams);
-                    OutIndices = std::move(Result.Indices);
-                    OutPredictedParentCount = Result.PredictedParentCount;
-                    CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " PositionQemReducer" << ", srcPositions=" << SourcePositionCount << ", srcTriangles=" << SourceTriangleCount << ", outputPositions=" << LastOutputPositions << ", outputTriangles=" << LastOutputTriangles << ", desiredParents=" << DesiredParentCount << ", maxAllowedParents=" << MaxAllowedParentCount << ", predictedParents=" << OutPredictedParentCount << ", targetClusterTriangles=" << FinalTargetClusterTriangles << ", lockedPositions=" << Scratch.LockedPositionCount << ", candidateEdges=" << LastCandidateEdges << ", acceptedCollapses=" << LastAcceptedCollapses << ", attempts=" << AttemptCount << ", externalPenalty=" << (bAllowExternalPenaltyCollapses ? "true" : "false") << ", resultError=" << FormatFloat(OutResultError) << ", validOutput=true");
-                    return true;
-                }
-
-                PendingStreams = std::move(Result.Streams);
-                PendingIndices = std::move(Result.Indices);
-                PendingResultError = OutResultError;
-                PendingPredictedParentCount = Result.PredictedParentCount;
-                PendingOutputPositions = LastOutputPositions;
-                PendingOutputTriangles = LastOutputTriangles;
-                PendingTargetClusterTriangles = FinalTargetClusterTriangles;
-                PendingLockedPositionCount = Scratch.LockedPositionCount;
-                PendingCandidateEdges = LastCandidateEdges;
-                PendingAcceptedCollapses = LastAcceptedCollapses;
-                bHasPendingActualParentCheck = true;
-            }
-
-            if (TargetClusterTriangles <= MinimumTargetClusterTriangles)
-            {
-                break;
-            }
-
-            TargetClusterTriangles -= 2u;
-        }
-
-        if (bHasPendingActualParentCheck)
-        {
-            OutStreams = std::move(PendingStreams);
-            OutIndices = std::move(PendingIndices);
-            OutResultError = PendingResultError;
-            OutPredictedParentCount = PendingPredictedParentCount;
-            CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " PositionQemReducer" << ", srcPositions=" << SourcePositionCount << ", srcTriangles=" << SourceTriangleCount << ", outputPositions=" << PendingOutputPositions << ", outputTriangles=" << PendingOutputTriangles << ", desiredParents=" << DesiredParentCount << ", maxAllowedParents=" << MaxAllowedParentCount << ", predictedParents=" << OutPredictedParentCount << ", targetClusterTriangles=" << PendingTargetClusterTriangles << ", lockedPositions=" << PendingLockedPositionCount << ", candidateEdges=" << PendingCandidateEdges << ", acceptedCollapses=" << PendingAcceptedCollapses << ", attempts=" << AttemptCount << ", externalPenalty=" << (bAllowExternalPenaltyCollapses ? "true" : "false") << ", resultError=" << FormatFloat(OutResultError) << ", validOutput=pending_actual_parent_count");
-            return true;
-        }
-
-        OutPredictedParentCount = LastPredictedParentCount;
-        CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " PositionQemReducer failed" << ", srcPositions=" << SourcePositionCount << ", srcTriangles=" << SourceTriangleCount << ", desiredParents=" << DesiredParentCount << ", maxAllowedParents=" << MaxAllowedParentCount << ", targetClusterTriangles=" << FinalTargetClusterTriangles << ", activeTriangles=" << LastActiveTriangles << ", targetTriangles=" << LastTargetTriangles << ", lockedPositions=" << Scratch.LockedPositionCount << ", dynamicEdges=" << LastDynamicEdges << ", candidateEdges=" << LastCandidateEdges << ", lastCandidateEdges=" << LastCandidateCount << ", lockedCandidates=" << LastLockedCandidates << ", penaltyCandidates=" << LastPenaltyCandidates << ", filteredExternalEdges=" << LastFilteredExternalEdges << ", filteredInvalidEdges=" << LastFilteredInvalidEdges << ", filteredLockedEdges=" << LastFilteredLockedEdges << ", solveFailedEdges=" << LastSolveFailedEdges << ", rejectInvalidNodes=" << LastRejectInvalidNodes << ", rejectDegenerate=" << LastRejectDegenerates << ", rejectNormalFlip=" << LastRejectNormalFlips << ", acceptedCollapses=" << LastAcceptedCollapses << ", outputPositions=" << LastOutputPositions << ", outputTriangles=" << LastOutputTriangles << ", predictedParents=" << LastPredictedParentCount << ", attempts=" << AttemptCount << ", externalPenalty=" << (bAllowExternalPenaltyCollapses ? "true" : "false") << ", resultError=" << FormatFloat(OutResultError) << ", reason=" << LastFailureReason);
-        return false;
-    }
-
-    bool ReduceGroupGeometryWithBackend(
+    bool SimplifyMergedClusterGroup(
         size_t PrimitiveIndex,
         uint32_t Level,
         size_t GroupOrdinal,
@@ -1966,105 +1600,60 @@ namespace
         FBuilderVertexStreams& OutStreams,
         std::vector<uint32_t>& OutIndices,
         float& OutResultError,
-        uint32_t& OutPredictedParentCount,
-        EClusterGroupReducerBackend& OutBackendUsed)
+        uint32_t& OutPredictedParentCount)
     {
         OutStreams = {};
         OutIndices.clear();
         OutResultError = 0.0f;
         OutPredictedParentCount = 0;
-        OutBackendUsed = Params.ReducerBackend;
 
-        auto AttemptMeshopt = [&]() -> bool
+        FBuilderVertexStreams SourceStreams;
+        std::vector<uint32_t> SourceIndices;
+        std::vector<unsigned char> SourceVertexLocks;
+        if (EmitMergedClusterGeometry(Dag, Scratch, SourceStreams, SourceIndices, &SourceVertexLocks))
         {
-            FBuilderVertexStreams SourceStreams;
-            std::vector<uint32_t> SourceIndices;
-            std::vector<unsigned char> SourceVertexLocks;
-            if (EmitMergedClusterGeometry(Dag, Scratch, SourceStreams, SourceIndices, &SourceVertexLocks))
-            {
-                OutBackendUsed = EClusterGroupReducerBackend::Meshopt;
-                if (SimplifyGroupGeometry(
-                    PrimitiveIndex,
-                    Level,
-                    GroupOrdinal,
-                    SourceStreams,
-                    SourceIndices,
-                    SourceVertexLocks,
-                    Params,
-                    DesiredParentCount,
-                    static_cast<uint32_t>(ChildClusters.size()),
-                    OutStreams,
-                    OutIndices,
-                    OutResultError,
-                    OutPredictedParentCount))
-                {
-                    return true;
-                }
-            }
-            else
-            {
-                CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " meshopt source emission failed" << ", childClusters=" << ChildClusters.size() << ", fallback=MeshoptScratch");
-            }
-
-            OutStreams = {};
-            OutIndices.clear();
-            OutResultError = 0.0f;
-            OutPredictedParentCount = 0;
-            OutBackendUsed = GMeshoptScratchBackend;
-            return SimplifyGroupGeometryWithMeshoptScratch(
+            if (SimplifyGroupGeometryWithAttributes(
                 PrimitiveIndex,
                 Level,
                 GroupOrdinal,
-                Dag,
-                Scratch,
+                SourceStreams,
+                SourceIndices,
+                SourceVertexLocks,
                 Params,
                 DesiredParentCount,
-                MaxAllowedParentCount,
                 static_cast<uint32_t>(ChildClusters.size()),
-                bAllowExternalPenaltyCollapses,
                 OutStreams,
                 OutIndices,
                 OutResultError,
-                OutPredictedParentCount);
-        };
-
-        auto AttemptPositionQem = [&]() -> bool
+                OutPredictedParentCount))
+            {
+                return true;
+            }
+        }
+        else
         {
-            return SimplifyGroupGeometryWithPositionQem(
-                PrimitiveIndex,
-                Level,
-                GroupOrdinal,
-                Dag,
-                Scratch,
-                Params,
-                DesiredParentCount,
-                MaxAllowedParentCount,
-                static_cast<uint32_t>(ChildClusters.size()),
-                bAllowExternalPenaltyCollapses,
-                OutStreams,
-                OutIndices,
-                OutResultError,
-                OutPredictedParentCount);
-        };
-
-        if (Params.ReducerBackend == EClusterGroupReducerBackend::Meshopt)
-        {
-            OutBackendUsed = EClusterGroupReducerBackend::Meshopt;
-            return AttemptMeshopt();
+            CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " meshopt source emission failed" << ", childClusters=" << ChildClusters.size() << ", fallback=MeshoptScratch");
         }
 
-        if (Params.ReducerBackend == EClusterGroupReducerBackend::PositionQem)
-        {
-            OutBackendUsed = EClusterGroupReducerBackend::PositionQem;
-            return AttemptPositionQem();
-        }
-
-        if (AttemptMeshopt())
-        {
-            return true;
-        }
-
-        return false;
+        OutStreams = {};
+        OutIndices.clear();
+        OutResultError = 0.0f;
+        OutPredictedParentCount = 0;
+        return SimplifyGroupGeometryPositionOnly(
+            PrimitiveIndex,
+            Level,
+            GroupOrdinal,
+            Dag,
+            Scratch,
+            Params,
+            DesiredParentCount,
+            MaxAllowedParentCount,
+            static_cast<uint32_t>(ChildClusters.size()),
+            bAllowExternalPenaltyCollapses,
+            OutStreams,
+            OutIndices,
+            OutResultError,
+            OutPredictedParentCount);
     }
 #endif
 
@@ -2292,7 +1881,7 @@ namespace
         OutDag = {};
 
 #if WITH_MESHOPTIMIZER
-        CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "start" << ", vertices=" << Primitive.VertexStreams.Positions.size() << ", indices=" << Primitive.Indices.size() << ", triangles=" << (Primitive.Indices.size() / 3) << ", params{maxVerts=" << Params.MaxClusterVertices << ", maxTris=" << Params.MaxClusterTriangles << ", targetGroupSize=" << Params.TargetGroupSize << ", simplifyRatio=" << FormatFloat(Params.SimplifyRatio) << ", maxLevels=" << Params.MaxLevels << ", reducer=" << ReducerBackendToString(Params.ReducerBackend) << "}");
+        CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "start" << ", vertices=" << Primitive.VertexStreams.Positions.size() << ", indices=" << Primitive.Indices.size() << ", triangles=" << (Primitive.Indices.size() / 3) << ", params{maxVerts=" << Params.MaxClusterVertices << ", maxTris=" << Params.MaxClusterTriangles << ", targetGroupSize=" << Params.TargetGroupSize << ", simplifyRatio=" << FormatFloat(Params.SimplifyRatio) << ", maxLevels=" << Params.MaxLevels << "}");
 
         if (Primitive.VertexStreams.Positions.empty() || Primitive.Indices.size() < 3 || (Primitive.Indices.size() % 3) != 0)
         {
@@ -2307,7 +1896,7 @@ namespace
         BaseStreams.Tangents = Primitive.VertexStreams.Tangents;
         BaseStreams.Colors = Primitive.VertexStreams.Colors;
         std::vector<uint32_t> BaseIndices = Primitive.Indices;
-        CompactAndOptimizeGeometry(BaseStreams, BaseIndices);
+        CompactAndOptimizeBuilderGeometry(BaseStreams, BaseIndices);
         CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "CompactAndOptimizeGeometry" << ", vertices=" << BaseStreams.Positions.size() << ", indices=" << BaseIndices.size() << ", triangles=" << (BaseIndices.size() / 3));
 
         if (BaseStreams.Positions.empty() || BaseIndices.size() < 3)
@@ -2416,7 +2005,18 @@ namespace
 
                 CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "Level " << Level << " meshopt_partitionClusters" << ", inputClusters=" << CurrentClusters.size() << ", targetGroupSize=" << Params.TargetGroupSize << ", partitionCount=" << PartitionCount << ", " << SummarizeGroupSizes(ClusterGroups));
 
-                MergeSmallPartitions(PrimitiveIndex, Level, State.Dag, CurrentClusters, ComputeClusterAdjacency(State.Dag, CurrentClusters), Params.TargetGroupSize, ClusterGroups);
+                const uint32_t MinGroupSize = (std::min)(GClusterDAGMinGroupSize, (std::max)(2u, Params.TargetGroupSize));
+                const bool bNeedsMerge = ClusterGroups.size() > 1 &&
+                    std::any_of(ClusterGroups.begin(), ClusterGroups.end(),
+                        [MinGroupSize](const std::vector<uint32_t>& Group)
+                        {
+                            return !Group.empty() && Group.size() < MinGroupSize;
+                        });
+                if (bNeedsMerge)
+                {
+                    MergeSmallPartitions(PrimitiveIndex, Level, State.Dag, CurrentClusters,
+                        ComputeClusterAdjacency(State.Dag, CurrentClusters), Params.TargetGroupSize, ClusterGroups);
+                }
             }
 
             std::vector<uint32_t> NextClusters;
@@ -2440,7 +2040,7 @@ namespace
 
                 const uint32_t SourceTriangleCount = Scratch.ActiveTriangleCount;
                 const uint32_t DesiredParentCount = ComputeDesiredParentCount(SourceTriangleCount, Params);
-                const uint32_t MaxAllowedParentCount = ComputePositionQemMaxAllowedParentCount(DesiredParentCount, static_cast<uint32_t>(ChildClusters.size()));
+                const uint32_t MaxAllowedParentCount = ComputeMaxAllowedParentCount(DesiredParentCount, static_cast<uint32_t>(ChildClusters.size()));
                 const bool bAllowExternalPenaltyCollapses =
                     ClusterGroups.size() == 1u &&
                     ChildClusters.size() == CurrentClusters.size();
@@ -2448,8 +2048,7 @@ namespace
                 std::vector<uint32_t> ReducedGroupIndices;
                 float SimplifyError = 0.0f;
                 uint32_t PredictedParentCount = 0;
-                EClusterGroupReducerBackend BackendUsed = Params.ReducerBackend;
-                const bool bSimplified = ReduceGroupGeometryWithBackend(
+                const bool bSimplified = SimplifyMergedClusterGroup(
                     PrimitiveIndex,
                     Level,
                     GroupOrdinal,
@@ -2463,14 +2062,13 @@ namespace
                     ReducedGroupStreams,
                     ReducedGroupIndices,
                     SimplifyError,
-                    PredictedParentCount,
-                    BackendUsed);
+                    PredictedParentCount);
                 const bool bGroupReduced = bSimplified && (ReducedGroupIndices.size() / 3) < SourceTriangleCount;
                 bReducedAnyGroup = bReducedAnyGroup || bGroupReduced;
 
                 if (!bGroupReduced)
                 {
-                    CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " reduction failed after retries" << ", backend=" << ReducerBackendToString(BackendUsed) << ", childClusters=" << ChildClusters.size() << ", sourceTriangles=" << SourceTriangleCount << ", desiredParents=" << DesiredParentCount << ", maxAllowedParents=" << MaxAllowedParentCount << ", predictedParents=" << PredictedParentCount << ", simplifyError=" << FormatFloat(SimplifyError));
+                    CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " reduction failed after retries" << ", childClusters=" << ChildClusters.size() << ", sourceTriangles=" << SourceTriangleCount << ", desiredParents=" << DesiredParentCount << ", maxAllowedParents=" << MaxAllowedParentCount << ", predictedParents=" << PredictedParentCount << ", simplifyError=" << FormatFloat(SimplifyError));
                     return false;
                 }
 
@@ -2550,7 +2148,7 @@ namespace
                 }
 
                 NextClusters.insert(NextClusters.end(), ParentClusters.begin(), ParentClusters.end());
-                CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " result" << ", backend=" << ReducerBackendToString(BackendUsed) << ", childClusters=" << ChildClusters.size() << ", desiredParents=" << DesiredParentCount << ", maxAllowedParents=" << ParentBudgetForValidation << ", predictedParents=" << PredictedParentCount << ", parentClusters=" << ParentClusters.size() << ", outputTriangles=" << (GroupIndices.size() / 3) << ", simplifyError=" << FormatFloat(SimplifyError) << ", relativeError=" << FormatFloat(ComputeRelativeError(SimplifyError, GroupSphere.Radius)) << ", childMaxError=" << FormatFloat(ChildMaxError) << ", parentError=" << FormatFloat(Group.ParentLODError) << ", lodRadius=" << FormatFloat(GroupSphere.Radius));
+                CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " result" << ", childClusters=" << ChildClusters.size() << ", desiredParents=" << DesiredParentCount << ", maxAllowedParents=" << ParentBudgetForValidation << ", predictedParents=" << PredictedParentCount << ", parentClusters=" << ParentClusters.size() << ", outputTriangles=" << (GroupIndices.size() / 3) << ", simplifyError=" << FormatFloat(SimplifyError) << ", relativeError=" << FormatFloat(ComputeRelativeError(SimplifyError, GroupSphere.Radius)) << ", childMaxError=" << FormatFloat(ChildMaxError) << ", parentError=" << FormatFloat(Group.ParentLODError) << ", lodRadius=" << FormatFloat(GroupSphere.Radius));
                 ++GroupOrdinal;
             }
 
@@ -2977,12 +2575,6 @@ bool LoadClusterDAGCacheFile(
         return false;
     }
 
-    const EClusterGroupReducerBackend StoredReducerBackend = static_cast<EClusterGroupReducerBackend>(Header.ReducerBackend);
-    if (!IsSerializableReducerBackend(StoredReducerBackend))
-    {
-        return false;
-    }
-
     OutMeshClusterDAGs.resize(Header.MeshCount);
     for (uint32_t MeshIndex = 0; MeshIndex < Header.MeshCount; ++MeshIndex)
     {
@@ -3093,9 +2685,7 @@ bool LoadClusterDAGCacheFile(
     }
 
     LogInfo("Cluster DAG cache metadata loaded: path="
-        + ToUtf8String(CacheFilePath)
-        + ", reducer="
-        + ReducerBackendToString(StoredReducerBackend)
+        + StringUtils::WideToUtf8(CacheFilePath)
         + ", meshes="
         + std::to_string(Header.MeshCount));
 
@@ -3120,7 +2710,6 @@ bool SaveClusterDAGCacheFile(
     Header.SourceFileSize = SourceFileSize;
     Header.ParamsHash = HashClusterDAGBuildParams(Params);
     Header.MeshCount = static_cast<uint32_t>(MeshClusterDAGs.size());
-    Header.ReducerBackend = static_cast<uint32_t>(Params.ReducerBackend);
 
     const std::filesystem::path TargetPath(CacheFilePath);
     const std::filesystem::path TempPath = TargetPath.wstring() + L".tmp";
@@ -3257,9 +2846,7 @@ bool SaveClusterDAGCacheFile(
     }
 
     LogInfo("Cluster DAG cache metadata saved: path="
-        + ToUtf8String(CacheFilePath)
-        + ", reducer="
-        + ReducerBackendToString(Params.ReducerBackend)
+        + StringUtils::WideToUtf8(CacheFilePath)
         + ", meshes="
         + std::to_string(Header.MeshCount));
 

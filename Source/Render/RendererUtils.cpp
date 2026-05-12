@@ -393,6 +393,18 @@ bool RendererUtils::CompileComputeShader(
 
 bool RendererUtils::CompileComputeShader(
     FShaderCompiler& Compiler,
+    FDX12Device* Device,
+    const std::wstring& ShaderPath,
+    const std::wstring& EntryPoint,
+    std::vector<uint8_t>& OutByteCode,
+    const std::vector<std::wstring>& Defines)
+{
+    const std::wstring CSTarget = BuildShaderTarget(L"cs", Device->GetShaderModel());
+    return Compiler.CompileFromFile(ShaderPath, EntryPoint, CSTarget, OutByteCode, Defines);
+}
+
+bool RendererUtils::CompileComputeShader(
+    FShaderCompiler& Compiler,
     const std::wstring& Target,
     const std::wstring& ShaderPath,
     std::vector<uint8_t>& OutByteCode,
@@ -865,5 +877,6 @@ uint32_t RendererUtils::BuildPipelineKey(const FSceneModelResource& Model)
     const uint32_t UseSkinning = (IsValidBindlessIndex(Model.BoneMatrixBindlessIndex) && Model.BoneMatrixCount > 0) ? 1u : 0u;
     const uint32_t UseDoubleSided = Model.bDoubleSided ? 1u : 0u;
     return (UseNormal) | (UseMr << 1) | (UseBase << 2) | (UseEmissive << 3) | (UseAlphaMask << 4)
-        | (UseSheenModel << 5) | (UseClearcoatModel << 6) | (UseAnisotropyModel << 7) | (UseSkinning << 8) | (UseDoubleSided << 9);
+        | (UseSheenModel << 5) | (UseClearcoatModel << 6) | (UseAnisotropyModel << 7)
+        | (UseSkinning << GPipelineKeySkinningBit) | (UseDoubleSided << GPipelineKeyDoubleSidedBit);
 }

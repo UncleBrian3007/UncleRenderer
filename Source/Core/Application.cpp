@@ -3,6 +3,7 @@
 #include "EngineTime.h"
 #include "ImGuiSupport.h"
 #include "Logger.h"
+#include "StringUtils.h"
 #include "../RHI/DX12DeviceRemoved.h"
 #include "GpuDebugMarkers.h"
 #include "TaskSystem.h"
@@ -45,12 +46,6 @@ extern "C"
 
 namespace
 {
-    std::string PathToUtf8String(const std::wstring& Path)
-    {
-        const auto Utf8 = std::filesystem::path(Path).u8string();
-        return std::string(Utf8.begin(), Utf8.end());
-    }
-
     std::filesystem::path GetRendererConfigPath()
     {
         return std::filesystem::current_path() / "bin/RendererConfig.ini";
@@ -1256,7 +1251,7 @@ bool FApplication::ReloadScene(const std::wstring& ScenePath)
     UpdateRendererLighting();
     ApplySceneCameraFromJson(ScenePath);
 
-    LogInfo("Scene reloaded from: " + PathToUtf8String(ScenePath));
+    LogInfo("Scene reloaded from: " + StringUtils::WideToUtf8(ScenePath));
     return true;
 }
 
@@ -1284,7 +1279,7 @@ void FApplication::StartAsyncSceneReload(const std::wstring& ScenePath)
         }
         if (!ReloadScene(ScenePath))
         {
-            LogError("Failed to reload scene: " + PathToUtf8String(ScenePath));
+            LogError("Failed to reload scene: " + StringUtils::WideToUtf8(ScenePath));
         }
         return;
     }
@@ -1292,7 +1287,7 @@ void FApplication::StartAsyncSceneReload(const std::wstring& ScenePath)
     bool bExpected = false;
     if (!bAsyncSceneLoadInProgress.compare_exchange_strong(bExpected, true, std::memory_order_acq_rel))
     {
-        LogWarning("Async scene reload already in progress, keeping pending request for: " + PathToUtf8String(ScenePath));
+        LogWarning("Async scene reload already in progress, keeping pending request for: " + StringUtils::WideToUtf8(ScenePath));
         PendingScenePath = ScenePath;
         return;
     }
@@ -1303,7 +1298,7 @@ void FApplication::StartAsyncSceneReload(const std::wstring& ScenePath)
         Device->GetGraphicsQueue()->Flush();
     }
 
-    LogInfo("Starting async scene reload: " + PathToUtf8String(ScenePath));
+    LogInfo("Starting async scene reload: " + StringUtils::WideToUtf8(ScenePath));
     const auto StartTime = std::chrono::high_resolution_clock::now();
 
     AsyncScenePath = ScenePath;
@@ -1417,7 +1412,7 @@ void FApplication::CompleteAsyncSceneReload()
     UpdateRendererLighting();
     ApplySceneCameraFromJson(AsyncScenePath);
 
-    LogInfo("Scene swapped to: " + PathToUtf8String(AsyncScenePath));
+    LogInfo("Scene swapped to: " + StringUtils::WideToUtf8(AsyncScenePath));
     
     // Clean up
     AsyncForwardRenderer.reset();
@@ -1450,7 +1445,7 @@ std::wstring FApplication::OpenSceneFileDialog(const std::wstring& InitialDirect
     InitialPath = std::filesystem::absolute(InitialPath, ErrorCode);
     if (ErrorCode)
     {
-        LogWarning("Failed to resolve absolute scene directory: " + PathToUtf8String(InitialPath));
+        LogWarning("Failed to resolve absolute scene directory: " + StringUtils::WideToUtf8(InitialPath));
     }
 
     std::wstring InitialPathWStr = InitialPath.wstring();
@@ -1465,7 +1460,7 @@ std::wstring FApplication::OpenSceneFileDialog(const std::wstring& InitialDirect
     std::filesystem::current_path(OriginalWorkingDir, RestoreError);
     if (RestoreError)
     {
-        LogWarning("Failed to restore working directory after file dialog: " + PathToUtf8String(OriginalWorkingDir));
+        LogWarning("Failed to restore working directory after file dialog: " + StringUtils::WideToUtf8(OriginalWorkingDir));
     }
 
     if (bDialogAccepted == TRUE)
@@ -1749,7 +1744,7 @@ void FApplication::RenderUI()
         }
 
         ImGui::Separator();
-        const std::string ScenePathUtf8 = PathToUtf8String(CurrentScenePath);
+        const std::string ScenePathUtf8 = StringUtils::WideToUtf8(CurrentScenePath);
         ImGui::TextWrapped("Scene: %s", ScenePathUtf8.c_str());
         if (ImGui::Button("Load Scene"))
         {
@@ -2248,6 +2243,43 @@ void FApplication::RenderUI()
                         RendererConfig.bEnableClusterDAGVisibilityBuffer ? "true" : "false");
 					SyncDeferredClusterDagConfig();
 				}
+
+                bool bClusterDagForceSoftwareRaster = RendererConfig.bEnableClusterDAGForceSoftwareRaster;
+                if (ImGui::Checkbox("Cluster DAG Force SW Raster", &bClusterDagForceSoftwareRaster))
+                {
+                    RendererConfig.bEnableClusterDAGForceSoftwareRaster = bClusterDagForceSoftwareRaster;
+                    UpsertConfigValue(
+                        GetRendererConfigPath(),
+                        "ClusterDAGForceSoftwareRaster",
+                        RendererConfig.bEnableClusterDAGForceSoftwareRaster ? "true" : "false");
+                    SyncDeferredClusterDagConfig();
+                }
+
+                ImGui::SetNextItemWidth(160.0f);
+                float ClusterDagSwRasterThresholdPixels = RendererConfig.ClusterDAGSwRasterThresholdPixels;
+                if (ImGui::SliderFloat("Cluster DAG SW Edge Pixels", &ClusterDagSwRasterThresholdPixels, 0.0f, 64.0f, "%.1f"))
+                {
+                    RendererConfig.ClusterDAGSwRasterThresholdPixels = (std::max)(0.0f, ClusterDagSwRasterThresholdPixels);
+                    SyncDeferredClusterDagConfig();
+                }
+                if (ImGui::IsItemDeactivatedAfterEdit())
+                {
+                    UpsertConfigValue(
+                        GetRendererConfigPath(),
+                        "ClusterDAGSwRasterThresholdPixels",
+                        std::to_string(RendererConfig.ClusterDAGSwRasterThresholdPixels));
+                }
+
+                bool bClusterDagSwRasterHzbReject = RendererConfig.bEnableClusterDAGSwRasterHzbReject;
+                if (ImGui::Checkbox("Cluster DAG SW HZB Reject", &bClusterDagSwRasterHzbReject))
+                {
+                    RendererConfig.bEnableClusterDAGSwRasterHzbReject = bClusterDagSwRasterHzbReject;
+                    UpsertConfigValue(
+                        GetRendererConfigPath(),
+                        "ClusterDAGSwRasterHzbReject",
+                        RendererConfig.bEnableClusterDAGSwRasterHzbReject ? "true" : "false");
+                    SyncDeferredClusterDagConfig();
+                }
 
 				bool bClusterDagForceMip = RendererConfig.bEnableClusterDAGForceMip;
 				if (ImGui::Checkbox("Cluster DAG Force Mip", &bClusterDagForceMip))

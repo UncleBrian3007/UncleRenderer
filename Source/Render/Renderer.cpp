@@ -20,6 +20,8 @@
 #include <cmath>
 #include <string>
 
+constexpr uint32_t kSkinningConstantsDwordCount = 6;
+
 
 
 
@@ -581,6 +583,7 @@ void FRenderer::DispatchGpuCulling(
     DispatchConfig.Mode = static_cast<uint32_t>(Mode);
     DispatchConfig.bGpuDebugPrintEnabled = GpuDebugState.IsPrintEnabled();
     DispatchConfig.ClusterDagTargetErrorPixels = GetClusterDagTargetErrorPixels();
+    DispatchConfig.ClusterDagSwRasterThresholdPixels = GetClusterDagSwRasterThresholdPixels();
     DispatchConfig.ViewportHeightPixels = Viewport.Height;
     DispatchConfig.ClusterDagVisibleRootCount = GetClusterDagVisibleRootCount();
     DispatchConfig.bClusterDagForceMipEnabled = IsClusterDagForceMipEnabled();
@@ -820,6 +823,7 @@ void FRenderer::DispatchSkinning(FDX12CommandContext& CmdContext, const DirectX:
             Model.BoneMatrixBindlessIndex,
             Model.SkinnedPositionUavBindlessIndex
         };
+        static_assert(_countof(Constants) <= kSkinningConstantsDwordCount);
         CommandList->SetComputeRoot32BitConstants(0, _countof(Constants), Constants, 0);
 
         const uint32_t DispatchCount = (VertexCount + 63) / 64;
@@ -1304,7 +1308,7 @@ bool FRenderer::CreateCullingPipelines(FDX12Device* Device)
 bool FRenderer::CreateSkinningPipeline(FDX12Device* Device)
 {
     CD3DX12_ROOT_PARAMETER1 RootParams[1] = {};
-    RootParams[0].InitAsConstants(6, 0, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[0].InitAsConstants(kSkinningConstantsDwordCount, 0, 0, D3D12_SHADER_VISIBILITY_ALL);
 
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC VersionedRootDesc;
     VersionedRootDesc.Init_1_1(_countof(RootParams), RootParams, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);

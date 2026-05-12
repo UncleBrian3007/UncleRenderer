@@ -100,6 +100,7 @@ public:
     bool IsClusterDagDebugEnabled() const override;
     EClusterDAGTraversalMode GetClusterDagTraversalMode() const override;
     float GetClusterDagTargetErrorPixels() const override;
+    float GetClusterDagSwRasterThresholdPixels() const override;
     bool IsClusterDagForceMipEnabled() const override;
     uint32_t GetClusterDagForceMipLevel() const override;
     bool IsClusterDagForceMipSkipFrustumCull() const override;

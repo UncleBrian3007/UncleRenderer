@@ -22,6 +22,19 @@ namespace
     constexpr uint32_t SsrPipelineHwFallbackBit = 4u;
     constexpr uint32_t SsrPipelineHzbFullResDepthBit = 8u;
 
+    constexpr uint32_t kSsrTraceConstantsDwordCount              = 15;
+    constexpr uint32_t kSsrTraceBindlessDwordCount               = 9;
+    constexpr uint32_t kSsrDenoiseConstantsDwordCount            = 4;
+    constexpr uint32_t kSsrDenoiseBindlessDwordCount             = 5;
+    constexpr uint32_t kSsrRayGatherConstantsDwordCount          = 11;
+    constexpr uint32_t kSsrRayGatherBindlessDwordCount           = 6;
+    constexpr uint32_t kSsrSwTraceConstantsDwordCount            = 13;
+    constexpr uint32_t kSsrSwTraceBindlessDwordCount             = 10;
+    constexpr uint32_t kSsrBuildIndirectArgsConstantsDwordCount  = 2;
+    constexpr uint32_t kSsrBuildIndirectArgsBindlessDwordCount   = 2;
+    constexpr uint32_t kSsrResolveConstantsDwordCount            = 5;
+    constexpr uint32_t kSsrResolveBindlessDwordCount             = 6;
+
     uint32_t BuildSsrPipelineIndex(bool bUseHzb, bool bUseRefine, bool bUseSwSsr, bool bUseHzbFullResDepth)
     {
         uint32_t PipelineIndex = 0u;
@@ -186,9 +199,9 @@ bool FSsr::CreateSsrRootSignature(FDX12Device* Device)
     // RootParams[0]: Scene constants (b0), used in Shaders/SsrSWTracePS.hlsl PSMain
     RootParams[0].InitAsConstantBufferView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE, D3D12_SHADER_VISIBILITY_PIXEL);
     // RootParams[1]: SSR constants (b1), used in Shaders/SsrSWTracePS.hlsl PSMain
-    RootParams[1].InitAsConstants(15, 1, 0, D3D12_SHADER_VISIBILITY_PIXEL);
+    RootParams[1].InitAsConstants(kSsrTraceConstantsDwordCount, 1, 0, D3D12_SHADER_VISIBILITY_PIXEL);
     // RootParams[2]: SSR bindless indices (b2), used in Shaders/SsrSWTracePS.hlsl PSMain
-    RootParams[2].InitAsConstants(9, 2, 0, D3D12_SHADER_VISIBILITY_PIXEL);
+    RootParams[2].InitAsConstants(kSsrTraceBindlessDwordCount, 2, 0, D3D12_SHADER_VISIBILITY_PIXEL);
 
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc;
     RootSigDesc.Init_1_1(_countof(RootParams), RootParams, 0, nullptr,
@@ -345,8 +358,8 @@ bool FSsr::EnsureSsrGraphicsPipelineOrFail(FDX12Device* Device, uint32_t Pipelin
 bool FSsr::CreateSsrDenoiseRootSignature(FDX12Device* Device)
 {
     CD3DX12_ROOT_PARAMETER1 RootParams[2] = {};
-    RootParams[0].InitAsConstants(4, 0, 0, D3D12_SHADER_VISIBILITY_PIXEL);
-    RootParams[1].InitAsConstants(5, 1, 0, D3D12_SHADER_VISIBILITY_PIXEL);
+    RootParams[0].InitAsConstants(kSsrDenoiseConstantsDwordCount, 0, 0, D3D12_SHADER_VISIBILITY_PIXEL);
+    RootParams[1].InitAsConstants(kSsrDenoiseBindlessDwordCount, 1, 0, D3D12_SHADER_VISIBILITY_PIXEL);
 
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc;
     RootSigDesc.Init_1_1(_countof(RootParams), RootParams, 0, nullptr,
@@ -416,8 +429,8 @@ bool FSsr::CreateSsrRayGatherRootSignature(FDX12Device* Device)
 {
     CD3DX12_ROOT_PARAMETER1 RootParams[3] = {};
     RootParams[0].InitAsConstantBufferView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE, D3D12_SHADER_VISIBILITY_ALL);
-    RootParams[1].InitAsConstants(11, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
-    RootParams[2].InitAsConstants(6, 2, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[1].InitAsConstants(kSsrRayGatherConstantsDwordCount, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[2].InitAsConstants(kSsrRayGatherBindlessDwordCount, 2, 0, D3D12_SHADER_VISIBILITY_ALL);
 
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc;
     RootSigDesc.Init_1_1(_countof(RootParams), RootParams, 0, nullptr,
@@ -458,8 +471,8 @@ bool FSsr::CreateSsrSwTraceRootSignature(FDX12Device* Device)
 {
     CD3DX12_ROOT_PARAMETER1 RootParams[3] = {};
     RootParams[0].InitAsConstantBufferView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE, D3D12_SHADER_VISIBILITY_ALL);
-    RootParams[1].InitAsConstants(13, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
-    RootParams[2].InitAsConstants(10, 2, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[1].InitAsConstants(kSsrSwTraceConstantsDwordCount, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[2].InitAsConstants(kSsrSwTraceBindlessDwordCount, 2, 0, D3D12_SHADER_VISIBILITY_ALL);
 
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc;
     RootSigDesc.Init_1_1(_countof(RootParams), RootParams, 0, nullptr,
@@ -578,8 +591,8 @@ bool FSsr::EnsureSsrSwTracePipelineOrFail(FDX12Device* Device, uint32_t Pipeline
 bool FSsr::CreateSsrBuildIndirectArgsRootSignature(FDX12Device* Device)
 {
     CD3DX12_ROOT_PARAMETER1 RootParams[2] = {};
-    RootParams[0].InitAsConstants(2, 0, 0, D3D12_SHADER_VISIBILITY_ALL);
-    RootParams[1].InitAsConstants(2, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[0].InitAsConstants(kSsrBuildIndirectArgsConstantsDwordCount, 0, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[1].InitAsConstants(kSsrBuildIndirectArgsBindlessDwordCount, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
 
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc;
     RootSigDesc.Init_1_1(_countof(RootParams), RootParams, 0, nullptr,
@@ -619,8 +632,8 @@ bool FSsr::CreateSsrBuildIndirectArgsPipeline(FDX12Device* Device)
 bool FSsr::CreateSsrResolveRootSignature(FDX12Device* Device)
 {
     CD3DX12_ROOT_PARAMETER1 RootParams[2] = {};
-    RootParams[0].InitAsConstants(5, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
-    RootParams[1].InitAsConstants(6, 2, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[0].InitAsConstants(kSsrResolveConstantsDwordCount, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[1].InitAsConstants(kSsrResolveBindlessDwordCount, 2, 0, D3D12_SHADER_VISIBILITY_ALL);
 
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc;
     RootSigDesc.Init_1_1(_countof(RootParams), RootParams, 0, nullptr,
@@ -986,6 +999,7 @@ void FSsr::AddSsrRayGatherPass(FDeferredPassContext& Context)
             LocalFrameIndex & 3u,
             0u
         };
+        static_assert(sizeof(FSsrRayGatherConstants) / sizeof(uint32_t) <= kSsrRayGatherConstantsDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(1, sizeof(FSsrRayGatherConstants) / sizeof(uint32_t), &Constants, 0);
 
         const uint32_t BindlessIndices[] =
@@ -997,6 +1011,7 @@ void FSsr::AddSsrRayGatherPass(FDeferredPassContext& Context)
             RayListUavIndex,
             Owner.Device->GetPointClampSamplerIndex()
         };
+        static_assert(_countof(BindlessIndices) <= kSsrRayGatherBindlessDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(2, _countof(BindlessIndices), BindlessIndices, 0);
 
         const uint32_t DispatchX = (Constants.OutputWidth + 7u) / 8u;
@@ -1080,9 +1095,11 @@ void FSsr::AddSsrBuildIndirectArgsPass(FDeferredPassContext& Context, bool bHwMi
 
         constexpr uint32_t ThreadGroupSizeX = 64u;
         const uint32_t Constants[] = { ThreadGroupSizeX, SsrMaxRayCount };
+        static_assert(_countof(Constants) <= kSsrBuildIndirectArgsConstantsDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(0, _countof(Constants), Constants, 0);
 
         const uint32_t BindlessIndices[] = { RayCounterSrvIndex, IndirectArgsUavIndex };
+        static_assert(_countof(BindlessIndices) <= kSsrBuildIndirectArgsBindlessDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
 
         LocalCommandList->Dispatch(1, 1, 1);
@@ -1250,6 +1267,7 @@ Cmd.GetCommandList()->ResourceBarrier(1, &UavBarrier);
             Data.bUseHzb ? 1u : 0u,
             SsrMaxRayCount
         };
+        static_assert(sizeof(FSsrSwTraceConstants) / sizeof(uint32_t) <= kSsrSwTraceConstantsDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(1, sizeof(FSsrSwTraceConstants) / sizeof(uint32_t), &Constants, 0);
 
         const uint32_t SceneColorIndex = Data.bUseHistory && Owner.Taa
@@ -1274,6 +1292,7 @@ Cmd.GetCommandList()->ResourceBarrier(1, &UavBarrier);
             Owner.Device->GetPointClampSamplerIndex(),
             Owner.Device->GetLinearClampSamplerIndex()
         };
+        static_assert(_countof(BindlessIndices) <= kSsrSwTraceBindlessDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(2, _countof(BindlessIndices), BindlessIndices, 0);
 
         LocalCommandList->ExecuteIndirect(SsrDispatchCommandSignature.Get(), 1, IndirectArgsBuffer, 0, nullptr, 0);
@@ -1509,6 +1528,7 @@ void FSsr::AddSsrResolvePass(FDeferredPassContext& Context)
             1.0f,
             0.5f
         };
+        static_assert(sizeof(FSsrResolveConstants) / sizeof(uint32_t) <= kSsrResolveConstantsDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(FSsrResolveConstants) / sizeof(uint32_t), &Constants, 0);
 
         const uint32_t BindlessIndices[] =
@@ -1520,6 +1540,7 @@ void FSsr::AddSsrResolvePass(FDeferredPassContext& Context)
             Owner.LinearDepthTexture.SrvBindlessIndex,
             Owner.Device->GetPointClampSamplerIndex()
         };
+        static_assert(_countof(BindlessIndices) <= kSsrResolveBindlessDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
 
         const uint32_t DispatchX = (Constants.OutputWidth + 7u) / 8u;
@@ -1683,6 +1704,7 @@ void FSsr::AddSsrPass(FDeferredPassContext& Context)
             Data.bUseHzb ? 1u : 0u,
             bSsrHwEnabled ? 1u : 0u
         };
+        static_assert(sizeof(FSsrConstants) / sizeof(uint32_t) <= kSsrTraceConstantsDwordCount);
         LocalCommandList->SetGraphicsRoot32BitConstants(1, sizeof(FSsrConstants) / sizeof(uint32_t), &SsrConstants, 0);
 
         const uint32_t HzbIndex = IsValidBindlessIndex(Owner.Hzb->GetSrvBindlessIndex()) ? Owner.Hzb->GetSrvBindlessIndex() : Owner.LinearDepthTexture.SrvBindlessIndex;
@@ -1698,6 +1720,7 @@ void FSsr::AddSsrPass(FDeferredPassContext& Context)
             RayCounterUavIndex,
             RayListUavIndex
         };
+        static_assert(_countof(SsrBindlessIndices) <= kSsrTraceBindlessDwordCount);
         LocalCommandList->SetGraphicsRoot32BitConstants(2, _countof(SsrBindlessIndices), SsrBindlessIndices, 0);
 
         LocalCommandList->DrawInstanced(3, 1, 0, 0);
@@ -1950,6 +1973,7 @@ void FSsr::AddSsrDenoisePass(FDeferredPassContext& Context, FRGResourceHandle In
             0.5f,
             32.0f
         };
+        static_assert(sizeof(FSsrDenoiseConstants) / sizeof(uint32_t) <= kSsrDenoiseConstantsDwordCount);
         LocalCommandList->SetGraphicsRoot32BitConstants(0, sizeof(FSsrDenoiseConstants) / sizeof(uint32_t), &Constants, 0);
 
         const uint32_t DenoiseBindlessIndices[] =
@@ -1960,6 +1984,7 @@ void FSsr::AddSsrDenoisePass(FDeferredPassContext& Context, FRGResourceHandle In
             Owner.Device->GetPointClampSamplerIndex(),
             Owner.Device->GetLinearClampSamplerIndex()
         };
+        static_assert(_countof(DenoiseBindlessIndices) <= kSsrDenoiseBindlessDwordCount);
         LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(DenoiseBindlessIndices), DenoiseBindlessIndices, 0);
 
         LocalCommandList->DrawInstanced(3, 1, 0, 0);

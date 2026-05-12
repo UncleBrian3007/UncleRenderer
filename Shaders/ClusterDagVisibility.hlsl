@@ -15,6 +15,8 @@ cbuffer ClusterDagVisibilityDrawConstants : register(b2)
 {
     uint DrawIndexStart;
     uint DrawDataIndex;
+    uint Visibility64UavIndex;
+    uint DrawDataVisibleEntryIndex;
 };
 
 VSOutput ClusterDagVisibilityVS(VSInput Input)
@@ -34,18 +36,23 @@ VSOutput ClusterDagVisibilityVS(VSInput Input)
     return Output;
 }
 
-struct PSOutput
+[earlydepthstencil]
+void ClusterDagVisibilityPS(
+    float4 Position : SV_Position,
+    uint PrimitiveId : SV_PrimitiveID)
 {
-    uint2 Visibility : SV_Target0;
-    float2 Barycentrics : SV_Target1;
-};
+    StructuredBuffer<uint> DrawDataVisibleEntries = ResourceDescriptorHeap[DrawDataVisibleEntryIndex];
+    RWTexture2D<uint64_t> Visibility64 = ResourceDescriptorHeap[Visibility64UavIndex];
 
-PSOutput ClusterDagVisibilityPS(
-    uint PrimitiveId : SV_PrimitiveID,
-    float3 Barycentrics : SV_Barycentrics)
-{
-    PSOutput Output;
-    Output.Visibility = uint2(DrawDataIndex + 1u, PrimitiveId);
-    Output.Barycentrics = Barycentrics.yz;
-    return Output;
+    const uint visibleEntryIndex = DrawDataVisibleEntries[DrawDataIndex];
+    if (visibleEntryIndex == 0xffffffffu || PrimitiveId >= 128u)
+    {
+        return;
+    }
+
+    const uint pixelValue = ((visibleEntryIndex + 1u) << 7u) | PrimitiveId;
+    const uint depthInt = asuint(saturate(Position.z));
+    const uint64_t packedPixel = (uint64_t(depthInt) << 32u) | uint64_t(pixelValue);
+    uint64_t previousValue = 0u;
+    InterlockedMax(Visibility64[uint2(Position.xy)], packedPixel, previousValue);
 }

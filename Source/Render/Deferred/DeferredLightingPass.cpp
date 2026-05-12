@@ -16,6 +16,11 @@
 
 namespace
 {
+    constexpr uint32_t kLightingPassBindlessDwordCount          = 14;
+    constexpr uint32_t kLightingPassConstantsDwordCount         = 7;
+    constexpr uint32_t kLinearDepthBindlessDwordCount           = 1;
+    constexpr uint32_t kExtractHalfDepthConstantsDwordCount     = 4;
+
     enum class ECompositeDiffuseSource : uint32_t
     {
         Environment = 0,
@@ -122,9 +127,9 @@ bool FDeferredLightingPass::CreateLightingRootSignature(FDX12Device* Device)
     // RootParams[0]: Lighting constants (b0), used in Shaders/DeferredLighting.hlsl PSMain
     RootParams[0].InitAsConstantBufferView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE, D3D12_SHADER_VISIBILITY_ALL);
     // RootParams[1]: Lighting bindless indices (b1), used in Shaders/DeferredLighting.hlsl PSMain
-    RootParams[1].InitAsConstants(14, 1, 0, D3D12_SHADER_VISIBILITY_PIXEL);
+    RootParams[1].InitAsConstants(kLightingPassBindlessDwordCount, 1, 0, D3D12_SHADER_VISIBILITY_PIXEL);
     // RootParams[2]: Deferred lighting visualization/constants (b2), used in lighting pixel shaders
-    RootParams[2].InitAsConstants(7, 2, 0, D3D12_SHADER_VISIBILITY_PIXEL);
+    RootParams[2].InitAsConstants(kLightingPassConstantsDwordCount, 2, 0, D3D12_SHADER_VISIBILITY_PIXEL);
 
     CD3DX12_STATIC_SAMPLER_DESC Samplers[3];
     CD3DX12_STATIC_SAMPLER_DESC::Init(Samplers[0], 0,
@@ -176,7 +181,7 @@ bool FDeferredLightingPass::CreateLinearDepthRootSignature(FDX12Device* Device)
     // RootParams[0]: Linear depth constants (b0), used in Shaders/LinearDepth.hlsl VSMain and PSMain
     RootParams[0].InitAsConstantBufferView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE, D3D12_SHADER_VISIBILITY_ALL);
     // RootParams[1]: Depth bindless index (b1), used in Shaders/LinearDepth.hlsl PSMain
-    RootParams[1].InitAsConstants(1, 1, 0, D3D12_SHADER_VISIBILITY_PIXEL);
+    RootParams[1].InitAsConstants(kLinearDepthBindlessDwordCount, 1, 0, D3D12_SHADER_VISIBILITY_PIXEL);
 
     CD3DX12_STATIC_SAMPLER_DESC SamplerDesc;
     SamplerDesc.Init(
@@ -272,7 +277,7 @@ bool FDeferredLightingPass::CreateExtractHalfDepthNormalRootSignature(FDX12Devic
 
     FDeferredRenderer& Renderer = *Owner;
     CD3DX12_ROOT_PARAMETER1 RootParams[1] = {};
-    RootParams[0].InitAsConstants(4, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[0].InitAsConstants(kExtractHalfDepthConstantsDwordCount, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
 
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc;
     RootSigDesc.Init_1_1(_countof(RootParams), RootParams, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
@@ -536,6 +541,7 @@ void FDeferredLightingPass::AddLinearDepthPass(FDeferredPassContext& Context) co
             ? 0u
             : (Owner.GetFrameIndex() % static_cast<uint32_t>(Owner.DepthBindlessIndices.size()));
         const uint32_t DepthBindlessIndex = Owner.DepthBindlessIndices.empty() ? UINT32_MAX : Owner.DepthBindlessIndices[DepthIndex];
+        static_assert(1u <= kLinearDepthBindlessDwordCount);
         LocalCommandList->SetGraphicsRoot32BitConstant(1, DepthBindlessIndex, 0);
 
         LocalCommandList->DrawInstanced(3, 1, 0, 0);
@@ -603,6 +609,7 @@ void FDeferredLightingPass::AddExtractHalfDepthNormalPass(FDeferredPassContext& 
             HalfDepthNormalUavBindlessIndex,
             SequenceFrame
         };
+        static_assert(_countof(Constants) <= kExtractHalfDepthConstantsDwordCount);
         CommandList->SetComputeRoot32BitConstants(0, _countof(Constants), Constants, 0);
 
         const uint32_t HalfWidth = (static_cast<uint32_t>(Owner.Viewport.Width) + 1u) / 2u;
@@ -721,6 +728,7 @@ void FDeferredLightingPass::AddDirectLightingPass(FDeferredPassContext& Context,
             UINT32_MAX,
             UINT32_MAX
         };
+        static_assert(_countof(LightingBindlessIndices) <= kLightingPassBindlessDwordCount);
         LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(LightingBindlessIndices), LightingBindlessIndices, 0);
 
         struct FDeferredLightingConstants
@@ -747,6 +755,7 @@ void FDeferredLightingPass::AddDirectLightingPass(FDeferredPassContext& Context,
             0u
         };
         (void)EffectiveRestirGIIntensity;
+        static_assert(sizeof(FDeferredLightingConstants) / sizeof(uint32_t) <= kLightingPassConstantsDwordCount);
         LocalCommandList->SetGraphicsRoot32BitConstants(2, sizeof(FDeferredLightingConstants) / sizeof(uint32_t), &DeferredLightingConstants, 0);
 
         LocalCommandList->DrawInstanced(3, 1, 0, 0);
@@ -876,6 +885,7 @@ void FDeferredLightingPass::AddCompositeLightPass(FDeferredPassContext& Context,
             SsrFallbackIndex,
             Owner.DirectLightingBindlessIndex
         };
+        static_assert(_countof(LightingBindlessIndices) <= kLightingPassBindlessDwordCount);
         LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(LightingBindlessIndices), LightingBindlessIndices, 0);
 
         struct FDeferredLightingConstants
@@ -902,6 +912,7 @@ void FDeferredLightingPass::AddCompositeLightPass(FDeferredPassContext& Context,
             0u
         };
         (void)EffectiveRestirGIIntensity;
+        static_assert(sizeof(FDeferredLightingConstants) / sizeof(uint32_t) <= kLightingPassConstantsDwordCount);
         LocalCommandList->SetGraphicsRoot32BitConstants(2, sizeof(FDeferredLightingConstants) / sizeof(uint32_t), &DeferredLightingConstants, 0);
 
         LocalCommandList->DrawInstanced(3, 1, 0, 0);

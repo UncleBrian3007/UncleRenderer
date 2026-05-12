@@ -2,6 +2,7 @@
 #include "Mesh.h"
 #include "../Core/Logger.h"
 #include "../Core/RendererConfig.h"
+#include "../Core/StringUtils.h"
 
 #ifdef _MSC_VER
 #pragma warning (disable : 4996)
@@ -11,69 +12,13 @@
 #include "../../ThirdParty/cgltf/cgltf.h"
 
 #include <algorithm>
-#include <array>
 #include <cstdint>
 #include <filesystem>
-#include <Windows.h>
 #include <string>
 #include <vector>
 
 namespace
 {
-    using FMatrix4 = std::array<float, 16>;
-
-    std::string ToUtf8String(const std::wstring& Wide)
-    {
-        if (Wide.empty())
-        {
-            return {};
-        }
-
-        const int RequiredSize = ::WideCharToMultiByte(
-            CP_UTF8,
-            0,
-            Wide.c_str(),
-            static_cast<int>(Wide.size()),
-            nullptr,
-            0,
-            nullptr,
-            nullptr);
-
-        if (RequiredSize <= 0)
-        {
-            return {};
-        }
-
-        std::string Result(static_cast<size_t>(RequiredSize), '\0');
-        ::WideCharToMultiByte(
-            CP_UTF8,
-            0,
-            Wide.c_str(),
-            static_cast<int>(Wide.size()),
-            Result.data(),
-            RequiredSize,
-            nullptr,
-            nullptr);
-
-        return Result;
-    }
-
-    FMatrix4 MakeMirrorZMatrix()
-    {
-        return { 1.0f, 0.0f,  0.0f, 0.0f,
-                 0.0f, 1.0f,  0.0f, 0.0f,
-                 0.0f, 0.0f, -1.0f, 0.0f,
-                 0.0f, 0.0f,  0.0f, 1.0f };
-    }
-
-    FMatrix4 MakeIdentityMatrix()
-    {
-        return { 1.0f, 0.0f, 0.0f, 0.0f,
-                 0.0f, 1.0f, 0.0f, 0.0f,
-                 0.0f, 0.0f, 1.0f, 0.0f,
-                 0.0f, 0.0f, 0.0f, 1.0f };
-    }
-
     std::wstring GetClusterDAGCachePath(const std::wstring& SourceFilePath)
     {
         std::filesystem::path CachePath(SourceFilePath);
@@ -116,82 +61,8 @@ namespace
         std::filesystem::remove(std::filesystem::path(CacheFilePath), ErrorCode);
         if (ErrorCode)
         {
-            LogWarning("Failed to remove Cluster DAG cache: " + ToUtf8String(CacheFilePath));
+            LogWarning("Failed to remove Cluster DAG cache: " + StringUtils::WideToUtf8(CacheFilePath));
         }
-    }
-
-    FMatrix4 MultiplyMatrix(const FMatrix4& A, const FMatrix4& B)
-    {
-        FMatrix4 Result{};
-        for (int Col = 0; Col < 4; ++Col)
-        {
-            for (int Row = 0; Row < 4; ++Row)
-            {
-                float Sum = 0.0f;
-                for (int k = 0; k < 4; ++k)
-                {
-                    Sum += A[k * 4 + Row] * B[Col * 4 + k];
-                }
-                Result[Col * 4 + Row] = Sum;
-            }
-        }
-        return Result;
-    }
-
-    FMatrix4 MatrixFromQuaternion(float x, float y, float z, float w)
-    {
-        const float xx = x * x;
-        const float yy = y * y;
-        const float zz = z * z;
-        const float xy = x * y;
-        const float xz = x * z;
-        const float yz = y * z;
-        const float wx = w * x;
-        const float wy = w * y;
-        const float wz = w * z;
-
-        return {
-            1.0f - 2.0f * (yy + zz), 2.0f * (xy + wz),       2.0f * (xz - wy),       0.0f,
-            2.0f * (xy - wz),       1.0f - 2.0f * (xx + zz), 2.0f * (yz + wx),       0.0f,
-            2.0f * (xz + wy),       2.0f * (yz - wx),       1.0f - 2.0f * (xx + yy), 0.0f,
-            0.0f,                   0.0f,                   0.0f,                   1.0f
-        };
-    }
-
-    FMatrix4 MatrixFromTRS(const FFloat3& Translation, const FFloat4& Rotation, const FFloat3& Scale)
-    {
-        const FMatrix4 T = { 1.0f, 0.0f, 0.0f, 0.0f,
-                             0.0f, 1.0f, 0.0f, 0.0f,
-                             0.0f, 0.0f, 1.0f, 0.0f,
-                             Translation.x, Translation.y, Translation.z, 1.0f };
-
-        const FMatrix4 S = { Scale.x, 0.0f, 0.0f, 0.0f,
-                             0.0f, Scale.y, 0.0f, 0.0f,
-                             0.0f, 0.0f, Scale.z, 0.0f,
-                             0.0f, 0.0f, 0.0f, 1.0f };
-
-        const FMatrix4 R = MatrixFromQuaternion(Rotation.x, Rotation.y, Rotation.z, Rotation.w);
-        return MultiplyMatrix(MultiplyMatrix(T, R), S);
-    }
-
-    FMatrix4 ToLeftHandedMatrix(const FMatrix4& M)
-    {
-        const FMatrix4 MirrorZ = MakeMirrorZMatrix();
-        return MultiplyMatrix(MirrorZ, MultiplyMatrix(M, MirrorZ));
-    }
-
-    DirectX::XMFLOAT4X4 ToFloat4x4(const FMatrix4& M)
-    {
-        DirectX::XMFLOAT4X4 Result{};
-        for (int Row = 0; Row < 4; ++Row)
-        {
-            for (int Col = 0; Col < 4; ++Col)
-            {
-                Result.m[Row][Col] = M[Row * 4 + Col];
-            }
-        }
-
-        return Result;
     }
 
     struct FMeshData
@@ -298,13 +169,8 @@ namespace
     {
         float Value[16] = {};
         cgltf_accessor_read_float(Accessor, Index, Value, 16);
-        FMatrix4 Matrix{};
-        for (int i = 0; i < 16; ++i)
-        {
-            Matrix[static_cast<size_t>(i)] = Value[i];
-        }
-
-        return ToFloat4x4(ToLeftHandedMatrix(Matrix));
+        const FMatrix4 Matrix = MatrixMath::FromArray16(Value);
+        return MatrixMath::ToFloat4x4(MatrixMath::ToLeftHanded(Matrix));
     }
 
     std::wstring ResolveTexturePath(const std::filesystem::path& BasePath, const cgltf_texture* Texture)
@@ -625,13 +491,8 @@ namespace
             {
                 cgltf_float Matrix[16] = {};
                 cgltf_node_transform_world(Node, Matrix);
-                FMatrix4 World{};
-                for (int i = 0; i < 16; ++i)
-                {
-                    World[static_cast<size_t>(i)] = Matrix[i];
-                }
-
-                const FMatrix4 WorldLH = ToLeftHandedMatrix(World);
+                const FMatrix4 World = MatrixMath::FromArray16(Matrix);
+                const FMatrix4 WorldLH = MatrixMath::ToLeftHanded(World);
 
                 FGltfNode LoadedNode;
                 LoadedNode.MeshIndex = static_cast<int>(MeshIndex);
@@ -640,7 +501,7 @@ namespace
                     LoadedNode.SkinIndex = static_cast<int>(Node->skin - Data->skins);
                 }
                 LoadedNode.NodeIndex = static_cast<int>(NodeIndex);
-                LoadedNode.WorldMatrix = ToFloat4x4(WorldLH);
+                LoadedNode.WorldMatrix = MatrixMath::ToFloat4x4(WorldLH);
                 LoadedNode.Name = Node->mesh->name ? Node->mesh->name : (Node->name ? Node->name : "");
                 OutNodes.push_back(LoadedNode);
             }
@@ -649,13 +510,8 @@ namespace
         {
             cgltf_float Matrix[16] = {};
             cgltf_node_transform_world(Node, Matrix);
-            FMatrix4 World{};
-            for (int i = 0; i < 16; ++i)
-            {
-                World[static_cast<size_t>(i)] = Matrix[i];
-            }
-
-            const FMatrix4 WorldLH = ToLeftHandedMatrix(World);
+            const FMatrix4 World = MatrixMath::FromArray16(Matrix);
+            const FMatrix4 WorldLH = MatrixMath::ToLeftHanded(World);
 
             FGltfNode LoadedNode;
             LoadedNode.MeshIndex = -1;
@@ -664,7 +520,7 @@ namespace
                 LoadedNode.SkinIndex = static_cast<int>(Node->skin - Data->skins);
             }
             LoadedNode.NodeIndex = static_cast<int>(NodeIndex);
-            LoadedNode.WorldMatrix = ToFloat4x4(WorldLH);
+            LoadedNode.WorldMatrix = MatrixMath::ToFloat4x4(WorldLH);
             LoadedNode.Name = Node->name ? Node->name : "";
             OutNodes.push_back(LoadedNode);
         }
@@ -678,7 +534,7 @@ namespace
 
 bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& OutScene)
 {
-    const std::string FilePathUtf8 = ToUtf8String(FilePath);
+    const std::string FilePathUtf8 = StringUtils::WideToUtf8(FilePath);
 
     cgltf_options Options{};
     cgltf_data* Data = nullptr;
@@ -789,14 +645,14 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
             }
             for (size_t Index = ReadCount; Index < MatrixCount; ++Index)
             {
-                SkinData.InverseBindMatrices[Index] = ToFloat4x4(MakeIdentityMatrix());
+                SkinData.InverseBindMatrices[Index] = MatrixMath::ToFloat4x4(MatrixMath::Identity());
             }
         }
         else
         {
             for (size_t Index = 0; Index < MatrixCount; ++Index)
             {
-                SkinData.InverseBindMatrices[Index] = ToFloat4x4(MakeIdentityMatrix());
+                SkinData.InverseBindMatrices[Index] = MatrixMath::ToFloat4x4(MatrixMath::Identity());
             }
         }
 
@@ -893,19 +749,15 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
 
         if (!Transform.bHasMatrix)
         {
-            const FMatrix4 Local = MatrixFromTRS(Transform.Translation, Transform.Rotation, Transform.Scale);
-            Transform.LocalMatrix = ToFloat4x4(ToLeftHandedMatrix(Local));
+            const FMatrix4 Local = MatrixMath::FromTRS(Transform.Translation, Transform.Rotation, Transform.Scale);
+            Transform.LocalMatrix = MatrixMath::ToFloat4x4(MatrixMath::ToLeftHanded(Local));
         }
         else
         {
             cgltf_float Matrix[16] = {};
             cgltf_node_transform_local(&Node, Matrix);
-            FMatrix4 Local{};
-            for (int i = 0; i < 16; ++i)
-            {
-                Local[static_cast<size_t>(i)] = Matrix[i];
-            }
-            Transform.LocalMatrix = ToFloat4x4(ToLeftHandedMatrix(Local));
+            const FMatrix4 Local = MatrixMath::FromArray16(Matrix);
+            Transform.LocalMatrix = MatrixMath::ToFloat4x4(MatrixMath::ToLeftHanded(Local));
         }
 
         NodeTransforms[NodeIndex] = Transform;
@@ -940,7 +792,7 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
             FGltfNode Node;
             Node.MeshIndex = static_cast<int>(MeshIndex);
             Node.NodeIndex = static_cast<int>(MeshIndex);
-            Node.WorldMatrix = ToFloat4x4(MakeIdentityMatrix());
+            Node.WorldMatrix = MatrixMath::ToFloat4x4(MatrixMath::Identity());
             OutScene.Nodes.push_back(Node);
         }
     }
@@ -973,7 +825,7 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
         bool bLoadedClusterDAGCache = false;
         if (RendererConfig.bForceRebuildClusterDAGCache)
         {
-            LogInfo("Cluster DAG cache rebuild forced; skipping cache load for asset: " + ToUtf8String(FilePath));
+            LogInfo("Cluster DAG cache rebuild forced; skipping cache load for asset: " + StringUtils::WideToUtf8(FilePath));
         }
         else
         {
@@ -1002,7 +854,7 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
             {
                 LoadedMeshes[MeshIndex].SetClusterDAGs(std::move(CachedClusterDAGs[MeshIndex]));
             }
-            LogInfo("Loaded Cluster DAG cache: " + ToUtf8String(ClusterDAGCachePath));
+            LogInfo("Loaded Cluster DAG cache: " + StringUtils::WideToUtf8(ClusterDAGCachePath));
         }
         else
         {
@@ -1016,22 +868,22 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
 
             if (!ShouldSaveClusterDAGCache(LoadedMeshes))
             {
-                LogInfo("Skipping Cluster DAG cache save because one or more primitives fell back to the legacy meshlet path: " + ToUtf8String(ClusterDAGCachePath));
+                LogInfo("Skipping Cluster DAG cache save because one or more primitives fell back to the legacy meshlet path: " + StringUtils::WideToUtf8(ClusterDAGCachePath));
                 RemoveClusterDAGCacheFile(ClusterDAGCachePath);
             }
             else if (!SaveClusterDAGCacheFile(ClusterDAGCachePath, FilePath, ClusterDAGParams, BuiltClusterDAGs))
             {
-                LogWarning("Failed to save Cluster DAG cache: " + ToUtf8String(ClusterDAGCachePath));
+                LogWarning("Failed to save Cluster DAG cache: " + StringUtils::WideToUtf8(ClusterDAGCachePath));
             }
             else
             {
-                LogInfo("Saved Cluster DAG cache: " + ToUtf8String(ClusterDAGCachePath));
+                LogInfo("Saved Cluster DAG cache: " + StringUtils::WideToUtf8(ClusterDAGCachePath));
             }
         }
     }
     else
     {
-        LogInfo("Cluster DAG runtime disabled; skipping Cluster DAG cache load/build for asset: " + ToUtf8String(FilePath));
+        LogInfo("Cluster DAG runtime disabled; skipping Cluster DAG cache load/build for asset: " + StringUtils::WideToUtf8(FilePath));
     }
 
     for (FMesh& Mesh : LoadedMeshes)

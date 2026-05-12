@@ -118,11 +118,12 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="Source\Scene\ClusterDAGBuilder.cpp" />
-    <ClCompile Include="Source\Scene\PositionQemReducer.cpp" />
+    <ClCompile Include="Source\Scene\MergedClusterSimplifier.cpp" />
     <ClCompile Include="Source\Scene\GltfAnimation.cpp" />
     <ClCompile Include="Source\Scene\SceneJsonLoader.cpp" />
     <ClCompile Include="Source\Scene\GltfLoader.cpp" />
     <ClCompile Include="Source\Core\EngineTime.cpp" />
+    <ClCompile Include="Source\Core\StringUtils.cpp" />
     <ClCompile Include="Source\Main.cpp" />
     <ClCompile Include="Source\Core\Application.cpp" />
     <ClCompile Include="Source\Core\Logger.cpp" />
@@ -210,8 +211,10 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <None Include="Assets\Scenes\Duck.json" />
     <None Include="Assets\Scenes\metal_spheres.json" />
     <None Include="Shaders\Common.hlsli" />
+    <None Include="Shaders\ClusterDagDepthExport.hlsl" />
     <None Include="Shaders\ClusterDagResolve.hlsl" />
     <None Include="Shaders\ClusterDagVisibility.hlsl" />
+    <None Include="Shaders\PipelineKeyShared.h" />
     <None Include="Shaders\ffx_a.h" />
     <None Include="Shaders\ffx_spd.h" />
     <ClInclude Include="Source\Core\Application.h" />
@@ -221,6 +224,7 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <ClInclude Include="Source\Core\ImGuiSupport.h" />
     <ClInclude Include="Source\Core\EngineTime.h" />
     <ClInclude Include="Source\Core\Logger.h" />
+    <ClInclude Include="Source\Core\StringUtils.h" />
     <ClInclude Include="Source\Core\TaskSystem.h" />
     <ClInclude Include="Source\Core\Window.h" />
     <ClInclude Include="Source\Render\GpuResource.h" />
@@ -274,7 +278,7 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <ClInclude Include="Source\Scene\GltfLoader.h" />
     <ClInclude Include="Source\Scene\Material.h" />
     <ClInclude Include="Source\Scene\Mesh.h" />
-    <ClInclude Include="Source\Scene\PositionQemReducer.h" />
+    <ClInclude Include="Source\Scene\MergedClusterSimplifier.h" />
     <ClInclude Include="Source\Scene\SceneJsonLoader.h" />
     <ClInclude Include="Source\Scene\Transform.h" />
     <ClInclude Include="Source\Math\MathTypes.h" />
@@ -529,6 +533,12 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
       <FileType>Document</FileType>
     </None>
     <None Include="Shaders\ClusterDag\InitClusterDagQueues.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\ClusterDag\RasterizeClusterSW.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\ClusterDag\PrepareClusterDagSwRasterArgs.hlsl">
       <FileType>Document</FileType>
     </None>
     <None Include="Shaders\ClusterDag\PrepareClusterDagLevelSplitClusterArgs.hlsl">

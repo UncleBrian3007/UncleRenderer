@@ -11,6 +11,7 @@
 #include "../Scene/GltfLoader.h"
 #include "../Scene/SceneJsonLoader.h"
 #include "../Core/Logger.h"
+#include "../Core/StringUtils.h"
 #include "../RHI/DX12Device.h"
 #include "../RHI/DX12Commons.h"
 #include "../RHI/DX12CommandContext.h"
@@ -44,12 +45,6 @@ namespace
         }
 
         return BuildClusterDAGPackedVertexData(ClusterDAG, OutPackedVertexData);
-    }
-
-    std::string PathToUtf8String(const std::filesystem::path& Path)
-    {
-        const auto Utf8 = Path.u8string();
-        return std::string(Utf8.begin(), Utf8.end());
     }
 
     DirectX::XMFLOAT4 BuildOffsetScale(const FGltfTextureTransform& Transform)
@@ -643,7 +638,7 @@ bool SceneModelResourceLoader::LoadModelsFromJson(
     uint32_t NextObjectId = 1;
 
     const std::filesystem::path ScenePath(SceneFilePath);
-    const std::string ScenePathUtf8 = PathToUtf8String(ScenePath);
+    const std::string ScenePathUtf8 = StringUtils::PathToUtf8(ScenePath);
 
     std::vector<FSceneModelDesc> Models;
     if (!FSceneJsonLoader::LoadScene(SceneFilePath, Models) || Models.empty())
@@ -669,7 +664,7 @@ bool SceneModelResourceLoader::LoadModelsFromJson(
         FGltfScene LoadedScene;
         if (!FGltfLoader::LoadSceneFromFile(MeshPath, LoadedScene))
         {
-            LogError("Failed to load mesh from scene: " + PathToUtf8String(MeshPath));
+            LogError("Failed to load mesh from scene: " + StringUtils::PathToUtf8(MeshPath));
             continue;
         }
 
@@ -677,7 +672,7 @@ bool SceneModelResourceLoader::LoadModelsFromJson(
 
         if (LoadedScene.Meshes.empty())
         {
-            LogError("No meshes found in glTF: " + PathToUtf8String(MeshPath));
+            LogError("No meshes found in glTF: " + StringUtils::PathToUtf8(MeshPath));
             continue;
         }
 
@@ -899,7 +894,7 @@ bool SceneModelResourceLoader::LoadModelsFromJson(
                 const bool bUseMeshletIndices = Mesh.IsMeshletIndexingAllowed() && MeshletGroup && !MeshletGroup->MeshletIndices.empty();
                 if (!CreatePrimitiveGeometry(Device, MeshPrimitives[SectionIndex], ModelResource.Geometry, !bUseMeshletIndices, &UploadBatch))
                 {
-                    LogError("Failed to create primitive geometry for scene mesh: " + PathToUtf8String(MeshPath));
+                    LogError("Failed to create primitive geometry for scene mesh: " + StringUtils::PathToUtf8(MeshPath));
                     continue;
                 }
 

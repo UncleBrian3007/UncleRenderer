@@ -22,6 +22,9 @@
 #include <cmath>
 #include <array>
 
+constexpr uint32_t kForwardBindlessDwordCount = 9;
+constexpr uint32_t kForwardPerDrawDwordCount  = 2;
+
 FForwardRenderer::FForwardRenderer()
     : SkyAtmosphere(std::make_unique<FSkyAtmosphere>())
 {
@@ -672,6 +675,8 @@ void FForwardRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Camer
                 EnvironmentCubeBindlessIndex,
                 BrdfLutBindlessIndex
             };
+            static_assert(_countof(ForwardBindlessIndices) <= kForwardBindlessDwordCount);
+            static_assert(1u <= kForwardPerDrawDwordCount);
             LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(ForwardBindlessIndices), ForwardBindlessIndices, 0);
             LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
 
@@ -835,6 +840,7 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                     EnvironmentCubeBindlessIndex,
                     BrdfLutBindlessIndex
                 };
+                static_assert(_countof(ForwardBindlessIndices) <= kForwardBindlessDwordCount);
                 LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(ForwardBindlessIndices), ForwardBindlessIndices, 0);
 
                 const uint64_t Offset = static_cast<uint64_t>(Range.Start) * sizeof(FIndirectDrawCommand);
@@ -899,6 +905,8 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                         EnvironmentCubeBindlessIndex,
                         BrdfLutBindlessIndex
                     };
+                    static_assert(_countof(ForwardBindlessIndices) <= kForwardBindlessDwordCount);
+                    static_assert(1u <= kForwardPerDrawDwordCount);
                     LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(ForwardBindlessIndices), ForwardBindlessIndices, 0);
                     LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
 
@@ -960,6 +968,8 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                     EnvironmentCubeBindlessIndex,
                     BrdfLutBindlessIndex
                 };
+                static_assert(_countof(ForwardBindlessIndices) <= kForwardBindlessDwordCount);
+                static_assert(1u <= kForwardPerDrawDwordCount);
                 LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(ForwardBindlessIndices), ForwardBindlessIndices, 0);
                 LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
 
@@ -1161,9 +1171,9 @@ bool FForwardRenderer::CreateRootSignature(FDX12Device* Device)
     // RootParams[0]: Scene constant buffer (b0), used in Shaders/ForwardVS.hlsl VSMain and Shaders/ForwardPS.hlsl PSMain
     RootParams[0].InitAsConstantBufferView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE, D3D12_SHADER_VISIBILITY_ALL);
     // RootParams[1]: Forward bindless indices (b1), used in Shaders/ForwardPS.hlsl PSMain
-    RootParams[1].InitAsConstants(9, 1, 0, D3D12_SHADER_VISIBILITY_PIXEL);
+    RootParams[1].InitAsConstants(kForwardBindlessDwordCount, 1, 0, D3D12_SHADER_VISIBILITY_PIXEL);
     // RootParams[2]: Per-draw constants (b2): DrawIndexStart (dword0) + DrawDataIndex (dword1)
-    RootParams[2].InitAsConstants(2, 2, 0, D3D12_SHADER_VISIBILITY_VERTEX);
+    RootParams[2].InitAsConstants(kForwardPerDrawDwordCount, 2, 0, D3D12_SHADER_VISIBILITY_VERTEX);
 
     CD3DX12_STATIC_SAMPLER_DESC Samplers[3];
     CD3DX12_STATIC_SAMPLER_DESC::Init(Samplers[0], 0,

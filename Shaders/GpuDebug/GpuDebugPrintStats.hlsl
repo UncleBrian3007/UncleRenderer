@@ -103,6 +103,8 @@ void GpuDebugPrintStatsCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     uint lateVisible = StatsBuffer.Load(4 * kDebugPrintStatsLateVisibleIndex);
     uint clusterDagVisible = StatsBuffer.Load(4 * kDebugPrintStatsClusterDagVisibleIndex);
     uint clusterDagLeafVisible = StatsBuffer.Load(4 * kDebugPrintStatsClusterDagLeafVisibleIndex);
+    uint clusterDagHwRaster = StatsBuffer.Load(4 * kDebugPrintStatsClusterDagHwRasterIndex);
+    uint clusterDagSwRaster = StatsBuffer.Load(4 * kDebugPrintStatsClusterDagSwRasterIndex);
     uint clusterDagLeafFrustumCulled = StatsBuffer.Load(4 * kDebugPrintStatsClusterDagLeafFrustumCulledIndex);
     uint clusterDagStackOverflow = StatsBuffer.Load(4 * kDebugPrintStatsClusterDagStackOverflowIndex);
     uint clusterDagExpandedOverflow = StatsBuffer.Load(4 * kDebugPrintStatsClusterDagExpandedOverflowIndex);
@@ -143,6 +145,14 @@ void GpuDebugPrintStatsCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     pos = uint2(8, 100);
     PrintLabel(pos, textColor, 'C', 'L', 'U', 'S', 'T', 'E', 'R', ' ');
     PrintUInt(uint2(8 + 8 * 8, 100), clusterDagVisible, textColor);
+
+    pos = uint2(144, 100);
+    PrintLabel(pos, textColor, 'H', 'W', 'R', 'A', 'S', 'T', ' ', ' ');
+    PrintUInt(uint2(144 + 8 * 8, 100), clusterDagHwRaster, textColor);
+
+    pos = uint2(144, 116);
+    PrintLabel(pos, textColor, 'S', 'W', 'R', 'A', 'S', 'T', ' ', ' ');
+    PrintUInt(uint2(144 + 8 * 8, 116), clusterDagSwRaster, textColor);
 
     pos = uint2(8, 116);
     PrintLabel(pos, textColor, 'L', 'E', 'A', 'F', ' ', ' ', ' ', ' ');

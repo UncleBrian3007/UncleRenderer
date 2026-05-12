@@ -18,6 +18,6 @@ cbuffer CullingConstants : register(b0)
     uint ClusterDAGForceMipEnabled;
     uint ClusterDAGForceMipLevel;
     uint ClusterDAGForceMipSkipFrustumCull;
-    uint Padding2;
-    uint Padding3;
+    uint ClusterDAGForceSoftwareRaster;
+    float ClusterDAGSwRasterThresholdPixels;
 };

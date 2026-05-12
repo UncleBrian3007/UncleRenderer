@@ -236,7 +236,7 @@ struct PSOutputVelocity
     float4 Velocity : SV_Target0;
 };
 
-PSOutputVelocity PSMainVelocity(VSOutput Input)
+PSOutputVelocity DeferredBasePassVelocityPS(VSOutput Input)
 {
     PSOutputVelocity Output;
 #if USE_ALPHA_MASK

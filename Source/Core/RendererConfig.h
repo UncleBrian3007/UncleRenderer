@@ -121,9 +121,12 @@ struct FRendererConfig
     bool bEnableClusterDAGVisibilityBuffer = true;
     EClusterDAGTraversalMode ClusterDAGTraversalMode = EClusterDAGTraversalMode::LevelSplitQueue;
     float ClusterDAGTargetErrorPixels = 1.0f;
+    float ClusterDAGSwRasterThresholdPixels = 16.0f;
+    bool bEnableClusterDAGSwRasterHzbReject = true;
     bool bEnableClusterDAGForceMip = false;
     uint32_t ClusterDAGForceMipLevel = 0;
     bool bEnableClusterDAGForceMipSkipFrustumCull = false;
+    bool bEnableClusterDAGForceSoftwareRaster = false;
     bool bEnableClusterDAGDebug = false;
     bool bEnablePbrResearch = false;
     bool bEnableGpuDebugPrint = true;

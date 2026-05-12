@@ -22,30 +22,52 @@ cbuffer ClusterDagPersistentBindlessConstants : register(b1)
     uint DebugPrintStatsIndex;
     uint DebugLineBufferIndex;
     uint TraversalEpoch;
+    uint VisibleEntriesIndex;
+    uint VisibleEntryCountersIndex;
+    uint HwVisibleEntryIndicesIndex;
+    uint SwVisibleEntryIndicesIndex;
+    uint DrawDataVisibleEntryIndicesIndex;
 };
 
 void EmitVisibleClusterDagCandidate(
+    uint clusterIndex,
     ClusterDagClusterData cluster,
     StructuredBuffer<ClusterDagDrawData> DrawDatas,
     ByteAddressBuffer CommandTemplates,
     RWByteAddressBuffer OutputCommands,
     RWByteAddressBuffer RunCounts,
     RWByteAddressBuffer QueueState,
+    RWStructuredBuffer<ClusterDagVisibleEntry> VisibleEntries,
+    RWByteAddressBuffer VisibleEntryCounters,
+    RWStructuredBuffer<uint> HwVisibleEntryIndices,
+    RWStructuredBuffer<uint> SwVisibleEntryIndices,
+    RWStructuredBuffer<uint> DrawDataVisibleEntryIndices,
     uint DebugPrintStatsIndex)
 {
     const bool isLeaf = cluster.GeneratingGroupIndex == 0xffffffffu;
+    const bool rasterizeSW = ShouldRasterizeClusterSW(cluster);
     TrackVisibleClusterDagCandidate(QueueState);
     RecordVisibleCluster(DebugPrintStatsIndex, isLeaf, cluster.MipLevel);
+    RecordRasterPath(DebugPrintStatsIndex, rasterizeSW);
 
     [loop]
     for (uint packetOffset = 0u; packetOffset < cluster.DrawDataCount; ++packetOffset)
     {
         const uint drawDataIndex = cluster.DrawDataStart + packetOffset;
         const ClusterDagDrawData drawData = DrawDatas[drawDataIndex];
-        uint runOffset = 0u;
-        RunCounts.InterlockedAdd(drawData.RangeIndex * 4u, 1u, runOffset);
-        const uint outputIndex = drawData.RangeCommandStart + runOffset;
-        CopyClusterDagCommandTemplate(drawDataIndex, outputIndex, CommandTemplates, OutputCommands);
+        ReserveClusterDagVisibleEntry(
+            clusterIndex,
+            drawDataIndex,
+            rasterizeSW,
+            VisibleEntries,
+            VisibleEntryCounters,
+            HwVisibleEntryIndices,
+            SwVisibleEntryIndices,
+            DrawDataVisibleEntryIndices);
+        if (!rasterizeSW)
+        {
+            EmitClusterDagHWCommand(drawDataIndex, drawData, CommandTemplates, OutputCommands, RunCounts);
+        }
     }
 }
 
@@ -107,6 +129,11 @@ void PersistentClusterDagCullCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     RWStructuredBuffer<uint> GroupQueue = ResourceDescriptorHeap[GroupQueueBufferIndex];
     RWStructuredBuffer<uint> CandidateClusterQueue = ResourceDescriptorHeap[CandidateClusterQueueBufferIndex];
     RWStructuredBuffer<uint> VisitedGroupEpochs = ResourceDescriptorHeap[VisitedGroupEpochBufferIndex];
+    RWStructuredBuffer<ClusterDagVisibleEntry> VisibleEntries = ResourceDescriptorHeap[VisibleEntriesIndex];
+    RWByteAddressBuffer VisibleEntryCounters = ResourceDescriptorHeap[VisibleEntryCountersIndex];
+    RWStructuredBuffer<uint> HwVisibleEntryIndices = ResourceDescriptorHeap[HwVisibleEntryIndicesIndex];
+    RWStructuredBuffer<uint> SwVisibleEntryIndices = ResourceDescriptorHeap[SwVisibleEntryIndicesIndex];
+    RWStructuredBuffer<uint> DrawDataVisibleEntryIndices = ResourceDescriptorHeap[DrawDataVisibleEntryIndicesIndex];
 
     const uint currentEpoch = TraversalEpoch;
     const uint maxLoopCount = max((GroupCount + ClusterCount) * 8u, 1024u);
@@ -246,7 +273,7 @@ void PersistentClusterDagCullCS(uint3 dispatchThreadId : SV_DispatchThreadID)
 
                         if (cluster.DrawDataCount <= kPersistentClusterDagInlineCandidateDrawDataCount)
                         {
-                            EmitVisibleClusterDagCandidate(cluster, DrawDatas, CommandTemplates, OutputCommands, RunCounts, QueueState, DebugPrintStatsIndex);
+                            EmitVisibleClusterDagCandidate(childRef.ClusterIndex, cluster, DrawDatas, CommandTemplates, OutputCommands, RunCounts, QueueState, VisibleEntries, VisibleEntryCounters, HwVisibleEntryIndices, SwVisibleEntryIndices, DrawDataVisibleEntryIndices, DebugPrintStatsIndex);
                         }
                         else
                         {
@@ -289,7 +316,7 @@ void PersistentClusterDagCullCS(uint3 dispatchThreadId : SV_DispatchThreadID)
 #endif
             {
                 const ClusterDagClusterData cluster = Clusters[clusterIndex];
-                EmitVisibleClusterDagCandidate(cluster, DrawDatas, CommandTemplates, OutputCommands, RunCounts, QueueState, DebugPrintStatsIndex);
+                EmitVisibleClusterDagCandidate(clusterIndex, cluster, DrawDatas, CommandTemplates, OutputCommands, RunCounts, QueueState, VisibleEntries, VisibleEntryCounters, HwVisibleEntryIndices, SwVisibleEntryIndices, DrawDataVisibleEntryIndices, DebugPrintStatsIndex);
             }
 
             DecrementClusterDagPending(QueueState);

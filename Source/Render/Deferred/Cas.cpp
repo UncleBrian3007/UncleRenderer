@@ -11,6 +11,9 @@
 
 using Microsoft::WRL::ComPtr;
 
+constexpr uint32_t kCasConstantsDwordCount = 4;
+constexpr uint32_t kCasBindlessDwordCount  = 1;
+
 bool FCas::InitializePipelines(FDeferredRenderer& Owner, FDX12Device* Device, DXGI_FORMAT BackBufferFormat)
 {
     (void)Owner;
@@ -98,7 +101,9 @@ void FCas::AddPass(FDeferredPassContext& Context) const
         LocalCommandList->RSSetScissorRects(1, &Owner.ScissorRect);
 
         LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        static_assert(sizeof(FCasConstants) / sizeof(uint32_t) <= kCasConstantsDwordCount);
         LocalCommandList->SetGraphicsRoot32BitConstants(0, sizeof(CasConstants) / sizeof(uint32_t), &CasConstants, 0);
+        static_assert(1u <= kCasBindlessDwordCount);
         LocalCommandList->SetGraphicsRoot32BitConstant(1, Owner.TonemapOutput.SrvBindlessIndex, 0);
         LocalCommandList->DrawInstanced(3, 1, 0, 0);
     });
@@ -112,8 +117,8 @@ bool FCas::IsReady() const
 bool FCas::CreateRootSignature(FDX12Device* Device)
 {
     CD3DX12_ROOT_PARAMETER1 RootParams[2] = {};
-    RootParams[0].InitAsConstants(4, 0, 0, D3D12_SHADER_VISIBILITY_PIXEL);
-    RootParams[1].InitAsConstants(1, 1, 0, D3D12_SHADER_VISIBILITY_PIXEL);
+    RootParams[0].InitAsConstants(kCasConstantsDwordCount, 0, 0, D3D12_SHADER_VISIBILITY_PIXEL);
+    RootParams[1].InitAsConstants(kCasBindlessDwordCount, 1, 0, D3D12_SHADER_VISIBILITY_PIXEL);
 
     CD3DX12_STATIC_SAMPLER_DESC SamplerDesc;
     SamplerDesc.Init(

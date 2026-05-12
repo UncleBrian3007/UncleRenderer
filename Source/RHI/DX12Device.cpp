@@ -161,7 +161,7 @@ bool FDX12Device::Initialize()
     if (!PickAdapter())   { LogError("No suitable adapter found"); return false; }
     if (!CreateDevice())  { LogError("Failed to create D3D12 device"); return false; }
     if (!QueryRayTracingSupport()) { LogError("Failed to query DXR support"); return false; }
-    if (!QueryBarycentricsSupport()) { LogError("Failed to query barycentrics support"); return false; }
+    if (!QueryAtomicInt64Support()) { LogError("Failed to query atomic int64 support"); return false; }
     if (!QueryEnhancedBarrierSupport()) { LogError("Failed to query enhanced barrier support"); return false; }
     if (!CreateBindlessDescriptorHeap()) { LogError("Failed to create bindless descriptor heap"); return false; }
     if (!CreateSamplerDescriptorHeap()) { LogError("Failed to create sampler descriptor heap"); return false; }
@@ -192,19 +192,19 @@ bool FDX12Device::QueryRayTracingSupport()
     return true;
 }
 
-bool FDX12Device::QueryBarycentricsSupport()
+bool FDX12Device::QueryAtomicInt64Support()
 {
-    bSupportsBarycentrics = false;
+    bSupportsAtomicInt64OnTypedResource = false;
 
-    D3D12_FEATURE_DATA_D3D12_OPTIONS3 Options3 = {};
-    if (FAILED(Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS3, &Options3, sizeof(Options3))))
+    D3D12_FEATURE_DATA_D3D12_OPTIONS9 Options9 = {};
+    if (FAILED(Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS9, &Options9, sizeof(Options9))))
     {
-        LogWarning("Failed to query D3D12 options3; barycentrics support disabled.");
+        LogWarning("D3D12 OPTIONS9 query failed; typed resource int64 atomics disabled.");
         return true;
     }
 
-    bSupportsBarycentrics = Options3.BarycentricsSupported == TRUE;
-    LogInfo(std::string("Barycentrics: ") + (bSupportsBarycentrics ? "Enabled" : "Disabled"));
+    bSupportsAtomicInt64OnTypedResource = Options9.AtomicInt64OnTypedResourceSupported == TRUE;
+    LogInfo(std::string("Atomic int64 typed resource support: ") + (bSupportsAtomicInt64OnTypedResource ? "Enabled" : "Disabled"));
     return true;
 }
 

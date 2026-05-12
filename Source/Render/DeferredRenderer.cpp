@@ -120,6 +120,10 @@ float FDeferredRenderer::GetClusterDagTargetErrorPixels() const
 {
     return ClusterDagRuntime->GetTargetErrorPixels();
 }
+float FDeferredRenderer::GetClusterDagSwRasterThresholdPixels() const
+{
+    return ClusterDagRuntime->GetSwRasterThresholdPixels();
+}
 bool FDeferredRenderer::IsClusterDagForceMipEnabled() const
 {
     return ClusterDagRuntime->IsForceMipEnabled();
@@ -249,6 +253,7 @@ void FDeferredRenderer::ApplyClusterDAGConfig(const FRendererConfig& Config)
 {
     ClusterDagRuntime->ApplyConfig(Config);
     ClusterDagVisibilityPass->SetEnabled(Config.bEnableClusterDAGVisibilityBuffer);
+    ClusterDagVisibilityPass->SetSoftwareRasterHzbRejectEnabled(Config.bEnableClusterDAGSwRasterHzbReject);
 }
 
 void FDeferredRenderer::ApplyRestirGIConfig(const FRendererConfig& Config)

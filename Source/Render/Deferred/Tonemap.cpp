@@ -13,6 +13,9 @@
 #include <vector>
 #include <d3dx12.h>
 
+constexpr uint32_t kTonemapConstantsDwordCount = 4;
+constexpr uint32_t kTonemapBindlessDwordCount  = 2;
+
 bool FTonemap::InitializePipelines(FDeferredRenderer& Owner, FDX12Device* Device, DXGI_FORMAT BackBufferFormat)
 {
     (void)Owner;
@@ -50,8 +53,8 @@ void FTonemap::AddPasses(FDeferredPassContext& Context) const
 bool FTonemap::CreateTonemapRootSignature(FDX12Device* Device)
 {
     CD3DX12_ROOT_PARAMETER1 RootParams[2] = {};
-    RootParams[0].InitAsConstants(4, 0, 0, D3D12_SHADER_VISIBILITY_PIXEL);
-    RootParams[1].InitAsConstants(2, 1, 0, D3D12_SHADER_VISIBILITY_PIXEL);
+    RootParams[0].InitAsConstants(kTonemapConstantsDwordCount, 0, 0, D3D12_SHADER_VISIBILITY_PIXEL);
+    RootParams[1].InitAsConstants(kTonemapBindlessDwordCount, 1, 0, D3D12_SHADER_VISIBILITY_PIXEL);
 
     CD3DX12_STATIC_SAMPLER_DESC SamplerDesc;
     SamplerDesc.Init(
@@ -201,12 +204,14 @@ void FTonemap::AddTonemapPass(FDeferredPassContext& Context) const
         LocalCommandList->RSSetScissorRects(1, &Owner.ScissorRect);
 
         LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        static_assert(sizeof(FTonemapConstants) / sizeof(uint32_t) <= kTonemapConstantsDwordCount);
         LocalCommandList->SetGraphicsRoot32BitConstants(0, sizeof(TonemapConstants) / sizeof(uint32_t), &TonemapConstants, 0);
         const uint32_t TonemapBindlessIndices[] =
         {
             Data.InputBindlessIndex,
             Owner.AutoExposure ? Owner.AutoExposure->LuminanceTextures[Data.LuminanceIndex].SrvBindlessIndex : UINT32_MAX
         };
+        static_assert(_countof(TonemapBindlessIndices) <= kTonemapBindlessDwordCount);
         LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(TonemapBindlessIndices), TonemapBindlessIndices, 0);
         LocalCommandList->DrawInstanced(3, 1, 0, 0);
 

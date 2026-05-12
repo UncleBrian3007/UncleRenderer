@@ -14,8 +14,7 @@ struct FDeferredPassContext;
 
 struct FClusterDagVisibilityFrameResources
 {
-    FRGResourceHandle VisibilityHandle0{};
-    FRGResourceHandle VisibilityHandle1{};
+    FRGResourceHandle Visibility64Handle{};
 };
 
 class FClusterDagVisibilityPass
@@ -26,35 +25,42 @@ public:
     void ImportPersistentResources(FDeferredPassContext& Context);
     void AddPasses(FDeferredPassContext& Context) const;
     void SetEnabled(bool bInEnabled) { bEnabled = bInEnabled; }
+    void SetSoftwareRasterHzbRejectEnabled(bool bInEnabled) { bSoftwareRasterHzbRejectEnabled = bInEnabled; }
 
     bool IsReady() const;
-    uint32_t GetVisibilitySrvBindlessIndex0() const { return VisibilityTexture0.SrvBindlessIndex; }
-    uint32_t GetVisibilitySrvBindlessIndex1() const { return VisibilityTexture1.SrvBindlessIndex; }
+    uint32_t GetVisibilitySrvBindlessIndex() const { return VisibilityTexture64.SrvBindlessIndex; }
 
 private:
     bool CreateVisibilityRootSignature(FDX12Device* Device);
     bool CreateVisibilityPipeline(FDX12Device* Device);
+    bool CreateSoftwareRasterPipeline(FDX12Device* Device);
+    bool CreateDepthExportRootSignature(FDX12Device* Device);
+    bool CreateDepthExportPipeline(FDX12Device* Device);
     bool CreateResolveRootSignature(FDX12Device* Device);
     bool CreateResolvePipeline(FDX12Device* Device);
     bool CreateCommandSignature(FDX12Device* Device);
     bool CreateVisibilityResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
     void AddVisibilityPass(FDeferredPassContext& Context) const;
+    void AddSoftwareRasterPass(FDeferredPassContext& Context) const;
+    void AddDepthExportPass(FDeferredPassContext& Context) const;
     void AddResolvePass(FDeferredPassContext& Context) const;
 
 private:
     FDeferredRenderer* Owner = nullptr;
     FDX12Device* Device = nullptr;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> VisibilityRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> SoftwareRasterRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> DepthExportRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> ResolveRootSignature;
     Microsoft::WRL::ComPtr<ID3D12CommandSignature> CommandSignature;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2> VisibilityPipelines;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> PrepareSoftwareRasterArgsPipeline;
+    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2> SoftwareRasterPipelines;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthExportPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ResolvePipeline;
-    FBindlessTexture VisibilityTexture0;
-    FBindlessTexture VisibilityTexture1;
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> VisibilityRtvHeap;
-    std::array<D3D12_CPU_DESCRIPTOR_HANDLE, 2> VisibilityRtvHandles{};
-    bool bFeatureSupported = false;
+    FBindlessTexture VisibilityTexture64;
     bool bEnabled = true;
+    bool bSoftwareRasterHzbRejectEnabled = true;
     bool bPipelinesReady = false;
     bool bResourcesReady = false;
 };

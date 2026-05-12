@@ -14,6 +14,9 @@
 
 using Microsoft::WRL::ComPtr;
 
+constexpr uint32_t kPathTracingConstantsDwordCount = 4;
+constexpr uint32_t kPathTracingBindlessDwordCount  = 4;
+
 bool FPathTracing::InitializePipelines(FDeferredRenderer& Owner, FDX12Device* Device)
 {
     (void)Owner;
@@ -173,8 +176,8 @@ void FPathTracing::SetDebugMode(int Mode)
 bool FPathTracing::CreateAccumulationRootSignature(FDX12Device* Device)
 {
     CD3DX12_ROOT_PARAMETER1 RootParams[2] = {};
-    RootParams[0].InitAsConstants(4, 0, 0, D3D12_SHADER_VISIBILITY_ALL);
-    RootParams[1].InitAsConstants(4, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[0].InitAsConstants(kPathTracingConstantsDwordCount, 0, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[1].InitAsConstants(kPathTracingBindlessDwordCount, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
 
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc;
     RootSigDesc.Init_1_1(_countof(RootParams), RootParams, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
@@ -507,6 +510,7 @@ void FPathTracing::AddPathTracingAccumulationPass(FDeferredPassContext& Context)
         LocalCommandList->SetPipelineState(PathTracingAccumulationPipeline.Get());
         LocalCommandList->SetComputeRootSignature(PathTracingAccumulationRootSignature.Get());
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        static_assert(sizeof(FPathTracingAccumulationConstants) / sizeof(uint32_t) <= kPathTracingConstantsDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(Constants) / sizeof(uint32_t), &Constants, 0);
 
         const bool bAccumulationActive = Data.bAccumulationActive && !PathTracingAccumulationTextures.empty();
@@ -526,6 +530,7 @@ void FPathTracing::AddPathTracingAccumulationPass(FDeferredPassContext& Context)
             HistoryUav,
             Owner.LightingBuffer.SrvBindlessIndex
         };
+        static_assert(_countof(AccumBindlessIndices) <= kPathTracingBindlessDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(1, _countof(AccumBindlessIndices), AccumBindlessIndices, 0);
 
         const uint32_t GroupX = (static_cast<uint32_t>(Data.OutputSize.x) + 7u) / 8u;

@@ -1,6 +1,7 @@
 #include "SceneJsonLoader.h"
 
 #include "../Core/Logger.h"
+#include "../Core/StringUtils.h"
 
 #include <algorithm>
 #include <cctype>
@@ -11,11 +12,6 @@
 #include <regex>
 #include <sstream>
 #include <string>
-
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <Windows.h>
 
 namespace
 {
@@ -29,52 +25,6 @@ namespace
 
         std::string Contents((std::istreambuf_iterator<char>(File)), std::istreambuf_iterator<char>());
         return Contents;
-    }
-
-    std::wstring Utf8ToWide(const std::string& Text)
-    {
-        if (Text.empty())
-        {
-            return {};
-        }
-
-        const int WideLength = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, Text.data(), static_cast<int>(Text.size()), nullptr, 0);
-        if (WideLength <= 0)
-        {
-            return {};
-        }
-
-        std::wstring Result(static_cast<size_t>(WideLength), L'\0');
-        const int Converted = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, Text.data(), static_cast<int>(Text.size()), Result.data(), WideLength);
-        if (Converted <= 0)
-        {
-            return {};
-        }
-
-        return Result;
-    }
-
-    std::string WideToUtf8(const std::wstring& Text)
-    {
-        if (Text.empty())
-        {
-            return {};
-        }
-
-        const int Utf8Length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, Text.data(), static_cast<int>(Text.size()), nullptr, 0, nullptr, nullptr);
-        if (Utf8Length <= 0)
-        {
-            return {};
-        }
-
-        std::string Result(static_cast<size_t>(Utf8Length), '\0');
-        const int Converted = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, Text.data(), static_cast<int>(Text.size()), Result.data(), Utf8Length, nullptr, nullptr);
-        if (Converted <= 0)
-        {
-            return {};
-        }
-
-        return Result;
     }
 
     std::string ExtractString(const std::string& Text, const std::string& Key)
@@ -377,28 +327,28 @@ bool FSceneJsonLoader::LoadScene(const std::wstring& FilePath, std::vector<FScen
     const std::string Contents = ReadFileToString(FilePath);
     if (Contents.empty())
     {
-        LogError("Failed to read scene JSON file: " + WideToUtf8(FilePath));
+        LogError("Failed to read scene JSON file: " + StringUtils::WideToUtf8(FilePath));
         return false;
     }
 
     const size_t ModelsKey = Contents.find("\"models\"");
     if (ModelsKey == std::string::npos)
     {
-        LogError("Scene JSON is missing 'models' array: " + WideToUtf8(FilePath));
+        LogError("Scene JSON is missing 'models' array: " + StringUtils::WideToUtf8(FilePath));
         return false;
     }
 
     const size_t ArrayStart = Contents.find('[', ModelsKey);
     if (ArrayStart == std::string::npos)
     {
-        LogError("Scene JSON does not contain a models array block: " + WideToUtf8(FilePath));
+        LogError("Scene JSON does not contain a models array block: " + StringUtils::WideToUtf8(FilePath));
         return false;
     }
 
     const size_t ArrayEnd = FindMatchingBracket(Contents, ArrayStart);
     if (ArrayEnd == std::string::npos || ArrayEnd <= ArrayStart)
     {
-        LogError("Scene JSON models array is malformed: " + WideToUtf8(FilePath));
+        LogError("Scene JSON models array is malformed: " + StringUtils::WideToUtf8(FilePath));
         return false;
     }
 
@@ -418,10 +368,10 @@ bool FSceneJsonLoader::LoadScene(const std::wstring& FilePath, std::vector<FScen
         const std::string ModelText = Match[0].str();
 
         FSceneModelDesc ModelDesc;
-        ModelDesc.MeshPath = Utf8ToWide(ExtractString(ModelText, "path"));
-        ModelDesc.BaseColorTexturePath = Utf8ToWide(ExtractString(ModelText, "baseColor"));
-        ModelDesc.MetallicRoughnessTexturePath = Utf8ToWide(ExtractString(ModelText, "metallicRoughness"));
-        ModelDesc.NormalTexturePath = Utf8ToWide(ExtractString(ModelText, "normal"));
+        ModelDesc.MeshPath = StringUtils::Utf8ToWide(ExtractString(ModelText, "path"));
+        ModelDesc.BaseColorTexturePath = StringUtils::Utf8ToWide(ExtractString(ModelText, "baseColor"));
+        ModelDesc.MetallicRoughnessTexturePath = StringUtils::Utf8ToWide(ExtractString(ModelText, "metallicRoughness"));
+        ModelDesc.NormalTexturePath = StringUtils::Utf8ToWide(ExtractString(ModelText, "normal"));
         ModelDesc.bVisible = ExtractBool(ModelText, "visible", true);
 
         ModelDesc.Position = ParseVectorAttribute(ModelText, "translate", ModelDesc.Position);
@@ -442,7 +392,7 @@ bool FSceneJsonLoader::LoadScene(const std::wstring& FilePath, std::vector<FScen
 
     if (OutModels.empty())
     {
-        LogError("No valid model entries found in scene: " + WideToUtf8(FilePath));
+        LogError("No valid model entries found in scene: " + StringUtils::WideToUtf8(FilePath));
         return false;
     }
 
@@ -456,13 +406,13 @@ bool FSceneJsonLoader::LoadSceneLighting(const std::wstring& FilePath, FSceneLig
     const std::string Contents = ReadFileToString(FilePath);
     if (Contents.empty())
     {
-        LogError("Failed to read scene JSON file for lighting: " + WideToUtf8(FilePath));
+        LogError("Failed to read scene JSON file for lighting: " + StringUtils::WideToUtf8(FilePath));
         return false;
     }
 
     if (!ExtractLights(Contents, OutLight))
     {
-        LogWarning("Scene JSON does not contain a directional light; using defaults: " + WideToUtf8(FilePath));
+        LogWarning("Scene JSON does not contain a directional light; using defaults: " + StringUtils::WideToUtf8(FilePath));
         return false;
     }
 

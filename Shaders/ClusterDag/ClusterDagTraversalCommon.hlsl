@@ -24,6 +24,65 @@ float ComputeProjectedErrorPixels(float3 center, float objectSpaceError)
     return objectSpaceError * ViewportHeightPixels / distanceToCamera;
 }
 
+float ComputeProjectedObjectLengthPixels(float3 center, float objectSpaceLength)
+{
+    const float distanceToCamera = max(length(center - CameraPosition), 1e-3f);
+    return objectSpaceLength * ViewportHeightPixels / distanceToCamera;
+}
+
+bool ShouldRasterizeClusterSW(ClusterDagClusterData cluster)
+{
+    const float maxEdgeLength = cluster.MaxEdgeLength > 0.0f ? cluster.MaxEdgeLength : cluster.Bounds.w * 2.0f;
+    return ClusterDAGForceSoftwareRaster != 0u
+        || ComputeProjectedObjectLengthPixels(cluster.Bounds.xyz, maxEdgeLength) < ClusterDAGSwRasterThresholdPixels;
+}
+
+uint ReserveClusterDagVisibleEntry(
+    uint clusterIndex,
+    uint drawDataIndex,
+    bool rasterizeSW,
+    RWStructuredBuffer<ClusterDagVisibleEntry> VisibleEntries,
+    RWByteAddressBuffer VisibleEntryCounters,
+    RWStructuredBuffer<uint> HwVisibleEntryIndices,
+    RWStructuredBuffer<uint> SwVisibleEntryIndices,
+    RWStructuredBuffer<uint> DrawDataVisibleEntryIndices)
+{
+    uint visibleEntryIndex = 0u;
+    VisibleEntryCounters.InterlockedAdd(0u, 1u, visibleEntryIndex);
+    ClusterDagVisibleEntry visibleEntry;
+    visibleEntry.ClusterIndex = clusterIndex;
+    visibleEntry.DrawDataIndex = drawDataIndex;
+    VisibleEntries[visibleEntryIndex] = visibleEntry;
+    DrawDataVisibleEntryIndices[drawDataIndex] = visibleEntryIndex;
+
+    uint pathEntryIndex = 0u;
+    if (rasterizeSW)
+    {
+        VisibleEntryCounters.InterlockedAdd(8u, 1u, pathEntryIndex);
+        SwVisibleEntryIndices[pathEntryIndex] = visibleEntryIndex;
+    }
+    else
+    {
+        VisibleEntryCounters.InterlockedAdd(4u, 1u, pathEntryIndex);
+        HwVisibleEntryIndices[pathEntryIndex] = visibleEntryIndex;
+    }
+
+    return visibleEntryIndex;
+}
+
+void EmitClusterDagHWCommand(
+    uint drawDataIndex,
+    ClusterDagDrawData drawData,
+    ByteAddressBuffer CommandTemplates,
+    RWByteAddressBuffer OutputCommands,
+    RWByteAddressBuffer RunCounts)
+{
+    uint runOffset = 0u;
+    RunCounts.InterlockedAdd(drawData.RangeIndex * 4u, 1u, runOffset);
+    const uint outputIndex = drawData.RangeCommandStart + runOffset;
+    CopyClusterDagCommandTemplate(drawDataIndex, outputIndex, CommandTemplates, OutputCommands);
+}
+
 #if USE_CLUSTER_DAG_DEBUG
 void DebugDrawClusterBoundsCross(uint debugLineBufferIndex, float3 center, float radius, uint packedColor)
 {
@@ -90,6 +149,16 @@ void RecordVisibleCluster(uint debugPrintStatsIndex, bool isLeaf, uint mipLevel)
     }
 }
 
+void RecordRasterPath(uint debugPrintStatsIndex, bool rasterizeSW)
+{
+    if (DebugPrintEnabled != 0u && debugPrintStatsIndex != 0xffffffffu)
+    {
+        RWByteAddressBuffer DebugPrintStats = ResourceDescriptorHeap[debugPrintStatsIndex];
+        const uint statIndex = rasterizeSW ? kDebugPrintStatsClusterDagSwRasterIndex : kDebugPrintStatsClusterDagHwRasterIndex;
+        DebugPrintStats.InterlockedAdd(4u * statIndex, 1u);
+    }
+}
+
 void RecordQueueOverflow(uint debugPrintStatsIndex)
 {
     if (DebugPrintEnabled != 0u && debugPrintStatsIndex != 0xffffffffu)
@@ -113,6 +182,7 @@ void RecordStackOverflow(uint debugPrintStatsIndex) {}
 void RecordExpandedOverflow(uint debugPrintStatsIndex) {}
 void RecordIterationOverflow(uint debugPrintStatsIndex) {}
 void RecordVisibleCluster(uint debugPrintStatsIndex, bool isLeaf, uint mipLevel) {}
+void RecordRasterPath(uint debugPrintStatsIndex, bool rasterizeSW) {}
 void RecordQueueOverflow(uint debugPrintStatsIndex) {}
 void RecordCommitSpinIterations(uint debugPrintStatsIndex, uint statIndex, uint spinIterations) {}
 #endif

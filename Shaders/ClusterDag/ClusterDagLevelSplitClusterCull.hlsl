@@ -11,9 +11,11 @@ cbuffer ClusterDagLevelSplitClusterCullBindlessConstants : register(b1)
     uint CandidateClusterQueueBufferIndex;
     uint ClusterCount;
     uint DebugPrintStatsIndex;
-    uint ClusterDagClusterCullPadding0;
-    uint ClusterDagClusterCullPadding1;
-    uint ClusterDagClusterCullPadding2;
+    uint VisibleEntriesIndex;
+    uint VisibleEntryCountersIndex;
+    uint HwVisibleEntryIndicesIndex;
+    uint SwVisibleEntryIndicesIndex;
+    uint DrawDataVisibleEntryIndicesIndex;
 };
 
 [numthreads(64, 1, 1)]
@@ -28,6 +30,11 @@ void ClusterDagLevelSplitClusterCullCS(uint3 dispatchThreadId : SV_DispatchThrea
     RWByteAddressBuffer RunCounts = ResourceDescriptorHeap[RunCountsIndex];
     RWByteAddressBuffer QueueState = ResourceDescriptorHeap[QueueStateBufferIndex];
     StructuredBuffer<uint> CandidateClusterQueue = ResourceDescriptorHeap[CandidateClusterQueueBufferIndex];
+    RWStructuredBuffer<ClusterDagVisibleEntry> VisibleEntries = ResourceDescriptorHeap[VisibleEntriesIndex];
+    RWByteAddressBuffer VisibleEntryCounters = ResourceDescriptorHeap[VisibleEntryCountersIndex];
+    RWStructuredBuffer<uint> HwVisibleEntryIndices = ResourceDescriptorHeap[HwVisibleEntryIndicesIndex];
+    RWStructuredBuffer<uint> SwVisibleEntryIndices = ResourceDescriptorHeap[SwVisibleEntryIndicesIndex];
+    RWStructuredBuffer<uint> DrawDataVisibleEntryIndices = ResourceDescriptorHeap[DrawDataVisibleEntryIndicesIndex];
 
     const uint candidateCount = QueueState.Load(kLevelSplitQueueStateCandidateWriteOffset);
     if (candidateIndex >= candidateCount)
@@ -44,8 +51,10 @@ void ClusterDagLevelSplitClusterCullCS(uint3 dispatchThreadId : SV_DispatchThrea
     {
         const ClusterDagClusterData cluster = Clusters[clusterIndex];
         const bool isLeaf = cluster.GeneratingGroupIndex == 0xffffffffu;
+        const bool rasterizeSW = ShouldRasterizeClusterSW(cluster);
         TrackLevelSplitVisibleClusterDagCandidate(QueueState);
         RecordVisibleCluster(DebugPrintStatsIndex, isLeaf, cluster.MipLevel);
+        RecordRasterPath(DebugPrintStatsIndex, rasterizeSW);
 
         [loop]
         for (uint packetOffset = 0u; packetOffset < cluster.DrawDataCount; ++packetOffset)
@@ -59,10 +68,19 @@ void ClusterDagLevelSplitClusterCullCS(uint3 dispatchThreadId : SV_DispatchThrea
 #endif
 
             const ClusterDagDrawData drawData = DrawDatas[drawDataIndex];
-            uint runOffset = 0u;
-            RunCounts.InterlockedAdd(drawData.RangeIndex * 4u, 1u, runOffset);
-            const uint outputIndex = drawData.RangeCommandStart + runOffset;
-            CopyClusterDagCommandTemplate(drawDataIndex, outputIndex, CommandTemplates, OutputCommands);
+            ReserveClusterDagVisibleEntry(
+                clusterIndex,
+                drawDataIndex,
+                rasterizeSW,
+                VisibleEntries,
+                VisibleEntryCounters,
+                HwVisibleEntryIndices,
+                SwVisibleEntryIndices,
+                DrawDataVisibleEntryIndices);
+            if (!rasterizeSW)
+            {
+                EmitClusterDagHWCommand(drawDataIndex, drawData, CommandTemplates, OutputCommands, RunCounts);
+            }
         }
     }
 }

@@ -10,6 +10,7 @@
 #include <array>
 #include <cstddef>
 #include <limits>
+#include "../../Shaders/PipelineKeyShared.h"
 #include "GpuResource.h"
 #include "SceneModelResource.h"
 #include "../Scene/GltfAnimation.h"
@@ -143,6 +144,10 @@ static_assert(offsetof(FIndirectDrawCommand, DrawArguments.StartInstanceLocation
 
 namespace RendererUtils
 {
+    constexpr uint32_t GPipelineKeySkinningBit = RENDER_PIPELINE_KEY_SKINNING_BIT;
+    constexpr uint32_t GPipelineKeyDoubleSidedBit = RENDER_PIPELINE_KEY_DOUBLE_SIDED_BIT;
+    constexpr uint32_t GPipelineKeyDoubleSidedMask = RENDER_PIPELINE_KEY_DOUBLE_SIDED_MASK;
+
     struct FUpdateSceneConstantsParams
     {
         const FCamera* Camera = nullptr;
@@ -191,6 +196,13 @@ namespace RendererUtils
         FShaderCompiler& Compiler,
         FDX12Device* Device,
         const std::wstring& ShaderPath,
+        std::vector<uint8_t>& OutByteCode,
+        const std::vector<std::wstring>& Defines = {});
+    bool CompileComputeShader(
+        FShaderCompiler& Compiler,
+        FDX12Device* Device,
+        const std::wstring& ShaderPath,
+        const std::wstring& EntryPoint,
         std::vector<uint8_t>& OutByteCode,
         const std::vector<std::wstring>& Defines = {});
     bool CompileComputeShader(

@@ -24,6 +24,8 @@ cbuffer ClusterDagInitBindlessConstants : register(b1)
     uint GroupCount;
     uint TraversalEpoch;
     uint DebugPrintStatsIndex;
+    uint VisibleEntryCountersIndex;
+    uint DrawDataVisibleEntryIndicesIndex;
 };
 
 [numthreads(64, 1, 1)]
@@ -37,9 +39,14 @@ void InitClusterDagQueuesCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     RWStructuredBuffer<uint> CandidateClusterQueue = ResourceDescriptorHeap[CandidateClusterQueueBufferIndex];
     RWStructuredBuffer<uint> VisitedGroupEpochs = ResourceDescriptorHeap[VisitedGroupEpochBufferIndex];
     RWByteAddressBuffer RunCounts = ResourceDescriptorHeap[RunCountBufferIndex];
+    RWByteAddressBuffer VisibleEntryCounters = ResourceDescriptorHeap[VisibleEntryCountersIndex];
+    RWStructuredBuffer<uint> DrawDataVisibleEntryIndices = ResourceDescriptorHeap[DrawDataVisibleEntryIndicesIndex];
 
     if (threadIndex == 0u)
     {
+        VisibleEntryCounters.Store(0u, 0u);
+        VisibleEntryCounters.Store(4u, 0u);
+        VisibleEntryCounters.Store(8u, 0u);
 #if !USE_CLUSTER_DAG_FAST
         QueueState.Store(kQueueStateTotalVisibleClustersOffset, 0u);
         QueueState.Store(kQueueStatePeakGroupQueueDepthOffset, RootGroupCount);
@@ -74,6 +81,11 @@ void InitClusterDagQueuesCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     if (threadIndex < RangeCount)
     {
         RunCounts.Store(threadIndex * 4u, 0u);
+    }
+
+    if (threadIndex < IndirectCommandCount)
+    {
+        DrawDataVisibleEntryIndices[threadIndex] = 0xffffffffu;
     }
 
 #if !USE_CLUSTER_DAG_PERSISTENT_QUEUE

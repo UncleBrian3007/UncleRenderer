@@ -89,6 +89,7 @@ public:
         bool bClusterDagFastShaderEnabled = false;
         bool bClusterDagGpuDebugEnabled = false;
         float ClusterDagTargetErrorPixels = 0.0f;
+        float ClusterDagSwRasterThresholdPixels = 16.0f;
         float ViewportHeightPixels = 0.0f;
         uint32_t ClusterDagVisibleRootCount = 0;
         uint32_t ClusterDagClusterCount = 0;
@@ -193,6 +194,7 @@ public:
     virtual bool IsClusterDagDebugEnabled() const { return false; }
     virtual EClusterDAGTraversalMode GetClusterDagTraversalMode() const { return EClusterDAGTraversalMode::LevelSplitQueue; }
     virtual float GetClusterDagTargetErrorPixels() const { return 1.0f; }
+    virtual float GetClusterDagSwRasterThresholdPixels() const { return 16.0f; }
     virtual bool IsClusterDagForceMipEnabled() const { return false; }
     virtual uint32_t GetClusterDagForceMipLevel() const { return 0; }
     virtual bool IsClusterDagForceMipSkipFrustumCull() const { return false; }

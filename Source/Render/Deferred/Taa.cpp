@@ -15,6 +15,9 @@ using Microsoft::WRL::ComPtr;
 
 namespace
 {
+    constexpr uint32_t kTaaConstantsDwordCount = 4;
+    constexpr uint32_t kTaaBindlessDwordCount  = 3;
+
     float HaltonSequence(uint32_t Index, uint32_t Base)
     {
         float Result = 0.0f;
@@ -137,6 +140,7 @@ void FTaa::AddPass(FDeferredPassContext& Context) const
         LocalCommandList->SetPipelineState(Pipeline.Get());
         LocalCommandList->SetComputeRootSignature(RootSignature.Get());
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        static_assert(sizeof(FTemporalAAConstants) / sizeof(uint32_t) <= kTaaConstantsDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(Constants) / sizeof(uint32_t), &Constants, 0);
         const uint32_t TaaBindlessIndices[] =
         {
@@ -144,6 +148,7 @@ void FTaa::AddPass(FDeferredPassContext& Context) const
             GetHistorySrvBindlessIndex(Data.ReadIndex),
             GetHistoryUavBindlessIndex(Data.WriteIndex)
         };
+        static_assert(_countof(TaaBindlessIndices) <= kTaaBindlessDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(1, _countof(TaaBindlessIndices), TaaBindlessIndices, 0);
 
         const uint32_t GroupX = (static_cast<uint32_t>(Data.OutputSize.x) + 7u) / 8u;
@@ -268,8 +273,8 @@ bool FTaa::CreateResources(FDX12Device* Device, uint32_t Width, uint32_t Height,
 bool FTaa::CreateRootSignature(FDX12Device* Device)
 {
     CD3DX12_ROOT_PARAMETER1 RootParams[2] = {};
-    RootParams[0].InitAsConstants(4, 0, 0, D3D12_SHADER_VISIBILITY_ALL);
-    RootParams[1].InitAsConstants(3, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[0].InitAsConstants(kTaaConstantsDwordCount, 0, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[1].InitAsConstants(kTaaBindlessDwordCount, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
 
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc;
     RootSigDesc.Init_1_1(_countof(RootParams), RootParams, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);

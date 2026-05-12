@@ -4,6 +4,7 @@
 #include "../../Core/GpuDebugMarkers.h"
 #include "../../Core/Logger.h"
 #include "../../RHI/DX12Device.h"
+#include "../RendererUtils.h"
 #include "../ShaderCompiler.h"
 #include <algorithm>
 #define A_CPU
@@ -14,6 +15,9 @@
 #include <string>
 
 using Microsoft::WRL::ComPtr;
+
+constexpr uint32_t kRestirGIConstantsDwordCount = 19;
+constexpr uint32_t kRestirGIBindlessDwordCount  = 30;
 
 bool FRestirGI::InitializePipelines(FDeferredRenderer& Owner, FDX12Device* Device)
 {
@@ -207,9 +211,9 @@ bool FRestirGI::CreateRootSignature(FDX12Device* Device)
     // RootParams[1]: Scene constants CBV (b0), used in Shaders/SceneConstants.hlsl
     RootParams[1].InitAsConstantBufferView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE, D3D12_SHADER_VISIBILITY_ALL);
     // RootParams[2]: ReSTIR GI constants (b1)
-    RootParams[2].InitAsConstants(19, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[2].InitAsConstants(kRestirGIConstantsDwordCount, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
     // RootParams[3]: ReSTIR GI bindless indices (b2)
-    RootParams[3].InitAsConstants(30, 2, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[3].InitAsConstants(kRestirGIBindlessDwordCount, 2, 0, D3D12_SHADER_VISIBILITY_ALL);
 
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc;
     RootSigDesc.Init_1_1(_countof(RootParams), RootParams, 0, nullptr,
@@ -238,39 +242,37 @@ bool FRestirGI::CreatePipeline(FDX12Device* Device)
     }
 
     FShaderCompiler Compiler;
-    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
-    const std::wstring CSTarget = RendererUtils::BuildShaderTarget(L"cs", ShaderModel);
 
     std::array<std::vector<uint8_t>, 2> InitialByteCodes;
-    if (!Compiler.CompileFromFile(L"Shaders/RestirGI/RestirGI.hlsl", L"CSInitialSampling", CSTarget, InitialByteCodes[0], { L"RESTIR_GI_RANDOM_MODE_HASH=1" }))
+    if (!RendererUtils::CompileComputeShader(Compiler, Device, L"Shaders/RestirGI/RestirGI.hlsl", L"CSInitialSampling", InitialByteCodes[0], { L"RESTIR_GI_RANDOM_MODE_HASH=1" }))
     {
         return false;
     }
-    if (!Compiler.CompileFromFile(L"Shaders/RestirGI/RestirGI.hlsl", L"CSInitialSampling", CSTarget, InitialByteCodes[1], { L"RESTIR_GI_RANDOM_MODE_BLUE_NOISE_SOBOL=1" }))
+    if (!RendererUtils::CompileComputeShader(Compiler, Device, L"Shaders/RestirGI/RestirGI.hlsl", L"CSInitialSampling", InitialByteCodes[1], { L"RESTIR_GI_RANDOM_MODE_BLUE_NOISE_SOBOL=1" }))
     {
         return false;
     }
 
     std::vector<uint8_t> TemporalByteCode;
-    if (!Compiler.CompileFromFile(L"Shaders/RestirGI/RestirGI.hlsl", L"CSTemporalResampling", CSTarget, TemporalByteCode))
+    if (!RendererUtils::CompileComputeShader(Compiler, Device, L"Shaders/RestirGI/RestirGI.hlsl", L"CSTemporalResampling", TemporalByteCode))
     {
         return false;
     }
 
     std::vector<uint8_t> BootstrapByteCode;
-    if (!Compiler.CompileFromFile(L"Shaders/RestirGI/RestirGI.hlsl", L"CSReservoirBootstrap", CSTarget, BootstrapByteCode))
+    if (!RendererUtils::CompileComputeShader(Compiler, Device, L"Shaders/RestirGI/RestirGI.hlsl", L"CSReservoirBootstrap", BootstrapByteCode))
     {
         return false;
     }
 
     std::vector<uint8_t> SpatialByteCode;
-    if (!Compiler.CompileFromFile(L"Shaders/RestirGI/RestirGI.hlsl", L"CSSpatialResampling", CSTarget, SpatialByteCode))
+    if (!RendererUtils::CompileComputeShader(Compiler, Device, L"Shaders/RestirGI/RestirGI.hlsl", L"CSSpatialResampling", SpatialByteCode))
     {
         return false;
     }
 
     std::vector<uint8_t> ResolveByteCode;
-    if (!Compiler.CompileFromFile(L"Shaders/RestirGI/RestirGI.hlsl", L"CSResolve", CSTarget, ResolveByteCode))
+    if (!RendererUtils::CompileComputeShader(Compiler, Device, L"Shaders/RestirGI/RestirGI.hlsl", L"CSResolve", ResolveByteCode))
     {
         return false;
     }
@@ -495,8 +497,9 @@ void FRestirGI::DispatchRestirPass(FDeferredPassContext& Context, FDX12CommandCo
     CommandList4->SetPipelineState(PipelineState);
     CommandList4->SetComputeRootShaderResourceView(0, TlasResource->GetGPUVirtualAddress());
     CommandList4->SetComputeRootConstantBufferView(1, Owner.GetSceneConstantBufferAddress());
+    static_assert(sizeof(FRestirGIConstants) / sizeof(uint32_t) <= kRestirGIConstantsDwordCount);
     CommandList4->SetComputeRoot32BitConstants(2, sizeof(FRestirGIConstants) / sizeof(uint32_t), &Constants, 0);
-    CommandList4->SetComputeRoot32BitConstants(3, 30, BindlessIndices, 0);
+    CommandList4->SetComputeRoot32BitConstants(3, kRestirGIBindlessDwordCount, BindlessIndices, 0);
 
     const uint32_t GroupSize = 8u;
     CommandList4->Dispatch((DispatchWidth + GroupSize - 1u) / GroupSize, (DispatchHeight + GroupSize - 1u) / GroupSize, 1u);
@@ -590,6 +593,7 @@ void FRestirGI::AddInitialSamplingPass(FDeferredPassContext& Context) const
             Owner.BlueNoiseSobolTexture.SrvBindlessIndex,
             Owner.BlueNoiseScramblingRanking1SPPTexture.SrvBindlessIndex
         };
+        static_assert(_countof(BindlessIndices) <= kRestirGIBindlessDwordCount);
         const uint32_t FullWidth = static_cast<uint32_t>(Owner.Viewport.Width);
         const uint32_t FullHeight = static_cast<uint32_t>(Owner.Viewport.Height);
         DispatchRestirPass(Context, Cmd, InitialPipeline, 0u, BindlessIndices, (FullWidth + 1u) / 2u, (FullHeight + 1u) / 2u, Data.bEnabled && bInputsValid);

@@ -4,8 +4,50 @@
 
 #include <array>
 #include <cstdint>
+#include <cstring>
+#include <sstream>
 #include <string>
 #include <vector>
+
+struct FPositionKey
+{
+    uint32_t X = 0;
+    uint32_t Y = 0;
+    uint32_t Z = 0;
+
+    bool operator==(const FPositionKey& Other) const
+    {
+        return X == Other.X && Y == Other.Y && Z == Other.Z;
+    }
+
+    bool operator<(const FPositionKey& Other) const
+    {
+        if (X != Other.X) return X < Other.X;
+        if (Y != Other.Y) return Y < Other.Y;
+        return Z < Other.Z;
+    }
+};
+
+struct FPositionKeyHasher
+{
+    size_t operator()(const FPositionKey& Key) const
+    {
+        size_t Hash = static_cast<size_t>(Key.X);
+        Hash ^= static_cast<size_t>(Key.Y) + 0x9e3779b9u + (Hash << 6) + (Hash >> 2);
+        Hash ^= static_cast<size_t>(Key.Z) + 0x9e3779b9u + (Hash << 6) + (Hash >> 2);
+        return Hash;
+    }
+};
+
+inline FPositionKey MakePositionKey(const FFloat3& Position)
+{
+    static_assert(sizeof(float) == sizeof(uint32_t));
+    FPositionKey Key;
+    std::memcpy(&Key.X, &Position.x, sizeof(uint32_t));
+    std::memcpy(&Key.Y, &Position.y, sizeof(uint32_t));
+    std::memcpy(&Key.Z, &Position.z, sizeof(uint32_t));
+    return Key;
+}
 
 struct FBuilderVertexStreams
 {
@@ -16,26 +58,35 @@ struct FBuilderVertexStreams
     std::vector<FFloat4> Colors;
 };
 
+inline void EnsureVertexStreamSize(FBuilderVertexStreams& Streams)
+{
+    const size_t VertexCount = Streams.Positions.size();
+    if (Streams.Normals.size() != VertexCount)
+        Streams.Normals.resize(VertexCount, FFloat3(0.0f, 0.0f, 1.0f));
+    if (Streams.UVs.size() != VertexCount)
+        Streams.UVs.resize(VertexCount, FFloat2(0.0f, 0.0f));
+    if (Streams.Tangents.size() != VertexCount)
+        Streams.Tangents.resize(VertexCount, FFloat4(1.0f, 0.0f, 0.0f, 1.0f));
+    if (Streams.Colors.size() != VertexCount)
+        Streams.Colors.resize(VertexCount, FFloat4(1.0f, 1.0f, 1.0f, 1.0f));
+}
+
 struct FScratchCorner
 {
     uint32_t SourceVertexIndex = GClusterDAGInvalidIndex;
     uint32_t PositionNodeIndex = GClusterDAGInvalidIndex;
-    uint32_t SourceChildClusterIndex = GClusterDAGInvalidIndex;
 };
 
 struct FScratchTriangle
 {
     std::array<uint32_t, 3> CornerIndices{ GClusterDAGInvalidIndex, GClusterDAGInvalidIndex, GClusterDAGInvalidIndex };
     std::array<uint32_t, 3> PositionNodeIndices{ GClusterDAGInvalidIndex, GClusterDAGInvalidIndex, GClusterDAGInvalidIndex };
-    uint32_t SourceChildClusterIndex = GClusterDAGInvalidIndex;
-    bool bDeleted = false;
 };
 
 struct FScratchPositionNode
 {
     FFloat3 Position{ 0.0f, 0.0f, 0.0f };
     bool bLocked = false;
-    bool bDeleted = false;
 };
 
 struct FScratchEdge
@@ -61,44 +112,6 @@ struct FMergedClusterScratch
     {
         return !Corners.empty() && !Triangles.empty() && !PositionNodes.empty() && ActiveTriangleCount > 0;
     }
-};
-
-struct FPositionQemReducerInput
-{
-    uint32_t DesiredParentCount = 0;
-    uint32_t MaxAllowedParentCount = 0;
-    uint32_t TargetClusterTriangles = 0;
-    uint32_t MaxClusterVertices = 128;
-    uint32_t MaxClusterTriangles = 128;
-    float ConeWeight = 0.5f;
-    bool bAllowExternalPenaltyCollapses = false;
-};
-
-struct FPositionQemReducerResult
-{
-    FBuilderVertexStreams Streams;
-    std::vector<uint32_t> Indices;
-    float ResultError = 0.0f;
-    uint32_t PredictedParentCount = 0;
-    uint32_t CandidateEdgeCount = 0;
-    uint32_t AcceptedCollapseCount = 0;
-    uint32_t OutputPositionCount = 0;
-    uint32_t OutputTriangleCount = 0;
-    uint32_t LastActiveTriangleCount = 0;
-    uint32_t LastTargetTriangleCount = 0;
-    uint32_t LastDynamicEdgeCount = 0;
-    uint32_t LastCandidateCount = 0;
-    uint32_t LastFilteredExternalEdgeCount = 0;
-    uint32_t LastFilteredInvalidEdgeCount = 0;
-    uint32_t LastFilteredLockedEdgeCount = 0;
-    uint32_t LastSolveFailedCount = 0;
-    uint32_t LastLockedCandidateCount = 0;
-    uint32_t LastPenaltyCandidateCount = 0;
-    uint32_t LastRejectInvalidNodeCount = 0;
-    uint32_t LastRejectDegenerateCount = 0;
-    uint32_t LastRejectNormalFlipCount = 0;
-    bool bValidOutput = false;
-    std::string FailureReason;
 };
 
 struct FMeshoptScratchReducerInput
@@ -128,6 +141,22 @@ struct FMeshoptScratchReducerResult
     std::string FailureReason;
 };
 
+std::string BuildPrimitiveLogPrefix(size_t PrimitiveIndex);
+void LogPrimitiveInfo(size_t PrimitiveIndex, const std::string& Message);
+void LogPrimitiveWarning(size_t PrimitiveIndex, const std::string& Message);
+
+#ifndef CLUSTER_DAG_BUILD_LOGGING
+#define CLUSTER_DAG_BUILD_LOGGING 1
+#endif
+
+#if CLUSTER_DAG_BUILD_LOGGING
+#define CLUSTER_DAG_LOG_INFO(PrimitiveIndex, StreamExpression) do { std::ostringstream Stream; Stream << StreamExpression; LogPrimitiveInfo((PrimitiveIndex), Stream.str()); } while(false)
+#define CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, StreamExpression) do { std::ostringstream Stream; Stream << StreamExpression; LogPrimitiveWarning((PrimitiveIndex), Stream.str()); } while(false)
+#else
+#define CLUSTER_DAG_LOG_INFO(PrimitiveIndex, StreamExpression) do { (void)(PrimitiveIndex); } while(false)
+#define CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, StreamExpression) do { (void)(PrimitiveIndex); } while(false)
+#endif
+
 bool CompactAndOptimizeBuilderGeometry(
     FBuilderVertexStreams& Streams,
     std::vector<uint32_t>& Indices,
@@ -147,12 +176,6 @@ bool EmitMergedClusterGeometry(
     FBuilderVertexStreams& OutStreams,
     std::vector<uint32_t>& OutIndices,
     std::vector<unsigned char>* OutVertexLocks = nullptr);
-
-bool ReduceMergedClusterWithPositionQem(
-    const FClusterDAG& Dag,
-    const FMergedClusterScratch& Scratch,
-    const FPositionQemReducerInput& Input,
-    FPositionQemReducerResult& OutResult);
 
 bool ReduceMergedClusterWithMeshopt(
     const FClusterDAG& Dag,

@@ -9,13 +9,6 @@
 
 constexpr uint32_t GClusterDAGInvalidIndex = 0xffffffffu;
 
-enum class EClusterGroupReducerBackend : uint32_t
-{
-    Auto = 0,
-    Meshopt = 1,
-    PositionQem = 2,
-};
-
 struct FClusterBounds
 {
     FFloat3 Center{ 0.0f, 0.0f, 0.0f };
@@ -79,6 +72,7 @@ struct FRuntimeCluster
 {
     FClusterBounds Bounds;
     float LODError = 0.0f;
+    float MaxEdgeLength = 0.0f;
     FFloat3 LodBoundsCenter{ 0.0f, 0.0f, 0.0f };
     float LodBoundsRadius = 0.0f;
     uint32_t GroupIndex = GClusterDAGInvalidIndex;
@@ -124,6 +118,7 @@ struct FCluster
     uint32_t TriangleCount = 0;
     FClusterBounds Bounds;
     float LODError = 0.0f;
+    float MaxEdgeLength = 0.0f;
     FFloat3 LodBoundsCenter{ 0.0f, 0.0f, 0.0f };
     float LodBoundsRadius = 0.0f;
     uint32_t ExternalEdgeOffset = 0;
@@ -239,9 +234,6 @@ struct FClusterDAGBuildParams
     float ConeWeight = 0.5f;
     uint32_t MaxLevels = 20;
     uint32_t ConvergeTriangleThreshold = 128;
-    float AttributeNormalWeight = 0.5f;
-    float AttributeUVWeight = 1.0f;
-    EClusterGroupReducerBackend ReducerBackend = EClusterGroupReducerBackend::Meshopt;
 };
 
 uint64_t HashClusterDAGBuildParams(const FClusterDAGBuildParams& Params);

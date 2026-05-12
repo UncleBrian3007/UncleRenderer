@@ -103,6 +103,7 @@ public:
         uint32_t Mode = 0;
         bool bGpuDebugPrintEnabled = false;
         float ClusterDagTargetErrorPixels = 0.0f;
+        float ClusterDagSwRasterThresholdPixels = 16.0f;
         float ViewportHeightPixels = 0.0f;
         uint32_t ClusterDagVisibleRootCount = 0;
         bool bClusterDagForceMipEnabled = false;

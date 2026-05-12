@@ -13,6 +13,9 @@
 #include "../../RHI/DX12Device.h"
 #include <d3dx12.h>
 
+constexpr uint32_t kHzbConstantsDwordCount = 12;
+constexpr uint32_t kHzbBindlessDwordCount  = 6;
+
 bool FHzb::InitializePipelines(FDeferredRenderer& Owner, FDX12Device* Device)
 {
     (void)Owner;
@@ -218,8 +221,10 @@ void FHzb::AddPass(FDeferredPassContext& Context)
             }
 
             LocalCommandList->SetPipelineState(SelectedPipeline);
+            static_assert(sizeof(FHZBConstants) / sizeof(uint32_t) <= kHzbConstantsDwordCount);
             LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(Constants) / sizeof(uint32_t), &Constants, 0);
             const uint32_t HZBBindlessIndices[] = { Data.DepthBindlessIndex, SourceBindlessIndex, DestIndex0, DestIndex1, DestIndex2, DestIndex3 };
+            static_assert(_countof(HZBBindlessIndices) <= kHzbBindlessDwordCount);
             LocalCommandList->SetComputeRoot32BitConstants(1, _countof(HZBBindlessIndices), HZBBindlessIndices, 0);
 
             const uint32_t GroupX = (Constants.DestWidth + 7) / 8;
@@ -292,9 +297,9 @@ bool FHzb::CreateRootSignature(FDX12Device* Device)
 {
     CD3DX12_ROOT_PARAMETER1 RootParams[2] = {};
     // RootParams[0]: HZB constants (mip counts, dimensions, source mip), used in Shaders/BuildHZB.hlsl BuildHZB
-    RootParams[0].InitAsConstants(12, 0, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[0].InitAsConstants(kHzbConstantsDwordCount, 0, 0, D3D12_SHADER_VISIBILITY_ALL);
     // RootParams[1]: HZB bindless indices (b1), used in Shaders/BuildHZB.hlsl BuildHZB
-    RootParams[1].InitAsConstants(6, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[1].InitAsConstants(kHzbBindlessDwordCount, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
 
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc;
     RootSigDesc.Init_1_1(_countof(RootParams), RootParams, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
@@ -315,8 +320,6 @@ bool FHzb::CreateRootSignature(FDX12Device* Device)
 bool FHzb::CreatePipeline(FDX12Device* Device)
 {
     FShaderCompiler Compiler;
-    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
-    const std::wstring CSTarget = RendererUtils::BuildShaderTarget(L"cs", ShaderModel);
 
     for (size_t PipelineIndex = 0; PipelineIndex < HzbPipelines.size(); ++PipelineIndex)
     {
@@ -324,7 +327,7 @@ bool FHzb::CreatePipeline(FDX12Device* Device)
         const std::wstring Define = L"HZB_MIPS_PER_DISPATCH=" + std::to_wstring(PipelineIndex + 1);
         const std::vector<std::wstring> Defines = { Define };
 
-        if (!Compiler.CompileFromFile(L"Shaders/BuildHZB.hlsl", L"BuildHZB", CSTarget, CSByteCode, Defines))
+        if (!RendererUtils::CompileComputeShader(Compiler, Device, L"Shaders/BuildHZB.hlsl", L"BuildHZB", CSByteCode, Defines))
         {
             return false;
         }

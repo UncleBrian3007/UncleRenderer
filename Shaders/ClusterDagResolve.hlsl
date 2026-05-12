@@ -23,8 +23,8 @@ struct ClusterDagPackedPosition
 
 cbuffer ClusterDagResolveBindlessConstants : register(b0)
 {
-    uint VisibilityTextureIndex0;
-    uint VisibilityTextureIndex1;
+    uint Visibility64TextureIndex;
+    uint VisibleEntryBufferIndex;
     uint DrawDataBufferIndex;
     uint SceneDataBufferIndex;
 };
@@ -126,6 +126,40 @@ float2 InterpolateFloat2(float2 v0, float2 v1, float2 v2, float2 barycentrics)
 float4 InterpolateFloat4(float4 v0, float4 v1, float4 v2, float2 barycentrics)
 {
     return v0 * (1.0f - barycentrics.x - barycentrics.y) + v1 * barycentrics.x + v2 * barycentrics.y;
+}
+
+float2 ClipToPixel(float4 clipPosition, float2 viewportSize)
+{
+    const float2 ndc = clipPosition.xy / max(abs(clipPosition.w), 1e-6f);
+    return float2(
+        (ndc.x * 0.5f + 0.5f) * viewportSize.x,
+        (0.5f - ndc.y * 0.5f) * viewportSize.y);
+}
+
+float EdgeFunction(float2 a, float2 b, float2 c)
+{
+    return (c.x - a.x) * (b.y - a.y) - (c.y - a.y) * (b.x - a.x);
+}
+
+float2 ComputePerspectiveBarycentrics(float2 pixelCenter, float4 clip0, float4 clip1, float4 clip2, float2 viewportSize)
+{
+    const float2 p0 = ClipToPixel(clip0, viewportSize);
+    const float2 p1 = ClipToPixel(clip1, viewportSize);
+    const float2 p2 = ClipToPixel(clip2, viewportSize);
+    const float area = EdgeFunction(p0, p1, p2);
+    if (abs(area) < 1e-6f)
+    {
+        return float2(0.0f, 0.0f);
+    }
+
+    const float b0 = EdgeFunction(p1, p2, pixelCenter) / area;
+    const float b1 = EdgeFunction(p2, p0, pixelCenter) / area;
+    const float b2 = EdgeFunction(p0, p1, pixelCenter) / area;
+    const float w0 = b0 / max(abs(clip0.w), 1e-6f);
+    const float w1 = b1 / max(abs(clip1.w), 1e-6f);
+    const float w2 = b2 / max(abs(clip2.w), 1e-6f);
+    const float invSum = rcp(max(w0 + w1 + w2, 1e-6f));
+    return float2(w1 * invSum, w2 * invSum);
 }
 
 bool IsFeatureEnabled(uint pipelineKey, uint bitIndex)
@@ -238,21 +272,27 @@ VSOutput ClusterDagResolveVS(uint vertexId : SV_VertexID)
 
 PSOutput ClusterDagResolvePS(VSOutput Input)
 {
-    Texture2D<uint2> VisibilityTexture0 = ResourceDescriptorHeap[VisibilityTextureIndex0];
-    Texture2D<float2> VisibilityTexture1 = ResourceDescriptorHeap[VisibilityTextureIndex1];
+    Texture2D<uint2> Visibility64Texture = ResourceDescriptorHeap[Visibility64TextureIndex];
+    StructuredBuffer<ClusterDagVisibleEntry> VisibleEntries = ResourceDescriptorHeap[VisibleEntryBufferIndex];
     StructuredBuffer<ClusterDagDrawData> DrawDatas = ResourceDescriptorHeap[DrawDataBufferIndex];
     StructuredBuffer<ClusterDagResolveSceneData> SceneDatas = ResourceDescriptorHeap[SceneDataBufferIndex];
 
     const int2 pixelPosition = int2(Input.Position.xy);
-    const uint2 visibility = VisibilityTexture0.Load(int3(pixelPosition, 0));
-    if (visibility.x == 0u)
+    uint width = 0u;
+    uint height = 0u;
+    Visibility64Texture.GetDimensions(width, height);
+
+    const uint2 visibility = Visibility64Texture.Load(int3(pixelPosition, 0));
+    const uint pixelValue = visibility.x;
+    if (pixelValue == 0u)
     {
         clip(-1.0f);
     }
 
-    const uint drawDataIndex = visibility.x - 1u;
-    const uint primitiveId = visibility.y;
-    const float2 barycentrics = VisibilityTexture1.Load(int3(pixelPosition, 0));
+    const uint visibleEntryIndex = (pixelValue >> 7u) - 1u;
+    const uint primitiveId = pixelValue & 0x7fu;
+    const ClusterDagVisibleEntry visibleEntry = VisibleEntries[visibleEntryIndex];
+    const uint drawDataIndex = visibleEntry.DrawDataIndex;
     const ClusterDagDrawData drawData = DrawDatas[drawDataIndex];
     const ClusterDagResolveSceneData sceneData = SceneDatas[drawData.ModelIndex];
 
@@ -277,14 +317,6 @@ PSOutput ClusterDagResolvePS(VSOutput Input)
     const float4 color1 = LoadColor(sceneData, vertexIndex1);
     const float4 color2 = LoadColor(sceneData, vertexIndex2);
 
-    const float3 localPosition = InterpolateFloat3(localPosition0, localPosition1, localPosition2, barycentrics);
-    const float3 localNormal = normalize(InterpolateFloat3(localNormal0, localNormal1, localNormal2, barycentrics));
-    const float2 uv = InterpolateFloat2(uv0, uv1, uv2, barycentrics);
-    const float4 tangent = InterpolateFloat4(tangent0, tangent1, tangent2, barycentrics);
-    const float4 color = InterpolateFloat4(color0, color1, color2, barycentrics);
-
-    const float4 worldPosition = mul(float4(localPosition, 1.0f), sceneData.World);
-    float3 worldNormal = normalize(mul(localNormal, (float3x3)sceneData.WorldInverseTranspose));
     const float4 worldClip0 = mul(mul(float4(localPosition0, 1.0f), sceneData.World), sceneData.View);
     const float4 worldClip1 = mul(mul(float4(localPosition1, 1.0f), sceneData.World), sceneData.View);
     const float4 worldClip2 = mul(mul(float4(localPosition2, 1.0f), sceneData.World), sceneData.View);
@@ -293,8 +325,21 @@ PSOutput ClusterDagResolvePS(VSOutput Input)
     const float4 clip2 = mul(worldClip2, sceneData.Projection);
     const bool isFrontFace = ComputeFrontFace(clip0, clip1, clip2);
 
-    float4 worldTangent = float4(normalize(mul(tangent.xyz, (float3x3)sceneData.WorldInverseTranspose)), tangent.w);
     const uint pipelineKey = sceneData.ClusterDagMaterialPipelineKey;
+    const float2 barycentrics = ComputePerspectiveBarycentrics(
+        float2(pixelPosition) + 0.5f,
+        clip0,
+        clip1,
+        clip2,
+        float2(width, height));
+    const float3 localPosition = InterpolateFloat3(localPosition0, localPosition1, localPosition2, barycentrics);
+    const float3 localNormal = normalize(InterpolateFloat3(localNormal0, localNormal1, localNormal2, barycentrics));
+    const float2 uv = InterpolateFloat2(uv0, uv1, uv2, barycentrics);
+    const float4 tangent = InterpolateFloat4(tangent0, tangent1, tangent2, barycentrics);
+    const float4 color = InterpolateFloat4(color0, color1, color2, barycentrics);
+    const float4 worldPosition = mul(float4(localPosition, 1.0f), sceneData.World);
+    float3 worldNormal = normalize(mul(localNormal, (float3x3)sceneData.WorldInverseTranspose));
+    float4 worldTangent = float4(normalize(mul(tangent.xyz, (float3x3)sceneData.WorldInverseTranspose)), tangent.w);
     const bool useNormalMap = IsFeatureEnabled(pipelineKey, 0u);
     const bool useMetallicRoughnessMap = IsFeatureEnabled(pipelineKey, 1u);
     const bool useBaseColorMap = IsFeatureEnabled(pipelineKey, 2u);
@@ -302,7 +347,7 @@ PSOutput ClusterDagResolvePS(VSOutput Input)
     const bool useSheen = IsFeatureEnabled(pipelineKey, 5u);
     const bool useClearcoat = IsFeatureEnabled(pipelineKey, 6u);
     const bool useAnisotropy = IsFeatureEnabled(pipelineKey, 7u);
-    const bool useDoubleSided = IsFeatureEnabled(pipelineKey, 9u);
+    const bool useDoubleSided = IsFeatureEnabled(pipelineKey, kClusterDagPipelineKeyDoubleSidedBit);
 
     const uint albedoTextureIndex = sceneData.MaterialTextureIndices0.x;
     const uint metallicRoughnessTextureIndex = sceneData.MaterialTextureIndices0.y;

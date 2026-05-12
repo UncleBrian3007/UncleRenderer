@@ -22,6 +22,8 @@ cbuffer ClusterDagLevelSplitInitBindlessConstants : register(b1)
     uint CandidateQueueCapacity;
     uint TraversalEpoch;
     uint DebugPrintStatsIndex;
+    uint VisibleEntryCountersIndex;
+    uint DrawDataVisibleEntryIndicesIndex;
 };
 
 void ClearLevelSplitNodeArgs(RWByteAddressBuffer Args)
@@ -48,9 +50,14 @@ void InitClusterDagLevelSplitQueuesCS(uint3 dispatchThreadId : SV_DispatchThread
     RWStructuredBuffer<uint> CandidateClusterQueue = ResourceDescriptorHeap[CandidateClusterQueueBufferIndex];
     RWStructuredBuffer<uint> VisitedGroupEpochs = ResourceDescriptorHeap[VisitedGroupEpochBufferIndex];
     RWByteAddressBuffer RunCounts = ResourceDescriptorHeap[RunCountBufferIndex];
+    RWByteAddressBuffer VisibleEntryCounters = ResourceDescriptorHeap[VisibleEntryCountersIndex];
+    RWStructuredBuffer<uint> DrawDataVisibleEntryIndices = ResourceDescriptorHeap[DrawDataVisibleEntryIndicesIndex];
 
     if (threadIndex == 0u)
     {
+        VisibleEntryCounters.Store(0u, 0u);
+        VisibleEntryCounters.Store(4u, 0u);
+        VisibleEntryCounters.Store(8u, 0u);
 #if !USE_CLUSTER_DAG_FAST
         QueueState.Store(kLevelSplitQueueStateTotalVisibleClustersOffset, 0u);
         QueueState.Store(kLevelSplitQueueStatePeakGroupQueueDepthOffset, RootGroupCount);
@@ -68,6 +75,11 @@ void InitClusterDagLevelSplitQueuesCS(uint3 dispatchThreadId : SV_DispatchThread
     if (threadIndex < RangeCount)
     {
         RunCounts.Store(threadIndex * 4u, 0u);
+    }
+
+    if (threadIndex < IndirectCommandCount)
+    {
+        DrawDataVisibleEntryIndices[threadIndex] = 0xffffffffu;
     }
 
     if (threadIndex < CandidateQueueCapacity)

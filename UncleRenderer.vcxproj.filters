@@ -320,7 +320,7 @@
     <ClCompile Include="Source\Scene\ClusterDAGBuilder.cpp">
       <Filter>Source Files\Scene</Filter>
     </ClCompile>
-    <ClCompile Include="Source\Scene\PositionQemReducer.cpp">
+    <ClCompile Include="Source\Scene\MergedClusterSimplifier.cpp">
       <Filter>Source Files\Scene</Filter>
     </ClCompile>
     <ClCompile Include="Source\Render\ObjectId.cpp">
@@ -547,7 +547,7 @@
     <ClInclude Include="Source\Scene\ClusterDAG.h">
       <Filter>Header Files\Scene</Filter>
     </ClInclude>
-    <ClInclude Include="Source\Scene\PositionQemReducer.h">
+    <ClInclude Include="Source\Scene\MergedClusterSimplifier.h">
       <Filter>Header Files\Scene</Filter>
     </ClInclude>
     <ClInclude Include="Source\Render\ObjectId.h">
@@ -617,6 +617,9 @@
       <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\ClusterDagResolve.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\ClusterDagDepthExport.hlsl">
       <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\GpuDebug\GpuDebugPrintCommon.hlsl">
@@ -773,6 +776,9 @@
     <None Include="Shaders\ClusterDag\PrepareClusterDagLevelSplitNodeArgs.hlsl">
       <Filter>Shaders\ClusterDag</Filter>
     </None>
+    <None Include="Shaders\ClusterDag\PrepareClusterDagSwRasterArgs.hlsl">
+      <Filter>Shaders\ClusterDag</Filter>
+    </None>
     <None Include="Shaders\ClusterDag\BuildClusterDagRunsAppend.hlsl">
       <Filter>Shaders\ClusterDag</Filter>
     </None>
@@ -789,6 +795,9 @@
       <Filter>Shaders\ClusterDag</Filter>
     </None>
     <None Include="Shaders\ClusterDag\InitClusterDagQueues.hlsl">
+      <Filter>Shaders\ClusterDag</Filter>
+    </None>
+    <None Include="Shaders\ClusterDag\RasterizeClusterSW.hlsl">
       <Filter>Shaders\ClusterDag</Filter>
     </None>
     <None Include="Shaders\ClusterDag\PersistentClusterDagCull.hlsl">
@@ -816,6 +825,9 @@
       <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\ClusterDagVisibility.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\PipelineKeyShared.h">
       <Filter>Shaders</Filter>
     </None>
   </ItemGroup>

@@ -3,6 +3,7 @@
 #include "../DeferredRenderer.h"
 #include "../../Core/GpuDebugMarkers.h"
 #include "../../RHI/DX12Device.h"
+#include "../RendererUtils.h"
 #include "../ShaderCompiler.h"
 #include <d3dx12.h>
 #define A_CPU
@@ -11,6 +12,9 @@
 #undef A_CPU
 
 using Microsoft::WRL::ComPtr;
+
+constexpr uint32_t kRestirGIDenoiserConstantsDwordCount = 10;
+constexpr uint32_t kRestirGIDenoiserBindlessDwordCount  = 16;
 
 bool FRestirGIDenoiser::ShouldResetHistoryForFreeze(const FDeferredRenderer& Owner) const
 {
@@ -46,8 +50,8 @@ bool FRestirGIDenoiser::InitializePipelines(FDeferredRenderer& Owner, FDX12Devic
 {
     (void)Owner;
     CD3DX12_ROOT_PARAMETER1 RootParams[3] = {};
-    RootParams[0].InitAsConstants(10, 0, 0, D3D12_SHADER_VISIBILITY_ALL);
-    RootParams[1].InitAsConstants(16, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[0].InitAsConstants(kRestirGIDenoiserConstantsDwordCount, 0, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[1].InitAsConstants(kRestirGIDenoiserBindlessDwordCount, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
     RootParams[2].InitAsConstantBufferView(2, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE, D3D12_SHADER_VISIBILITY_ALL);
 
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc;
@@ -64,12 +68,10 @@ bool FRestirGIDenoiser::InitializePipelines(FDeferredRenderer& Owner, FDX12Devic
     HR_CHECK(Device->GetDevice()->CreateRootSignature(0, SerializedSig->GetBufferPointer(), SerializedSig->GetBufferSize(), IID_PPV_ARGS(RootSignature.ReleaseAndGetAddressOf())));
 
     FShaderCompiler Compiler;
-    const D3D_SHADER_MODEL ShaderModel = Device->GetShaderModel();
-    const std::wstring CSTarget = RendererUtils::BuildShaderTarget(L"cs", ShaderModel);
     auto CreateDenoiserPso = [&](const wchar_t* ShaderPath, const wchar_t* EntryPoint, Microsoft::WRL::ComPtr<ID3D12PipelineState>& OutPipeline) -> bool
     {
         std::vector<uint8_t> CSByteCode;
-        if (!Compiler.CompileFromFile(ShaderPath, EntryPoint, CSTarget, CSByteCode))
+        if (!RendererUtils::CompileComputeShader(Compiler, Device, ShaderPath, EntryPoint, CSByteCode))
         {
             return false;
         }
@@ -272,6 +274,7 @@ void FRestirGIDenoiser::AddShMipGenPass(FDeferredRenderer& Owner, FRenderGraph& 
 
         const auto CounterBarrier = CD3DX12_RESOURCE_BARRIER::UAV(AtomicCounterResource);
         LocalCommandList->ResourceBarrier(1, &CounterBarrier);
+        static_assert(_countof(SpdConstants) <= kRestirGIDenoiserConstantsDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(0, _countof(SpdConstants), SpdConstants, 0);
         LocalCommandList->Dispatch(DispatchThreadGroupCountXY[0], DispatchThreadGroupCountXY[1], 1);
 
@@ -375,6 +378,7 @@ void FRestirGIDenoiser::AddLinearDepthMipGenPass(FDeferredRenderer& Owner, FRend
 
         const auto CounterBarrier = CD3DX12_RESOURCE_BARRIER::UAV(AtomicCounterResource);
         LocalCommandList->ResourceBarrier(1, &CounterBarrier);
+        static_assert(_countof(SpdConstants) <= kRestirGIDenoiserConstantsDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(0, _countof(SpdConstants), SpdConstants, 0);
         LocalCommandList->Dispatch(DispatchThreadGroupCountXY[0], DispatchThreadGroupCountXY[1], 1);
 
@@ -491,7 +495,9 @@ void FRestirGIDenoiser::AddHistoryReconstructionPass(FDeferredRenderer& Owner, F
         LocalCommandList->SetComputeRootSignature(RootSignature.Get());
         LocalCommandList->SetComputeRootConstantBufferView(2, Owner.GetSceneConstantBufferAddress());
         LocalCommandList->SetPipelineState(HistoryReconstructionPipeline.Get());
+        static_assert(sizeof(FRestirGiDenoiserConstants) / sizeof(uint32_t) <= kRestirGIDenoiserConstantsDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(FRestirGiDenoiserConstants) / sizeof(uint32_t), &Constants, 0);
+        static_assert(_countof(Bindless) <= kRestirGIDenoiserBindlessDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(1, _countof(Bindless), Bindless, 0);
         LocalCommandList->Dispatch(DispatchX, DispatchY, 1);
     });
@@ -594,7 +600,9 @@ void FRestirGIDenoiser::AddFinalBlurPass(FDeferredRenderer& Owner, FRenderGraph&
         LocalCommandList->SetComputeRootSignature(RootSignature.Get());
         LocalCommandList->SetComputeRootConstantBufferView(2, Owner.GetSceneConstantBufferAddress());
         LocalCommandList->SetPipelineState(FinalBlurPipeline.Get());
+        static_assert(sizeof(FRestirGiDenoiserConstants) / sizeof(uint32_t) <= kRestirGIDenoiserConstantsDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(FRestirGiDenoiserConstants) / sizeof(uint32_t), &Constants, 0);
+        static_assert(_countof(Bindless) <= kRestirGIDenoiserBindlessDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(1, _countof(Bindless), Bindless, 0);
         LocalCommandList->Dispatch((Constants.Width + 7u) / 8u, (Constants.Height + 7u) / 8u, 1);
     });
@@ -694,7 +702,9 @@ void FRestirGIDenoiser::AddPreBlurPass(FDeferredRenderer& Owner, FRenderGraph& G
         };
 
         LocalCommandList->SetPipelineState(PreBlurPipeline.Get());
+        static_assert(sizeof(FRestirGiDenoiserConstants) / sizeof(uint32_t) <= kRestirGIDenoiserConstantsDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(FRestirGiDenoiserConstants) / sizeof(uint32_t), &Constants, 0);
+        static_assert(_countof(PreBlurBindless) <= kRestirGIDenoiserBindlessDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(1, _countof(PreBlurBindless), PreBlurBindless, 0);
         LocalCommandList->Dispatch((Constants.Width + 7u) / 8u, (Constants.Height + 7u) / 8u, 1);
     });
@@ -812,7 +822,9 @@ void FRestirGIDenoiser::AddTemporalAccumulationPass(FDeferredRenderer& Owner, FR
         };
 
         LocalCommandList->SetPipelineState(TemporalAccumulationPipeline.Get());
+        static_assert(sizeof(FRestirGiDenoiserConstants) / sizeof(uint32_t) <= kRestirGIDenoiserConstantsDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(FRestirGiDenoiserConstants) / sizeof(uint32_t), &Constants, 0);
+        static_assert(_countof(TemporalBindless) <= kRestirGIDenoiserBindlessDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(1, _countof(TemporalBindless), TemporalBindless, 0);
         LocalCommandList->Dispatch((Constants.Width + 7u) / 8u, (Constants.Height + 7u) / 8u, 1);
     });

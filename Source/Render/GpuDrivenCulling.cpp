@@ -18,6 +18,10 @@ using Microsoft::WRL::ComPtr;
 
 namespace
 {
+    constexpr uint32_t kGpuCullingBindlessDwordCount   = 24;
+    constexpr uint32_t kMeshletRunBindlessDwordCount   = 8;
+    constexpr uint32_t kVisibilityListBindlessDwordCount = 8;
+
     bool ArePerFrameMappedUploadBuffersValid(const std::vector<FMappedUploadBuffer>& Buffers, size_t ExpectedFrameCount)
     {
         if (Buffers.size() != ExpectedFrameCount)
@@ -406,7 +410,7 @@ bool FGpuDrivenCulling::CreateCullingPipelines(FDX12Device* Device)
 
     CD3DX12_ROOT_PARAMETER1 RootParams[2] = {};
     RootParams[0].InitAsConstantBufferView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE, D3D12_SHADER_VISIBILITY_ALL);
-    RootParams[1].InitAsConstants(20, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[1].InitAsConstants(kGpuCullingBindlessDwordCount, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
 
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC VersionedRootDesc;
     VersionedRootDesc.Init_1_1(_countof(RootParams), RootParams, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
@@ -443,7 +447,7 @@ bool FGpuDrivenCulling::CreateCullingPipelines(FDX12Device* Device)
 
     CD3DX12_ROOT_PARAMETER1 RunRootParams[2] = {};
     RunRootParams[0].InitAsConstantBufferView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE, D3D12_SHADER_VISIBILITY_ALL);
-    RunRootParams[1].InitAsConstants(8, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RunRootParams[1].InitAsConstants(kMeshletRunBindlessDwordCount, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
 
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC RunVersionedDesc;
     RunVersionedDesc.Init_1_1(_countof(RunRootParams), RunRootParams, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
@@ -722,7 +726,7 @@ bool FGpuDrivenCulling::CreateVisibilityListPipelines(FDX12Device* Device)
 
     CD3DX12_ROOT_PARAMETER1 RootParams[2] = {};
     RootParams[0].InitAsConstantBufferView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE, D3D12_SHADER_VISIBILITY_ALL);
-    RootParams[1].InitAsConstants(8, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[1].InitAsConstants(kVisibilityListBindlessDwordCount, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
 
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC VersionedDesc;
     VersionedDesc.Init_1_1(_countof(RootParams), RootParams, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
@@ -843,6 +847,7 @@ void FGpuDrivenCulling::DispatchBuildVisibilityLists(
         uint32_t Padding3;
     };
 
+    static_assert(sizeof(FClearCountsConstants) / sizeof(uint32_t) <= kVisibilityListBindlessDwordCount);
     const FClearCountsConstants ClearConstants = { VisibleCountIndex, InvisibleCountIndex, 0, 0, 0, 0 };
     CommandList->SetPipelineState(ClearVisibilityCountsPipeline.Get());
     CommandList->SetComputeRoot32BitConstants(1, sizeof(ClearConstants) / sizeof(uint32_t), &ClearConstants, 0);
@@ -863,6 +868,7 @@ void FGpuDrivenCulling::DispatchBuildVisibilityLists(
         uint32_t Padding0;
     };
 
+    static_assert(sizeof(FBuildListsConstants) / sizeof(uint32_t) <= kVisibilityListBindlessDwordCount);
     const FBuildListsConstants BuildConstants = { VisibilityIndex, VisibleListIndex, InvisibleListIndex, VisibleCountIndex, InvisibleCountIndex, 0 };
     CommandList->SetPipelineState(BuildVisibilityListsPipeline.Get());
     CommandList->SetComputeRoot32BitConstants(1, sizeof(BuildConstants) / sizeof(uint32_t), &BuildConstants, 0);
@@ -911,6 +917,7 @@ void FGpuDrivenCulling::DispatchBuildEarlyRejectList(
         uint32_t Padding3;
     };
 
+    static_assert(sizeof(FClearCountsConstants) / sizeof(uint32_t) <= kVisibilityListBindlessDwordCount);
     const FClearCountsConstants ClearConstants = { RejectCountIndex, RejectCountIndex, 0, 0, 0, 0 };
     CommandList->SetPipelineState(ClearVisibilityCountsPipeline.Get());
     CommandList->SetComputeRoot32BitConstants(1, sizeof(ClearConstants) / sizeof(uint32_t), &ClearConstants, 0);
@@ -929,6 +936,7 @@ void FGpuDrivenCulling::DispatchBuildEarlyRejectList(
         uint32_t Padding2;
     };
 
+    static_assert(sizeof(FEarlyRejectConstants) / sizeof(uint32_t) <= kVisibilityListBindlessDwordCount);
     const FEarlyRejectConstants RejectConstants = { VisibilityIndex, RejectListIndex, RejectCountIndex, 0, 0, 0 };
     CommandList->SetPipelineState(BuildEarlyRejectListPipeline.Get());
     CommandList->SetComputeRoot32BitConstants(1, sizeof(RejectConstants) / sizeof(uint32_t), &RejectConstants, 0);
@@ -988,6 +996,7 @@ void FGpuDrivenCulling::DispatchMergeVisibilityLists(
         uint32_t Padding6;
     };
 
+    static_assert(sizeof(FClearFlagsConstants) / sizeof(uint32_t) <= kVisibilityListBindlessDwordCount);
     const FClearFlagsConstants ClearFlagsConstants = { FlagsIndex, 0, 0, 0, 0, 0, 0, 0 };
     CommandList->SetPipelineState(ClearVisibilityFlagsPipeline.Get());
     CommandList->SetComputeRoot32BitConstants(1, sizeof(ClearFlagsConstants) / sizeof(uint32_t), &ClearFlagsConstants, 0);
@@ -1008,6 +1017,7 @@ void FGpuDrivenCulling::DispatchMergeVisibilityLists(
         uint32_t FlagsIndex;
     };
 
+    static_assert(sizeof(FMergeConstants) / sizeof(uint32_t) <= kVisibilityListBindlessDwordCount);
     const FMergeConstants MergeConstants = { ListAIndex, ListBIndex, CountAIndex, CountBIndex, OutputListIndex, OutputCountIndex, FlagsIndex };
     struct FClearCountsConstants
     {
@@ -1019,6 +1029,7 @@ void FGpuDrivenCulling::DispatchMergeVisibilityLists(
         uint32_t Padding3;
     };
 
+    static_assert(sizeof(FClearCountsConstants) / sizeof(uint32_t) <= kVisibilityListBindlessDwordCount);
     const FClearCountsConstants ClearConstants = { OutputCountIndex, OutputCountIndex, 0, 0, 0, 0 };
     CommandList->SetPipelineState(ClearVisibilityCountsPipeline.Get());
     CommandList->SetComputeRoot32BitConstants(1, sizeof(ClearConstants) / sizeof(uint32_t), &ClearConstants, 0);
@@ -1113,7 +1124,7 @@ void FGpuDrivenCulling::DispatchGpuCulling(
     Constants[56] = Config.ClusterDagForceMipLevel;
     Constants[57] = Config.bClusterDagForceMipSkipFrustumCull ? 1u : 0u;
     Constants[58] = 0u;
-    Constants[59] = 0u;
+    std::memcpy(Constants.data() + 59, &Config.ClusterDagSwRasterThresholdPixels, sizeof(float));
 
     ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
     const char* EventName = (PassName && PassName[0] != '\0') ? PassName : "GpuCulling";
@@ -1173,6 +1184,7 @@ void FGpuDrivenCulling::DispatchGpuCulling(
         uint32_t RunCountsIndex;
     };
 
+    static_assert(sizeof(FMeshletRunBindlessConstants) / sizeof(uint32_t) <= kMeshletRunBindlessDwordCount);
     const FMeshletRunBindlessConstants RunBindlessConstants =
     {
         VisibilityFrame.SrvBindlessIndex,
@@ -1212,6 +1224,7 @@ void FGpuDrivenCulling::DispatchGpuCulling(
     const uint32_t ResolvedListIndex = Indices.bUseCullingList ? Indices.CullingListIndex : VisibilityFrame.SrvBindlessIndex;
     const uint32_t ResolvedListCountIndex = Indices.bUseCullingList ? Indices.CullingListCountIndex : UINT32_MAX;
 
+    static_assert(sizeof(FGpuCullingBindlessConstants) / sizeof(uint32_t) <= kGpuCullingBindlessDwordCount);
     const FGpuCullingBindlessConstants CullingBindlessConstants =
     {
         Indices.ModelBoundsIndex,
@@ -1274,6 +1287,7 @@ FRenderer::FGpuDrivenCullingProvider FRenderer::GetGpuDrivenCullingProvider(bool
     Provider.bClusterDagFastShaderEnabled = IsClusterDagFastShaderEnabled();
     Provider.bClusterDagGpuDebugEnabled = IsClusterDagDebugEnabled() && GpuDebugState.IsPrintEnabled();
     Provider.ClusterDagTargetErrorPixels = GetClusterDagTargetErrorPixels();
+    Provider.ClusterDagSwRasterThresholdPixels = GetClusterDagSwRasterThresholdPixels();
     Provider.ViewportHeightPixels = Viewport.Height;
     Provider.ClusterDagVisibleRootCount = GetClusterDagVisibleRootCount();
     Provider.ClusterDagClusterCount = GetClusterDagClusterCount();
