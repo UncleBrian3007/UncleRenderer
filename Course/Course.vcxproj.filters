@@ -1,0 +1,85 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="Source\Main.cpp" />
+    <ClCompile Include="Source\CourseRunner.cpp" />
+    <ClCompile Include="Source\Courses\Course01_Reduction.cpp" />
+    <ClCompile Include="Source\Courses\Course02_PrefixScan.cpp" />
+    <ClCompile Include="Source\Courses\Course03_Enqueue.cpp" />
+    <ClCompile Include="Source\Courses\Course04_BottomUpTraversal.cpp" />
+    <ClCompile Include="Source\Courses\Course05_WaterfallScheme.cpp" />
+    <ClCompile Include="Source\Courses\Course06_PersistentThreads.cpp" />
+    <ClCompile Include="Source\Courses\Course07_PoolAllocator.cpp" />
+    <ClCompile Include="Source\Courses\Course08_LinearProbing.cpp" />
+    <ClCompile Include="Source\Courses\Course09_RadixSort.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Source\CourseRunner.h" />
+    <ClInclude Include="Source\Courses\Course01_Reduction.h" />
+    <ClInclude Include="Source\Courses\Course02_PrefixScan.h" />
+    <ClInclude Include="Source\Courses\Course03_Enqueue.h" />
+    <ClInclude Include="Source\Courses\Course04_BottomUpTraversal.h" />
+    <ClInclude Include="Source\Courses\Course05_WaterfallScheme.h" />
+    <ClInclude Include="Source\Courses\Course06_PersistentThreads.h" />
+    <ClInclude Include="Source\Courses\Course07_PoolAllocator.h" />
+    <ClInclude Include="Source\Courses\Course08_LinearProbing.h" />
+    <ClInclude Include="Source\Courses\Course09_RadixSort.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Shaders\WaveCommon.hlsli" />
+    <None Include="packages.config" />
+    <None Include="doc\Phase0_Infrastructure.md">
+      <Filter>doc</Filter>
+    </None>
+    <None Include="doc\Phase1_Primitives.md">
+      <Filter>doc</Filter>
+    </None>
+    <None Include="doc\Phase2_Trees.md">
+      <Filter>doc</Filter>
+    </None>
+    <None Include="doc\Phase3_DataStructures.md">
+      <Filter>doc</Filter>
+    </None>
+    <None Include="doc\Phase4_DangerousPatterns.md">
+      <Filter>doc</Filter>
+    </None>
+    <None Include="Shaders\Common.hlsli">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\Course01_Reduction.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\Course02_PrefixScan.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\Course03_Enqueue.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\Course04_BottomUpTraversal.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\Course05_WaterfallScheme.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\Course06_PersistentThreads.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\Course07_PoolAllocator.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\Course08_LinearProbing.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\Course09_RadixSort.hlsl">
+      <Filter>Shaders</Filter>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="doc">
+      <UniqueIdentifier>{d5e65370-f91c-4b99-a096-8411af1b042e}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Shaders">
+      <UniqueIdentifier>{6a854fcf-3210-48d0-8623-45961c3567c6}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

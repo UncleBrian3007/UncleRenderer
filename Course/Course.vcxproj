@@ -1,0 +1,182 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(SolutionDir)packages\Microsoft.Direct3D.DXC.1.8.2505.32\build\native\Microsoft.Direct3D.DXC.props"
+          Condition="Exists('$(SolutionDir)packages\Microsoft.Direct3D.DXC.1.8.2505.32\build\native\Microsoft.Direct3D.DXC.props')" />
+  <Import Project="$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\build\native\Microsoft.Direct3D.D3D12.props"
+          Condition="Exists('$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\build\native\Microsoft.Direct3D.D3D12.props')" />
+
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}</ProjectGuid>
+    <RootNamespace>Course</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <LanguageStandard>stdcpp17</LanguageStandard>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+    <LanguageStandard>stdcpp17</LanguageStandard>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="Shared" />
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props"
+            Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')"
+            Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props"
+            Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')"
+            Label="LocalAppDataPlatform" />
+  </ImportGroup>
+
+  <PropertyGroup Label="UserMacros" />
+
+  <PropertyGroup>
+    <OutDir>$(SolutionDir)bin\</OutDir>
+    <IntDir>$(SolutionDir)obj\$(Configuration)\Course\</IntDir>
+    <TargetName>CourseTests</TargetName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <TargetName>CourseTestsDebug</TargetName>
+  </PropertyGroup>
+
+  <!-- =============================================================== -->
+  <!-- Debug configuration                                              -->
+  <!-- =============================================================== -->
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>Disabled</Optimization>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_UNICODE;UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <AdditionalIncludeDirectories>$(ProjectDir)Source;$(SolutionDir)ThirdParty\d3d12;$(SolutionDir)ThirdParty\WinPixEventRuntime;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <EntryPointSymbol>mainCRTStartup</EntryPointSymbol>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>d3d12.lib;dxgi.lib;dxcompiler.lib;dxguid.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <PostBuildEvent>
+      <Command>if not exist "$(OutDir)D3D12" mkdir "$(OutDir)D3D12"
+if exist "$(SolutionDir)packages\Microsoft.Direct3D.DXC.1.8.2505.32\bin\x64\dxcompiler.dll" copy /Y "$(SolutionDir)packages\Microsoft.Direct3D.DXC.1.8.2505.32\bin\x64\dxcompiler.dll" "$(OutDir)"
+if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\D3D12Core.dll" copy /Y "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\D3D12Core.dll" "$(OutDir)D3D12"
+if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12SDKLayers.dll" copy /Y "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12SDKLayers.dll" "$(OutDir)D3D12"
+if exist "$(SolutionDir)packages\WinPixEventRuntime.1.0.240308001\bin\WinPixEventRuntime.dll" copy /Y "$(SolutionDir)packages\WinPixEventRuntime.1.0.240308001\bin\WinPixEventRuntime.dll" "$(OutDir)"</Command>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+
+  <!-- =============================================================== -->
+  <!-- Release configuration                                            -->
+  <!-- =============================================================== -->
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_UNICODE;UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <AdditionalIncludeDirectories>$(ProjectDir)Source;$(SolutionDir)ThirdParty\d3d12;$(SolutionDir)ThirdParty\WinPixEventRuntime;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <EntryPointSymbol>mainCRTStartup</EntryPointSymbol>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <AdditionalDependencies>d3d12.lib;dxgi.lib;dxcompiler.lib;dxguid.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <PostBuildEvent>
+      <Command>if not exist "$(OutDir)D3D12" mkdir "$(OutDir)D3D12"
+if exist "$(SolutionDir)packages\Microsoft.Direct3D.DXC.1.8.2505.32\bin\x64\dxcompiler.dll" copy /Y "$(SolutionDir)packages\Microsoft.Direct3D.DXC.1.8.2505.32\bin\x64\dxcompiler.dll" "$(OutDir)"
+if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\D3D12Core.dll" copy /Y "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\D3D12Core.dll" "$(OutDir)D3D12"
+if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12SDKLayers.dll" copy /Y "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12SDKLayers.dll" "$(OutDir)D3D12"</Command>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+
+  <!-- =============================================================== -->
+  <!-- Source files                                                     -->
+  <!-- =============================================================== -->
+  <ItemGroup>
+    <ClCompile Include="Source\Main.cpp" />
+    <ClCompile Include="Source\CourseRunner.cpp" />
+    <ClCompile Include="Source\Courses\Course01_Reduction.cpp" />
+    <ClCompile Include="Source\Courses\Course02_PrefixScan.cpp" />
+    <ClCompile Include="Source\Courses\Course03_Enqueue.cpp" />
+    <ClCompile Include="Source\Courses\Course04_BottomUpTraversal.cpp" />
+    <ClCompile Include="Source\Courses\Course05_WaterfallScheme.cpp" />
+    <ClCompile Include="Source\Courses\Course06_PersistentThreads.cpp" />
+    <ClCompile Include="Source\Courses\Course07_PoolAllocator.cpp" />
+    <ClCompile Include="Source\Courses\Course08_LinearProbing.cpp" />
+    <ClCompile Include="Source\Courses\Course09_RadixSort.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Source\CourseRunner.h" />
+    <ClInclude Include="Source\Courses\Course01_Reduction.h" />
+    <ClInclude Include="Source\Courses\Course02_PrefixScan.h" />
+    <ClInclude Include="Source\Courses\Course03_Enqueue.h" />
+    <ClInclude Include="Source\Courses\Course04_BottomUpTraversal.h" />
+    <ClInclude Include="Source\Courses\Course05_WaterfallScheme.h" />
+    <ClInclude Include="Source\Courses\Course06_PersistentThreads.h" />
+    <ClInclude Include="Source\Courses\Course07_PoolAllocator.h" />
+    <ClInclude Include="Source\Courses\Course08_LinearProbing.h" />
+    <ClInclude Include="Source\Courses\Course09_RadixSort.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Shaders\WaveCommon.hlsli" />
+    <None Include="Shaders\Common.hlsli" />
+    <None Include="Shaders\Course01_Reduction.hlsl" />
+    <None Include="Shaders\Course02_PrefixScan.hlsl" />
+    <None Include="Shaders\Course03_Enqueue.hlsl" />
+    <None Include="Shaders\Course04_BottomUpTraversal.hlsl" />
+    <None Include="Shaders\Course05_WaterfallScheme.hlsl" />
+    <None Include="Shaders\Course06_PersistentThreads.hlsl" />
+    <None Include="Shaders\Course07_PoolAllocator.hlsl" />
+    <None Include="Shaders\Course08_LinearProbing.hlsl" />
+    <None Include="Shaders\Course09_RadixSort.hlsl" />
+    <None Include="packages.config" />
+  </ItemGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+    <Import Project="$(SolutionDir)packages\Microsoft.Direct3D.DXC.1.8.2505.32\build\native\Microsoft.Direct3D.DXC.targets"
+            Condition="Exists('$(SolutionDir)packages\Microsoft.Direct3D.DXC.1.8.2505.32\build\native\Microsoft.Direct3D.DXC.targets')" />
+    <Import Project="$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\build\native\Microsoft.Direct3D.D3D12.targets"
+            Condition="Exists('$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\build\native\Microsoft.Direct3D.D3D12.targets')" />
+    <Import Project="$(SolutionDir)packages\WinPixEventRuntime.1.0.240308001\build\WinPixEventRuntime.targets"
+            Condition="Exists('$(SolutionDir)packages\WinPixEventRuntime.1.0.240308001\build\WinPixEventRuntime.targets')" />
+  </ImportGroup>
+</Project>
