@@ -63,12 +63,6 @@ void FGtao::ImportPersistentResources(FDeferredPassContext& Context)
     Context.Resources.Gtao.GtaoHandle = ImportBindlessTexture(Context.Graph, "GTAO", GtaoTexture);
 }
 
-bool FGtao::CreatePersistentDescriptors(FDeferredRenderer& Owner, FDX12Device* Device)
-{
-    (void)Owner;
-    (void)Device;
-    return true;
-}
 
 void FGtao::ApplyConfig(const FRendererConfig& Config)
 {
@@ -87,7 +81,7 @@ void FGtao::AddPass(FDeferredPassContext& Context) const
     FDeferredRenderer& Owner = Context.Owner;
     FRenderGraph& Graph = Context.Graph;
     FDeferredRenderer* OwnerPtr = &Context.Owner;
-    const std::array<FRGResourceHandle, 4>& GBufferHandles = Context.Resources.GBufferHandles;
+    const FDeferredGBufferHandles& GBufferHandles = Context.Resources.GBufferHandles;
     const FRGResourceHandle LinearDepthHandle = Context.Resources.LinearDepthHandle;
     const FRGResourceHandle GtaoHandle = Context.Resources.Gtao.GtaoHandle;
 
@@ -134,16 +128,15 @@ void FGtao::AddPass(FDeferredPassContext& Context) const
 
         LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         LocalCommandList->SetGraphicsRootConstantBufferView(0, Owner.GetSceneConstantBufferAddress());
-        const uint32_t GtaoBindlessIndices[] =
+        const uint32_t GtaoBindlessIndices[kGtaoBindlessDwordCount] =
         {
-            Owner.GBufferBindlessIndices[0],
+            Owner.GBufferA.SrvBindlessIndex,
             Owner.LinearDepthTexture.SrvBindlessIndex,
             HilbertLutTexture.SrvBindlessIndex
         };
-        static_assert(_countof(GtaoBindlessIndices) <= kGtaoBindlessDwordCount);
         LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(GtaoBindlessIndices), GtaoBindlessIndices, 0);
 
-        const uint32_t GtaoPassValues[8] =
+        const uint32_t GtaoPassValues[kGtaoConstantsDwordCount] =
         {
             *reinterpret_cast<const uint32_t*>(&GtaoRadius),
             *reinterpret_cast<const uint32_t*>(&GtaoPower),
@@ -154,8 +147,7 @@ void FGtao::AddPass(FDeferredPassContext& Context) const
             0u,
             0u
         };
-        static_assert(_countof(GtaoPassValues) <= kGtaoConstantsDwordCount);
-        LocalCommandList->SetGraphicsRoot32BitConstants(2, 8, GtaoPassValues, 0);
+        LocalCommandList->SetGraphicsRoot32BitConstants(2, kGtaoConstantsDwordCount, GtaoPassValues, 0);
 
         LocalCommandList->DrawInstanced(3, 1, 0, 0);
     });
@@ -258,44 +250,11 @@ bool FGtao::CreatePipeline(FDX12Device* Device)
 
 bool FGtao::CreateResources(FDX12Device* Device, uint32_t Width, uint32_t Height)
 {
-    const D3D12_HEAP_PROPERTIES DefaultHeap = CreateHeapProperties(D3D12_HEAP_TYPE_DEFAULT);
-    const FRGTextureDesc TextureDesc = { Width, Height, DXGI_FORMAT_R8_UNORM };
-    const D3D12_RESOURCE_DESC ResourceDesc = CreateTexture2DResourceDesc(TextureDesc, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
-
-    const FLOAT Color[] = { 1.0f, 1.0f, 1.0f, 1.0f };
-    CD3DX12_CLEAR_VALUE ClearValue(DXGI_FORMAT_R8_UNORM, Color);
-
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &DefaultHeap,
-        D3D12_HEAP_FLAG_NONE,
-        &ResourceDesc,
-        D3D12_RESOURCE_STATE_RENDER_TARGET,
-        &ClearValue,
-        IID_PPV_ARGS(GtaoTexture.ReleaseAndGetAddressOf())));
-
-    if (GtaoTexture)
-    {
-        GtaoTexture->SetName(L"GTAO");
-    }
-
-    InitializeBindlessTexture(GtaoTexture, TextureDesc, D3D12_RESOURCE_STATE_RENDER_TARGET);
-    CreateBindlessTextureSrv(Device, GtaoTexture);
-
-    D3D12_DESCRIPTOR_HEAP_DESC RtvHeapDesc = {};
-    RtvHeapDesc.NumDescriptors = 1;
-    RtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    RtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-    HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&RtvHeapDesc, IID_PPV_ARGS(GtaoRtvHeap.GetAddressOf())));
-    if (GtaoRtvHeap)
-    {
-        GtaoRtvHeap->SetName(L"GTAO_RTVHeap");
-    }
-
-    GtaoRtvHandle = GtaoRtvHeap->GetCPUDescriptorHandleForHeapStart();
-    D3D12_RENDER_TARGET_VIEW_DESC RtvDesc = {};
-    RtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
-    RtvDesc.Format = DXGI_FORMAT_R8_UNORM;
-    Device->GetDevice()->CreateRenderTargetView(GtaoTexture.Get(), &RtvDesc, GtaoRtvHandle);
+	const FRGTextureDesc TextureDesc = { Width, Height, DXGI_FORMAT_R8_UNORM };
+	const FLOAT Color[] = { 1.0f, 1.0f, 1.0f, 1.0f };
+	CD3DX12_CLEAR_VALUE ClearValue(DXGI_FORMAT_R8_UNORM, Color);
+	CreateBindlessTexture(Device, L"GTAO", TextureDesc, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_RESOURCE_STATE_RENDER_TARGET, GtaoTexture, true, false, &ClearValue);
+    CreateTexture2DRtv(Device, L"GTAO_RTVHeap", GtaoTexture.Get(), DXGI_FORMAT_R8_UNORM, GtaoRtvHeap, GtaoRtvHandle);
 
     return true;
 }
@@ -314,39 +273,17 @@ bool FGtao::CreateHilbertLutResources(FDX12Device* Device)
     }
 
     const FRGTextureDesc LutDesc = { HilbertWidth, HilbertWidth, DXGI_FORMAT_R16_UINT };
-    const D3D12_RESOURCE_DESC Desc = CreateTexture2DResourceDesc(LutDesc);
-    const D3D12_HEAP_PROPERTIES DefaultHeap = CreateHeapProperties(D3D12_HEAP_TYPE_DEFAULT);
-
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &DefaultHeap,
-        D3D12_HEAP_FLAG_NONE,
-        &Desc,
-        D3D12_RESOURCE_STATE_COPY_DEST,
-        nullptr,
-        IID_PPV_ARGS(HilbertLutTexture.GetAddressOf())));
-
-    if (HilbertLutTexture)
-    {
-        HilbertLutTexture->SetName(L"GTAO_HilbertLUT");
-    }
+    CreateBindlessTexture(Device, L"GTAO_HilbertLUT", LutDesc, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST, HilbertLutTexture, false, false);
 
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT Layout = {};
     UINT NumRows = 0;
     UINT64 RowSizeInBytes = 0;
     UINT64 UploadBufferSize = 0;
+    const D3D12_RESOURCE_DESC Desc = HilbertLutTexture->GetDesc();
     Device->GetDevice()->GetCopyableFootprints(&Desc, 0, 1, 0, &Layout, &NumRows, &RowSizeInBytes, &UploadBufferSize);
 
-    const D3D12_HEAP_PROPERTIES UploadHeap = CreateHeapProperties(D3D12_HEAP_TYPE_UPLOAD);
-    const D3D12_RESOURCE_DESC UploadDesc = CreateBufferResourceDesc(UploadBufferSize);
-
-    ComPtr<ID3D12Resource> UploadResource;
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &UploadHeap,
-        D3D12_HEAP_FLAG_NONE,
-        &UploadDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        nullptr,
-        IID_PPV_ARGS(UploadResource.GetAddressOf())));
+    FUploadBuffer UploadResource;
+    CreateUploadBuffer(Device, L"", UploadBufferSize, UploadResource, nullptr);
 
     uint8_t* UploadData = nullptr;
     const D3D12_RANGE EmptyRange = { 0, 0 };

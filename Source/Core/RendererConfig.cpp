@@ -358,11 +358,6 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
         OutConfig.bEnableGpuTiming = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
 
-    if (LowerKey == "forcelegacybarriers" || LowerKey == "legacybarriers")
-    {
-        OutConfig.bForceLegacyBarriers = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
     if (LowerKey == "hzb" || LowerKey == "enablehzb")
     {
         OutConfig.bEnableHZB = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
@@ -805,13 +800,6 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
         {
             OutConfig.ClusterDAGTraversalMode = EClusterDAGTraversalMode::LevelSplitQueue;
         }
-        else if (LowerValue == "splitqueue"
-            || LowerValue == "split_queue"
-            || LowerValue == "split"
-            || LowerValue == "nodecluster")
-        {
-            OutConfig.ClusterDAGTraversalMode = EClusterDAGTraversalMode::SplitQueue;
-        }
         else
         {
             OutConfig.ClusterDAGTraversalMode = EClusterDAGTraversalMode::LevelSplitQueue;
@@ -877,6 +865,64 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
         || LowerKey == "enableclusterdagswrasterhzbocclusion")
     {
         OutConfig.bEnableClusterDAGSwRasterHzbReject = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+
+    if (LowerKey == "clusterdagstreaming"
+        || LowerKey == "enableclusterdagstreaming")
+    {
+        OutConfig.bEnableClusterDAGStreaming = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+
+    if (LowerKey == "clusterdagstreamingpoolmb")
+    {
+        try
+        {
+            const int32_t ParsedValue = std::stoi(Value);
+            OutConfig.ClusterDAGStreamingPoolMB = static_cast<uint32_t>(std::clamp(ParsedValue, 1, 4096));
+        }
+        catch (...)
+        {
+            LogWarning("Invalid Cluster DAG streaming pool MB in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "clusterdagstreamingrequestbuffercapacity")
+    {
+        try
+        {
+            const int32_t ParsedValue = std::stoi(Value);
+            OutConfig.ClusterDAGStreamingRequestBufferCapacity = static_cast<uint32_t>(std::clamp(ParsedValue, 64, 1048576));
+        }
+        catch (...)
+        {
+            LogWarning("Invalid Cluster DAG streaming request buffer capacity in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "clusterdagstreamingmaxpendingpages")
+    {
+        try
+        {
+            const int32_t ParsedValue = std::stoi(Value);
+            OutConfig.ClusterDAGStreamingMaxPendingPages = static_cast<uint32_t>(std::clamp(ParsedValue, 1, 65536));
+        }
+        catch (...)
+        {
+            LogWarning("Invalid Cluster DAG streaming max pending pages in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "clusterdagstreamingmaxpageinstallsperframe")
+    {
+        try
+        {
+            const int32_t ParsedValue = std::stoi(Value);
+            OutConfig.ClusterDAGStreamingMaxPageInstallsPerFrame = static_cast<uint32_t>(std::clamp(ParsedValue, 1, 1024));
+        }
+        catch (...)
+        {
+            LogWarning("Invalid Cluster DAG streaming max page installs per frame in renderer config: " + Value);
+        }
     }
 
     if (LowerKey == "clusterdagforcemip" || LowerKey == "enableclusterdagforcemip")

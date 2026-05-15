@@ -6,6 +6,7 @@
 #include <d3d12.h>
 
 #include "../RHI/RayTracing.h"
+#include "GpuResource.h"
 
 class FDX12CommandContext;
 class FDX12Device;
@@ -63,13 +64,12 @@ public:
 
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> TlasScratchBuffers;
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> TlasResultBuffers;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> TlasInstanceBuffers;
+    std::vector<FMappedUploadBuffer> TlasInstanceBuffers;
     std::vector<bool> TlasBuilt;
     std::vector<uint32_t> TlasPrevInstanceCount;
     std::vector<uint64_t> TlasPrevInstanceHash;
     uint32_t TlasInstanceCapacity = 0;
 
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> PathTracingInstanceDataBuffers;
-    std::vector<uint32_t> PathTracingInstanceDataBindlessIndices;
+    std::vector<FMappedUploadBuffer> PathTracingInstanceDataBuffers;
 
 };

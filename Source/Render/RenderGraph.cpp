@@ -785,7 +785,6 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
                 Entry.PixEventName.empty() ? L"" : Entry.PixEventName.c_str(),
                 !Entry.PixEventName.empty());
 
-            const bool bUseEnhancedBarriers = Device && Device->SupportsEnhancedBarriers();
             std::vector<D3D12_RESOURCE_BARRIER> PendingBarriers;
             PendingBarriers.reserve(Entry.TextureUsages.size() + Entry.BufferUsages.size() + Entry.TextureUavBarriers.size() + Entry.BufferUavBarriers.size());
             std::vector<bool> TextureUavBarrierQueued(ResourceCount, false);
@@ -811,7 +810,7 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
                 if (bEnableBarrierLogs)
                 {
                     std::ostringstream Stream;
-                    Stream << (bUseEnhancedBarriers ? "[RG][Enhanced] Pass '" : "[RG] Pass '") << Entry.Name << "' inserting UAV barrier for '"
+                    Stream << "[RG] Pass '" << Entry.Name << "' inserting UAV barrier for '"
                         << (Resource.Name.empty() ? "<Unnamed>" : Resource.Name) << "'";
                     LogInfo(Stream.str());
                 }
@@ -837,7 +836,7 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
                 if (bEnableBarrierLogs)
                 {
                     std::ostringstream Stream;
-                    Stream << (bUseEnhancedBarriers ? "[RG][Enhanced] Pass '" : "[RG] Pass '") << Entry.Name << "' inserting UAV barrier for buffer '"
+                    Stream << "[RG] Pass '" << Entry.Name << "' inserting UAV barrier for buffer '"
                         << (Resource.Name.empty() ? "<Unnamed>" : Resource.Name) << "'";
                     LogInfo(Stream.str());
                 }
@@ -874,7 +873,7 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
                     if (bEnableBarrierLogs)
                     {
                         std::ostringstream Stream;
-                        Stream << (bUseEnhancedBarriers ? "[RG][Enhanced] Pass '" : "[RG] Pass '") << Entry.Name << "' transitioning '"
+                        Stream << "[RG] Pass '" << Entry.Name << "' transitioning '"
                             << (Resource->Name.empty() ? "<Unnamed>" : Resource->Name) << "': "
                             << RendererUtils::ResourceStateToString(StateRef) << " -> "
                             << RendererUtils::ResourceStateToString(Usage.RequiredState);
@@ -917,7 +916,7 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
                     if (bEnableBarrierLogs)
                     {
                         std::ostringstream Stream;
-                        Stream << (bUseEnhancedBarriers ? "[RG][Enhanced] Pass '" : "[RG] Pass '") << Entry.Name << "' transitioning buffer '"
+                        Stream << "[RG] Pass '" << Entry.Name << "' transitioning buffer '"
                             << (Resource.Name.empty() ? "<Unnamed>" : Resource.Name) << "': "
                             << RendererUtils::ResourceStateToString(StateRef) << " -> "
                             << RendererUtils::ResourceStateToString(Usage.RequiredState);
@@ -945,28 +944,7 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
                 }
             }
 
-            if (bUseEnhancedBarriers)
-            {
-                for (const D3D12_RESOURCE_BARRIER& Barrier : PendingBarriers)
-                {
-                    if (Barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION)
-                    {
-                        CmdContext.TransitionResourceEx(
-                            Barrier.Transition.pResource,
-                            Barrier.Transition.StateBefore,
-                            Barrier.Transition.StateAfter,
-                            Barrier.Transition.Subresource);
-                    }
-                    else if (Barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_UAV)
-                    {
-                        CmdContext.UavBarrierEx(Barrier.UAV.pResource);
-                    }
-                }
-            }
-            else
-            {
-                CmdContext.TransitionResources(PendingBarriers);
-            }
+            CmdContext.TransitionResources(PendingBarriers);
 
             if (Entry.ExecuteFunc)
             {
@@ -1120,32 +1098,24 @@ bool FRenderGraph::AcquireTransientTexture(FRGTextureResource& Texture, D3D12_RE
         return true;
     }
 
-    CD3DX12_RESOURCE_DESC ResourceDesc = CD3DX12_RESOURCE_DESC::Tex2D(
-        Texture.Desc.Format,
-        Texture.Desc.Width,
-        Texture.Desc.Height,
-        1,
-        Texture.Desc.MipLevels,
-        1,
-        0,
-        Texture.Flags);
+    const D3D12_RESOURCE_DESC ResourceDesc = CreateTextureResourceDesc(Texture.Desc, Texture.Flags);
 
-    CD3DX12_CLEAR_VALUE ClearValue = {};
+    D3D12_CLEAR_VALUE ClearValue = {};
     D3D12_CLEAR_VALUE* ClearPtr = nullptr;
     if (Texture.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)
     {
-        const FLOAT Color[] = { 0.0f, 0.0f, 0.0f, 0.0f };
-        ClearValue = CD3DX12_CLEAR_VALUE(Texture.Desc.Format, Color);
+        ClearValue.Format = Texture.Desc.Format;
         ClearPtr = &ClearValue;
     }
     else if (Texture.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)
     {
-        ClearValue = CD3DX12_CLEAR_VALUE(Texture.Desc.Format, 1.0f, 0);
+        ClearValue.Format = Texture.Desc.Format;
+        ClearValue.DepthStencil = { 1.0f, 0 };
         ClearPtr = &ClearValue;
     }
 
     Microsoft::WRL::ComPtr<ID3D12Resource> NewResource;
-    CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
+    const D3D12_HEAP_PROPERTIES HeapProps = CreateHeapProperties(D3D12_HEAP_TYPE_DEFAULT);
     HRESULT hr = Device->GetDevice()->CreateCommittedResource(
         &HeapProps,
         D3D12_HEAP_FLAG_NONE,
@@ -1211,10 +1181,10 @@ bool FRenderGraph::AcquireTransientBuffer(FRGBufferResource& Buffer, D3D12_RESOU
         return true;
     }
 
-    const CD3DX12_RESOURCE_DESC ResourceDesc = CD3DX12_RESOURCE_DESC::Buffer(Buffer.Desc.Size, Buffer.Desc.Flags);
+    const D3D12_RESOURCE_DESC ResourceDesc = CreateBufferResourceDesc(Buffer.Desc.Size, Buffer.Desc.Flags);
 
     Microsoft::WRL::ComPtr<ID3D12Resource> NewResource;
-    CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
+    const D3D12_HEAP_PROPERTIES HeapProps = CreateHeapProperties(D3D12_HEAP_TYPE_DEFAULT);
     const HRESULT Hr = Device->GetDevice()->CreateCommittedResource(
         &HeapProps,
         D3D12_HEAP_FLAG_NONE,

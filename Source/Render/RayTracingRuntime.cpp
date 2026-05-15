@@ -81,10 +81,8 @@ namespace
             return false;
         }
 
-        D3D12_HEAP_PROPERTIES HeapProps = {};
-        HeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
-
-		const D3D12_RESOURCE_DESC Desc = CreateBufferResourceDesc(AlignRayTracingBufferSize(SizeInBytes), Flags);
+        const D3D12_HEAP_PROPERTIES HeapProps = CreateHeapProperties(D3D12_HEAP_TYPE_DEFAULT);
+        const D3D12_RESOURCE_DESC Desc = CreateBufferResourceDesc(AlignRayTracingBufferSize(SizeInBytes), Flags);
  
         HR_CHECK(Device->GetDevice()->CreateCommittedResource(
             &HeapProps,
@@ -612,9 +610,14 @@ void FRayTracingRuntime::UpdateBlasRefit(FRenderer& Owner, FDX12CommandContext& 
             continue;
         }
 
-        const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBindlessIndex) && Model.BoneMatrixCount > 0
+        const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) && Model.BoneMatrixCount > 0
             && FrameIndex < Model.SkinnedPositionBuffers.size();
         if (!bUseSkinning)
+        {
+            continue;
+        }
+
+        if (!Model.bSkinningUpdatedThisFrame)
         {
             continue;
         }
@@ -757,16 +760,16 @@ void FRayTracingRuntime::BuildTlas(FRenderer& Owner, FDX12CommandContext& CmdCon
 
         // Build instance data for path tracing (same order as TLAS instances)
         FPathTracingInstanceData InstData = {};
-        InstData.PositionBufferIndex = Model.VertexBufferBindlessIndices[0];
-        InstData.NormalBufferIndex = Model.VertexBufferBindlessIndices[1];
-        InstData.UVBufferIndex = Model.VertexBufferBindlessIndices[2];
-        InstData.IndexBufferIndex = Model.IndexBufferBindlessIndex;
-        InstData.TangentBufferIndex = Model.VertexBufferBindlessIndices[3];
-        InstData.BaseColorTextureIndex = Model.BaseColorBindlessIndex;
-        InstData.NormalTextureIndex = Model.NormalBindlessIndex;
-        InstData.MetallicRoughnessTextureIndex = Model.MetallicRoughnessBindlessIndex;
+        InstData.PositionBufferIndex = Model.Geometry.VertexBuffers[0].SrvBindlessIndex;
+        InstData.NormalBufferIndex = Model.Geometry.VertexBuffers[1].SrvBindlessIndex;
+        InstData.UVBufferIndex = Model.Geometry.VertexBuffers[2].SrvBindlessIndex;
+        InstData.IndexBufferIndex = Model.Geometry.IndexBuffer.SrvBindlessIndex;
+        InstData.TangentBufferIndex = Model.Geometry.VertexBuffers[3].SrvBindlessIndex;
+        InstData.BaseColorTextureIndex = Model.BaseColor.SrvBindlessIndex;
+        InstData.NormalTextureIndex = Model.Normal.SrvBindlessIndex;
+        InstData.MetallicRoughnessTextureIndex = Model.MetallicRoughness.SrvBindlessIndex;
         InstData.Flags = Model.bDoubleSided ? 1u : 0u;
-        InstData.EmissiveTextureIndex = Model.EmissiveBindlessIndex;
+        InstData.EmissiveTextureIndex = Model.Emissive.SrvBindlessIndex;
         InstData.Padding0 = 0u;
         InstData.Padding1 = 0u;
         InstData.EmissiveFactor = DirectX::XMFLOAT4(Model.EmissiveFactor.x, Model.EmissiveFactor.y, Model.EmissiveFactor.z, 0.0f);
@@ -797,28 +800,17 @@ void FRayTracingRuntime::BuildTlas(FRenderer& Owner, FDX12CommandContext& CmdCon
     if (PathTracingInstanceDataBuffers.size() != Owner.GetFramesInFlight())
     {
         PathTracingInstanceDataBuffers.resize(Owner.GetFramesInFlight());
-        PathTracingInstanceDataBindlessIndices.assign(Owner.GetFramesInFlight(), UINT32_MAX);
     }
 
     // Create or update the per-frame instance data buffer
     const uint64_t InstanceDataBufferSize = sizeof(FPathTracingInstanceData) * InstanceDataArray.size();
-    if (!PathTracingInstanceDataBuffers[FrameIndex] || PathTracingInstanceDataBuffers[FrameIndex]->GetDesc().Width < InstanceDataBufferSize)
+    if (!PathTracingInstanceDataBuffers[FrameIndex] || PathTracingInstanceDataBuffers[FrameIndex].Size < InstanceDataBufferSize)
     {
-        CD3DX12_HEAP_PROPERTIES UploadHeap(D3D12_HEAP_TYPE_UPLOAD);
-        CD3DX12_RESOURCE_DESC BufferDesc = CD3DX12_RESOURCE_DESC::Buffer(InstanceDataBufferSize);
+        CreateMappedUploadBuffer(Owner.Device,
+            L"PathTracingInstanceDataBuffer_Frame_" + std::to_wstring(FrameIndex),
+            InstanceDataBufferSize,
+            PathTracingInstanceDataBuffers[FrameIndex]);
 
-        HR_CHECK(Owner.Device->GetDevice()->CreateCommittedResource(
-            &UploadHeap,
-            D3D12_HEAP_FLAG_NONE,
-            &BufferDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ,
-            nullptr,
-            IID_PPV_ARGS(PathTracingInstanceDataBuffers[FrameIndex].ReleaseAndGetAddressOf())));
-
-        std::wstring BufferName = L"PathTracingInstanceDataBuffer_Frame_" + std::to_wstring(FrameIndex);
-        PathTracingInstanceDataBuffers[FrameIndex]->SetName(BufferName.c_str());
-
-        // Create bindless SRV
         CD3DX12_SHADER_RESOURCE_VIEW_DESC SrvDesc = {};
         SrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
         SrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -827,21 +819,15 @@ void FRayTracingRuntime::BuildTlas(FRenderer& Owner, FDX12CommandContext& CmdCon
         SrvDesc.Buffer.StructureByteStride = sizeof(FPathTracingInstanceData);
         SrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
 
-        PathTracingInstanceDataBindlessIndices[FrameIndex] = Owner.Device->CreateBindlessSrv(PathTracingInstanceDataBuffers[FrameIndex].Get(), SrvDesc);
+        PathTracingInstanceDataBuffers[FrameIndex].SrvBindlessIndex =
+            Owner.Device->CreateBindlessSrv(PathTracingInstanceDataBuffers[FrameIndex].Get(), SrvDesc);
     }
 
     // Update buffer data
-    if (PathTracingInstanceDataBuffers[FrameIndex])
+    if (PathTracingInstanceDataBuffers[FrameIndex].MappedData)
     {
-        void* MappedData = nullptr;
-        D3D12_RANGE EmptyRange = { 0, 0 };
-        HR_CHECK_DX_OBJ(
-            Owner.Device ? Owner.Device->GetDevice() : nullptr,
-            PathTracingInstanceDataBuffers[FrameIndex].Get(),
-            PathTracingInstanceDataBuffers[FrameIndex]->Map(0, &EmptyRange, &MappedData),
-            L"PathTracingInstanceDataBuffer::Map");
-        std::memcpy(MappedData, InstanceDataArray.data(), sizeof(FPathTracingInstanceData) * InstanceDataArray.size());
-        PathTracingInstanceDataBuffers[FrameIndex]->Unmap(0, nullptr);
+        std::memcpy(PathTracingInstanceDataBuffers[FrameIndex].MappedData,
+            InstanceDataArray.data(), sizeof(FPathTracingInstanceData) * InstanceDataArray.size());
     }
 
     if (TlasScratchBuffers.size() != Owner.GetFramesInFlight())
@@ -883,34 +869,17 @@ void FRayTracingRuntime::BuildTlas(FRenderer& Owner, FDX12CommandContext& CmdCon
     TlasPrevInstanceHash[FrameIndex] = CurrentInstanceHash;
 
     const uint64_t InstanceBufferSize = sizeof(D3D12_RAYTRACING_INSTANCE_DESC) * TlasInstanceCapacity;
-    if (!TlasInstanceBuffers[FrameIndex] || TlasInstanceBuffers[FrameIndex]->GetDesc().Width < InstanceBufferSize)
+    if (!TlasInstanceBuffers[FrameIndex] || TlasInstanceBuffers[FrameIndex].Size < InstanceBufferSize)
     {
-        CD3DX12_HEAP_PROPERTIES UploadHeap(D3D12_HEAP_TYPE_UPLOAD);
-        CD3DX12_RESOURCE_DESC InstanceBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(InstanceBufferSize);
-
-        HR_CHECK(Owner.Device->GetDevice()->CreateCommittedResource(
-            &UploadHeap,
-            D3D12_HEAP_FLAG_NONE,
-            &InstanceBufferDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ,
-            nullptr,
-            IID_PPV_ARGS(TlasInstanceBuffers[FrameIndex].ReleaseAndGetAddressOf())));
+        CreateMappedUploadBuffer(Owner.Device, L"TLAS_InstanceBuffer", InstanceBufferSize, TlasInstanceBuffers[FrameIndex]);
     }
 
-    if (TlasInstanceBuffers[FrameIndex])
-    {
-        TlasInstanceBuffers[FrameIndex]->SetName(L"TLAS_InstanceBuffer");
-        void* MappedData = nullptr;
-        D3D12_RANGE EmptyRange = { 0, 0 };
-        HR_CHECK(TlasInstanceBuffers[FrameIndex]->Map(0, &EmptyRange, &MappedData));
-        std::memcpy(MappedData, Instances.data(), sizeof(D3D12_RAYTRACING_INSTANCE_DESC) * Instances.size());
-        TlasInstanceBuffers[FrameIndex]->Unmap(0, nullptr);
-    }
+    std::memcpy(TlasInstanceBuffers[FrameIndex].MappedData, Instances.data(), sizeof(D3D12_RAYTRACING_INSTANCE_DESC) * Instances.size());
 
     D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS Inputs = {};
     Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
     Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
-    Inputs.InstanceDescs = TlasInstanceBuffers[FrameIndex]->GetGPUVirtualAddress();
+    Inputs.InstanceDescs = TlasInstanceBuffers[FrameIndex].GetGPUVirtualAddress();
     Inputs.NumDescs = InstanceCount;
     Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE;
 
@@ -927,22 +896,7 @@ void FRayTracingRuntime::BuildTlas(FRenderer& Owner, FDX12CommandContext& CmdCon
         {
             return;
         }
-
-        CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
-        CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Buffer(Size, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-
-        HR_CHECK(Owner.Device->GetDevice()->CreateCommittedResource(
-            &HeapProps,
-            D3D12_HEAP_FLAG_NONE,
-            &Desc,
-            State,
-            nullptr,
-            IID_PPV_ARGS(Buffer.ReleaseAndGetAddressOf())));
-
-        if (Buffer && Name)
-        {
-            Buffer->SetName(Name);
-        }
+        CreateRayTracingBuffer(Owner.Device, Size, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, State, Buffer, Name);
     };
 
     EnsureBuffer(TlasScratchBuffers[FrameIndex], ScratchSize, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"TLAS_Scratch");

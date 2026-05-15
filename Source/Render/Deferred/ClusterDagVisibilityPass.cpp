@@ -25,10 +25,6 @@ bool FClusterDagVisibilityPass::InitializePipelines(FDeferredRenderer& Owner, FD
     this->Owner = &Owner;
     this->Device = Device;
     bPipelinesReady = false;
-    if (Device == nullptr)
-    {
-        return false;
-    }
     if (!Device->SupportsAtomicInt64OnTypedResource())
     {
         LogWarning("ClusterDag visibility Vis64 path disabled: AtomicInt64OnTypedResource is not supported.");
@@ -51,10 +47,6 @@ bool FClusterDagVisibilityPass::InitializeResources(FDeferredRenderer& Owner, FD
     this->Owner = &Owner;
     this->Device = Device;
     bResourcesReady = false;
-    if (Device == nullptr)
-    {
-        return false;
-    }
     return CreateVisibilityResources(Device, Width, Height);
 }
 
@@ -242,9 +234,7 @@ void FClusterDagVisibilityPass::AddSoftwareRasterPass(FDeferredPassContext& Cont
     {
         FClusterDagRuntime* Runtime = Owner->ClusterDagRuntime.get();
         const uint32_t FrameIndex = Context.FrameIndex;
-        const uint32_t DepthIndex = Owner->DepthBindlessIndices.empty()
-            ? UINT32_MAX
-            : Owner->DepthBindlessIndices[FrameIndex % static_cast<uint32_t>(Owner->DepthBindlessIndices.size())];
+        const uint32_t DepthIndex = Owner->GetCurrentDepthSrvBindlessIndex();
         Data.bEnabled = Context.Resources.ClusterDagVisibility.Visibility64Handle
             && IsValidBindlessIndex(DepthIndex);
         if (!Data.bEnabled)
@@ -723,12 +713,12 @@ bool FClusterDagVisibilityPass::CreateResolvePipeline(FDX12Device* Device)
     PsoDesc.DepthStencilState.DepthEnable = FALSE;
     PsoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
     PsoDesc.DepthStencilState.StencilEnable = FALSE;
-    PsoDesc.NumRenderTargets = 5;
-    PsoDesc.RTVFormats[0] = FDeferredRenderer::GBufferFormats[0];
-    PsoDesc.RTVFormats[1] = FDeferredRenderer::GBufferFormats[1];
-    PsoDesc.RTVFormats[2] = FDeferredRenderer::GBufferFormats[2];
-    PsoDesc.RTVFormats[3] = FDeferredRenderer::GBufferFormats[3];
-    PsoDesc.RTVFormats[4] = FDeferredRenderer::LightingBufferFormat;
+    PsoDesc.NumRenderTargets = kDeferredGBufferCount + 1u;
+    for (uint32_t i = 0; i < kDeferredGBufferCount; ++i)
+    {
+        PsoDesc.RTVFormats[i] = FDeferredRenderer::GBufferFormats[i];
+    }
+    PsoDesc.RTVFormats[kDeferredGBufferCount] = FDeferredRenderer::LightingBufferFormat;
 
     HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(ResolvePipeline.ReleaseAndGetAddressOf())));
     return true;
@@ -755,11 +745,6 @@ bool FClusterDagVisibilityPass::CreateCommandSignature(FDX12Device* Device)
 
 bool FClusterDagVisibilityPass::CreateVisibilityResources(FDX12Device* Device, uint32_t Width, uint32_t Height)
 {
-    if (Owner == nullptr || Device == nullptr)
-    {
-        return false;
-    }
-
     bResourcesReady = false;
 
     const FRGTextureDesc Desc =

@@ -52,11 +52,25 @@ struct FUploadBuffer
     ID3D12Resource* operator->() const { return Resource.Get(); }
 };
 
+struct FReadbackBuffer
+{
+    Microsoft::WRL::ComPtr<ID3D12Resource> Resource;
+    uint64_t Size = 0;
+
+    ID3D12Resource* Get() const { return Resource.Get(); }
+    ID3D12Resource** GetAddressOf() { return Resource.GetAddressOf(); }
+    ID3D12Resource** ReleaseAndGetAddressOf() { return Resource.ReleaseAndGetAddressOf(); }
+    bool IsValid() const { return Resource != nullptr; }
+    explicit operator bool() const { return IsValid(); }
+    ID3D12Resource* operator->() const { return Resource.Get(); }
+};
+
 struct FMappedUploadBuffer
 {
     Microsoft::WRL::ComPtr<ID3D12Resource> Resource;
     uint64_t Size = 0;
     uint8_t* MappedData = nullptr;
+    uint32_t SrvBindlessIndex = UINT32_MAX;
 
     ID3D12Resource* Get() const { return Resource.Get(); }
     ID3D12Resource** GetAddressOf() { return Resource.GetAddressOf(); }
@@ -65,6 +79,7 @@ struct FMappedUploadBuffer
     explicit operator bool() const { return IsValid(); }
     ID3D12Resource* operator->() const { return Resource.Get(); }
     D3D12_GPU_VIRTUAL_ADDRESS GetGPUVirtualAddress() const { return Resource ? Resource->GetGPUVirtualAddress() : 0; }
+    bool HasSrv() const { return SrvBindlessIndex != UINT32_MAX; }
 };
 
 inline FRGBufferHandle ImportBindlessBuffer(FRenderGraph& Graph, const std::string& Name, FBindlessBuffer& Buffer)
@@ -283,6 +298,32 @@ inline void CreateUploadBuffer(FDX12Device* Device, const std::wstring& Name, ui
     }
 }
 
+inline bool CreateReadbackBuffer(FDX12Device* Device, const std::wstring& Name, uint64_t Size, FReadbackBuffer& OutBuffer)
+{
+    const D3D12_HEAP_PROPERTIES ReadbackHeap = CreateHeapProperties(D3D12_HEAP_TYPE_READBACK);
+    const D3D12_RESOURCE_DESC ReadbackDesc = CreateBufferResourceDesc(Size);
+    const HRESULT Hr = Device->GetDevice()->CreateCommittedResource(
+        &ReadbackHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &ReadbackDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        nullptr,
+        IID_PPV_ARGS(OutBuffer.ReleaseAndGetAddressOf()));
+    if (FAILED(Hr) || !OutBuffer.Get())
+    {
+        OutBuffer = {};
+        return false;
+    }
+
+    if (!Name.empty())
+    {
+        OutBuffer->SetName(Name.c_str());
+    }
+
+    OutBuffer.Size = Size;
+    return true;
+}
+
 inline bool CreateMappedUploadBuffer(FDX12Device* Device, const std::wstring& Name, uint64_t Size, FMappedUploadBuffer& Buffer)
 {
     const D3D12_HEAP_PROPERTIES UploadHeap = CreateHeapProperties(D3D12_HEAP_TYPE_UPLOAD);
@@ -317,7 +358,7 @@ inline bool CreateMappedUploadBuffer(FDX12Device* Device, const std::wstring& Na
     return true;
 }
 
-inline bool CreateMappedConstantBuffer(FDX12Device* Device, uint64_t BufferSize, FMappedUploadBuffer& OutConstantBuffer)
+inline bool CreateMappedConstantBuffer(FDX12Device* Device, const std::wstring& Name, uint64_t BufferSize, FMappedUploadBuffer& OutConstantBuffer)
 {
     if (Device == nullptr)
     {
@@ -325,7 +366,7 @@ inline bool CreateMappedConstantBuffer(FDX12Device* Device, uint64_t BufferSize,
     }
 
     const uint64_t ConstantBufferSize = (BufferSize + 255ULL) & ~255ULL;
-    return CreateMappedUploadBuffer(Device, L"MappedConstantBuffer", ConstantBufferSize, OutConstantBuffer);
+    return CreateMappedUploadBuffer(Device, Name, ConstantBufferSize, OutConstantBuffer);
 }
 
 inline bool CreateMappedBindlessBuffer(
@@ -439,13 +480,13 @@ inline void InitializeBindlessTexture(FBindlessTexture& Texture, const FRGTextur
     Texture.UavBindlessIndex = UINT32_MAX;
 }
 
-inline D3D12_RESOURCE_DESC CreateTexture2DResourceDesc(const FRGTextureDesc& Desc, D3D12_RESOURCE_FLAGS Flags = D3D12_RESOURCE_FLAG_NONE)
+inline D3D12_RESOURCE_DESC CreateTextureResourceDesc(const FRGTextureDesc& Desc, D3D12_RESOURCE_FLAGS Flags = D3D12_RESOURCE_FLAG_NONE)
 {
     D3D12_RESOURCE_DESC ResourceDesc = {};
-    ResourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    ResourceDesc.Dimension = Desc.Dimension;
     ResourceDesc.Width = Desc.Width;
     ResourceDesc.Height = Desc.Height;
-    ResourceDesc.DepthOrArraySize = 1;
+    ResourceDesc.DepthOrArraySize = Desc.DepthOrArraySize;
     ResourceDesc.MipLevels = Desc.MipLevels;
     ResourceDesc.Format = Desc.Format;
     ResourceDesc.SampleDesc.Count = 1;
@@ -593,7 +634,7 @@ inline void CreateBindlessTexture(
     const D3D12_CLEAR_VALUE* OptimizedClearValue = nullptr)
 {
     const D3D12_HEAP_PROPERTIES DefaultHeap = CreateHeapProperties(D3D12_HEAP_TYPE_DEFAULT);
-    const D3D12_RESOURCE_DESC ResourceDesc = CreateTexture2DResourceDesc(Desc, Flags);
+    const D3D12_RESOURCE_DESC ResourceDesc = CreateTextureResourceDesc(Desc, Flags);
     HR_CHECK(Device->GetDevice()->CreateCommittedResource(
         &DefaultHeap,
         D3D12_HEAP_FLAG_NONE,
@@ -609,6 +650,164 @@ inline void CreateBindlessTexture(
 
     InitializeBindlessTexture(OutTexture, Desc, InitialState);
     CreateBindlessTextureViews(Device, OutTexture, bCreateSrv, bCreateUav);
+}
+
+inline void CreateTexture2DRtv(
+    FDX12Device* Device,
+    const std::wstring& HeapName,
+    ID3D12Resource* Resource,
+    DXGI_FORMAT Format,
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>& OutHeap,
+    D3D12_CPU_DESCRIPTOR_HANDLE& OutHandle)
+{
+    D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
+    HeapDesc.NumDescriptors = 1;
+    HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(OutHeap.ReleaseAndGetAddressOf())));
+    if (OutHeap && !HeapName.empty())
+    {
+        OutHeap->SetName(HeapName.c_str());
+    }
+    OutHandle = OutHeap->GetCPUDescriptorHandleForHeapStart();
+    D3D12_RENDER_TARGET_VIEW_DESC RtvDesc = {};
+    RtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+    RtvDesc.Format = Format;
+    Device->GetDevice()->CreateRenderTargetView(Resource, &RtvDesc, OutHandle);
+}
+
+inline void WriteTexture2DRtv(
+    FDX12Device* Device,
+    ID3D12Resource* Resource,
+    DXGI_FORMAT Format,
+    D3D12_CPU_DESCRIPTOR_HANDLE Handle)
+{
+    D3D12_RENDER_TARGET_VIEW_DESC RtvDesc = {};
+    RtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+    RtvDesc.Format = Format;
+    Device->GetDevice()->CreateRenderTargetView(Resource, &RtvDesc, Handle);
+}
+
+struct FRenderTarget
+{
+    Microsoft::WRL::ComPtr<ID3D12Resource> Resource;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> RtvHeap;
+    D3D12_CPU_DESCRIPTOR_HANDLE RtvHandle{};
+
+    ID3D12Resource* Get() const { return Resource.Get(); }
+    bool IsValid() const { return Resource != nullptr; }
+    explicit operator bool() const { return IsValid(); }
+};
+
+inline void CreateRenderTarget2D(
+    FDX12Device* Device,
+    const std::wstring& Name,
+    uint32_t Width,
+    uint32_t Height,
+    DXGI_FORMAT Format,
+    const FLOAT ClearColor[4],
+    FRenderTarget& OutRT)
+{
+    const FRGTextureDesc Desc = { Width, Height, Format };
+    const D3D12_RESOURCE_DESC ResourceDesc = CreateTextureResourceDesc(Desc, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
+    D3D12_CLEAR_VALUE ClearValue = {};
+    ClearValue.Format = Format;
+    ClearValue.Color[0] = ClearColor[0];
+    ClearValue.Color[1] = ClearColor[1];
+    ClearValue.Color[2] = ClearColor[2];
+    ClearValue.Color[3] = ClearColor[3];
+    const D3D12_HEAP_PROPERTIES HeapProps = CreateHeapProperties(D3D12_HEAP_TYPE_DEFAULT);
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &HeapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &ResourceDesc,
+        D3D12_RESOURCE_STATE_RENDER_TARGET,
+        &ClearValue,
+        IID_PPV_ARGS(OutRT.Resource.ReleaseAndGetAddressOf())));
+    if (OutRT.Resource && !Name.empty())
+    {
+        OutRT.Resource->SetName(Name.c_str());
+    }
+    CreateTexture2DRtv(Device, Name + L"Heap", OutRT.Resource.Get(), Format, OutRT.RtvHeap, OutRT.RtvHandle);
+}
+
+inline DXGI_FORMAT GetDepthResourceFormat(DXGI_FORMAT DsvFormat)
+{
+    switch (DsvFormat)
+    {
+    case DXGI_FORMAT_D24_UNORM_S8_UINT: return DXGI_FORMAT_R24G8_TYPELESS;
+    case DXGI_FORMAT_D32_FLOAT:         return DXGI_FORMAT_R32_TYPELESS;
+    case DXGI_FORMAT_D16_UNORM:         return DXGI_FORMAT_R16_TYPELESS;
+    default:                            return DsvFormat;
+    }
+}
+
+inline void CreateDepthTexture2D(
+    FDX12Device* Device,
+    const std::wstring& Name,
+    uint32_t Width,
+    uint32_t Height,
+    DXGI_FORMAT DsvFormat,
+    float ClearDepth,
+    Microsoft::WRL::ComPtr<ID3D12Resource>& OutResource)
+{
+    const FRGTextureDesc DepthDesc = { Width, Height, GetDepthResourceFormat(DsvFormat) };
+    const D3D12_RESOURCE_DESC ResourceDesc = CreateTextureResourceDesc(DepthDesc, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
+    D3D12_CLEAR_VALUE ClearValue = {};
+    ClearValue.Format = DsvFormat;
+    ClearValue.DepthStencil.Depth = ClearDepth;
+    const D3D12_HEAP_PROPERTIES HeapProps = CreateHeapProperties(D3D12_HEAP_TYPE_DEFAULT);
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &HeapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &ResourceDesc,
+        D3D12_RESOURCE_STATE_DEPTH_WRITE,
+        &ClearValue,
+        IID_PPV_ARGS(OutResource.ReleaseAndGetAddressOf())));
+    if (OutResource && !Name.empty())
+    {
+        OutResource->SetName(Name.c_str());
+    }
+}
+
+struct FDepthStencilTarget
+{
+    Microsoft::WRL::ComPtr<ID3D12Resource> Resource;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> DSVHeap;
+    D3D12_CPU_DESCRIPTOR_HANDLE DSVHandle{};
+    uint32_t SrvBindlessIndex = UINT32_MAX;
+    D3D12_RESOURCE_STATES State = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    DXGI_FORMAT TypelessFormat = DXGI_FORMAT_UNKNOWN;
+
+    ID3D12Resource* Get() const { return Resource.Get(); }
+    bool IsValid() const { return Resource != nullptr; }
+    bool HasSrv() const { return IsValidBindlessIndex(SrvBindlessIndex); }
+    explicit operator bool() const { return IsValid(); }
+};
+
+inline void CreateTexture2DDsv(
+    FDX12Device* Device,
+    const std::wstring& HeapName,
+    ID3D12Resource* Resource,
+    DXGI_FORMAT Format,
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>& OutHeap,
+    D3D12_CPU_DESCRIPTOR_HANDLE& OutHandle)
+{
+    D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
+    HeapDesc.NumDescriptors = 1;
+    HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+    HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(OutHeap.ReleaseAndGetAddressOf())));
+    if (OutHeap && !HeapName.empty())
+    {
+        OutHeap->SetName(HeapName.c_str());
+    }
+    OutHandle = OutHeap->GetCPUDescriptorHandleForHeapStart();
+    D3D12_DEPTH_STENCIL_VIEW_DESC ViewDesc = {};
+    ViewDesc.Format = Format;
+    ViewDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+    ViewDesc.Flags = D3D12_DSV_FLAG_NONE;
+    Device->GetDevice()->CreateDepthStencilView(Resource, &ViewDesc, OutHandle);
 }
 
 inline bool CheckFormatSupport(FDX12Device* Device, DXGI_FORMAT Format, D3D12_FORMAT_SUPPORT1 RequiredFlags)
@@ -654,5 +853,52 @@ inline bool CreateCubeTexture(
         return false;
     }
     OutResource->SetName(Name);
+    return true;
+}
+
+struct FBindlessCubeTexture
+{
+    Microsoft::WRL::ComPtr<ID3D12Resource> Resource;
+    uint32_t SrvBindlessIndex = UINT32_MAX;
+    std::vector<uint32_t> MipUavIndices;
+
+    ID3D12Resource* Get() const { return Resource.Get(); }
+    bool HasSrv() const { return IsValidBindlessIndex(SrvBindlessIndex); }
+    bool HasMipUav(uint32_t Mip) const { return Mip < MipUavIndices.size() && IsValidBindlessIndex(MipUavIndices[Mip]); }
+};
+
+inline bool CreateBindlessCubeTexture(
+    FDX12Device* Device,
+    const std::wstring& Name,
+    uint32_t Resolution,
+    uint16_t MipLevels,
+    DXGI_FORMAT Format,
+    FBindlessCubeTexture& Out)
+{
+    if (!CreateCubeTexture(Device, Name.c_str(), Resolution, MipLevels, Format, Out.Resource))
+    {
+        return false;
+    }
+
+    Out.SrvBindlessIndex = Device->CreateBindlessSrv(Out.Get(),
+        CD3DX12_SHADER_RESOURCE_VIEW_DESC::TexCube(Format, MipLevels));
+    if (!Out.HasSrv())
+    {
+        return false;
+    }
+
+    Out.MipUavIndices.clear();
+    Out.MipUavIndices.reserve(MipLevels);
+    for (uint16_t Mip = 0; Mip < MipLevels; ++Mip)
+    {
+        const auto UavDesc = CD3DX12_UNORDERED_ACCESS_VIEW_DESC::Tex2DArray(Format, 6, 0, Mip);
+        const uint32_t UavIndex = Device->CreateBindlessUav(Out.Get(), nullptr, UavDesc);
+        if (!IsValidBindlessIndex(UavIndex))
+        {
+            return false;
+        }
+        Out.MipUavIndices.push_back(UavIndex);
+    }
+
     return true;
 }

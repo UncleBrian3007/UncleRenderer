@@ -13,6 +13,33 @@ class FDX12CommandContext;
 class FCamera;
 struct FDeferredPassContext;
 
+static constexpr uint32_t kCullingConstantDwords = 60;
+
+struct FGpuCullingConstants
+{
+    float    FrustumPlanes[6][4];
+    float    ViewProjection[4][4];
+    uint32_t IndirectCommandCount;
+    uint32_t HZBEnabled;
+    uint32_t HZBMipCount;
+    uint32_t HZBWidth;
+    uint32_t HZBHeight;
+    uint32_t DebugPrintEnabled;
+    uint32_t RangeCount;
+    uint32_t CullingMode;
+    float    CameraPosition[3];
+    uint32_t Padding1;
+    float    ClusterDagTargetErrorPixels;
+    float    ViewportHeightPixels;
+    uint32_t ClusterDagVisibleRootCount;
+    uint32_t ClusterDagForceMipEnabled;
+    uint32_t ClusterDagForceMipLevel;
+    uint32_t ClusterDagForceMipSkipFrustumCull;
+    uint32_t ClusterDagForceSoftwareRaster;
+    float    ClusterDagSwRasterThresholdPixels;
+};
+static_assert(sizeof(FGpuCullingConstants) == sizeof(uint32_t) * kCullingConstantDwords);
+
 class FGpuDrivenCulling
 {
 public:
@@ -198,6 +225,11 @@ public:
     void AddSharedInputUploadPreCopyBarriers(std::vector<D3D12_RESOURCE_BARRIER>& Barriers) const;
     void CopySharedInputData(ID3D12GraphicsCommandList* CommandList) const;
     void AddSharedInputUploadPostCopyBarriers(std::vector<D3D12_RESOURCE_BARRIER>& Barriers) const;
+
+    void AddInitialUploadPreCopyBarriers(std::vector<D3D12_RESOURCE_BARRIER>& Barriers, uint32_t FramesInFlight) const;
+    void CopyInitialData(ID3D12GraphicsCommandList* CommandList, const std::vector<FUploadBuffer>& IndirectCommandUploads, uint64_t CommandBufferSize) const;
+    void AddInitialUploadPostCopyBarriers(std::vector<D3D12_RESOURCE_BARRIER>& Barriers, uint32_t FramesInFlight) const;
+    void ResetInitialUploadStates(uint32_t FramesInFlight);
     void RefreshVisibilityPersistentValidation(uint32_t FramesInFlight);
     bool CreateVisibilityResources(FDX12Device* Device, uint32_t FramesInFlight, uint32_t IndirectCommandCount);
     void ResetVisibilityStatesToCommon(uint32_t FramesInFlight);

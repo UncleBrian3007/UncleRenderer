@@ -142,13 +142,12 @@ void FTaa::AddPass(FDeferredPassContext& Context) const
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         static_assert(sizeof(FTemporalAAConstants) / sizeof(uint32_t) <= kTaaConstantsDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(Constants) / sizeof(uint32_t), &Constants, 0);
-        const uint32_t TaaBindlessIndices[] =
+        const uint32_t TaaBindlessIndices[kTaaBindlessDwordCount] =
         {
             Owner.LightingBuffer.SrvBindlessIndex,
             GetHistorySrvBindlessIndex(Data.ReadIndex),
             GetHistoryUavBindlessIndex(Data.WriteIndex)
         };
-        static_assert(_countof(TaaBindlessIndices) <= kTaaBindlessDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(1, _countof(TaaBindlessIndices), TaaBindlessIndices, 0);
 
         const uint32_t GroupX = (static_cast<uint32_t>(Data.OutputSize.x) + 7u) / 8u;

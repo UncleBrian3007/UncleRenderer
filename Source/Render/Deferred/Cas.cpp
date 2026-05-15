@@ -33,11 +33,7 @@ void FCas::ImportPersistentResources(FDeferredPassContext& Context)
     FRenderGraph& Graph = Context.Graph;
     FCasFrameResources& OutResources = Context.Resources.Cas;
 
-    OutResources.TonemapOutputHandle = Graph.ImportTexture(
-        "TonemapOutput",
-        Owner.TonemapOutput.Get(),
-        &Owner.TonemapOutput.State,
-        { static_cast<uint32>(Owner.Viewport.Width), static_cast<uint32>(Owner.Viewport.Height), Owner.BackBufferFormat });
+    OutResources.TonemapOutputHandle = ImportBindlessTexture(Graph, "TonemapOutput", Owner.TonemapOutput);
 }
 
 bool FCas::CreatePersistentDescriptors(FDeferredRenderer& Owner, FDX12Device* Device)

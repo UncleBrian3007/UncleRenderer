@@ -134,11 +134,8 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> LinePipeline;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> BoxRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> BoxPipeline;
-    Microsoft::WRL::ComPtr<ID3D12Resource> PrintFontTexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> PrintGlyphBuffer;
-
-    uint32_t PrintGlyphBindlessIndex = UINT32_MAX;
-    uint32_t PrintFontBindlessIndex = UINT32_MAX;
+    FBindlessTexture PrintFontTexture;
+    FBindlessBuffer PrintGlyphBuffer;
 
     uint32_t PrintAtlasWidth = 0;
     uint32_t PrintAtlasHeight = 0;

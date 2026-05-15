@@ -1,4 +1,5 @@
 #include "Application.h"
+#include "FrameGpuTimer.h"
 #include "Window.h"
 #include "EngineTime.h"
 #include "ImGuiSupport.h"
@@ -442,65 +443,12 @@ bool FApplication::RenderFrame()
 
     if (RendererConfig.bEnableGpuTiming && Device && Device->GetGraphicsQueue())
     {
-        ID3D12Device* D3DDevice = Device->GetDevice();
-        ID3D12CommandQueue* Queue = Device->GetGraphicsQueue()->GetD3DQueue();
-        const uint32 BufferCount = SwapChain->GetBackBufferCount();
-        const uint32 QueryCount = BufferCount * 2;
-
-        if (!FrameTimingQueryHeap || !FrameTimingReadback || FrameTimingFenceValues.size() != BufferCount)
-        {
-            FrameTimingFenceValues.assign(BufferCount, 0);
-
-            D3D12_QUERY_HEAP_DESC HeapDesc = {};
-            HeapDesc.Count = QueryCount;
-            HeapDesc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
-            HeapDesc.NodeMask = 0;
-            HR_CHECK(D3DDevice->CreateQueryHeap(&HeapDesc, IID_PPV_ARGS(FrameTimingQueryHeap.GetAddressOf())));
-
-            const UINT64 ReadbackSize = static_cast<UINT64>(QueryCount) * sizeof(uint64);
-            CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_READBACK);
-            CD3DX12_RESOURCE_DESC BufferDesc = CD3DX12_RESOURCE_DESC::Buffer(ReadbackSize);
-            HR_CHECK(D3DDevice->CreateCommittedResource(
-                &HeapProps,
-                D3D12_HEAP_FLAG_NONE,
-                &BufferDesc,
-                D3D12_RESOURCE_STATE_COPY_DEST,
-                nullptr,
-                IID_PPV_ARGS(FrameTimingReadback.GetAddressOf())));
-
-            FrameTimingFrequency = 0;
-        }
-
-        if (FrameTimingFrequency == 0)
-        {
-            Queue->GetTimestampFrequency(&FrameTimingFrequency);
-        }
-
-        if (FrameTimingReadback && FrameTimingFrequency > 0 && BackBufferIndex < FrameTimingFenceValues.size())
-        {
-            const uint64 FenceValue = FrameTimingFenceValues[BackBufferIndex];
-            if (FenceValue > 0 && Device->GetGraphicsQueue()->GetCompletedFenceValue() >= FenceValue)
-            {
-                const UINT64 Offset = static_cast<UINT64>(BackBufferIndex * 2) * sizeof(uint64);
-                const UINT64 ReadbackSize = sizeof(uint64) * 2;
-                D3D12_RANGE ReadRange = { Offset, Offset + ReadbackSize };
-                uint64* TimestampData = nullptr;
-                if (SUCCEEDED(FrameTimingReadback->Map(0, &ReadRange, reinterpret_cast<void**>(&TimestampData))) && TimestampData)
-                {
-                    const uint64 Start = TimestampData[BackBufferIndex * 2];
-                    const uint64 End = TimestampData[BackBufferIndex * 2 + 1];
-                    if (End > Start)
-                    {
-                        const double Delta = static_cast<double>(End - Start) / static_cast<double>(FrameTimingFrequency);
-                        const double Milliseconds = Delta * 1000.0;
-                        FRenderGraph::AddExternalGpuTimingSample("Frame", Milliseconds);
-                    }
-                    FrameTimingReadback->Unmap(0, nullptr);
-                }
-
-                FrameTimingFenceValues[BackBufferIndex] = 0;
-            }
-        }
+        FrameTimer.BeginFrame(
+            Device->GetDevice(),
+            Device->GetGraphicsQueue()->GetD3DQueue(),
+            Device->GetGraphicsQueue()->GetCompletedFenceValue(),
+            BackBufferIndex,
+            SwapChain->GetBackBufferCount());
     }
 
     CommandContext->BeginFrame(BackBufferIndex);
@@ -510,10 +458,9 @@ bool FApplication::RenderFrame()
         swprintf_s(FrameLabel, L"Frame %llu", static_cast<unsigned long long>(FrameIndex));
         FScopedPixEvent FrameEvent(CommandContext->GetCommandList(), FrameLabel);
 
-        if (RendererConfig.bEnableGpuTiming && FrameTimingQueryHeap && FrameTimingReadback)
+        if (RendererConfig.bEnableGpuTiming)
         {
-            const uint32 QueryIndex = BackBufferIndex * 2;
-            CommandContext->GetCommandList()->EndQuery(FrameTimingQueryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, QueryIndex);
+            FrameTimer.RecordBeginTimestamp(CommandContext->GetCommandList(), BackBufferIndex);
         }
 
         CommandContext->TransitionResource(
@@ -563,51 +510,14 @@ bool FApplication::RenderFrame()
 
         FScopedPixEvent PresentEvent(CommandContext->GetCommandList(), L"Present");
 
-        if (RendererConfig.bEnableGpuTiming && FrameTimingQueryHeap && FrameTimingReadback)
+        if (RendererConfig.bEnableGpuTiming)
         {
-            const uint32 QueryIndex = BackBufferIndex * 2;
-            CommandContext->GetCommandList()->EndQuery(FrameTimingQueryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, QueryIndex + 1);
-            const UINT64 Offset = static_cast<UINT64>(QueryIndex) * sizeof(uint64);
-            CommandContext->GetCommandList()->ResolveQueryData(
-                FrameTimingQueryHeap.Get(),
-                D3D12_QUERY_TYPE_TIMESTAMP,
-                QueryIndex,
-                2,
-                FrameTimingReadback.Get(),
-                Offset);
+            FrameTimer.RecordEndTimestamp(CommandContext->GetCommandList(), BackBufferIndex);
         }
     }
     CommandContext->CloseAndExecute();
 
-    const bool bNeedsReadback = bPendingObjectIdReadback;
-    if (bNeedsReadback && ActiveRenderer && Device && Device->GetGraphicsQueue())
-    {
-        Device->GetGraphicsQueue()->Flush();
-        if (bPendingObjectIdReadback)
-        {
-            uint32_t ObjectId = 0;
-            if (ActiveRenderer->ConsumeObjectIdReadback(ObjectId))
-            {
-                const std::vector<FSceneModelResource>* Models = ActiveRenderer->GetSceneModels();
-                if (ObjectId > 0 && Models && ObjectId <= Models->size())
-                {
-                    SelectedModelIndex = static_cast<int32_t>(ObjectId - 1);
-                    SelectedModelName = (*Models)[SelectedModelIndex].Name;
-                    if (SelectedModelName.empty())
-                    {
-                        SelectedModelName = "Unnamed";
-                    }
-                }
-                else
-                {
-                    SelectedModelIndex = -1;
-                    SelectedModelName.clear();
-                }
-            }
-            bPendingObjectIdReadback = false;
-        }
-
-    }
+    ProcessObjectIdReadback();
 
     LogVerbose("Preparing frame end: " + std::to_string(FrameIndex));
 
@@ -633,10 +543,7 @@ bool FApplication::RenderFrame()
     {
         ActiveRenderer->OnFrameFenceSignaled(BackBufferIndex, FenceValue);
     }
-    if (BackBufferIndex < FrameTimingFenceValues.size())
-    {
-        FrameTimingFenceValues[BackBufferIndex] = FenceValue;
-    }
+    FrameTimer.OnFenceSignaled(BackBufferIndex, FenceValue);
 #if WITH_BINDLESS_DESCRIPTOR_STATS
     UpdateBindlessDescriptorStatsSnapshot();
 #endif
@@ -798,6 +705,37 @@ void FApplication::HandleCameraInput(float DeltaSeconds)
 
     FovY = std::clamp(FovY, MinFov, MaxFov);
     Camera->SetFovY(FovY);
+}
+
+void FApplication::ProcessObjectIdReadback()
+{
+    if (!bPendingObjectIdReadback || !ActiveRenderer || !Device || !Device->GetGraphicsQueue())
+    {
+        return;
+    }
+
+    Device->GetGraphicsQueue()->Flush();
+
+    uint32_t ObjectId = 0;
+    if (ActiveRenderer->ConsumeObjectIdReadback(ObjectId))
+    {
+        const std::vector<FSceneModelResource>* Models = ActiveRenderer->GetSceneModels();
+        if (ObjectId > 0 && Models && ObjectId <= Models->size())
+        {
+            SelectedModelIndex = static_cast<int32_t>(ObjectId - 1);
+            SelectedModelName = (*Models)[SelectedModelIndex].Name;
+            if (SelectedModelName.empty())
+            {
+                SelectedModelName = "Unnamed";
+            }
+        }
+        else
+        {
+            SelectedModelIndex = -1;
+            SelectedModelName.clear();
+        }
+    }
+    bPendingObjectIdReadback = false;
 }
 
 void FApplication::UpdateSelectionFromMouseClick()
@@ -2279,6 +2217,67 @@ void FApplication::RenderUI()
                         "ClusterDAGSwRasterHzbReject",
                         RendererConfig.bEnableClusterDAGSwRasterHzbReject ? "true" : "false");
                     SyncDeferredClusterDagConfig();
+                }
+
+                bool bClusterDagStreaming = RendererConfig.bEnableClusterDAGStreaming;
+                if (ImGui::Checkbox("Cluster DAG Streaming", &bClusterDagStreaming))
+                {
+                    RendererConfig.bEnableClusterDAGStreaming = bClusterDagStreaming;
+                    UpsertConfigValue(
+                        GetRendererConfigPath(),
+                        "ClusterDAGStreaming",
+                        RendererConfig.bEnableClusterDAGStreaming ? "true" : "false");
+                    SyncDeferredClusterDagConfig();
+                }
+
+                if (bClusterDagStreaming)
+                {
+                    ImGui::SetNextItemWidth(160.0f);
+                    int StreamingPoolMB = static_cast<int>(RendererConfig.ClusterDAGStreamingPoolMB);
+                    if (ImGui::InputInt("Cluster DAG Stream Pool MB", &StreamingPoolMB))
+                    {
+                        RendererConfig.ClusterDAGStreamingPoolMB = static_cast<uint32_t>(std::clamp(StreamingPoolMB, 1, 4096));
+                        SyncDeferredClusterDagConfig();
+                    }
+                    if (ImGui::IsItemDeactivatedAfterEdit())
+                    {
+                        UpsertConfigValue(
+                            GetRendererConfigPath(),
+                            "ClusterDAGStreamingPoolMB",
+                            std::to_string(RendererConfig.ClusterDAGStreamingPoolMB));
+                    }
+
+                    ImGui::SetNextItemWidth(160.0f);
+                    int InstallsPerFrame = static_cast<int>(RendererConfig.ClusterDAGStreamingMaxPageInstallsPerFrame);
+                    if (ImGui::InputInt("Cluster DAG Installs/Frame", &InstallsPerFrame))
+                    {
+                        RendererConfig.ClusterDAGStreamingMaxPageInstallsPerFrame = static_cast<uint32_t>(std::clamp(InstallsPerFrame, 1, 1024));
+                        SyncDeferredClusterDagConfig();
+                    }
+                    if (ImGui::IsItemDeactivatedAfterEdit())
+                    {
+                        UpsertConfigValue(
+                            GetRendererConfigPath(),
+                            "ClusterDAGStreamingMaxPageInstallsPerFrame",
+                            std::to_string(RendererConfig.ClusterDAGStreamingMaxPageInstallsPerFrame));
+                    }
+
+                    if (DeferredRenderer && ActiveRenderer == DeferredRenderer.get())
+                    {
+                        if (const FClusterDagStreamingManager* StreamingManager = DeferredRenderer->GetClusterDagStreamingManager())
+                        {
+                            ImGui::Text(
+                                "Stream Pages R/P/I: %u / %u / %u",
+                                StreamingManager->GetResidentPageCount(),
+                                StreamingManager->GetPendingPageCount(),
+                                StreamingManager->GetLastFrameInstallCount());
+                            ImGui::Text(
+                                "Stream Req/Drop/Repl: %u / %u / %u",
+                                StreamingManager->GetLastFrameRequestCount(),
+                                StreamingManager->GetDroppedRequestCount(),
+                                StreamingManager->GetReplacedRequestCount());
+                        }
+                    }
                 }
 
 				bool bClusterDagForceMip = RendererConfig.bEnableClusterDAGForceMip;

@@ -140,24 +140,6 @@ namespace
         }
     };
 
-    uint32_t CreateStructuredBufferSrv(FDX12Device* Device, ID3D12Resource* Buffer, uint32_t Stride)
-    {
-        if (!Buffer || Stride == 0)
-        {
-            return UINT32_MAX;
-        }
-
-        const D3D12_RESOURCE_DESC BufferDesc = Buffer->GetDesc();
-        const uint64_t ElementCount = BufferDesc.Width / Stride;
-        if (ElementCount == 0)
-        {
-            return UINT32_MAX;
-        }
-
-        return Device->CreateBindlessSrv(Buffer,
-            CD3DX12_SHADER_RESOURCE_VIEW_DESC::StructuredBuffer(static_cast<UINT>(ElementCount), Stride));
-    }
-
     bool CreatePrimitiveGeometry(
         FDX12Device* Device,
         const FMesh::FPrimitive& Primitive,
@@ -232,7 +214,7 @@ namespace
             Weights = &DefaultWeights;
         }
 
-        const std::array<const void*, 7> StreamData =
+        const std::array<const void*, kMeshVertexStreamCount> StreamData =
         {
             Positions->data(),
             Normals->data(),
@@ -243,7 +225,7 @@ namespace
             Weights->data()
         };
 
-        const std::array<UINT, 7> StreamStrides =
+        const std::array<UINT, kMeshVertexStreamCount> StreamStrides =
         {
             static_cast<UINT>(sizeof(FFloat3)),
             static_cast<UINT>(sizeof(FFloat3)),
@@ -254,7 +236,7 @@ namespace
             static_cast<UINT>(sizeof(FFloat4))
         };
 
-        const std::array<UINT, 7> StreamSizes =
+        const std::array<UINT, kMeshVertexStreamCount> StreamSizes =
         {
             static_cast<UINT>(VertexCount * sizeof(FFloat3)),
             static_cast<UINT>(VertexCount * sizeof(FFloat3)),
@@ -267,98 +249,43 @@ namespace
 
         const UINT IndexBufferSize = static_cast<UINT>(Primitive.Indices.size() * sizeof(uint32_t));
 
-        D3D12_HEAP_PROPERTIES DefaultHeap = {};
-        DefaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
-        DefaultHeap.CreationNodeMask = 1;
-        DefaultHeap.VisibleNodeMask = 1;
-
-        D3D12_HEAP_PROPERTIES UploadHeap = {};
-        UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
-        UploadHeap.CreationNodeMask = 1;
-        UploadHeap.VisibleNodeMask = 1;
-
-        D3D12_RESOURCE_DESC BufferDesc = {};
-        BufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        BufferDesc.Height = 1;
-        BufferDesc.DepthOrArraySize = 1;
-        BufferDesc.MipLevels = 1;
-        BufferDesc.Format = DXGI_FORMAT_UNKNOWN;
-        BufferDesc.SampleDesc.Count = 1;
-        BufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
         OutGeometry.VertexBufferCount = static_cast<uint32_t>(StreamData.size());
         OutGeometry.VertexBufferViews.fill({});
 
-        std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 7> UploadBuffers;
-
+        std::array<FUploadBuffer, kMeshVertexStreamCount> UploadBuffers;
         for (size_t StreamIndex = 0; StreamIndex < StreamData.size(); ++StreamIndex)
         {
-            BufferDesc.Width = StreamSizes[StreamIndex];
-            HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-                &DefaultHeap,
-                D3D12_HEAP_FLAG_NONE,
-                &BufferDesc,
+            CreateBindlessBufferWithUpload(
+                Device,
+                L"PrimitiveVertexBuffer_" + std::to_wstring(StreamIndex),
+                CreateStructuredBufferDesc(VertexCount, StreamStrides[StreamIndex]),
                 D3D12_RESOURCE_STATE_COPY_DEST,
-                nullptr,
-                IID_PPV_ARGS(OutGeometry.VertexBuffers[StreamIndex].ReleaseAndGetAddressOf())));
-            if (OutGeometry.VertexBuffers[StreamIndex])
-            {
-                const std::wstring BufferName = L"PrimitiveVertexBuffer_" + std::to_wstring(StreamIndex);
-                OutGeometry.VertexBuffers[StreamIndex]->SetName(BufferName.c_str());
-            }
-
-            HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-                &UploadHeap,
-                D3D12_HEAP_FLAG_NONE,
-                &BufferDesc,
-                D3D12_RESOURCE_STATE_GENERIC_READ,
-                nullptr,
-                IID_PPV_ARGS(UploadBuffers[StreamIndex].ReleaseAndGetAddressOf())));
-
-            void* VertexData = nullptr;
-            D3D12_RANGE EmptyRange = { 0, 0 };
-            HR_CHECK(UploadBuffers[StreamIndex]->Map(0, &EmptyRange, &VertexData));
-            memcpy(VertexData, StreamData[StreamIndex], StreamSizes[StreamIndex]);
-            UploadBuffers[StreamIndex]->Unmap(0, nullptr);
-
+                OutGeometry.VertexBuffers[StreamIndex],
+                UploadBuffers[StreamIndex],
+                StreamData[StreamIndex],
+                true,
+                false);
             OutGeometry.VertexBufferViews[StreamIndex].BufferLocation = OutGeometry.VertexBuffers[StreamIndex]->GetGPUVirtualAddress();
             OutGeometry.VertexBufferViews[StreamIndex].StrideInBytes = StreamStrides[StreamIndex];
             OutGeometry.VertexBufferViews[StreamIndex].SizeInBytes = StreamSizes[StreamIndex];
         }
 
-        Microsoft::WRL::ComPtr<ID3D12Resource> IndexUploadBuffer;
+        FUploadBuffer IndexUploadBuffer;
         if (bCreateIndexBuffer)
         {
-            BufferDesc.Width = IndexBufferSize;
-            HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-                &DefaultHeap,
-                D3D12_HEAP_FLAG_NONE,
-                &BufferDesc,
+            CreateBindlessBufferWithUpload(
+                Device,
+                L"PrimitiveIndexBuffer",
+                CreateStructuredBufferDesc<uint32_t>(Primitive.Indices.size()),
                 D3D12_RESOURCE_STATE_COPY_DEST,
-                nullptr,
-                IID_PPV_ARGS(OutGeometry.IndexBuffer.GetAddressOf())));
-            if (OutGeometry.IndexBuffer)
-            {
-                OutGeometry.IndexBuffer->SetName(L"PrimitiveIndexBuffer");
-            }
-
+                OutGeometry.IndexBuffer,
+                IndexUploadBuffer,
+                Primitive.Indices.data(),
+                true,
+                false);
             OutGeometry.IndexBufferView.BufferLocation = OutGeometry.IndexBuffer->GetGPUVirtualAddress();
             OutGeometry.IndexBufferView.Format = DXGI_FORMAT_R32_UINT;
             OutGeometry.IndexBufferView.SizeInBytes = IndexBufferSize;
-
-            HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-                &UploadHeap,
-                D3D12_HEAP_FLAG_NONE,
-                &BufferDesc,
-                D3D12_RESOURCE_STATE_GENERIC_READ,
-                nullptr,
-                IID_PPV_ARGS(IndexUploadBuffer.ReleaseAndGetAddressOf())));
-
-            void* IndexData = nullptr;
-            D3D12_RANGE EmptyRange = { 0, 0 };
-            HR_CHECK(IndexUploadBuffer->Map(0, &EmptyRange, &IndexData));
-            memcpy(IndexData, Primitive.Indices.data(), IndexBufferSize);
-            IndexUploadBuffer->Unmap(0, nullptr);
         }
 
         if (UploadBatch && !UploadBatch->bInitialized)
@@ -378,23 +305,21 @@ namespace
         for (size_t StreamIndex = 0; StreamIndex < StreamData.size(); ++StreamIndex)
         {
             CommandList->CopyBufferRegion(
-                OutGeometry.VertexBuffers[StreamIndex].Get(),
-                0,
-                UploadBuffers[StreamIndex].Get(),
-                0,
+                OutGeometry.VertexBuffers[StreamIndex].Get(), 0,
+                UploadBuffers[StreamIndex].Get(), 0,
                 StreamSizes[StreamIndex]);
             ActiveBatch->Context.TransitionResource(
                 OutGeometry.VertexBuffers[StreamIndex].Get(),
                 D3D12_RESOURCE_STATE_COPY_DEST,
                 D3D12_RESOURCE_STATE_GENERIC_READ);
-            ActiveBatch->AddUploadBuffer(std::move(UploadBuffers[StreamIndex]));
+            ActiveBatch->AddUploadBuffer(std::move(UploadBuffers[StreamIndex].Resource));
         }
 
         if (bCreateIndexBuffer && IndexUploadBuffer)
         {
             CommandList->CopyBufferRegion(OutGeometry.IndexBuffer.Get(), 0, IndexUploadBuffer.Get(), 0, IndexBufferSize);
             ActiveBatch->Context.TransitionResource(OutGeometry.IndexBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ);
-            ActiveBatch->AddUploadBuffer(std::move(IndexUploadBuffer));
+            ActiveBatch->AddUploadBuffer(std::move(IndexUploadBuffer.Resource));
         }
 
         if (!UploadBatch)
@@ -438,58 +363,22 @@ namespace
 
         const UINT IndexBufferSize = static_cast<UINT>(Indices.size() * sizeof(uint32_t));
 
-        D3D12_HEAP_PROPERTIES DefaultHeap = {};
-        DefaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
-        DefaultHeap.CreationNodeMask = 1;
-        DefaultHeap.VisibleNodeMask = 1;
-
-        D3D12_HEAP_PROPERTIES UploadHeap = {};
-        UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
-        UploadHeap.CreationNodeMask = 1;
-        UploadHeap.VisibleNodeMask = 1;
-
-        D3D12_RESOURCE_DESC BufferDesc = {};
-        BufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        BufferDesc.Width = IndexBufferSize;
-        BufferDesc.Height = 1;
-        BufferDesc.DepthOrArraySize = 1;
-        BufferDesc.MipLevels = 1;
-        BufferDesc.Format = DXGI_FORMAT_UNKNOWN;
-        BufferDesc.SampleDesc.Count = 1;
-        BufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-            &DefaultHeap,
-            D3D12_HEAP_FLAG_NONE,
-            &BufferDesc,
+        FUploadBuffer UploadBuffer;
+        CreateBindlessBufferWithUpload(
+            Device,
+            L"PrimitiveIndexBuffer",
+            CreateStructuredBufferDesc<uint32_t>(Indices.size()),
             D3D12_RESOURCE_STATE_COPY_DEST,
-            nullptr,
-            IID_PPV_ARGS(InOutGeometry.IndexBuffer.ReleaseAndGetAddressOf())));
-
-        if (InOutGeometry.IndexBuffer)
-        {
-            InOutGeometry.IndexBuffer->SetName(L"PrimitiveIndexBuffer");
-        }
-
-        Microsoft::WRL::ComPtr<ID3D12Resource> UploadBuffer;
-        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-            &UploadHeap,
-            D3D12_HEAP_FLAG_NONE,
-            &BufferDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ,
-            nullptr,
-            IID_PPV_ARGS(UploadBuffer.ReleaseAndGetAddressOf())));
+            InOutGeometry.IndexBuffer,
+            UploadBuffer,
+            Indices.data(),
+            true,
+            false);
 
         InOutGeometry.IndexBufferView.BufferLocation = InOutGeometry.IndexBuffer->GetGPUVirtualAddress();
         InOutGeometry.IndexBufferView.Format = DXGI_FORMAT_R32_UINT;
         InOutGeometry.IndexBufferView.SizeInBytes = IndexBufferSize;
         InOutGeometry.IndexCount = static_cast<uint32_t>(Indices.size());
-
-        void* IndexData = nullptr;
-        D3D12_RANGE EmptyRange = { 0, 0 };
-        HR_CHECK(UploadBuffer->Map(0, &EmptyRange, &IndexData));
-        memcpy(IndexData, Indices.data(), IndexBufferSize);
-        UploadBuffer->Unmap(0, nullptr);
 
         if (UploadBatch && !UploadBatch->bInitialized)
         {
@@ -507,7 +396,7 @@ namespace
         ID3D12GraphicsCommandList* CommandList = ActiveBatch->Context.GetCommandList();
         CommandList->CopyBufferRegion(InOutGeometry.IndexBuffer.Get(), 0, UploadBuffer.Get(), 0, IndexBufferSize);
         ActiveBatch->Context.TransitionResource(InOutGeometry.IndexBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ);
-        ActiveBatch->AddUploadBuffer(std::move(UploadBuffer));
+        ActiveBatch->AddUploadBuffer(std::move(UploadBuffer.Resource));
 
         if (!UploadBatch)
         {
@@ -521,7 +410,7 @@ namespace
     bool CreateStructuredBufferFromData(
         FDX12Device* Device,
         const std::vector<T>& Data,
-        Microsoft::WRL::ComPtr<ID3D12Resource>& OutBuffer,
+        FBindlessBuffer& OutBuffer,
         const wchar_t* Name,
         FUploadBatch* UploadBatch = nullptr)
     {
@@ -532,20 +421,17 @@ namespace
 
         const uint64_t BufferSize = static_cast<uint64_t>(sizeof(T)) * Data.size();
 
-        FBindlessBuffer DefaultBuffer;
         FUploadBuffer UploadBufferObj;
-        const std::wstring BufferName = Name ? std::wstring(Name) : std::wstring();
         CreateBindlessBufferWithUpload(
             Device,
-            BufferName,
+            Name ? std::wstring(Name) : std::wstring(),
             CreateStructuredBufferDesc<T>(Data.size()),
             D3D12_RESOURCE_STATE_COPY_DEST,
-            DefaultBuffer,
+            OutBuffer,
             UploadBufferObj,
             Data.data(),
-            false,
+            true,
             false);
-        OutBuffer = std::move(DefaultBuffer.Resource);
 
         if (UploadBatch && !UploadBatch->bInitialized)
         {
@@ -864,26 +750,26 @@ bool SceneModelResourceLoader::LoadModelsFromJson(
                 ModelResource.ShadingModelId = Material.ShadingModelId;
                 ModelResource.bHasNormalMap = !ModelResource.NormalTexturePath.empty();
 
-                ModelResource.BaseColorTransformOffsetScale = BuildOffsetScale(Material.BaseColorTransform);
-                ModelResource.BaseColorTransformRotation = BuildRotationConstants(Material.BaseColorTransform);
-                ModelResource.MetallicRoughnessTransformOffsetScale = BuildOffsetScale(Material.MetallicRoughnessTransform);
-                ModelResource.MetallicRoughnessTransformRotation = BuildRotationConstants(Material.MetallicRoughnessTransform);
-                ModelResource.NormalTransformOffsetScale = BuildOffsetScale(Material.NormalTransform);
-                ModelResource.NormalTransformRotation = BuildRotationConstants(Material.NormalTransform);
-                ModelResource.EmissiveTransformOffsetScale = BuildOffsetScale(Material.EmissiveTransform);
-                ModelResource.EmissiveTransformRotation = BuildRotationConstants(Material.EmissiveTransform);
-                ModelResource.SheenColorTransformOffsetScale = BuildOffsetScale(Material.SheenColorTransform);
-                ModelResource.SheenColorTransformRotation = BuildRotationConstants(Material.SheenColorTransform);
-                ModelResource.SheenRoughnessTransformOffsetScale = BuildOffsetScale(Material.SheenRoughnessTransform);
-                ModelResource.SheenRoughnessTransformRotation = BuildRotationConstants(Material.SheenRoughnessTransform);
-                ModelResource.ClearcoatTransformOffsetScale = BuildOffsetScale(Material.ClearcoatTransform);
-                ModelResource.ClearcoatTransformRotation = BuildRotationConstants(Material.ClearcoatTransform);
-                ModelResource.ClearcoatRoughnessTransformOffsetScale = BuildOffsetScale(Material.ClearcoatRoughnessTransform);
-                ModelResource.ClearcoatRoughnessTransformRotation = BuildRotationConstants(Material.ClearcoatRoughnessTransform);
-                ModelResource.ClearcoatNormalTransformOffsetScale = BuildOffsetScale(Material.ClearcoatNormalTransform);
-                ModelResource.ClearcoatNormalTransformRotation = BuildRotationConstants(Material.ClearcoatNormalTransform);
-                ModelResource.AnisotropyTransformOffsetScale = BuildOffsetScale(Material.AnisotropyTransform);
-                ModelResource.AnisotropyTransformRotation = BuildRotationConstants(Material.AnisotropyTransform);
+                ModelResource.BaseColorTransform.OffsetScale = BuildOffsetScale(Material.BaseColorTransform);
+                ModelResource.BaseColorTransform.Rotation = BuildRotationConstants(Material.BaseColorTransform);
+                ModelResource.MetallicRoughnessTransform.OffsetScale = BuildOffsetScale(Material.MetallicRoughnessTransform);
+                ModelResource.MetallicRoughnessTransform.Rotation = BuildRotationConstants(Material.MetallicRoughnessTransform);
+                ModelResource.NormalTransform.OffsetScale = BuildOffsetScale(Material.NormalTransform);
+                ModelResource.NormalTransform.Rotation = BuildRotationConstants(Material.NormalTransform);
+                ModelResource.EmissiveTransform.OffsetScale = BuildOffsetScale(Material.EmissiveTransform);
+                ModelResource.EmissiveTransform.Rotation = BuildRotationConstants(Material.EmissiveTransform);
+                ModelResource.SheenColorTransform.OffsetScale = BuildOffsetScale(Material.SheenColorTransform);
+                ModelResource.SheenColorTransform.Rotation = BuildRotationConstants(Material.SheenColorTransform);
+                ModelResource.SheenRoughnessTransform.OffsetScale = BuildOffsetScale(Material.SheenRoughnessTransform);
+                ModelResource.SheenRoughnessTransform.Rotation = BuildRotationConstants(Material.SheenRoughnessTransform);
+                ModelResource.ClearcoatTransform.OffsetScale = BuildOffsetScale(Material.ClearcoatTransform);
+                ModelResource.ClearcoatTransform.Rotation = BuildRotationConstants(Material.ClearcoatTransform);
+                ModelResource.ClearcoatRoughnessTransform.OffsetScale = BuildOffsetScale(Material.ClearcoatRoughnessTransform);
+                ModelResource.ClearcoatRoughnessTransform.Rotation = BuildRotationConstants(Material.ClearcoatRoughnessTransform);
+                ModelResource.ClearcoatNormalTransform.OffsetScale = BuildOffsetScale(Material.ClearcoatNormalTransform);
+                ModelResource.ClearcoatNormalTransform.Rotation = BuildRotationConstants(Material.ClearcoatNormalTransform);
+                ModelResource.AnisotropyTransform.OffsetScale = BuildOffsetScale(Material.AnisotropyTransform);
+                ModelResource.AnisotropyTransform.Rotation = BuildRotationConstants(Material.AnisotropyTransform);
 
                 if (SectionIndex >= MeshPrimitives.size())
                 {
@@ -916,18 +802,6 @@ bool SceneModelResourceLoader::LoadModelsFromJson(
                     ModelResource.DrawIndexStart = 0;
                     ModelResource.DrawIndexCount = static_cast<uint32_t>(MeshPrimitives[SectionIndex].Indices.size());
                     ModelResource.BaseIndexCount = ModelResource.DrawIndexCount;
-                }
-
-                if (Device && Device->GetBindlessDescriptorHeap())
-                {
-                    ModelResource.VertexBufferBindlessIndices[0] = CreateStructuredBufferSrv(Device, ModelResource.Geometry.VertexBuffers[0].Get(), sizeof(FFloat3));
-                    ModelResource.VertexBufferBindlessIndices[1] = CreateStructuredBufferSrv(Device, ModelResource.Geometry.VertexBuffers[1].Get(), sizeof(FFloat3));
-                    ModelResource.VertexBufferBindlessIndices[2] = CreateStructuredBufferSrv(Device, ModelResource.Geometry.VertexBuffers[2].Get(), sizeof(FFloat2));
-                    ModelResource.VertexBufferBindlessIndices[3] = CreateStructuredBufferSrv(Device, ModelResource.Geometry.VertexBuffers[3].Get(), sizeof(FFloat4));
-                    ModelResource.VertexBufferBindlessIndices[4] = CreateStructuredBufferSrv(Device, ModelResource.Geometry.VertexBuffers[4].Get(), sizeof(FFloat4));
-                    ModelResource.VertexBufferBindlessIndices[5] = CreateStructuredBufferSrv(Device, ModelResource.Geometry.VertexBuffers[5].Get(), sizeof(FUInt4));
-                    ModelResource.VertexBufferBindlessIndices[6] = CreateStructuredBufferSrv(Device, ModelResource.Geometry.VertexBuffers[6].Get(), sizeof(FFloat4));
-                    ModelResource.IndexBufferBindlessIndex = CreateStructuredBufferSrv(Device, ModelResource.Geometry.IndexBuffer.Get(), sizeof(uint32_t));
                 }
 
                 if (const FClusterDAG* ClusterDAG = Mesh.GetClusterDAG(SectionIndex))
@@ -1004,71 +878,31 @@ bool SceneModelResourceLoader::LoadModelsFromJson(
                                 ClusterDagPackedVertexData.ConstantColor.w);
                             ModelResource.ClusterDagIndexBuffer = ClusterDagGeometry.IndexBuffer;
                             ModelResource.ClusterDagIndexCount = ClusterDagGeometry.IndexCount;
-                            if (Device && Device->GetBindlessDescriptorHeap())
-                            {
-                                ModelResource.ClusterDagVertexBufferBindlessIndices[0] = CreateStructuredBufferSrv(
-                                    Device,
-                                    ModelResource.ClusterDagVertexBuffers[0].Get(),
-                                    sizeof(FClusterDagPackedPosition));
-                                ModelResource.ClusterDagVertexBufferBindlessIndices[1] = CreateStructuredBufferSrv(
-                                    Device,
-                                    ModelResource.ClusterDagVertexBuffers[1].Get(),
-                                    sizeof(uint32_t));
-                                if (ModelResource.ClusterDagVertexBuffers[2])
-                                {
-                                    ModelResource.ClusterDagVertexBufferBindlessIndices[2] = CreateStructuredBufferSrv(
-                                        Device,
-                                        ModelResource.ClusterDagVertexBuffers[2].Get(),
-                                        sizeof(uint32_t));
-                                }
-                                if (ModelResource.ClusterDagVertexBuffers[3])
-                                {
-                                    ModelResource.ClusterDagVertexBufferBindlessIndices[3] = CreateStructuredBufferSrv(
-                                        Device,
-                                        ModelResource.ClusterDagVertexBuffers[3].Get(),
-                                        sizeof(uint32_t));
-                                }
-                                if (ModelResource.ClusterDagColorBuffer)
-                                {
-                                    ModelResource.ClusterDagColorBufferBindlessIndex = CreateStructuredBufferSrv(
-                                        Device,
-                                        ModelResource.ClusterDagColorBuffer.Get(),
-                                        sizeof(uint32_t));
-                                }
-                                ModelResource.ClusterDagIndexBufferBindlessIndex = CreateStructuredBufferSrv(
-                                    Device,
-                                    ModelResource.ClusterDagIndexBuffer.Get(),
-                                    sizeof(uint32_t));
 
-                                const bool bDagVertexSrvReady =
-                                    AreAllBindlessIndicesValid(
-                                        ModelResource.ClusterDagVertexBufferBindlessIndices[0],
-                                        ModelResource.ClusterDagVertexBufferBindlessIndices[1],
-                                        ModelResource.ClusterDagIndexBufferBindlessIndex);
-                                if (!bDagVertexSrvReady)
-                                {
-                                    ModelResource.bUseClusterDagRuntime = false;
-                                    ModelResource.ClusterDagVertexPackingMode = GClusterDagVertexPackingModeNone;
-                                }
+                            const bool bDagVertexSrvReady =
+                                AreAllBindlessIndicesValid(
+                                    ModelResource.ClusterDagVertexBuffers[0].SrvBindlessIndex,
+                                    ModelResource.ClusterDagVertexBuffers[1].SrvBindlessIndex,
+                                    ModelResource.ClusterDagIndexBuffer.SrvBindlessIndex);
+                            if (!bDagVertexSrvReady)
+                            {
+                                ModelResource.bUseClusterDagRuntime = false;
+                                ModelResource.ClusterDagVertexPackingMode = GClusterDagVertexPackingModeNone;
                             }
 
-                            if (ModelResource.bUseClusterDagRuntime && Device && Device->GetBindlessDescriptorHeap())
+                            if (ModelResource.bUseClusterDagRuntime)
                             {
                                 const std::vector<uint32_t> DebugColors = BuildClusterDagDebugColorTable(
                                     ClusterDAG->RuntimeHierarchy,
                                     ModelResource.ClusterDagIndexCount);
-                                if (!DebugColors.empty()
-                                    && CreateStructuredBufferFromData(
+                                if (!DebugColors.empty())
+                                {
+                                    CreateStructuredBufferFromData(
                                         Device,
                                         DebugColors,
                                         ModelResource.ClusterDagDebugColorBuffer,
                                         L"ClusterDagDebugColorBuffer",
-                                        &UploadBatch))
-                                {
-                                    ModelResource.ClusterDagDebugColorBufferBindlessIndex = CreateStructuredBufferSrv(
-                                        Device,
-                                        ModelResource.ClusterDagDebugColorBuffer.Get(),
-                                        sizeof(uint32_t));
+                                        &UploadBatch);
                                 }
                             }
                         }
@@ -1080,7 +914,7 @@ bool SceneModelResourceLoader::LoadModelsFromJson(
                     }
                 }
 
-                if (Device && Device->GetBindlessDescriptorHeap() && ModelResource.GltfSkinIndex >= 0)
+                if (Device && ModelResource.GltfSkinIndex >= 0)
                 {
                     if (static_cast<size_t>(ModelResource.GltfSkinIndex) < LoadedScene.Skins.size())
                     {
@@ -1088,63 +922,34 @@ bool SceneModelResourceLoader::LoadModelsFromJson(
                         ModelResource.BoneMatrixCount = static_cast<uint32_t>(Skin.Joints.size());
                         if (ModelResource.BoneMatrixCount > 0)
                         {
-                            const uint64_t BufferSize = sizeof(DirectX::XMFLOAT4X4) * ModelResource.BoneMatrixCount;
-                            D3D12_HEAP_PROPERTIES UploadHeap = {};
-                            UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
-                            UploadHeap.CreationNodeMask = 1;
-                            UploadHeap.VisibleNodeMask = 1;
-
-                            D3D12_RESOURCE_DESC BufferDesc = {};
-                            BufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-                            BufferDesc.Width = BufferSize;
-                            BufferDesc.Height = 1;
-                            BufferDesc.DepthOrArraySize = 1;
-                            BufferDesc.MipLevels = 1;
-                            BufferDesc.Format = DXGI_FORMAT_UNKNOWN;
-                            BufferDesc.SampleDesc.Count = 1;
-                            BufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-                            HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-                                &UploadHeap,
-                                D3D12_HEAP_FLAG_NONE,
-                                &BufferDesc,
-                                D3D12_RESOURCE_STATE_GENERIC_READ,
-                                nullptr,
-                                IID_PPV_ARGS(ModelResource.BoneMatrixBuffer.ReleaseAndGetAddressOf())));
-
-                            if (ModelResource.BoneMatrixBuffer)
-                            {
-                                ModelResource.BoneMatrixBuffer->SetName(L"SkinMatrixBuffer");
-                                D3D12_RANGE EmptyRange = { 0, 0 };
-                                HR_CHECK(ModelResource.BoneMatrixBuffer->Map(
-                                    0,
-                                    &EmptyRange,
-                                    reinterpret_cast<void**>(&ModelResource.BoneMatrixBufferMapped)));
-                                if (ModelResource.BoneMatrixBufferMapped)
-                                {
-                                    std::vector<DirectX::XMFLOAT4X4> IdentityMatrices(ModelResource.BoneMatrixCount);
-                                    for (uint32_t JointIndex = 0; JointIndex < ModelResource.BoneMatrixCount; ++JointIndex)
-                                    {
-                                        IdentityMatrices[JointIndex] = DirectX::XMFLOAT4X4(
-                                            1.0f, 0.0f, 0.0f, 0.0f,
-                                            0.0f, 1.0f, 0.0f, 0.0f,
-                                            0.0f, 0.0f, 1.0f, 0.0f,
-                                            0.0f, 0.0f, 0.0f, 1.0f);
-                                    }
-                                    std::memcpy(ModelResource.BoneMatrixBufferMapped, IdentityMatrices.data(), BufferSize);
-                                }
-                            }
-
-                            ModelResource.BoneMatrixBindlessIndex = CreateStructuredBufferSrv(
+                            void* MappedData = nullptr;
+                            if (CreateMappedBindlessBuffer(
                                 Device,
-                                ModelResource.BoneMatrixBuffer.Get(),
-                                sizeof(DirectX::XMFLOAT4X4));
-
-                            ModelResource.bUseSkinning = IsValidBindlessIndex(ModelResource.BoneMatrixBindlessIndex);
+                                L"SkinMatrixBuffer",
+                                CreateStructuredBufferDesc<DirectX::XMFLOAT4X4>(ModelResource.BoneMatrixCount),
+                                ModelResource.BoneMatrixBuffer,
+                                MappedData))
+                            {
+                                ModelResource.BoneMatrixBufferMapped = static_cast<uint8_t*>(MappedData);
+                                const uint64_t BufferSize = sizeof(DirectX::XMFLOAT4X4) * ModelResource.BoneMatrixCount;
+                                std::vector<DirectX::XMFLOAT4X4> IdentityMatrices(ModelResource.BoneMatrixCount);
+                                for (uint32_t JointIndex = 0; JointIndex < ModelResource.BoneMatrixCount; ++JointIndex)
+                                {
+                                    IdentityMatrices[JointIndex] = DirectX::XMFLOAT4X4(
+                                        1.0f, 0.0f, 0.0f, 0.0f,
+                                        0.0f, 1.0f, 0.0f, 0.0f,
+                                        0.0f, 0.0f, 1.0f, 0.0f,
+                                        0.0f, 0.0f, 0.0f, 1.0f);
+                                }
+                                std::memcpy(ModelResource.BoneMatrixBufferMapped, IdentityMatrices.data(), BufferSize);
+                                CreateBindlessBufferSrv(Device, ModelResource.BoneMatrixBuffer);
+                                ModelResource.bUseSkinning = IsValidBindlessIndex(ModelResource.BoneMatrixBuffer.SrvBindlessIndex);
+                            }
                         }
                     }
                 }
 
+                ModelResource.PipelineKey = RendererUtils::BuildPipelineKey(ModelResource);
                 UpdateSceneBounds(ModelResource.Center, ModelResource.Radius, SceneMin, SceneMax);
 
                 OutModels.push_back(std::move(ModelResource));

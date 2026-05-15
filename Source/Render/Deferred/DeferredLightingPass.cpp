@@ -117,11 +117,6 @@ bool FDeferredLightingPass::InitializeResources(FDeferredRenderer& Owner, FDX12D
 
 bool FDeferredLightingPass::CreateLightingRootSignature(FDX12Device* Device)
 {
-    if (Owner == nullptr)
-    {
-        return false;
-    }
-
     FDeferredRenderer& Renderer = *Owner;
     CD3DX12_ROOT_PARAMETER1 RootParams[3] = {};
     // RootParams[0]: Lighting constants (b0), used in Shaders/DeferredLighting.hlsl PSMain
@@ -171,11 +166,6 @@ bool FDeferredLightingPass::CreateLightingRootSignature(FDX12Device* Device)
 
 bool FDeferredLightingPass::CreateLinearDepthRootSignature(FDX12Device* Device)
 {
-    if (Owner == nullptr)
-    {
-        return false;
-    }
-
     FDeferredRenderer& Renderer = *Owner;
     CD3DX12_ROOT_PARAMETER1 RootParams[2] = {};
     // RootParams[0]: Linear depth constants (b0), used in Shaders/LinearDepth.hlsl VSMain and PSMain
@@ -219,11 +209,6 @@ bool FDeferredLightingPass::CreateLinearDepthRootSignature(FDX12Device* Device)
 
 bool FDeferredLightingPass::CreateLinearDepthPipeline(FDX12Device* Device)
 {
-    if (Owner == nullptr)
-    {
-        return false;
-    }
-
     FDeferredRenderer& Renderer = *Owner;
     FShaderCompiler Compiler;
     std::vector<uint8_t> VSByteCode;
@@ -270,11 +255,6 @@ bool FDeferredLightingPass::CreateLinearDepthPipeline(FDX12Device* Device)
 
 bool FDeferredLightingPass::CreateExtractHalfDepthNormalRootSignature(FDX12Device* Device)
 {
-    if (Owner == nullptr)
-    {
-        return false;
-    }
-
     FDeferredRenderer& Renderer = *Owner;
     CD3DX12_ROOT_PARAMETER1 RootParams[1] = {};
     RootParams[0].InitAsConstants(kExtractHalfDepthConstantsDwordCount, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
@@ -297,11 +277,6 @@ bool FDeferredLightingPass::CreateExtractHalfDepthNormalRootSignature(FDX12Devic
 
 bool FDeferredLightingPass::CreateExtractHalfDepthNormalPipeline(FDX12Device* Device)
 {
-    if (Owner == nullptr)
-    {
-        return false;
-    }
-
     FDeferredRenderer& Renderer = *Owner;
     FShaderCompiler Compiler;
     std::vector<uint8_t> CSByteCode;
@@ -321,11 +296,6 @@ bool FDeferredLightingPass::CreateExtractHalfDepthNormalPipeline(FDX12Device* De
 
 bool FDeferredLightingPass::CreateLightingPipeline(FDX12Device* Device, DXGI_FORMAT BackBufferFormat)
 {
-    if (Owner == nullptr)
-    {
-        return false;
-    }
-
     FDeferredRenderer& Renderer = *Owner;
     (void)BackBufferFormat;
 
@@ -436,56 +406,13 @@ bool FDeferredLightingPass::CreateLightingPipeline(FDX12Device* Device, DXGI_FOR
 
 bool FDeferredLightingPass::CreateLinearDepthResources(FDX12Device* Device, uint32_t Width, uint32_t Height) const
 {
-    if (Owner == nullptr)
-    {
-        return false;
-    }
-
     FDeferredRenderer& Renderer = *Owner;
-    CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
-
-    CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
-        DXGI_FORMAT_R16_FLOAT,
-        Width,
-        Height,
-        1,
-        1,
-        1,
-        0,
-        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
-
+    const FRGTextureDesc LinearDepthDesc = { Width, Height, DXGI_FORMAT_R16_FLOAT };
     const FLOAT Color[] = { 0.0f, 0.0f, 0.0f, 0.0f };
-    CD3DX12_CLEAR_VALUE ClearValue(Desc.Format, Color);
-
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &HeapProps,
-        D3D12_HEAP_FLAG_NONE,
-        &Desc,
-        D3D12_RESOURCE_STATE_RENDER_TARGET,
-        &ClearValue,
-        IID_PPV_ARGS(Renderer.LinearDepthTexture.GetAddressOf())));
-
-    if (Renderer.LinearDepthTexture)
-    {
-        Renderer.LinearDepthTexture->SetName(L"LinearDepth");
-    }
-    InitializeBindlessTexture(Renderer.LinearDepthTexture, { Width, Height, DXGI_FORMAT_R16_FLOAT }, D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-    D3D12_DESCRIPTOR_HEAP_DESC RtvHeapDesc = {};
-    RtvHeapDesc.NumDescriptors = 1;
-    RtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    RtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-    HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&RtvHeapDesc, IID_PPV_ARGS(Renderer.LinearDepthRtvHeap.GetAddressOf())));
-    if (Renderer.LinearDepthRtvHeap)
-    {
-        Renderer.LinearDepthRtvHeap->SetName(L"LinearDepthRTVHeap");
-    }
-
-    Renderer.LinearDepthRtvHandle = Renderer.LinearDepthRtvHeap->GetCPUDescriptorHandleForHeapStart();
-    D3D12_RENDER_TARGET_VIEW_DESC RtvDesc = {};
-    RtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
-    RtvDesc.Format = DXGI_FORMAT_R16_FLOAT;
-    Device->GetDevice()->CreateRenderTargetView(Renderer.LinearDepthTexture.Get(), &RtvDesc, Renderer.LinearDepthRtvHandle);
+    CD3DX12_CLEAR_VALUE ClearValue(DXGI_FORMAT_R16_FLOAT, Color);
+    CreateBindlessTexture(Device, L"LinearDepth", LinearDepthDesc, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_RESOURCE_STATE_RENDER_TARGET, Renderer.LinearDepthTexture, false, false, &ClearValue);
+    WriteOrCreateBindlessTextureSrv(Device, Renderer.LinearDepthTexture);
+    CreateTexture2DRtv(Device, L"LinearDepthRTVHeap", Renderer.LinearDepthTexture.Get(), DXGI_FORMAT_R16_FLOAT, Renderer.LinearDepthRtvHeap, Renderer.LinearDepthRtvHandle);
 
     return true;
 }
@@ -537,10 +464,7 @@ void FDeferredLightingPass::AddLinearDepthPass(FDeferredPassContext& Context) co
         LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         LocalCommandList->SetGraphicsRootConstantBufferView(0, Owner.GetSceneConstantBufferAddress());
 
-        const uint32_t DepthIndex = Owner.DepthBindlessIndices.empty()
-            ? 0u
-            : (Owner.GetFrameIndex() % static_cast<uint32_t>(Owner.DepthBindlessIndices.size()));
-        const uint32_t DepthBindlessIndex = Owner.DepthBindlessIndices.empty() ? UINT32_MAX : Owner.DepthBindlessIndices[DepthIndex];
+        const uint32_t DepthBindlessIndex = Owner.GetCurrentDepthSrvBindlessIndex();
         static_assert(1u <= kLinearDepthBindlessDwordCount);
         LocalCommandList->SetGraphicsRoot32BitConstant(1, DepthBindlessIndex, 0);
 
@@ -586,9 +510,9 @@ void FDeferredLightingPass::AddExtractHalfDepthNormalPass(FDeferredPassContext& 
             return;
         }
 
-        const uint32_t DepthBindlessIndex = Owner.DepthBindlessIndices.empty() ? UINT32_MAX : Owner.DepthBindlessIndices[Owner.GetFrameIndex() % static_cast<uint32_t>(Owner.DepthBindlessIndices.size())];
+        const uint32_t DepthBindlessIndex = Owner.GetCurrentDepthSrvBindlessIndex();
         const uint32_t HalfDepthNormalUavBindlessIndex = Graph.GetTextureUavBindlessIndex(Data.HalfDepthNormalHandle);
-        if (DepthBindlessIndex == UINT32_MAX || Owner.GBufferBindlessIndices[0] == UINT32_MAX || HalfDepthNormalUavBindlessIndex == UINT32_MAX)
+        if (DepthBindlessIndex == UINT32_MAX || Owner.GBufferA.SrvBindlessIndex == UINT32_MAX || HalfDepthNormalUavBindlessIndex == UINT32_MAX)
         {
             return;
         }
@@ -602,14 +526,13 @@ void FDeferredLightingPass::AddExtractHalfDepthNormalPass(FDeferredPassContext& 
 
         const uint32_t GlobalFrameNumber = static_cast<uint32_t>(Owner.GetFrameNumber());
         const uint32_t SequenceFrame = Owner.RestirGI->IsFreezeFrame() ? Owner.RestirGI->GetFrozenSequenceFrame() : GlobalFrameNumber;
-        const uint32_t Constants[4] =
+        const uint32_t Constants[kExtractHalfDepthConstantsDwordCount] =
         {
             DepthBindlessIndex,
-            Owner.GBufferBindlessIndices[0],
+            Owner.GBufferA.SrvBindlessIndex,
             HalfDepthNormalUavBindlessIndex,
             SequenceFrame
         };
-        static_assert(_countof(Constants) <= kExtractHalfDepthConstantsDwordCount);
         CommandList->SetComputeRoot32BitConstants(0, _countof(Constants), Constants, 0);
 
         const uint32_t HalfWidth = (static_cast<uint32_t>(Owner.Viewport.Width) + 1u) / 2u;
@@ -624,7 +547,7 @@ void FDeferredLightingPass::AddDirectLightingPass(FDeferredPassContext& Context,
     FDeferredRenderer& Owner = Context.Owner;
     FRenderGraph& Graph = Context.Graph;
     const FDeferredRenderer::FDeferredFrameState& FrameState = Context.FrameState;
-    const std::array<FRGResourceHandle, 4>& GBufferHandles = Context.Resources.GBufferHandles;
+    const FDeferredGBufferHandles& GBufferHandles = Context.Resources.GBufferHandles;
     const FRGResourceHandle DepthHandle = Context.Resources.DepthHandle;
     const FRGResourceHandle ShadowHandle = Context.Resources.ShadowHandle;
     const bool bPbrResearchEnabled = bEnablePbrResearch;
@@ -685,13 +608,10 @@ void FDeferredLightingPass::AddDirectLightingPass(FDeferredPassContext& Context,
         DirectLightingRtvDesc.Format = FDeferredRenderer::LightingBufferFormat;
         Owner.Device->GetDevice()->CreateRenderTargetView(DirectLightingResource, &DirectLightingRtvDesc, DirectLightingRtvHandle);
 
-        const uint32_t DepthIndex = Owner.DepthBindlessIndices.empty()
-            ? 0u
-            : (Owner.GetFrameIndex() % static_cast<uint32_t>(Owner.DepthBindlessIndices.size()));
-        const uint32_t DepthBindlessIndex = Owner.DepthBindlessIndices.empty() ? UINT32_MAX : Owner.DepthBindlessIndices[DepthIndex];
+        const uint32_t DepthBindlessIndex = Owner.GetCurrentDepthSrvBindlessIndex();
         if (!IsValidBindlessIndex(DepthBindlessIndex) || !IsValidBindlessIndex(Owner.ShadowMap.SrvBindlessIndex)
-            || !IsValidBindlessIndex(Owner.EnvironmentCubeBindlessIndex) || !IsValidBindlessIndex(Owner.BrdfLutBindlessIndex)
-            || !IsValidBindlessIndex(Owner.GBufferBindlessIndices[0]) || !IsValidBindlessIndex(Owner.GBufferBindlessIndices[1]) || !IsValidBindlessIndex(Owner.GBufferBindlessIndices[2]))
+            || !IsValidBindlessIndex(Owner.GetEnvironmentCubeSrvIndex()) || !IsValidBindlessIndex(Owner.GetBrdfLutSrvIndex())
+            || !IsValidBindlessIndex(Owner.GBufferA.SrvBindlessIndex) || !IsValidBindlessIndex(Owner.GBufferB.SrvBindlessIndex) || !IsValidBindlessIndex(Owner.GBufferC.SrvBindlessIndex))
         {
             return;
         }
@@ -711,16 +631,16 @@ void FDeferredLightingPass::AddDirectLightingPass(FDeferredPassContext& Context,
         LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         LocalCommandList->SetGraphicsRootConstantBufferView(0, Owner.GetSceneConstantBufferAddress());
         const uint32_t ResolvedShadowMaskIndex = bUseShadowMask ? Owner.ShadowMaskBindlessIndex : Owner.ShadowMap.SrvBindlessIndex;
-        const uint32_t LightingBindlessIndices[] =
+        const uint32_t LightingBindlessIndices[kLightingPassBindlessDwordCount] =
         {
-            Owner.GBufferBindlessIndices[0],
-            Owner.GBufferBindlessIndices[1],
-            Owner.GBufferBindlessIndices[2],
-            Owner.GBufferBindlessIndices[3],
+            Owner.GBufferA.SrvBindlessIndex,
+            Owner.GBufferB.SrvBindlessIndex,
+            Owner.GBufferC.SrvBindlessIndex,
+            Owner.GBufferD.SrvBindlessIndex,
             Owner.ShadowMap.SrvBindlessIndex,
             ResolvedShadowMaskIndex,
-            Owner.EnvironmentCubeBindlessIndex,
-            Owner.BrdfLutBindlessIndex,
+            Owner.GetEnvironmentCubeSrvIndex(),
+            Owner.GetBrdfLutSrvIndex(),
             DepthBindlessIndex,
             UINT32_MAX,
             UINT32_MAX,
@@ -728,7 +648,6 @@ void FDeferredLightingPass::AddDirectLightingPass(FDeferredPassContext& Context,
             UINT32_MAX,
             UINT32_MAX
         };
-        static_assert(_countof(LightingBindlessIndices) <= kLightingPassBindlessDwordCount);
         LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(LightingBindlessIndices), LightingBindlessIndices, 0);
 
         struct FDeferredLightingConstants
@@ -766,7 +685,7 @@ void FDeferredLightingPass::AddCompositeLightPass(FDeferredPassContext& Context,
 {
     FDeferredRenderer& Owner = Context.Owner;
     FRenderGraph& Graph = Context.Graph;
-    const std::array<FRGResourceHandle, 4>& GBufferHandles = Context.Resources.GBufferHandles;
+    const FDeferredGBufferHandles& GBufferHandles = Context.Resources.GBufferHandles;
     const FRGResourceHandle DepthHandle = Context.Resources.DepthHandle;
     const FRGResourceHandle GtaoHandle = Context.Resources.Gtao.GtaoHandle;
         const FRGResourceHandle RestirGIInputHandle = Owner.RestirGIDenoiser->IsEnabled() ? Context.Resources.RestirGIDenoiser.HistoryIrradianceHandle : Context.Resources.RestirGI.RestirGIHandle;
@@ -822,10 +741,7 @@ void FDeferredLightingPass::AddCompositeLightPass(FDeferredPassContext& Context,
         }
         Owner.DirectLightingResource = DirectLightingResource;
 
-        const uint32_t DepthIndex = Owner.DepthBindlessIndices.empty()
-            ? 0u
-            : (Owner.GetFrameIndex() % static_cast<uint32_t>(Owner.DepthBindlessIndices.size()));
-        const uint32_t DepthBindlessIndex = Owner.DepthBindlessIndices.empty() ? UINT32_MAX : Owner.DepthBindlessIndices[DepthIndex];
+        const uint32_t DepthBindlessIndex = Owner.GetCurrentDepthSrvBindlessIndex();
         const ECompositeDiffuseSource CompositeDiffuseSource = ResolveCompositeDiffuseSource(Owner);
         const ECompositeVisualizationPermutation VisualizationPermutation = ResolveCompositeVisualizationPermutation(VisualizationMode);
         const uint32_t CompositePipelineIndex = GetCompositeLightingPipelineIndex(CompositeDiffuseSource, VisualizationPermutation);
@@ -842,12 +758,12 @@ void FDeferredLightingPass::AddCompositeLightPass(FDeferredPassContext& Context,
             SsrLightingBindlessIndex,
             SsrFallbackIndex,
             Owner.ShadowMap.SrvBindlessIndex,
-            Owner.EnvironmentCubeBindlessIndex,
-            Owner.BrdfLutBindlessIndex,
+            Owner.GetEnvironmentCubeSrvIndex(),
+            Owner.GetBrdfLutSrvIndex(),
             Owner.DirectLightingBindlessIndex,
-            Owner.GBufferBindlessIndices[0],
-            Owner.GBufferBindlessIndices[1],
-            Owner.GBufferBindlessIndices[2]))
+            Owner.GBufferA.SrvBindlessIndex,
+            Owner.GBufferB.SrvBindlessIndex,
+            Owner.GBufferC.SrvBindlessIndex))
         {
             return;
         }
@@ -868,16 +784,16 @@ void FDeferredLightingPass::AddCompositeLightPass(FDeferredPassContext& Context,
 
         LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         LocalCommandList->SetGraphicsRootConstantBufferView(0, Owner.GetSceneConstantBufferAddress());
-        const uint32_t LightingBindlessIndices[] =
+        const uint32_t LightingBindlessIndices[kLightingPassBindlessDwordCount] =
         {
-            Owner.GBufferBindlessIndices[0],
-            Owner.GBufferBindlessIndices[1],
-            Owner.GBufferBindlessIndices[2],
-            Owner.GBufferBindlessIndices[3],
+            Owner.GBufferA.SrvBindlessIndex,
+            Owner.GBufferB.SrvBindlessIndex,
+            Owner.GBufferC.SrvBindlessIndex,
+            Owner.GBufferD.SrvBindlessIndex,
             Owner.ShadowMap.SrvBindlessIndex,
             Owner.ShadowMap.SrvBindlessIndex,
-            Owner.EnvironmentCubeBindlessIndex,
-            Owner.BrdfLutBindlessIndex,
+            Owner.GetEnvironmentCubeSrvIndex(),
+            Owner.GetBrdfLutSrvIndex(),
             DepthBindlessIndex,
             GtaoBindlessIndex,
             RestirGILightingBindlessIndex,
@@ -885,7 +801,6 @@ void FDeferredLightingPass::AddCompositeLightPass(FDeferredPassContext& Context,
             SsrFallbackIndex,
             Owner.DirectLightingBindlessIndex
         };
-        static_assert(_countof(LightingBindlessIndices) <= kLightingPassBindlessDwordCount);
         LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(LightingBindlessIndices), LightingBindlessIndices, 0);
 
         struct FDeferredLightingConstants

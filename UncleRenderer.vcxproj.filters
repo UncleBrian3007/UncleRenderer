@@ -86,6 +86,9 @@
     <ClCompile Include="Source\Core\Application.cpp">
       <Filter>Source Files\Core</Filter>
     </ClCompile>
+    <ClCompile Include="Source\Core\FrameGpuTimer.cpp">
+      <Filter>Source Files\Core</Filter>
+    </ClCompile>
     <ClCompile Include="Source\Core\Logger.cpp">
       <Filter>Source Files\Core</Filter>
     </ClCompile>
@@ -165,6 +168,9 @@
       <Filter>Source Files\Render</Filter>
     </ClCompile>
     <ClCompile Include="Source\Render\Deferred\ClusterDagRuntime.cpp">
+      <Filter>Source Files\Render</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Render\Deferred\ClusterDagStreamingManager.cpp">
       <Filter>Source Files\Render</Filter>
     </ClCompile>
     <ClCompile Include="Source\Render\Deferred\Tonemap.cpp">
@@ -334,6 +340,9 @@
     <ClInclude Include="Source\Core\Application.h">
       <Filter>Header Files\Core</Filter>
     </ClInclude>
+    <ClInclude Include="Source\Core\FrameGpuTimer.h">
+      <Filter>Header Files\Core</Filter>
+    </ClInclude>
     <ClInclude Include="Source\Core\ImGuiSupport.h">
       <Filter>Header Files\Core</Filter>
     </ClInclude>
@@ -401,6 +410,12 @@
       <Filter>Header Files\Render</Filter>
     </ClInclude>
     <ClInclude Include="Source\Render\Deferred\ClusterDagRuntime.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Render\Deferred\ClusterDagStreamingManager.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Render\Deferred\GBufferLayout.h">
       <Filter>Header Files\Render</Filter>
     </ClInclude>
     <ClInclude Include="Source\Render\Deferred\Taa.h">

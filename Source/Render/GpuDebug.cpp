@@ -69,10 +69,9 @@ void FGpuDebug::RefreshPersistentValidation()
     bPrintPersistentInputsValid =
         PrintPipeline &&
         PrintRootSignature &&
-        PrintGlyphBuffer &&
-        PrintFontTexture &&
-        PrintBuffer.HasSrv() &&
-        AreAllBindlessIndicesValid(PrintGlyphBindlessIndex, PrintFontBindlessIndex);
+        PrintGlyphBuffer.HasSrv() &&
+        PrintFontTexture.HasSrv() &&
+        PrintBuffer.HasSrv();
 
     bPrintStatsPersistentInputsValid =
         PrintStatsPipeline &&
@@ -562,11 +561,6 @@ bool FGpuDebug::CreateResources(FDX12Device* Device)
     PrintCharCount = FontResources.CharCount;
     PrintFontSize = FontResources.FontSize;
 
-    PrintGlyphBindlessIndex = Device->CreateBindlessSrv(PrintGlyphBuffer.Get(),
-        CD3DX12_SHADER_RESOURCE_VIEW_DESC::StructuredBuffer(128, sizeof(FDebugPrintGlyph)));
-    PrintFontBindlessIndex = Device->CreateBindlessSrv(PrintFontTexture.Get(),
-        CD3DX12_SHADER_RESOURCE_VIEW_DESC::Tex2D(DXGI_FORMAT_R8_UNORM, 1));
-
     CreateBindlessBufferViews(Device, PrintBuffer, true, true);
     CreateBindlessBufferViews(Device, PrintStatsBuffer, true, true);
 
@@ -731,8 +725,7 @@ void FGpuDebug::DispatchPrintStats(FDX12Device* Device, FDX12CommandContext& Cmd
     CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
     CommandList->SetPipelineState(PrintStatsPipeline.Get());
     CommandList->SetComputeRootSignature(PrintStatsRootSignature.Get());
-    const uint32_t BindlessIndices[] = { PrintStatsBuffer.SrvBindlessIndex, PrintBuffer.UavBindlessIndex, LineBuffer.SrvBindlessIndex };
-    static_assert(_countof(BindlessIndices) <= kDebugPrintStatsBindlessDwordCount);
+    const uint32_t BindlessIndices[kDebugPrintStatsBindlessDwordCount] = { PrintStatsBuffer.SrvBindlessIndex, PrintBuffer.UavBindlessIndex, LineBuffer.SrvBindlessIndex };
     CommandList->SetComputeRoot32BitConstants(0, _countof(BindlessIndices), BindlessIndices, 0);
     CommandList->Dispatch(1, 1, 1);
 }
@@ -779,8 +772,8 @@ void FGpuDebug::RenderPrint(FDX12Device* Device, const D3D12_VIEWPORT& Viewport,
 
     const FDebugPrintBindlessConstants BindlessConstants =
     {
-        PrintGlyphBindlessIndex,
-        PrintFontBindlessIndex,
+        PrintGlyphBuffer.SrvBindlessIndex,
+        PrintFontTexture.SrvBindlessIndex,
         PrintBuffer.SrvBindlessIndex
     };
 

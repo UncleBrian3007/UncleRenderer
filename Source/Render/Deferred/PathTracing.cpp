@@ -217,43 +217,14 @@ bool FPathTracing::CreateAccumulationResources(FDX12Device* Device, uint32_t Wid
     const uint32_t EffectiveFrameCount = (std::max)(1u, FrameCount);
     const FRGTextureDesc TextureDesc = { Width, Height, FDeferredRenderer::PathTracingBufferFormat };
 
-    D3D12_HEAP_PROPERTIES HeapProps = {};
-    HeapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
-
-    const D3D12_RESOURCE_DESC Desc = CreateTexture2DResourceDesc(TextureDesc, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &HeapProps,
-        D3D12_HEAP_FLAG_NONE,
-        &Desc,
-        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-        nullptr,
-        IID_PPV_ARGS(PathTracingTempTexture.ReleaseAndGetAddressOf())));
-    InitializeBindlessTexture(PathTracingTempTexture, TextureDesc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-
-    if (PathTracingTempTexture)
-    {
-        PathTracingTempTexture->SetName(L"PathTracingTemp");
-    }
+    CreateBindlessTexture(Device, L"PathTracingTemp", TextureDesc, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, PathTracingTempTexture, false, false);
 
     PathTracingAccumulationTextures.clear();
     PathTracingAccumulationTextures.resize(EffectiveFrameCount);
     for (uint32_t Index = 0; Index < EffectiveFrameCount; ++Index)
     {
-        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-            &HeapProps,
-            D3D12_HEAP_FLAG_NONE,
-            &Desc,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            nullptr,
-            IID_PPV_ARGS(PathTracingAccumulationTextures[Index].ReleaseAndGetAddressOf())));
-        InitializeBindlessTexture(PathTracingAccumulationTextures[Index], TextureDesc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-
-        if (PathTracingAccumulationTextures[Index])
-        {
-            const std::wstring ResourceName = L"PathTracingAccumulation_" + std::to_wstring(Index);
-            PathTracingAccumulationTextures[Index]->SetName(ResourceName.c_str());
-        }
+        const std::wstring ResourceName = L"PathTracingAccumulation_" + std::to_wstring(Index);
+        CreateBindlessTexture(Device, ResourceName, TextureDesc, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, PathTracingAccumulationTextures[Index], false, false);
     }
 
     PathTracingAccumulationFrameCount = EffectiveFrameCount;
@@ -365,7 +336,7 @@ void FPathTracing::AddPathTracingPass(FDeferredPassContext& Context)
             || GBufferBBindlessIndex == UINT32_MAX
             || GBufferCBindlessIndex == UINT32_MAX
             || LightingUavBindlessIndex == UINT32_MAX
-            || Owner.EnvironmentCubeBindlessIndex == UINT32_MAX)
+            || Owner.GetEnvironmentCubeSrvIndex() == UINT32_MAX)
         {
             return;
         }
@@ -405,18 +376,18 @@ void FPathTracing::AddPathTracingPass(FDeferredPassContext& Context)
         const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = Owner.GetSceneConstantBufferAddress();
         CommandList4->SetComputeRootConstantBufferView(1, ConstantBufferAddress + ConstantBufferOffset);
 
-        if (FrameIndex >= Owner.GetRayTracingRuntime().PathTracingInstanceDataBindlessIndices.size())
+        if (FrameIndex >= Owner.GetRayTracingRuntime().PathTracingInstanceDataBuffers.size())
         {
             return;
         }
 
-        const uint32_t PathTracingInstanceDataBindlessIndex = Owner.GetRayTracingRuntime().PathTracingInstanceDataBindlessIndices[FrameIndex];
+        const uint32_t PathTracingInstanceDataBindlessIndex = Owner.GetRayTracingRuntime().PathTracingInstanceDataBuffers[FrameIndex].SrvBindlessIndex;
         if (PathTracingInstanceDataBindlessIndex == UINT32_MAX)
         {
             return;
         }
 
-        const uint32_t BindlessIndices[] =
+        const uint32_t BindlessIndices[FRayTracingRuntime::RayQueryRootConstantDwordCount] =
         {
             DepthBindlessIndex,
             GBufferABindlessIndex,
@@ -429,11 +400,9 @@ void FPathTracing::AddPathTracingPass(FDeferredPassContext& Context)
             PathTracingInstanceDataBindlessIndex,
             PathTracingMaxBounces,
             Owner.Device->GetLinearClampSamplerIndex(),
-            Owner.EnvironmentCubeBindlessIndex,
+            Owner.GetEnvironmentCubeSrvIndex(),
             static_cast<uint32_t>(PathTracingDebugMode)
         };
-        static_assert(_countof(BindlessIndices) <= FRayTracingRuntime::RayQueryRootConstantDwordCount, "Ray query root constants exceed root signature capacity.");
-        assert(_countof(BindlessIndices) <= FRayTracingRuntime::RayQueryRootConstantDwordCount);
         CommandList4->SetComputeRoot32BitConstants(2, _countof(BindlessIndices), BindlessIndices, 0);
 
         CommandList4->Dispatch(GroupCountX, GroupCountY, 1);
@@ -523,14 +492,13 @@ void FPathTracing::AddPathTracingAccumulationPass(FDeferredPassContext& Context)
             ? PathTracingAccumulationTextures[WriteIdx].UavBindlessIndex
             : PathTracingTempTexture.UavBindlessIndex;
 
-        const uint32_t AccumBindlessIndices[] =
+        const uint32_t AccumBindlessIndices[kPathTracingBindlessDwordCount] =
         {
             PathTracingTempTexture.SrvBindlessIndex,
             HistorySrv,
             HistoryUav,
             Owner.LightingBuffer.SrvBindlessIndex
         };
-        static_assert(_countof(AccumBindlessIndices) <= kPathTracingBindlessDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(1, _countof(AccumBindlessIndices), AccumBindlessIndices, 0);
 
         const uint32_t GroupX = (static_cast<uint32_t>(Data.OutputSize.x) + 7u) / 8u;

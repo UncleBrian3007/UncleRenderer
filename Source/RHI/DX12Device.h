@@ -53,6 +53,8 @@ public:
     ID3D12DescriptorHeap* GetBindlessDescriptorHeap() const { return BindlessDescriptorHeap.Get(); }
     ID3D12DescriptorHeap* GetBindlessCpuDescriptorHeap() const { return BindlessCpuDescriptorHeap.Get(); }
     uint32_t             GetBindlessDescriptorCount() const { return BindlessDescriptorCount; }
+    uint32_t             GetBindlessDescriptorStride() const { return BindlessDescriptorStride; }
+    uint32_t             GetRtvDescriptorStride() const { return RtvDescriptorStride; }
     FBindlessDescriptorStats GetBindlessDescriptorStats() const;
     uint32_t             CreateBindlessSrv(ID3D12Resource* Resource, const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc);
     uint32_t             CreateBindlessUav(ID3D12Resource* Resource, ID3D12Resource* Counter, const D3D12_UNORDERED_ACCESS_VIEW_DESC& Desc);
@@ -86,10 +88,7 @@ public:
     bool                 IsShaderModelForIndirectDrawSupported() const { return bIndirectDrawSupported; }
     bool                 IsRayTracingSupported() const { return bSupportsRayTracing; }
     bool                 SupportsAtomicInt64OnTypedResource() const { return bSupportsAtomicInt64OnTypedResource; }
-    bool                 SupportsEnhancedBarriers() const { return bSupportsEnhancedBarriers && !bForceLegacyBarriers; }
-    bool                 IsEnhancedBarrierFeatureSupported() const { return bSupportsEnhancedBarriers; }
-    void                 SetForceLegacyBarriers(bool bEnable) { bForceLegacyBarriers = bEnable; }
-    bool                 IsForceLegacyBarriersEnabled() const { return bForceLegacyBarriers; }
+
     bool                 CreateRayTracingDevice(class FRayTracingDevice& OutDevice) const;
 
 private:
@@ -98,7 +97,6 @@ private:
     bool CreateDevice();
     bool QueryRayTracingSupport();
     bool QueryAtomicInt64Support();
-    bool QueryEnhancedBarrierSupport();
     bool CreateBindlessDescriptorHeap();
     bool CreateSamplerDescriptorHeap();
     bool CreateCommandQueues();
@@ -127,6 +125,7 @@ private:
     std::atomic<uint32_t> BindlessDescriptorNextIndex{ 0 };
     uint32_t BindlessDescriptorCount = 0;
     uint32_t BindlessDescriptorStride = 0;
+    uint32_t RtvDescriptorStride = 0;
     mutable std::mutex TransientBindlessDescriptorMutex;
     std::vector<uint32_t> FreeTransientBindlessDescriptorIndices;
     std::deque<FRetiredBindlessDescriptor> RetiredTransientBindlessDescriptorIndices;
@@ -157,7 +156,5 @@ private:
     bool bIndirectDrawSupported = true;
     bool bSupportsRayTracing = false;
     bool bSupportsAtomicInt64OnTypedResource = false;
-    bool bSupportsEnhancedBarriers = false;
-    bool bForceLegacyBarriers = false;
     D3D_SHADER_MODEL ShaderModel = D3D_SHADER_MODEL_6_6;
 };

@@ -20,7 +20,25 @@ struct FRGTextureDesc
     uint32 Height = 0;
     DXGI_FORMAT Format = DXGI_FORMAT_UNKNOWN;
     uint16 MipLevels = 1;
+    uint16 DepthOrArraySize = 1;
+    D3D12_RESOURCE_DIMENSION Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
 };
+
+inline FRGTextureDesc BuildTextureDescFromResource(ID3D12Resource* Resource)
+{
+    FRGTextureDesc Desc = {};
+    if (Resource == nullptr)
+    {
+        return Desc;
+    }
+
+    const D3D12_RESOURCE_DESC ResourceDesc = Resource->GetDesc();
+    Desc.Width = static_cast<uint32_t>(ResourceDesc.Width);
+    Desc.Height = ResourceDesc.Height;
+    Desc.MipLevels = static_cast<uint16_t>(ResourceDesc.MipLevels);
+    Desc.Format = ResourceDesc.Format;
+    return Desc;
+}
 
 struct FRGBufferDesc
 {

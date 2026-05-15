@@ -1,10 +1,9 @@
 #pragma once
 
-#include <d3d12.h>
-#include <wrl.h>
 #include <cstdint>
 #include <string>
-#include <vector>
+
+#include "GpuResource.h"
 
 class FDX12Device;
 
@@ -20,8 +19,8 @@ struct FDebugPrintGlyph
 
 struct FDebugPrintFontResources
 {
-    Microsoft::WRL::ComPtr<ID3D12Resource> FontTexture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> GlyphBuffer;
+    FBindlessTexture FontTexture;
+    FBindlessBuffer GlyphBuffer;
     uint32_t AtlasWidth = 0;
     uint32_t AtlasHeight = 0;
     uint32_t FirstChar = 32;

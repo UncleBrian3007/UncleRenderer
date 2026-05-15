@@ -5,6 +5,7 @@
 #include "Cas.h"
 #include "Taa.h"
 #include "../DeferredRenderer.h"
+#include "../GpuResource.h"
 #include "../RendererUtils.h"
 #include "../ShaderCompiler.h"
 #include "../../Core/GpuDebugMarkers.h"
@@ -23,10 +24,12 @@ bool FTonemap::InitializePipelines(FDeferredRenderer& Owner, FDX12Device* Device
         && CreateTonemapPipeline(Device, BackBufferFormat);
 }
 
-bool FTonemap::InitializeResources(FDeferredRenderer& Owner, FDX12Device* Device)
+bool FTonemap::InitializeResources(FDeferredRenderer& Owner, FDX12Device* Device, uint32_t Width, uint32_t Height)
 {
-    (void)Owner;
-    (void)Device;
+    const FLOAT ClearColor[] = { 0.0f, 0.0f, 0.0f, 1.0f };
+    CD3DX12_CLEAR_VALUE TonemapClear(Owner.BackBufferFormat, ClearColor);
+    CreateBindlessTexture(Device, L"TonemapOutput", { Width, Height, Owner.BackBufferFormat }, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_RESOURCE_STATE_RENDER_TARGET, Owner.TonemapOutput, false, false, &TonemapClear);
+    CreateTexture2DRtv(Device, L"TonemapOutputRtvHeap", Owner.TonemapOutput.Get(), Owner.BackBufferFormat, TonemapOutputRtvHeap, Owner.TonemapOutputRtvHandle);
     return true;
 }
 
@@ -37,12 +40,6 @@ void FTonemap::ImportPersistentResources(FDeferredPassContext& Context)
     (void)Context;
 }
 
-bool FTonemap::CreatePersistentDescriptors(FDeferredRenderer& Owner, FDX12Device* Device)
-{
-    (void)Owner;
-    (void)Device;
-    return true;
-}
 
 void FTonemap::AddPasses(FDeferredPassContext& Context) const
 {
@@ -170,7 +167,7 @@ void FTonemap::AddTonemapPass(FDeferredPassContext& Context) const
         {
             Builder.ReadTexture(Context.Resources.AutoExposure.LuminanceHandles[Data.LuminanceIndex], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         }
-        for (int i = 0; i < 4; ++i)
+        for (uint32_t i = 0; i < kDeferredGBufferCount; ++i)
         {
             Builder.WriteTexture(Context.Resources.GBufferHandles[i], D3D12_RESOURCE_STATE_RENDER_TARGET);
         }
@@ -206,12 +203,11 @@ void FTonemap::AddTonemapPass(FDeferredPassContext& Context) const
         LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         static_assert(sizeof(FTonemapConstants) / sizeof(uint32_t) <= kTonemapConstantsDwordCount);
         LocalCommandList->SetGraphicsRoot32BitConstants(0, sizeof(TonemapConstants) / sizeof(uint32_t), &TonemapConstants, 0);
-        const uint32_t TonemapBindlessIndices[] =
+        const uint32_t TonemapBindlessIndices[kTonemapBindlessDwordCount] =
         {
             Data.InputBindlessIndex,
             Owner.AutoExposure ? Owner.AutoExposure->LuminanceTextures[Data.LuminanceIndex].SrvBindlessIndex : UINT32_MAX
         };
-        static_assert(_countof(TonemapBindlessIndices) <= kTonemapBindlessDwordCount);
         LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(TonemapBindlessIndices), TonemapBindlessIndices, 0);
         LocalCommandList->DrawInstanced(3, 1, 0, 0);
 

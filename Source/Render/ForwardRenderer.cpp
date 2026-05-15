@@ -116,10 +116,7 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
         return false;
     }
 
-    if (NullTexture)
-    {
-        NullTexture->SetName(L"NullTexture");
-    }
+    NullTexture->SetName(L"NullTexture");
 
     if (!EnvironmentMap->InitializeResources(*this, Device, Config, "Forward"))
     {
@@ -155,13 +152,6 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
     {
         LogError("Forward renderer initialization failed: skinned position buffer creation failed");
         return false;
-    }
-
-    GltfScenePoses.resize(GltfScenes.size());
-    GltfSceneTimes.assign(GltfScenes.size(), 0.0f);
-    for (size_t Index = 0; Index < GltfScenes.size(); ++Index)
-    {
-        InitializeGltfAnimationPose(GltfScenes[Index], GltfScenePoses[Index]);
     }
 
     SceneConstantBufferStride = (sizeof(FSceneConstants) + 255ULL) & ~255ULL;
@@ -232,7 +222,7 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
         return;
     }
 
-    RendererUtils::UpdateGltfSceneAnimation(SceneModels, GltfScenes, GltfScenePoses, GltfSceneTimes, DeltaTime);
+    RendererUtils::UpdateGltfSceneAnimation(SceneModels, GltfScenes, DeltaTime);
 
     GpuDebugState.PreparePrint(CmdContext);
     GpuDebugState.PrepareLine(CmdContext);
@@ -284,17 +274,13 @@ void FForwardRenderer::ConfigureFrameGraph(FRenderGraph& Graph) const
 
 void FForwardRenderer::ImportFrameResources(FRenderGraph& Graph, FForwardFrameResources& OutResources)
 {
-    OutResources.ShadowHandle = Graph.ImportTexture(
-        "ShadowMap",
-        ShadowMap.Get(),
-        &ShadowMap.State,
-        { 2048, 2048, DXGI_FORMAT_D32_FLOAT });
+    OutResources.ShadowHandle = ImportBindlessTexture(Graph, "ShadowMap", ShadowMap);
 
     const FRGTextureDesc DepthDesc =
     {
         static_cast<uint32>(Viewport.Width),
         static_cast<uint32>(Viewport.Height),
-        DXGI_FORMAT_D24_UNORM_S8_UINT
+        GetDepthTypelessFormat()
     };
 
     D3D12_RESOURCE_STATES& DepthState = GetDepthBufferState();
@@ -417,7 +403,7 @@ void FForwardRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCamer
         UpdateSceneConstants(*Data.Camera, SceneModels.front(), ConstantBufferOffset, LightViewProjection);
         const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
         CommandList4->SetComputeRootConstantBufferView(1, ConstantBufferAddress + ConstantBufferOffset);
-        const uint32_t BindlessIndices[] =
+        const uint32_t BindlessIndices[FRayTracingRuntime::RayQueryRootConstantDwordCount] =
         {
             DepthBindlessIndex,
             GBufferABindlessIndex,
@@ -426,8 +412,6 @@ void FForwardRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCamer
             DispatchWidth,
             DispatchHeight
         };
-        static_assert(_countof(BindlessIndices) <= FRayTracingRuntime::RayQueryRootConstantDwordCount, "Ray query root constants exceed root signature capacity.");
-        assert(_countof(BindlessIndices) <= FRayTracingRuntime::RayQueryRootConstantDwordCount);
         CommandList4->SetComputeRoot32BitConstants(2, _countof(BindlessIndices), BindlessIndices, 0);
 
         CommandList4->Dispatch(GroupCountX, GroupCountY, 1);
@@ -563,7 +547,7 @@ void FForwardRenderer::AddShadowPass(FRenderGraph& Graph, const FCamera& Camera,
                 0,
                 ConstantBufferAddress + ConstantBufferOffset);
             LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
-            const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBindlessIndex) && Model.BoneMatrixCount > 0;
+            const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) && Model.BoneMatrixCount > 0;
             SetShadowPipeline(bUseSkinning, Model.bDoubleSided);
 
             if (AreModelPixEventsEnabled())
@@ -617,7 +601,7 @@ void FForwardRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Camer
 
         Cmd.ClearDepth(GetDSVHandle());
 
-        if (!IsValidBindlessIndex(ShadowMap.SrvBindlessIndex) || !IsValidBindlessIndex(EnvironmentCubeBindlessIndex) || !IsValidBindlessIndex(BrdfLutBindlessIndex))
+        if (!IsValidBindlessIndex(ShadowMap.SrvBindlessIndex) || !IsValidBindlessIndex(GetEnvironmentCubeSrvIndex()) || !IsValidBindlessIndex(GetBrdfLutSrvIndex()))
         {
             return;
         }
@@ -649,7 +633,7 @@ void FForwardRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Camer
 
             UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset, Data.LightViewProjection);
 
-            const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBindlessIndex) && Model.BoneMatrixCount > 0;
+            const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) && Model.BoneMatrixCount > 0;
             ID3D12PipelineState* DesiredPipeline = bUseSkinning ? DepthPrepassPipelinesSkinned[Model.bDoubleSided ? 1u : 0u].Get() : DepthPrepassPipelines[Model.bDoubleSided ? 1u : 0u].Get();
             if (DesiredPipeline != CurrentPipeline)
             {
@@ -663,19 +647,18 @@ void FForwardRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Camer
                 ConstantBufferAddress + ConstantBufferOffset);
             const uint32_t ShadowMaskEnabled = (bRayTracedShadowsEnabled && IsValidBindlessIndex(ShadowMaskBindlessIndex)) ? 1u : 0u;
             const uint32_t ResolvedShadowMaskIndex = ShadowMaskEnabled ? ShadowMaskBindlessIndex : ShadowMap.SrvBindlessIndex;
-            const uint32_t ForwardBindlessIndices[] =
+            const uint32_t ForwardBindlessIndices[kForwardBindlessDwordCount] =
             {
-                Model.BaseColorBindlessIndex,
-                Model.MetallicRoughnessBindlessIndex,
-                Model.NormalBindlessIndex,
-                Model.EmissiveBindlessIndex,
+                Model.BaseColor.SrvBindlessIndex,
+                Model.MetallicRoughness.SrvBindlessIndex,
+                Model.Normal.SrvBindlessIndex,
+                Model.Emissive.SrvBindlessIndex,
                 ShadowMap.SrvBindlessIndex,
                 ResolvedShadowMaskIndex,
                 ShadowMaskEnabled,
-                EnvironmentCubeBindlessIndex,
-                BrdfLutBindlessIndex
+                GetEnvironmentCubeSrvIndex(),
+                GetBrdfLutSrvIndex()
             };
-            static_assert(_countof(ForwardBindlessIndices) <= kForwardBindlessDwordCount);
             static_assert(1u <= kForwardPerDrawDwordCount);
             LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(ForwardBindlessIndices), ForwardBindlessIndices, 0);
             LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
@@ -774,7 +757,7 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
 
         LocalCommandList->SetGraphicsRootSignature(RootSignature.Get());
 
-        if (!IsValidBindlessIndex(ShadowMap.SrvBindlessIndex) || !IsValidBindlessIndex(EnvironmentCubeBindlessIndex) || !IsValidBindlessIndex(BrdfLutBindlessIndex))
+        if (!IsValidBindlessIndex(ShadowMap.SrvBindlessIndex) || !IsValidBindlessIndex(GetEnvironmentCubeSrvIndex()) || !IsValidBindlessIndex(GetBrdfLutSrvIndex()))
         {
             return;
         }
@@ -828,7 +811,7 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                 LocalCommandList->SetPipelineState(Pipeline);
                 const uint32_t ShadowMaskEnabled = (bRayTracedShadowsEnabled && IsValidBindlessIndex(ShadowMaskBindlessIndex)) ? 1u : 0u;
                 const uint32_t ResolvedShadowMaskIndex = ShadowMaskEnabled ? ShadowMaskBindlessIndex : ShadowMap.SrvBindlessIndex;
-                const uint32_t ForwardBindlessIndices[] =
+                const uint32_t ForwardBindlessIndices[kForwardBindlessDwordCount] =
                 {
                     Range.MaterialBindlessIndices[0],
                     Range.MaterialBindlessIndices[1],
@@ -837,11 +820,10 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                     ShadowMap.SrvBindlessIndex,
                     ResolvedShadowMaskIndex,
                     ShadowMaskEnabled,
-                    EnvironmentCubeBindlessIndex,
-                    BrdfLutBindlessIndex
+                    GetEnvironmentCubeSrvIndex(),
+                    GetBrdfLutSrvIndex()
                 };
-                static_assert(_countof(ForwardBindlessIndices) <= kForwardBindlessDwordCount);
-                LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(ForwardBindlessIndices), ForwardBindlessIndices, 0);
+                    LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(ForwardBindlessIndices), ForwardBindlessIndices, 0);
 
                 const uint64_t Offset = static_cast<uint64_t>(Range.Start) * sizeof(FIndirectDrawCommand);
                 const uint64_t CountOffset = RangeIndex * sizeof(uint32_t);
@@ -872,15 +854,14 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                         continue;
                     }
 
-                    const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBindlessIndex) && Model.BoneMatrixCount > 0;
+                    const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) && Model.BoneMatrixCount > 0;
                     if (!bUseSkinning)
                     {
                         continue;
                     }
 
                     const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
-                    const uint32_t ModelPipelineKey = RendererUtils::BuildPipelineKey(Model);
-                    const uint32_t PipelineKey = (ModelPipelineKey & 0xFFu) | (((ModelPipelineKey >> 9) & 1u) << 8);
+                    const uint32_t PipelineKey = (Model.PipelineKey & 0xFFu) | (((Model.PipelineKey >> 9) & 1u) << 8);
                     if (!EnsureBasePassPipelineOrFail(PipelineKey, true, "ForwardBasePass/SkinningFallback"))
                     {
                         return;
@@ -893,20 +874,19 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                         ConstantBufferAddress + ConstantBufferOffset);
                     const uint32_t ShadowMaskEnabled = (bRayTracedShadowsEnabled && IsValidBindlessIndex(ShadowMaskBindlessIndex)) ? 1u : 0u;
                     const uint32_t ResolvedShadowMaskIndex = ShadowMaskEnabled ? ShadowMaskBindlessIndex : ShadowMap.SrvBindlessIndex;
-                    const uint32_t ForwardBindlessIndices[] =
+                    const uint32_t ForwardBindlessIndices[kForwardBindlessDwordCount] =
                     {
-                        Model.BaseColorBindlessIndex,
-                        Model.MetallicRoughnessBindlessIndex,
-                        Model.NormalBindlessIndex,
-                        Model.EmissiveBindlessIndex,
+                        Model.BaseColor.SrvBindlessIndex,
+                        Model.MetallicRoughness.SrvBindlessIndex,
+                        Model.Normal.SrvBindlessIndex,
+                        Model.Emissive.SrvBindlessIndex,
                         ShadowMap.SrvBindlessIndex,
                         ResolvedShadowMaskIndex,
                         ShadowMaskEnabled,
-                        EnvironmentCubeBindlessIndex,
-                        BrdfLutBindlessIndex
+                        GetEnvironmentCubeSrvIndex(),
+                        GetBrdfLutSrvIndex()
                     };
-                    static_assert(_countof(ForwardBindlessIndices) <= kForwardBindlessDwordCount);
-                    static_assert(1u <= kForwardPerDrawDwordCount);
+                            static_assert(1u <= kForwardPerDrawDwordCount);
                     LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(ForwardBindlessIndices), ForwardBindlessIndices, 0);
                     LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
 
@@ -941,9 +921,8 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                 }
                 const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
 
-                const uint32_t ModelPipelineKey = RendererUtils::BuildPipelineKey(Model);
-                const bool bUseSkinning = (ModelPipelineKey & (1u << 8)) != 0;
-                const uint32_t PipelineKey = (ModelPipelineKey & 0xFFu) | (((ModelPipelineKey >> 9) & 1u) << 8);
+                const bool bUseSkinning = (Model.PipelineKey & (1u << 8)) != 0;
+                const uint32_t PipelineKey = (Model.PipelineKey & 0xFFu) | (((Model.PipelineKey >> 9) & 1u) << 8);
                 if (!EnsureBasePassPipelineOrFail(PipelineKey, bUseSkinning, "ForwardBasePass/Direct"))
                 {
                     return;
@@ -956,20 +935,19 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                     ConstantBufferAddress + ConstantBufferOffset);
                 const uint32_t ShadowMaskEnabled = (bRayTracedShadowsEnabled && IsValidBindlessIndex(ShadowMaskBindlessIndex)) ? 1u : 0u;
                 const uint32_t ResolvedShadowMaskIndex = ShadowMaskEnabled ? ShadowMaskBindlessIndex : ShadowMap.SrvBindlessIndex;
-                const uint32_t ForwardBindlessIndices[] =
+                const uint32_t ForwardBindlessIndices[kForwardBindlessDwordCount] =
                 {
-                    Model.BaseColorBindlessIndex,
-                    Model.MetallicRoughnessBindlessIndex,
-                    Model.NormalBindlessIndex,
-                    Model.EmissiveBindlessIndex,
+                    Model.BaseColor.SrvBindlessIndex,
+                    Model.MetallicRoughness.SrvBindlessIndex,
+                    Model.Normal.SrvBindlessIndex,
+                    Model.Emissive.SrvBindlessIndex,
                     ShadowMap.SrvBindlessIndex,
                     ResolvedShadowMaskIndex,
                     ShadowMaskEnabled,
-                    EnvironmentCubeBindlessIndex,
-                    BrdfLutBindlessIndex
+                    GetEnvironmentCubeSrvIndex(),
+                    GetBrdfLutSrvIndex()
                 };
-                static_assert(_countof(ForwardBindlessIndices) <= kForwardBindlessDwordCount);
-                static_assert(1u <= kForwardPerDrawDwordCount);
+                    static_assert(1u <= kForwardPerDrawDwordCount);
                 LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(ForwardBindlessIndices), ForwardBindlessIndices, 0);
                 LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
 
@@ -1080,11 +1058,11 @@ void FForwardRenderer::AddObjectIdPass(FRenderGraph& Graph, const FCamera& Camer
         const uint32_t ReadX = (std::min)(ObjectId->GetReadbackX(), Width > 0 ? Width - 1 : 0);
         const uint32_t ReadY = (std::min)(ObjectId->GetReadbackY(), Height > 0 ? Height - 1 : 0);
 
-        D3D12_RESOURCE_BARRIER Barrier = CD3DX12_RESOURCE_BARRIER::Transition(ObjectId->GetTexture(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        D3D12_RESOURCE_BARRIER Barrier = CD3DX12_RESOURCE_BARRIER::Transition(ObjectId->GetRenderTarget(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
         LocalCommandList->ResourceBarrier(1, &Barrier);
 
         D3D12_TEXTURE_COPY_LOCATION Src = {};
-        Src.pResource = ObjectId->GetTexture();
+        Src.pResource = ObjectId->GetRenderTarget();
         Src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
         Src.SubresourceIndex = 0;
 
@@ -1424,30 +1402,10 @@ bool FForwardRenderer::EnsureBasePassPipelineOrFail(uint32_t PipelineKey, bool b
     return false;
 }
 
-bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vector<FSceneModelResource>& Models)
+bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, std::vector<FSceneModelResource>& Models)
 {
-    SceneTextures.clear();
-    SceneTextures.reserve(Models.size() * 10); // base color + metallic roughness + normal + emissive + sheen + clearcoat + anisotropy
     ShadowMap.SrvBindlessIndex = UINT32_MAX;
-    EnvironmentCubeBindlessIndex = UINT32_MAX;
-    BrdfLutBindlessIndex = UINT32_MAX;
 
-    // Prepare parallel texture loading
-    struct FTextureLoadResult
-    {
-        Microsoft::WRL::ComPtr<ID3D12Resource> BaseColor;
-        Microsoft::WRL::ComPtr<ID3D12Resource> MetallicRoughness;
-        Microsoft::WRL::ComPtr<ID3D12Resource> Normal;
-        Microsoft::WRL::ComPtr<ID3D12Resource> Emissive;
-        Microsoft::WRL::ComPtr<ID3D12Resource> SheenColor;
-        Microsoft::WRL::ComPtr<ID3D12Resource> SheenRoughness;
-        Microsoft::WRL::ComPtr<ID3D12Resource> Clearcoat;
-        Microsoft::WRL::ComPtr<ID3D12Resource> ClearcoatRoughness;
-        Microsoft::WRL::ComPtr<ID3D12Resource> ClearcoatNormal;
-        Microsoft::WRL::ComPtr<ID3D12Resource> Anisotropy;
-    };
-    
-    std::vector<FTextureLoadResult> LoadResults(Models.size());
     std::vector<FTextureLoadRequest> Requests;
     Requests.reserve(Models.size() * 10);
 
@@ -1474,7 +1432,7 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
             BaseColorRequest.Path = Models[Index].BaseColorTexturePath;
             BaseColorRequest.bUseSolidColor = false;
             BaseColorRequest.bUseSRGB = true;
-            BaseColorRequest.OutTexture = &LoadResults[Index].BaseColor;
+            BaseColorRequest.OutTexture = &Models[Index].BaseColor.Resource;
             Requests.push_back(BaseColorRequest);
         }
 
@@ -1483,7 +1441,7 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
             FTextureLoadRequest MetallicRoughnessRequest;
             MetallicRoughnessRequest.Path = Models[Index].MetallicRoughnessTexturePath;
             MetallicRoughnessRequest.bUseSolidColor = false;
-            MetallicRoughnessRequest.OutTexture = &LoadResults[Index].MetallicRoughness;
+            MetallicRoughnessRequest.OutTexture = &Models[Index].MetallicRoughness.Resource;
             Requests.push_back(MetallicRoughnessRequest);
         }
 
@@ -1492,7 +1450,7 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
             FTextureLoadRequest NormalRequest;
             NormalRequest.Path = Models[Index].NormalTexturePath;
             NormalRequest.bUseSolidColor = false;
-            NormalRequest.OutTexture = &LoadResults[Index].Normal;
+            NormalRequest.OutTexture = &Models[Index].Normal.Resource;
             Requests.push_back(NormalRequest);
         }
 
@@ -1502,7 +1460,7 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
             EmissiveRequest.Path = Models[Index].EmissiveTexturePath;
             EmissiveRequest.bUseSolidColor = false;
             EmissiveRequest.bUseSRGB = true;
-            EmissiveRequest.OutTexture = &LoadResults[Index].Emissive;
+            EmissiveRequest.OutTexture = &Models[Index].Emissive.Resource;
             Requests.push_back(EmissiveRequest);
         }
 
@@ -1512,7 +1470,7 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
             SheenColorRequest.Path = Models[Index].SheenColorTexturePath;
             SheenColorRequest.bUseSolidColor = false;
             SheenColorRequest.bUseSRGB = true;
-            SheenColorRequest.OutTexture = &LoadResults[Index].SheenColor;
+            SheenColorRequest.OutTexture = &Models[Index].SheenColor.Resource;
             Requests.push_back(SheenColorRequest);
         }
 
@@ -1521,7 +1479,7 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
             FTextureLoadRequest SheenRoughnessRequest;
             SheenRoughnessRequest.Path = Models[Index].SheenRoughnessTexturePath;
             SheenRoughnessRequest.bUseSolidColor = false;
-            SheenRoughnessRequest.OutTexture = &LoadResults[Index].SheenRoughness;
+            SheenRoughnessRequest.OutTexture = &Models[Index].SheenRoughness.Resource;
             Requests.push_back(SheenRoughnessRequest);
         }
 
@@ -1530,7 +1488,7 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
             FTextureLoadRequest ClearcoatRequest;
             ClearcoatRequest.Path = Models[Index].ClearcoatTexturePath;
             ClearcoatRequest.bUseSolidColor = false;
-            ClearcoatRequest.OutTexture = &LoadResults[Index].Clearcoat;
+            ClearcoatRequest.OutTexture = &Models[Index].Clearcoat.Resource;
             Requests.push_back(ClearcoatRequest);
         }
 
@@ -1539,7 +1497,7 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
             FTextureLoadRequest ClearcoatRoughnessRequest;
             ClearcoatRoughnessRequest.Path = Models[Index].ClearcoatRoughnessTexturePath;
             ClearcoatRoughnessRequest.bUseSolidColor = false;
-            ClearcoatRoughnessRequest.OutTexture = &LoadResults[Index].ClearcoatRoughness;
+            ClearcoatRoughnessRequest.OutTexture = &Models[Index].ClearcoatRoughness.Resource;
             Requests.push_back(ClearcoatRoughnessRequest);
         }
 
@@ -1548,7 +1506,7 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
             FTextureLoadRequest ClearcoatNormalRequest;
             ClearcoatNormalRequest.Path = Models[Index].ClearcoatNormalTexturePath;
             ClearcoatNormalRequest.bUseSolidColor = false;
-            ClearcoatNormalRequest.OutTexture = &LoadResults[Index].ClearcoatNormal;
+            ClearcoatNormalRequest.OutTexture = &Models[Index].ClearcoatNormal.Resource;
             Requests.push_back(ClearcoatNormalRequest);
         }
 
@@ -1557,7 +1515,7 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
             FTextureLoadRequest AnisotropyRequest;
             AnisotropyRequest.Path = Models[Index].AnisotropyTexturePath;
             AnisotropyRequest.bUseSolidColor = false;
-            AnisotropyRequest.OutTexture = &LoadResults[Index].Anisotropy;
+            AnisotropyRequest.OutTexture = &Models[Index].Anisotropy.Resource;
             Requests.push_back(AnisotropyRequest);
         }
     }
@@ -1585,98 +1543,78 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
 
     const auto ShadowSrvDesc = CD3DX12_SHADER_RESOURCE_VIEW_DESC::Tex2D(DXGI_FORMAT_R32_FLOAT, 1);
 
-    ID3D12Resource* EnvironmentCube = GetEnvironmentCubeTexture();
-    ID3D12Resource* BrdfLut = GetBrdfLutTexture();
-
-    const auto EnvSrvDesc = CD3DX12_SHADER_RESOURCE_VIEW_DESC::TexCube(
-        EnvironmentCube ? EnvironmentCube->GetDesc().Format : DXGI_FORMAT_UNKNOWN,
-        EnvironmentCube ? EnvironmentCube->GetDesc().MipLevels : 1);
-
-    const auto BrdfSrvDesc = CD3DX12_SHADER_RESOURCE_VIEW_DESC::Tex2D(
-        BrdfLut ? BrdfLut->GetDesc().Format : DXGI_FORMAT_R8G8B8A8_UNORM,
-        BrdfLut ? BrdfLut->GetDesc().MipLevels : 1);
 
     for (size_t Index = 0; Index < Models.size(); ++Index)
     {
-        SceneTextures.push_back(LoadResults[Index].BaseColor);
-        if (LoadResults[Index].BaseColor)
+        if (Models[Index].BaseColor)
         {
             const std::wstring Name = L"BaseColorTexture_" + std::to_wstring(Index);
-            LoadResults[Index].BaseColor->SetName(Name.c_str());
+            Models[Index].BaseColor->SetName(Name.c_str());
         }
-        SceneModels[Index].BaseColorBindlessIndex = CreateSceneTextureSrv(LoadResults[Index].BaseColor.Get());
+        Models[Index].BaseColor.SrvBindlessIndex = CreateSceneTextureSrv(Models[Index].BaseColor.Get());
 
-        SceneTextures.push_back(LoadResults[Index].MetallicRoughness);
-        if (LoadResults[Index].MetallicRoughness)
+        if (Models[Index].MetallicRoughness)
         {
             const std::wstring Name = L"MetallicRoughnessTexture_" + std::to_wstring(Index);
-            LoadResults[Index].MetallicRoughness->SetName(Name.c_str());
+            Models[Index].MetallicRoughness->SetName(Name.c_str());
         }
-        SceneModels[Index].MetallicRoughnessBindlessIndex = CreateSceneTextureSrv(LoadResults[Index].MetallicRoughness.Get());
+        Models[Index].MetallicRoughness.SrvBindlessIndex = CreateSceneTextureSrv(Models[Index].MetallicRoughness.Get());
 
-        SceneTextures.push_back(LoadResults[Index].Normal);
-        if (LoadResults[Index].Normal)
+        if (Models[Index].Normal)
         {
             const std::wstring Name = L"NormalTexture_" + std::to_wstring(Index);
-            LoadResults[Index].Normal->SetName(Name.c_str());
+            Models[Index].Normal->SetName(Name.c_str());
         }
-        SceneModels[Index].NormalBindlessIndex = CreateSceneTextureSrv(LoadResults[Index].Normal.Get());
+        Models[Index].Normal.SrvBindlessIndex = CreateSceneTextureSrv(Models[Index].Normal.Get());
 
-        SceneTextures.push_back(LoadResults[Index].Emissive);
-        if (LoadResults[Index].Emissive)
+        if (Models[Index].Emissive)
         {
             const std::wstring Name = L"EmissiveTexture_" + std::to_wstring(Index);
-            LoadResults[Index].Emissive->SetName(Name.c_str());
+            Models[Index].Emissive->SetName(Name.c_str());
         }
-        SceneModels[Index].EmissiveBindlessIndex = CreateSceneTextureSrv(LoadResults[Index].Emissive.Get());
+        Models[Index].Emissive.SrvBindlessIndex = CreateSceneTextureSrv(Models[Index].Emissive.Get());
 
-        SceneTextures.push_back(LoadResults[Index].SheenColor);
-        if (LoadResults[Index].SheenColor)
+        if (Models[Index].SheenColor)
         {
             const std::wstring Name = L"SheenColorTexture_" + std::to_wstring(Index);
-            LoadResults[Index].SheenColor->SetName(Name.c_str());
+            Models[Index].SheenColor->SetName(Name.c_str());
         }
-        SceneModels[Index].SheenColorBindlessIndex = CreateSceneTextureSrv(LoadResults[Index].SheenColor.Get());
+        Models[Index].SheenColor.SrvBindlessIndex = CreateSceneTextureSrv(Models[Index].SheenColor.Get());
 
-        SceneTextures.push_back(LoadResults[Index].SheenRoughness);
-        if (LoadResults[Index].SheenRoughness)
+        if (Models[Index].SheenRoughness)
         {
             const std::wstring Name = L"SheenRoughnessTexture_" + std::to_wstring(Index);
-            LoadResults[Index].SheenRoughness->SetName(Name.c_str());
+            Models[Index].SheenRoughness->SetName(Name.c_str());
         }
-        SceneModels[Index].SheenRoughnessBindlessIndex = CreateSceneTextureSrv(LoadResults[Index].SheenRoughness.Get());
+        Models[Index].SheenRoughness.SrvBindlessIndex = CreateSceneTextureSrv(Models[Index].SheenRoughness.Get());
 
-        SceneTextures.push_back(LoadResults[Index].Clearcoat);
-        if (LoadResults[Index].Clearcoat)
+        if (Models[Index].Clearcoat)
         {
             const std::wstring Name = L"ClearcoatTexture_" + std::to_wstring(Index);
-            LoadResults[Index].Clearcoat->SetName(Name.c_str());
+            Models[Index].Clearcoat->SetName(Name.c_str());
         }
-        SceneModels[Index].ClearcoatBindlessIndex = CreateSceneTextureSrv(LoadResults[Index].Clearcoat.Get());
+        Models[Index].Clearcoat.SrvBindlessIndex = CreateSceneTextureSrv(Models[Index].Clearcoat.Get());
 
-        SceneTextures.push_back(LoadResults[Index].ClearcoatRoughness);
-        if (LoadResults[Index].ClearcoatRoughness)
+        if (Models[Index].ClearcoatRoughness)
         {
             const std::wstring Name = L"ClearcoatRoughnessTexture_" + std::to_wstring(Index);
-            LoadResults[Index].ClearcoatRoughness->SetName(Name.c_str());
+            Models[Index].ClearcoatRoughness->SetName(Name.c_str());
         }
-        SceneModels[Index].ClearcoatRoughnessBindlessIndex = CreateSceneTextureSrv(LoadResults[Index].ClearcoatRoughness.Get());
+        Models[Index].ClearcoatRoughness.SrvBindlessIndex = CreateSceneTextureSrv(Models[Index].ClearcoatRoughness.Get());
 
-        SceneTextures.push_back(LoadResults[Index].ClearcoatNormal);
-        if (LoadResults[Index].ClearcoatNormal)
+        if (Models[Index].ClearcoatNormal)
         {
             const std::wstring Name = L"ClearcoatNormalTexture_" + std::to_wstring(Index);
-            LoadResults[Index].ClearcoatNormal->SetName(Name.c_str());
+            Models[Index].ClearcoatNormal->SetName(Name.c_str());
         }
-        SceneModels[Index].ClearcoatNormalBindlessIndex = CreateSceneTextureSrv(LoadResults[Index].ClearcoatNormal.Get());
+        Models[Index].ClearcoatNormal.SrvBindlessIndex = CreateSceneTextureSrv(Models[Index].ClearcoatNormal.Get());
 
-        SceneTextures.push_back(LoadResults[Index].Anisotropy);
-        if (LoadResults[Index].Anisotropy)
+        if (Models[Index].Anisotropy)
         {
             const std::wstring Name = L"AnisotropyTexture_" + std::to_wstring(Index);
-            LoadResults[Index].Anisotropy->SetName(Name.c_str());
+            Models[Index].Anisotropy->SetName(Name.c_str());
         }
-        SceneModels[Index].AnisotropyBindlessIndex = CreateSceneTextureSrv(LoadResults[Index].Anisotropy.Get());
+        Models[Index].Anisotropy.SrvBindlessIndex = CreateSceneTextureSrv(Models[Index].Anisotropy.Get());
     }
 
     if (ShadowMap.SrvBindlessIndex == UINT32_MAX)
@@ -1687,8 +1625,6 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, const std::vecto
     {
         Device->WriteBindlessSrv(ShadowMap.SrvBindlessIndex, ShadowMap.Get(), ShadowSrvDesc);
     }
-    EnvironmentCubeBindlessIndex = Device->CreateBindlessSrv(EnvironmentCube, EnvSrvDesc);
-    BrdfLutBindlessIndex = Device->CreateBindlessSrv(BrdfLut, BrdfSrvDesc);
     return true;
 }
 

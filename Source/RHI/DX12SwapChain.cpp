@@ -90,7 +90,7 @@ bool FDX12SwapChain::CreateRTVs(FDX12Device* InDevice)
     HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     HR_CHECK(InDevice->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(RTVHeap.GetAddressOf())));
 
-    RTVDescriptorSize = InDevice->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    RTVDescriptorSize = InDevice->GetRtvDescriptorStride();
     D3D12_CPU_DESCRIPTOR_HANDLE RtvHandle = RTVHeap->GetCPUDescriptorHandleForHeapStart();
 
     for (uint32 i = 0; i < BufferCount; ++i)

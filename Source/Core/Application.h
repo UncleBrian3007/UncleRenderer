@@ -15,6 +15,7 @@
 #include "../RHI/DX12Commons.h"
 #include "../RHI/DX12Device.h"
 #include "RendererConfig.h"
+#include "FrameGpuTimer.h"
 
 // ImGui availability is determined in ImGuiSupport.h to avoid build failures
 // when the library is not present locally.
@@ -65,6 +66,7 @@ private:
 
     // Selection
     void UpdateSelectionFromMouseClick();
+    void ProcessObjectIdReadback();
 
     // Debug primitives
     void UpdateDebugPrimitives();
@@ -140,10 +142,7 @@ private:
     uint32_t     PendingObjectIdY = 0;
 
     // GPU frame timing
-    ComPtr<ID3D12QueryHeap>  FrameTimingQueryHeap;
-    ComPtr<ID3D12Resource>   FrameTimingReadback;
-    std::vector<uint64>      FrameTimingFenceValues;
-    uint64                   FrameTimingFrequency = 0;
+    FFrameGpuTimer FrameTimer;
 
     // ReSTIR GI transient debug state
     bool bRestirGIFreezeFrame = false;

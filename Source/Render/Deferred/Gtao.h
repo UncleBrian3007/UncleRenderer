@@ -24,7 +24,6 @@ public:
     bool InitializePipelines(FDeferredRenderer& Owner, FDX12Device* Device);
     bool InitializeResources(FDeferredRenderer& Owner, FDX12Device* Device, uint32_t Width, uint32_t Height);
     void ImportPersistentResources(FDeferredPassContext& Context);
-    bool CreatePersistentDescriptors(FDeferredRenderer& Owner, FDX12Device* Device);
     void AddPass(FDeferredPassContext& Context) const;
     void ApplyConfig(const FRendererConfig& Config);
 

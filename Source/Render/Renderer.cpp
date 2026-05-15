@@ -41,7 +41,7 @@ D3D12_CPU_DESCRIPTOR_HANDLE FRenderer::GetBindlessCpuHandle(uint32_t Index) cons
         return Handle;
     }
 
-    const UINT Stride = Device->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    const uint32_t Stride = Device->GetBindlessDescriptorStride();
     Handle = Device->GetBindlessDescriptorHeap()->GetCPUDescriptorHandleForHeapStart();
     Handle.ptr += static_cast<SIZE_T>(Index) * Stride;
     return Handle;
@@ -55,7 +55,7 @@ D3D12_CPU_DESCRIPTOR_HANDLE FRenderer::GetBindlessCpuClearHandle(uint32_t Index)
         return Handle;
     }
 
-    const UINT Stride = Device->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    const uint32_t Stride = Device->GetBindlessDescriptorStride();
     Handle = Device->GetBindlessCpuDescriptorHeap()->GetCPUDescriptorHandleForHeapStart();
     Handle.ptr += static_cast<SIZE_T>(Index) * Stride;
     return Handle;
@@ -69,7 +69,7 @@ D3D12_GPU_DESCRIPTOR_HANDLE FRenderer::GetBindlessGpuHandle(uint32_t Index) cons
         return Handle;
     }
 
-    const UINT Stride = Device->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    const uint32_t Stride = Device->GetBindlessDescriptorStride();
     Handle = Device->GetBindlessDescriptorHeap()->GetGPUDescriptorHandleForHeapStart();
     Handle.ptr += static_cast<UINT64>(Index) * Stride;
     return Handle;
@@ -108,6 +108,16 @@ ID3D12Resource* FRenderer::GetBrdfLutTexture() const
     return EnvironmentMap ? EnvironmentMap->GetBrdfLutTexture() : nullptr;
 }
 
+uint32_t FRenderer::GetEnvironmentCubeSrvIndex() const
+{
+    return EnvironmentMap ? EnvironmentMap->GetCubeSrvIndex() : UINT32_MAX;
+}
+
+uint32_t FRenderer::GetBrdfLutSrvIndex() const
+{
+    return EnvironmentMap ? EnvironmentMap->GetBrdfLutSrvIndex() : UINT32_MAX;
+}
+
 float FRenderer::GetEnvironmentMipCount() const
 {
     return EnvironmentMap ? EnvironmentMap->GetMipCount() : 1.0f;
@@ -143,12 +153,7 @@ void FRenderer::InitializeCommonSettings(uint32_t Width, uint32_t Height, const 
     bEnableGpuTiming = Config.bEnableGpuTiming;
     if (Device)
     {
-        Device->SetForceLegacyBarriers(Config.bForceLegacyBarriers);
-        LogInfo(std::string("Barrier mode: ") + (Device->SupportsEnhancedBarriers() ? "Enhanced" : "Legacy"));
-        if (Device->IsEnhancedBarrierFeatureSupported() && Device->IsForceLegacyBarriersEnabled())
-        {
-            LogWarning("Enhanced barriers are available but legacy mode is forced to avoid legacy/enhanced interop hazards.");
-        }
+        LogInfo(std::string("Barrier mode: Legacy"));
     }
     bEnableIndirectDraw = Config.bEnableIndirectDraw;
     bEnableSkinningIndirectDraw = Config.bEnableSkinningIndirectDraw;
@@ -201,7 +206,7 @@ void FRenderer::SetFrameIndex(uint32_t FrameIndex)
     }
 
     CurrentFrameIndex = FrameIndex % static_cast<uint32_t>(DepthResourcesPerFrame.size());
-    DepthStencilHandle = DepthResourcesPerFrame[CurrentFrameIndex].DepthStencilHandle;
+    DepthStencilHandle = DepthResourcesPerFrame[CurrentFrameIndex].DSVHandle;
 }
 
 const D3D12_CPU_DESCRIPTOR_HANDLE& FRenderer::GetDSVHandle() const
@@ -216,18 +221,36 @@ ID3D12Resource* FRenderer::GetDepthBuffer() const
         return nullptr;
     }
 
-    return DepthResourcesPerFrame[CurrentFrameIndex].DepthBuffer.Get();
+    return DepthResourcesPerFrame[CurrentFrameIndex].Resource.Get();
+}
+
+uint32_t FRenderer::GetCurrentDepthSrvBindlessIndex() const
+{
+    if (DepthResourcesPerFrame.empty())
+    {
+        return UINT32_MAX;
+    }
+    return DepthResourcesPerFrame[CurrentFrameIndex].SrvBindlessIndex;
+}
+
+DXGI_FORMAT FRenderer::GetDepthTypelessFormat() const
+{
+    if (DepthResourcesPerFrame.empty())
+    {
+        return DXGI_FORMAT_UNKNOWN;
+    }
+    return DepthResourcesPerFrame[CurrentFrameIndex].TypelessFormat;
 }
 
 D3D12_RESOURCE_STATES& FRenderer::GetDepthBufferState()
 {
-    if (DepthBufferStates.empty())
+    if (DepthResourcesPerFrame.empty())
     {
         static D3D12_RESOURCE_STATES FallbackState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
         return FallbackState;
     }
 
-    return DepthBufferStates[CurrentFrameIndex];
+    return DepthResourcesPerFrame[CurrentFrameIndex].State;
 }
 
 ID3D12Resource* FRenderer::GetIndirectCommandBuffer() const
@@ -282,71 +305,28 @@ D3D12_GPU_VIRTUAL_ADDRESS FRenderer::GetSceneConstantBufferAddress() const
 
 uint8_t* FRenderer::GetSceneConstantBufferMapped() const
 {
-    if (SceneConstantBufferMapped.empty())
+    if (SceneConstantBuffers.empty())
     {
         return nullptr;
     }
 
-    return SceneConstantBufferMapped[CurrentFrameIndex];
+    return SceneConstantBuffers[CurrentFrameIndex].MappedData;
 }
 
-bool FRenderer::CreateDepthResources(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT Format, FDepthResources& OutDepthResources)
+bool FRenderer::CreateDepthResources(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT Format, FDepthStencilTarget& OutDepthResources)
 {
-    DXGI_FORMAT ResourceFormat = Format;
-    if (Format == DXGI_FORMAT_D24_UNORM_S8_UINT)
-    {
-        ResourceFormat = DXGI_FORMAT_R24G8_TYPELESS;
-    }
-
-    CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
-        ResourceFormat,
-        Width,
-        Height,
-        1,
-        1,
-        1,
-        0,
-        D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
-
-    CD3DX12_CLEAR_VALUE ClearValue(Format, 0.0f, 0);
-
-    CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
-
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &HeapProps,
-        D3D12_HEAP_FLAG_NONE,
-        &Desc,
-        D3D12_RESOURCE_STATE_DEPTH_WRITE,
-        &ClearValue,
-        IID_PPV_ARGS(OutDepthResources.DepthBuffer.GetAddressOf())));
-
-    OutDepthResources.DepthBuffer->SetName(L"DepthBuffer");
-
-    D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
-    HeapDesc.NumDescriptors = 1;
-    HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-    HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-    HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(OutDepthResources.DSVHeap.GetAddressOf())));
-
-    OutDepthResources.DepthStencilHandle = OutDepthResources.DSVHeap->GetCPUDescriptorHandleForHeapStart();
-
-    D3D12_DEPTH_STENCIL_VIEW_DESC ViewDesc = {};
-    ViewDesc.Format = Format;
-    ViewDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
-    ViewDesc.Flags = D3D12_DSV_FLAG_NONE;
-    Device->GetDevice()->CreateDepthStencilView(OutDepthResources.DepthBuffer.Get(), &ViewDesc, OutDepthResources.DepthStencilHandle);
-
+    CreateDepthTexture2D(Device, L"", Width, Height, Format, 0.0f, OutDepthResources.Resource);
+    CreateTexture2DDsv(Device, L"", OutDepthResources.Resource.Get(), Format, OutDepthResources.DSVHeap, OutDepthResources.DSVHandle);
+    OutDepthResources.TypelessFormat = GetDepthResourceFormat(Format);
     return true;
 }
 
 bool FRenderer::CreateDepthResourcesPerFrame(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT Format)
 {
     DepthResourcesPerFrame.clear();
-    DepthBufferStates.clear();
     SceneDepthFormat = Format;
 
     DepthResourcesPerFrame.resize(FramesInFlight);
-    DepthBufferStates.resize(FramesInFlight, D3D12_RESOURCE_STATE_DEPTH_WRITE);
 
     for (uint32_t Index = 0; Index < FramesInFlight; ++Index)
     {
@@ -355,10 +335,10 @@ bool FRenderer::CreateDepthResourcesPerFrame(FDX12Device* Device, uint32_t Width
             return false;
         }
 
-        if (DepthResourcesPerFrame[Index].DepthBuffer)
+        if (DepthResourcesPerFrame[Index].Resource)
         {
             const std::wstring Name = L"DepthBuffer_Frame" + std::to_wstring(Index);
-            DepthResourcesPerFrame[Index].DepthBuffer->SetName(Name.c_str());
+            DepthResourcesPerFrame[Index].Resource->SetName(Name.c_str());
         }
         if (DepthResourcesPerFrame[Index].DSVHeap)
         {
@@ -374,25 +354,13 @@ bool FRenderer::CreateDepthResourcesPerFrame(FDX12Device* Device, uint32_t Width
 bool FRenderer::CreateSceneConstantBuffersPerFrame(FDX12Device* Device, uint64_t BufferSize)
 {
     SceneConstantBuffers.clear();
-    SceneConstantBufferMapped.clear();
     SceneConstantBuffers.resize(FramesInFlight);
-    SceneConstantBufferMapped.resize(FramesInFlight, nullptr);
 
     for (uint32_t Index = 0; Index < FramesInFlight; ++Index)
     {
-        FMappedConstantBuffer ConstantBufferResource;
-        if (!CreateMappedConstantBuffer(Device, BufferSize, ConstantBufferResource))
+        if (!CreateMappedConstantBuffer(Device, L"SceneConstantBuffer_" + std::to_wstring(Index), BufferSize, SceneConstantBuffers[Index]))
         {
             return false;
-        }
-
-        SceneConstantBuffers[Index] = ConstantBufferResource.Resource;
-        SceneConstantBufferMapped[Index] = ConstantBufferResource.MappedData;
-
-        if (SceneConstantBuffers[Index])
-        {
-            const std::wstring Name = L"SceneConstantBuffer_Frame" + std::to_wstring(Index);
-            SceneConstantBuffers[Index]->SetName(Name.c_str());
         }
     }
 
@@ -477,60 +445,10 @@ bool FRenderer::CreateShadowResources(
         InOutHeight = 4096;
     }
 
-    CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
-        DXGI_FORMAT_R32_TYPELESS,
-        InOutWidth,
-        InOutHeight,
-        /*arraySize*/ 1,
-        /*mipLevels*/ 1,
-        /*sampleCount*/ 1,
-        /*sampleQuality*/ 0,
-        D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
-        D3D12_TEXTURE_LAYOUT_UNKNOWN);
-
-    CD3DX12_CLEAR_VALUE ClearValue(DXGI_FORMAT_D32_FLOAT, 1.0f, 0);
-
-    CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
-    HeapProps.CreationNodeMask = 1;
-    HeapProps.VisibleNodeMask = 1;
-
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &HeapProps,
-        D3D12_HEAP_FLAG_NONE,
-        &Desc,
-        D3D12_RESOURCE_STATE_DEPTH_WRITE,
-        &ClearValue,
-        IID_PPV_ARGS(OutShadowMap.ReleaseAndGetAddressOf())));
-
-    if (OutShadowMap)
-    {
-        OutShadowMap->SetName(L"ShadowMap");
-    }
-
-    InitializeBindlessTexture(
-        OutShadowMap,
-        { InOutWidth, InOutHeight, DXGI_FORMAT_R32_FLOAT },
-        D3D12_RESOURCE_STATE_DEPTH_WRITE);
-
-    D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
-    HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-    HeapDesc.NumDescriptors = 1;
-    HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-    HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(OutShadowDsvHeap.ReleaseAndGetAddressOf())));
-
-    if (OutShadowDsvHeap)
-    {
-        OutShadowDsvHeap->SetName(L"ShadowDSVHeap");
-    }
-
-    D3D12_CPU_DESCRIPTOR_HANDLE DsvHandle = OutShadowDsvHeap->GetCPUDescriptorHandleForHeapStart();
-    D3D12_DEPTH_STENCIL_VIEW_DESC DsvDesc = {};
-    DsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
-    DsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
-    DsvDesc.Flags = D3D12_DSV_FLAG_NONE;
-    Device->GetDevice()->CreateDepthStencilView(OutShadowMap.Get(), &DsvDesc, DsvHandle);
-    OutShadowDsvHandle = DsvHandle;
-
+    CreateDepthTexture2D(Device, L"ShadowMap", InOutWidth, InOutHeight, DXGI_FORMAT_D32_FLOAT, 1.0f, OutShadowMap.Resource);
+    InitializeBindlessTexture(OutShadowMap, { InOutWidth, InOutHeight, DXGI_FORMAT_R32_FLOAT }, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    WriteOrCreateBindlessTextureSrv(Device, OutShadowMap);
+    CreateTexture2DDsv(Device, L"ShadowDSVHeap", OutShadowMap.Get(), DXGI_FORMAT_D32_FLOAT, OutShadowDsvHeap, OutShadowDsvHandle);
     return true;
 }
 
@@ -618,7 +536,7 @@ bool FRenderer::CreateSkinnedPositionBuffers()
     bool bAllReady = true;
     for (FSceneModelResource& Model : SceneModels)
     {
-        if (Model.BoneMatrixBindlessIndex == UINT32_MAX || Model.BoneMatrixCount == 0)
+        if (!IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) || Model.BoneMatrixCount == 0)
         {
             continue;
         }
@@ -632,77 +550,21 @@ bool FRenderer::CreateSkinnedPositionBuffers()
             continue;
         }
 
-        const uint64_t BufferSize = static_cast<uint64_t>(VertexCount) * sizeof(FFloat3);
-        Model.SkinnedPositionBuffers.assign(FramesInFlight, nullptr);
-        Model.SkinnedPositionSrvBindlessIndices.assign(FramesInFlight, UINT32_MAX);
-        Model.SkinnedPositionUavBindlessIndices.assign(FramesInFlight, UINT32_MAX);
-        Model.SkinnedPositionStates.assign(FramesInFlight, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-
-        CD3DX12_HEAP_PROPERTIES DefaultHeap(D3D12_HEAP_TYPE_DEFAULT);
-        CD3DX12_RESOURCE_DESC BufferDesc = CD3DX12_RESOURCE_DESC::Buffer(BufferSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-
-        const auto CreateStructuredBufferSrv = [&](ID3D12Resource* Buffer, uint32_t Stride)
-        {
-            if (!Buffer || Stride == 0)
-            {
-                return UINT32_MAX;
-            }
-        const D3D12_RESOURCE_DESC BufferDescLocal = Buffer->GetDesc();
-            const uint64_t ElementCount = BufferDescLocal.Width / Stride;
-            if (ElementCount == 0)
-            {
-                return UINT32_MAX;
-            }
-            return Device->CreateBindlessSrv(Buffer,
-                CD3DX12_SHADER_RESOURCE_VIEW_DESC::StructuredBuffer(static_cast<UINT>(ElementCount), Stride));
-        };
-
-        const auto CreateStructuredBufferUav = [&](ID3D12Resource* Buffer, uint32_t Stride)
-        {
-            if (!Buffer || Stride == 0)
-            {
-                return UINT32_MAX;
-            }
-        const D3D12_RESOURCE_DESC BufferDescLocal = Buffer->GetDesc();
-            const uint64_t ElementCount = BufferDescLocal.Width / Stride;
-            if (ElementCount == 0)
-            {
-                return UINT32_MAX;
-            }
-            return Device->CreateBindlessUav(Buffer, nullptr,
-                CD3DX12_UNORDERED_ACCESS_VIEW_DESC::StructuredBuffer(static_cast<UINT>(ElementCount), Stride));
-        };
-
+        Model.SkinnedPositionBuffers.resize(FramesInFlight);
         for (uint32_t FrameIndex = 0; FrameIndex < FramesInFlight; ++FrameIndex)
         {
-            HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-                &DefaultHeap,
-                D3D12_HEAP_FLAG_NONE,
-                &BufferDesc,
+            CreateBindlessBuffer(Device,
+                L"SkinnedPositionBuffer_" + std::to_wstring(FrameIndex),
+                CreateStructuredBufferDesc<FFloat3>(VertexCount),
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                nullptr,
-                IID_PPV_ARGS(Model.SkinnedPositionBuffers[FrameIndex].ReleaseAndGetAddressOf())));
-
-            if (Model.SkinnedPositionBuffers[FrameIndex])
-            {
-                const std::wstring BufferName = L"SkinnedPositionBuffer_" + std::to_wstring(FrameIndex);
-                Model.SkinnedPositionBuffers[FrameIndex]->SetName(BufferName.c_str());
-                Model.SkinnedPositionSrvBindlessIndices[FrameIndex] = CreateStructuredBufferSrv(
-                    Model.SkinnedPositionBuffers[FrameIndex].Get(),
-                    sizeof(FFloat3));
-                Model.SkinnedPositionUavBindlessIndices[FrameIndex] = CreateStructuredBufferUav(
-                    Model.SkinnedPositionBuffers[FrameIndex].Get(),
-                    sizeof(FFloat3));
-            }
+                Model.SkinnedPositionBuffers[FrameIndex],
+                true, true);
         }
 
         bool bReady = true;
         for (uint32_t FrameIndex = 0; FrameIndex < FramesInFlight; ++FrameIndex)
         {
-            bReady = bReady && Model.SkinnedPositionBuffers[FrameIndex]
-                && AreAllBindlessIndicesValid(
-                    Model.SkinnedPositionSrvBindlessIndices[FrameIndex],
-                    Model.SkinnedPositionUavBindlessIndices[FrameIndex]);
+            bReady = bReady && Model.SkinnedPositionBuffers[FrameIndex].IsFullyBound();
         }
 
         Model.bUseSkinning = Model.bUseSkinning && bReady;
@@ -729,24 +591,22 @@ void FRenderer::DispatchSkinning(FDX12CommandContext& CmdContext, const DirectX:
     for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
     {
         FSceneModelResource& Model = SceneModels[ModelIndex];
-        const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBindlessIndex) && Model.BoneMatrixCount > 0
-            && FrameIndex < Model.SkinnedPositionBuffers.size()
-            && FrameIndex < Model.SkinnedPositionUavBindlessIndices.size();
+        const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) && Model.BoneMatrixCount > 0
+            && FrameIndex < Model.SkinnedPositionBuffers.size();
 
         if (bUseSkinning)
         {
-            Model.SkinnedPositionBuffer = Model.SkinnedPositionBuffers[FrameIndex];
-            Model.SkinnedPositionSrvBindlessIndex = Model.SkinnedPositionSrvBindlessIndices[FrameIndex];
-            Model.SkinnedPositionUavBindlessIndex = Model.SkinnedPositionUavBindlessIndices[FrameIndex];
+            const uint32_t SlotToUse = (Model.bSkinningUpdatedThisFrame || Model.LastSkinnedSlot == UINT32_MAX)
+                ? FrameIndex
+                : Model.LastSkinnedSlot;
+            Model.SkinnedPositionBuffer = Model.SkinnedPositionBuffers[SlotToUse];
         }
         else
         {
-            Model.SkinnedPositionBuffer.Reset();
-            Model.SkinnedPositionSrvBindlessIndex = UINT32_MAX;
-            Model.SkinnedPositionUavBindlessIndex = UINT32_MAX;
+            Model.SkinnedPositionBuffer = {};
         }
 
-        if (!bUseSkinning || !Model.SkinnedPositionBuffer || !IsValidBindlessIndex(Model.SkinnedPositionUavBindlessIndex))
+        if (!bUseSkinning || !Model.SkinnedPositionBuffer || !IsValidBindlessIndex(Model.SkinnedPositionBuffer.UavBindlessIndex))
         {
             continue;
         }
@@ -783,11 +643,14 @@ void FRenderer::DispatchSkinning(FDX12CommandContext& CmdContext, const DirectX:
     for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
     {
         FSceneModelResource& Model = SceneModels[ModelIndex];
-        const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBindlessIndex) && Model.BoneMatrixCount > 0
-            && FrameIndex < Model.SkinnedPositionBuffers.size()
-            && FrameIndex < Model.SkinnedPositionUavBindlessIndices.size()
-            && FrameIndex < Model.SkinnedPositionStates.size();
+        const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) && Model.BoneMatrixCount > 0
+            && FrameIndex < Model.SkinnedPositionBuffers.size();
         if (!bUseSkinning || !SceneModelSkinningVisibility[ModelIndex])
+        {
+            continue;
+        }
+
+        if (!Model.bSkinningUpdatedThisFrame && Model.LastSkinnedSlot != UINT32_MAX)
         {
             continue;
         }
@@ -807,23 +670,22 @@ void FRenderer::DispatchSkinning(FDX12CommandContext& CmdContext, const DirectX:
             continue;
         }
 
-        if (Model.SkinnedPositionStates[FrameIndex] != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+        if (Model.SkinnedPositionBuffers[FrameIndex].State != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
         {
-            const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(SkinnedBuffer, Model.SkinnedPositionStates[FrameIndex], D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(SkinnedBuffer, Model.SkinnedPositionBuffers[FrameIndex].State, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             CommandList->ResourceBarrier(1, &Barrier);
-            Model.SkinnedPositionStates[FrameIndex] = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+            Model.SkinnedPositionBuffers[FrameIndex].State = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
         }
 
-        const uint32_t Constants[] =
+        const uint32_t Constants[kSkinningConstantsDwordCount] =
         {
             VertexCount,
-            Model.VertexBufferBindlessIndices[0],
-            Model.VertexBufferBindlessIndices[5],
-            Model.VertexBufferBindlessIndices[6],
-            Model.BoneMatrixBindlessIndex,
-            Model.SkinnedPositionUavBindlessIndex
+            Model.Geometry.VertexBuffers[0].SrvBindlessIndex,
+            Model.Geometry.VertexBuffers[5].SrvBindlessIndex,
+            Model.Geometry.VertexBuffers[6].SrvBindlessIndex,
+            Model.BoneMatrixBuffer.SrvBindlessIndex,
+            Model.SkinnedPositionBuffer.UavBindlessIndex
         };
-        static_assert(_countof(Constants) <= kSkinningConstantsDwordCount);
         CommandList->SetComputeRoot32BitConstants(0, _countof(Constants), Constants, 0);
 
         const uint32_t DispatchCount = (VertexCount + 63) / 64;
@@ -834,7 +696,8 @@ void FRenderer::DispatchSkinning(FDX12CommandContext& CmdContext, const DirectX:
 
         const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(SkinnedBuffer, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         CommandList->ResourceBarrier(1, &Barrier);
-        Model.SkinnedPositionStates[FrameIndex] = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        Model.SkinnedPositionBuffers[FrameIndex].State = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        Model.LastSkinnedSlot = FrameIndex;
     }
 }
 
@@ -848,13 +711,6 @@ bool FRenderer::PrepareGpuDrivenDrawData(FGpuDrivenPreparedData& OutData)
 
     IndirectDrawRanges.clear();
 
-    // Pre-compute pipeline keys to avoid redundant calculations during sorting
-    std::vector<uint32_t> PipelineKeys(SceneModels.size());
-    for (size_t Index = 0; Index < SceneModels.size(); ++Index)
-    {
-        PipelineKeys[Index] = RendererUtils::BuildPipelineKey(SceneModels[Index]);
-    }
-
     std::vector<uint32_t> SortedIndices(SceneModels.size());
     for (uint32_t Index = 0; Index < SortedIndices.size(); ++Index)
     {
@@ -863,25 +719,25 @@ bool FRenderer::PrepareGpuDrivenDrawData(FGpuDrivenPreparedData& OutData)
 
     std::sort(SortedIndices.begin(), SortedIndices.end(), [&](uint32_t A, uint32_t B)
     {
-        const uint32_t KeyA = PipelineKeys[A];
-        const uint32_t KeyB = PipelineKeys[B];
+        const uint32_t KeyA = SceneModels[A].PipelineKey;
+        const uint32_t KeyB = SceneModels[B].PipelineKey;
         if (KeyA != KeyB)
         {
             return KeyA < KeyB;
         }
         const std::array<uint32_t, 4> IndicesA =
         {
-            SceneModels[A].BaseColorBindlessIndex,
-            SceneModels[A].MetallicRoughnessBindlessIndex,
-            SceneModels[A].NormalBindlessIndex,
-            SceneModels[A].EmissiveBindlessIndex
+            SceneModels[A].BaseColor.SrvBindlessIndex,
+            SceneModels[A].MetallicRoughness.SrvBindlessIndex,
+            SceneModels[A].Normal.SrvBindlessIndex,
+            SceneModels[A].Emissive.SrvBindlessIndex
         };
         const std::array<uint32_t, 4> IndicesB =
         {
-            SceneModels[B].BaseColorBindlessIndex,
-            SceneModels[B].MetallicRoughnessBindlessIndex,
-            SceneModels[B].NormalBindlessIndex,
-            SceneModels[B].EmissiveBindlessIndex
+            SceneModels[B].BaseColor.SrvBindlessIndex,
+            SceneModels[B].MetallicRoughness.SrvBindlessIndex,
+            SceneModels[B].Normal.SrvBindlessIndex,
+            SceneModels[B].Emissive.SrvBindlessIndex
         };
         return IndicesA < IndicesB;
     });
@@ -899,26 +755,15 @@ bool FRenderer::PrepareGpuDrivenDrawData(FGpuDrivenPreparedData& OutData)
             continue;
         }
 
-        if (Model.bUseMeshletCulling && !Model.Meshlets.empty())
+        if (!Model.bUseMeshletCulling || Model.Meshlets.empty() || Model.MeshletBounds.empty())
         {
-            TotalCommandCount += Model.Meshlets.size();
+            continue;
         }
-        else
-        {
-            TotalCommandCount += 1;
-        }
+
+        TotalCommandCount += Model.Meshlets.size();
     }
 
-    OutData.Commands.clear();
-    OutData.Commands.reserve(TotalCommandCount);
-    OutData.MeshletDrawData.clear();
-    OutData.MeshletDrawData.reserve(TotalCommandCount);
-    OutData.Bounds.clear();
-    OutData.Bounds.reserve(TotalCommandCount);
-    OutData.ConeAxisCutoff.clear();
-    OutData.ConeAxisCutoff.reserve(TotalCommandCount);
-    OutData.ConeApex.clear();
-    OutData.ConeApex.reserve(TotalCommandCount);
+    OutData.Reserve(TotalCommandCount);
 
     const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferBase = GetSceneConstantBufferAddress();
     uint32_t GroupIndex = 0;
@@ -926,7 +771,7 @@ bool FRenderer::PrepareGpuDrivenDrawData(FGpuDrivenPreparedData& OutData)
     for (uint32_t SortedIndex : SortedIndices)
     {
         const FSceneModelResource& Model = SceneModels[SortedIndex];
-        const uint32_t PipelineKey = PipelineKeys[SortedIndex];
+        const uint32_t PipelineKey = Model.PipelineKey;
         if (Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
         {
             continue;
@@ -937,120 +782,75 @@ bool FRenderer::PrepareGpuDrivenDrawData(FGpuDrivenPreparedData& OutData)
             continue;
         }
 
+        if (!Model.bUseMeshletCulling || Model.Meshlets.empty() || Model.MeshletBounds.empty())
+        {
+            continue;
+        }
+
         const std::array<uint32_t, 10> MaterialIndices =
         {
-            Model.BaseColorBindlessIndex,
-            Model.MetallicRoughnessBindlessIndex,
-            Model.NormalBindlessIndex,
-            Model.EmissiveBindlessIndex,
-            Model.SheenColorBindlessIndex,
-            Model.SheenRoughnessBindlessIndex,
-            Model.ClearcoatBindlessIndex,
-            Model.ClearcoatRoughnessBindlessIndex,
-            Model.ClearcoatNormalBindlessIndex,
-            Model.AnisotropyBindlessIndex
+            Model.BaseColor.SrvBindlessIndex,
+            Model.MetallicRoughness.SrvBindlessIndex,
+            Model.Normal.SrvBindlessIndex,
+            Model.Emissive.SrvBindlessIndex,
+            Model.SheenColor.SrvBindlessIndex,
+            Model.SheenRoughness.SrvBindlessIndex,
+            Model.Clearcoat.SrvBindlessIndex,
+            Model.ClearcoatRoughness.SrvBindlessIndex,
+            Model.ClearcoatNormal.SrvBindlessIndex,
+            Model.Anisotropy.SrvBindlessIndex
         };
         if (IndirectDrawRanges.empty()
             || IndirectDrawRanges.back().PipelineKey != PipelineKey
             || IndirectDrawRanges.back().MaterialBindlessIndices != MaterialIndices)
         {
-            FIndirectDrawRange Range;
-            Range.Start = static_cast<uint32_t>(OutData.Commands.size());
-            Range.Count = 0;
-            Range.PipelineKey = PipelineKey;
-            Range.MaterialBindlessIndices = MaterialIndices;
-            if (!Model.Name.empty())
-            {
-                Range.Name.assign(Model.Name.begin(), Model.Name.end());
-            }
-            IndirectDrawRanges.push_back(Range);
+            IndirectDrawRanges.push_back(FIndirectDrawRange::Make(
+                static_cast<uint32_t>(OutData.Commands.size()),
+                PipelineKey, MaterialIndices, Model.Name));
         }
 
         const uint32_t RangeIndex = static_cast<uint32_t>(IndirectDrawRanges.size() - 1);
-        if (Model.bUseMeshletCulling && !Model.Meshlets.empty() && !Model.MeshletBounds.empty())
+        const DirectX::XMMATRIX World = DirectX::XMLoadFloat4x4(&Model.WorldMatrix);
+        const DirectX::XMMATRIX NormalMatrix = DirectX::XMMatrixTranspose(DirectX::XMMatrixInverse(nullptr, World));
+        const float ScaleX = std::sqrt(Model.WorldMatrix._11 * Model.WorldMatrix._11 + Model.WorldMatrix._21 * Model.WorldMatrix._21 + Model.WorldMatrix._31 * Model.WorldMatrix._31);
+        const float ScaleY = std::sqrt(Model.WorldMatrix._12 * Model.WorldMatrix._12 + Model.WorldMatrix._22 * Model.WorldMatrix._22 + Model.WorldMatrix._32 * Model.WorldMatrix._32);
+        const float ScaleZ = std::sqrt(Model.WorldMatrix._13 * Model.WorldMatrix._13 + Model.WorldMatrix._23 * Model.WorldMatrix._23 + Model.WorldMatrix._33 * Model.WorldMatrix._33);
+        const float ModelScale = (std::max)((std::max)(ScaleX, ScaleY), ScaleZ);
+
+        const size_t MeshletCount = (std::min)(Model.Meshlets.size(), Model.MeshletBounds.size());
+        for (size_t MeshletIndex = 0; MeshletIndex < MeshletCount; ++MeshletIndex)
         {
-            const DirectX::XMMATRIX World = DirectX::XMLoadFloat4x4(&Model.WorldMatrix);
-            const DirectX::XMMATRIX NormalMatrix = DirectX::XMMatrixTranspose(DirectX::XMMatrixInverse(nullptr, World));
-            const float ScaleX = std::sqrt(Model.WorldMatrix._11 * Model.WorldMatrix._11 + Model.WorldMatrix._21 * Model.WorldMatrix._21 + Model.WorldMatrix._31 * Model.WorldMatrix._31);
-            const float ScaleY = std::sqrt(Model.WorldMatrix._12 * Model.WorldMatrix._12 + Model.WorldMatrix._22 * Model.WorldMatrix._22 + Model.WorldMatrix._32 * Model.WorldMatrix._32);
-            const float ScaleZ = std::sqrt(Model.WorldMatrix._13 * Model.WorldMatrix._13 + Model.WorldMatrix._23 * Model.WorldMatrix._23 + Model.WorldMatrix._33 * Model.WorldMatrix._33);
-            const float ModelScale = (std::max)((std::max)(ScaleX, ScaleY), ScaleZ);
+            const FMesh::FMeshlet& Meshlet = Model.Meshlets[MeshletIndex];
+            const FMesh::FMeshletBounds& BoundsData = Model.MeshletBounds[MeshletIndex];
 
-            const size_t MeshletCount = (std::min)(Model.Meshlets.size(), Model.MeshletBounds.size());
-            for (size_t MeshletIndex = 0; MeshletIndex < MeshletCount; ++MeshletIndex)
-            {
-                const FMesh::FMeshlet& Meshlet = Model.Meshlets[MeshletIndex];
-                const FMesh::FMeshletBounds& BoundsData = Model.MeshletBounds[MeshletIndex];
+            const FIndirectDrawCommand Command = FIndirectDrawCommand::Make(
+                ConstantBufferBase + SceneConstantBufferStride * SortedIndex,
+                Meshlet.IndexOffset, Meshlet.IndexCount, SortedIndex);
+            const FMeshletDrawData DrawData = FMeshletDrawData::Make(
+                Meshlet.IndexOffset, Meshlet.IndexCount, RangeIndex, GroupIndex);
 
-                FIndirectDrawCommand Command;
-                Command.ConstantBufferAddress = ConstantBufferBase + SceneConstantBufferStride * SortedIndex;
-                Command.DrawIndexStart = Meshlet.IndexOffset;
-                Command.DrawArguments.VertexCountPerInstance = Meshlet.IndexCount;
-                Command.DrawArguments.InstanceCount = 1;
-                Command.DrawArguments.StartVertexLocation = 0;
-                Command.DrawArguments.StartInstanceLocation = SortedIndex;
-                OutData.Commands.push_back(Command);
+            const DirectX::XMVECTOR LocalCenter = DirectX::XMLoadFloat3(&BoundsData.Center);
+            const DirectX::XMVECTOR WorldCenter = DirectX::XMVector3TransformCoord(LocalCenter, World);
+            DirectX::XMFLOAT3 Center{};
+            DirectX::XMStoreFloat3(&Center, WorldCenter);
 
-                FMeshletDrawData DrawData;
-                DrawData.StartIndex = Meshlet.IndexOffset;
-                DrawData.IndexCount = Meshlet.IndexCount;
-                DrawData.RangeIndex = RangeIndex;
-                DrawData.GroupIndex = GroupIndex;
-                OutData.MeshletDrawData.push_back(DrawData);
+            const DirectX::XMVECTOR LocalAxis = DirectX::XMLoadFloat3(&BoundsData.ConeAxis);
+            const DirectX::XMVECTOR WorldAxis = DirectX::XMVector3Normalize(DirectX::XMVector3TransformNormal(LocalAxis, NormalMatrix));
+            DirectX::XMFLOAT3 Axis{};
+            DirectX::XMStoreFloat3(&Axis, WorldAxis);
 
-                const DirectX::XMVECTOR LocalCenter = DirectX::XMLoadFloat3(&BoundsData.Center);
-                const DirectX::XMVECTOR WorldCenter = DirectX::XMVector3TransformCoord(LocalCenter, World);
-                DirectX::XMFLOAT3 Center{};
-                DirectX::XMStoreFloat3(&Center, WorldCenter);
-                const float Radius = BoundsData.Radius * ModelScale;
-                OutData.Bounds.emplace_back(Center.x, Center.y, Center.z, Radius);
+            const DirectX::XMVECTOR LocalApex = DirectX::XMLoadFloat3(&BoundsData.ConeApex);
+            const DirectX::XMVECTOR WorldApex = DirectX::XMVector3TransformCoord(LocalApex, World);
+            DirectX::XMFLOAT3 Apex{};
+            DirectX::XMStoreFloat3(&Apex, WorldApex);
 
-                const DirectX::XMVECTOR LocalAxis = DirectX::XMLoadFloat3(&BoundsData.ConeAxis);
-                const DirectX::XMVECTOR WorldAxis = DirectX::XMVector3Normalize(DirectX::XMVector3TransformNormal(LocalAxis, NormalMatrix));
-                DirectX::XMFLOAT3 Axis{};
-                DirectX::XMStoreFloat3(&Axis, WorldAxis);
-                const float ConeCutoff = Model.bDoubleSided ? -1.0f : BoundsData.ConeCutoff;
-                OutData.ConeAxisCutoff.emplace_back(Axis.x, Axis.y, Axis.z, ConeCutoff);
+            OutData.PushDraw(
+                Command,
+                DrawData,
+                { Center.x, Center.y, Center.z, BoundsData.Radius * ModelScale },
+                { Axis.x, Axis.y, Axis.z, Model.bDoubleSided ? -1.0f : BoundsData.ConeCutoff },
+                { Apex.x, Apex.y, Apex.z, 0.0f });
 
-                const DirectX::XMVECTOR LocalApex = DirectX::XMLoadFloat3(&BoundsData.ConeApex);
-                const DirectX::XMVECTOR WorldApex = DirectX::XMVector3TransformCoord(LocalApex, World);
-                DirectX::XMFLOAT3 Apex{};
-                DirectX::XMStoreFloat3(&Apex, WorldApex);
-                OutData.ConeApex.emplace_back(Apex.x, Apex.y, Apex.z, 0.0f);
-
-                IndirectDrawRanges.back().Count += 1;
-            }
-        }
-        else
-        {
-            FIndirectDrawCommand Command;
-            Command.ConstantBufferAddress = ConstantBufferBase + SceneConstantBufferStride * SortedIndex;
-            Command.DrawIndexStart = Model.DrawIndexStart;
-            Command.DrawArguments.VertexCountPerInstance = Model.DrawIndexCount;
-            Command.DrawArguments.InstanceCount = 1;
-            Command.DrawArguments.StartVertexLocation = 0;
-            Command.DrawArguments.StartInstanceLocation = SortedIndex;
-            OutData.Commands.push_back(Command);
-
-            FMeshletDrawData DrawData;
-            DrawData.StartIndex = Model.DrawIndexStart;
-            DrawData.IndexCount = Model.DrawIndexCount;
-            DrawData.RangeIndex = RangeIndex;
-            DrawData.GroupIndex = GroupIndex;
-            OutData.MeshletDrawData.push_back(DrawData);
-
-            const DirectX::XMFLOAT3 Center{
-                (Model.BoundsMin.x + Model.BoundsMax.x) * 0.5f,
-                (Model.BoundsMin.y + Model.BoundsMax.y) * 0.5f,
-                (Model.BoundsMin.z + Model.BoundsMax.z) * 0.5f
-            };
-            const float Radius = std::sqrt(
-                (Model.BoundsMax.x - Center.x) * (Model.BoundsMax.x - Center.x) +
-                (Model.BoundsMax.y - Center.y) * (Model.BoundsMax.y - Center.y) +
-                (Model.BoundsMax.z - Center.z) * (Model.BoundsMax.z - Center.z));
-            OutData.Bounds.emplace_back(Center.x, Center.y, Center.z, Radius);
-            OutData.ConeAxisCutoff.emplace_back(0.0f, 0.0f, 1.0f, -1.0f);
-            OutData.ConeApex.emplace_back(0.0f, 0.0f, 0.0f, 0.0f);
             IndirectDrawRanges.back().Count += 1;
         }
 
@@ -1140,70 +940,39 @@ bool FRenderer::CreateSharedGpuDrivenBuffers(FDX12Device* Device, const FGpuDriv
     return true;
 }
 
+std::vector<FUploadBuffer> FRenderer::PrepareIndirectCommandUploads(FDX12Device* Device, const std::vector<FIndirectDrawCommand>& Commands)
+{
+    const uint64_t BufferSize = sizeof(FIndirectDrawCommand) * Commands.size();
+    std::vector<FIndirectDrawCommand> FrameCommands = Commands;
+    std::vector<FUploadBuffer> Uploads(GetFramesInFlight());
+    for (uint32_t FrameIndex = 0; FrameIndex < GetFramesInFlight(); ++FrameIndex)
+    {
+        const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferBase = SceneConstantBuffers[FrameIndex].Get()
+            ? SceneConstantBuffers[FrameIndex].GetGPUVirtualAddress()
+            : 0;
+        for (FIndirectDrawCommand& Cmd : FrameCommands)
+        {
+            Cmd.ConstantBufferAddress =
+                ConstantBufferBase + SceneConstantBufferStride * Cmd.DrawArguments.StartInstanceLocation;
+        }
+        CreateUploadBuffer(Device,
+            L"IndirectCommandUpload_" + std::to_wstring(FrameIndex),
+            BufferSize,
+            Uploads[FrameIndex],
+            FrameCommands.data());
+    }
+    return Uploads;
+}
+
 bool FRenderer::UploadGpuDrivenBuffers(FDX12Device* Device, const FGpuDrivenPreparedData& Data)
 {
-    const bool bHasLegacyIndirectData =
-        !Data.Commands.empty() &&
-        GpuDrivenCullingState.GetIndirectCommandTemplateBuffer(0) != nullptr;
-    const bool bHasLegacySharedData = GpuDrivenCullingState.HasSharedInputs();
-
     const uint64_t CommandBufferSize = sizeof(FIndirectDrawCommand) * Data.Commands.size();
-
-    D3D12_HEAP_PROPERTIES UploadHeap = {};
-    UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
-    UploadHeap.CreationNodeMask = 1;
-    UploadHeap.VisibleNodeMask = 1;
-
-    D3D12_RESOURCE_DESC UploadDesc = {};
-    UploadDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    UploadDesc.Width = std::max<uint64_t>(CommandBufferSize, 4ull);
-    UploadDesc.Height = 1;
-    UploadDesc.DepthOrArraySize = 1;
-    UploadDesc.MipLevels = 1;
-    UploadDesc.Format = DXGI_FORMAT_UNKNOWN;
-    UploadDesc.SampleDesc.Count = 1;
-    UploadDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    UploadDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
-
-    const D3D12_RANGE EmptyRange = { 0, 0 };
-
-    // Create upload buffers for commands
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> IndirectCommandUploads;
-    IndirectCommandUploads.resize(GetFramesInFlight());
-
-    if (bHasLegacyIndirectData)
+    std::vector<FUploadBuffer> IndirectCommandUploads;
+    if (!Data.Commands.empty() && GpuDrivenCullingState.GetIndirectCommandTemplateBuffer(0) != nullptr)
     {
-        for (uint32_t FrameIndex = 0; FrameIndex < GetFramesInFlight(); ++FrameIndex)
-        {
-            HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-                &UploadHeap,
-                D3D12_HEAP_FLAG_NONE,
-                &UploadDesc,
-                D3D12_RESOURCE_STATE_GENERIC_READ,
-                nullptr,
-                IID_PPV_ARGS(IndirectCommandUploads[FrameIndex].GetAddressOf())));
-
-            if (IndirectCommandUploads[FrameIndex])
-            {
-                void* UploadData = nullptr;
-                HR_CHECK(IndirectCommandUploads[FrameIndex]->Map(0, &EmptyRange, &UploadData));
-                std::vector<FIndirectDrawCommand> FrameCommands = Data.Commands;
-                const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferBase = SceneConstantBuffers[FrameIndex]
-                    ? SceneConstantBuffers[FrameIndex]->GetGPUVirtualAddress()
-                    : 0;
-                for (uint32_t CommandIndex = 0; CommandIndex < FrameCommands.size(); ++CommandIndex)
-                {
-                    const uint32_t InstanceIndex = FrameCommands[CommandIndex].DrawArguments.StartInstanceLocation;
-                    FrameCommands[CommandIndex].ConstantBufferAddress =
-                        ConstantBufferBase + SceneConstantBufferStride * InstanceIndex;
-                }
-                std::memcpy(UploadData, FrameCommands.data(), CommandBufferSize);
-                IndirectCommandUploads[FrameIndex]->Unmap(0, nullptr);
-            }
-        }
+        IndirectCommandUploads = PrepareIndirectCommandUploads(Device, Data.Commands);
     }
 
-    // Create command list for upload
     ComPtr<ID3D12CommandAllocator> UploadAllocator;
     ComPtr<ID3D12GraphicsCommandList> UploadList;
     HR_CHECK(Device->GetDevice()->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(UploadAllocator.GetAddressOf())));
@@ -1213,68 +982,22 @@ bool FRenderer::UploadGpuDrivenBuffers(FDX12Device* Device, const FGpuDrivenPrep
     // Pre-copy barriers
     std::vector<D3D12_RESOURCE_BARRIER> PreCopyBarriers;
     PreCopyBarriers.reserve(GetFramesInFlight() * 2 + GpuDrivenSharedBufferCount);
-
-    if (bHasLegacyIndirectData)
-    {
-        for (uint32_t FrameIndex = 0; FrameIndex < GetFramesInFlight(); ++FrameIndex)
-        {
-            ID3D12Resource* TemplateBuffer = GpuDrivenCullingState.GetIndirectCommandTemplateBuffer(FrameIndex);
-            PreCopyBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(TemplateBuffer, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST));
-        }
-    }
-
-    if (bHasLegacySharedData)
-    {
-        GpuDrivenCullingState.AddSharedInputUploadPreCopyBarriers(PreCopyBarriers);
-    }
-
+    GpuDrivenCullingState.AddInitialUploadPreCopyBarriers(PreCopyBarriers, GetFramesInFlight());
     GpuDebugState.AddUploadPreCopyBarriers(PreCopyBarriers);
-
     if (!PreCopyBarriers.empty())
     {
         UploadList->ResourceBarrier(static_cast<UINT>(PreCopyBarriers.size()), PreCopyBarriers.data());
     }
 
-    // Copy operations
-    if (bHasLegacyIndirectData)
-    {
-        for (uint32_t FrameIndex = 0; FrameIndex < GetFramesInFlight(); ++FrameIndex)
-        {
-            ID3D12Resource* TemplateBuffer = GpuDrivenCullingState.GetIndirectCommandTemplateBuffer(FrameIndex);
-            UploadList->CopyBufferRegion(
-                TemplateBuffer,
-                0,
-                IndirectCommandUploads[FrameIndex].Get(),
-                0,
-                CommandBufferSize);
-        }
-    }
-    if (bHasLegacySharedData)
-    {
-        GpuDrivenCullingState.CopySharedInputData(UploadList.Get());
-    }
+    // Copy
+    GpuDrivenCullingState.CopyInitialData(UploadList.Get(), IndirectCommandUploads, CommandBufferSize);
     GpuDebugState.UploadInitialData(UploadList.Get());
 
     // Post-copy barriers
     std::vector<D3D12_RESOURCE_BARRIER> PostCopyBarriers;
     PostCopyBarriers.reserve(GetFramesInFlight() * 2 + GpuDrivenSharedBufferCount);
-
-    if (bHasLegacyIndirectData)
-    {
-        for (uint32_t FrameIndex = 0; FrameIndex < GetFramesInFlight(); ++FrameIndex)
-        {
-            ID3D12Resource* TemplateBuffer = GpuDrivenCullingState.GetIndirectCommandTemplateBuffer(FrameIndex);
-            PostCopyBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(TemplateBuffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
-        }
-    }
-
-    if (bHasLegacySharedData)
-    {
-        GpuDrivenCullingState.AddSharedInputUploadPostCopyBarriers(PostCopyBarriers);
-    }
-
+    GpuDrivenCullingState.AddInitialUploadPostCopyBarriers(PostCopyBarriers, GetFramesInFlight());
     GpuDebugState.AddUploadPostCopyBarriers(PostCopyBarriers);
-
     if (!PostCopyBarriers.empty())
     {
         UploadList->ResourceBarrier(static_cast<UINT>(PostCopyBarriers.size()), PostCopyBarriers.data());
@@ -1285,8 +1008,7 @@ bool FRenderer::UploadGpuDrivenBuffers(FDX12Device* Device, const FGpuDrivenPrep
     Device->GetGraphicsQueue()->ExecuteCommandLists(1, Lists);
     Device->GetGraphicsQueue()->Flush();
 
-    GpuDrivenCullingState.ResetCullingStatesToCommon(GetFramesInFlight());
-    GpuDrivenCullingState.ResetVisibilityStatesToCommon(GetFramesInFlight());
+    GpuDrivenCullingState.ResetInitialUploadStates(GetFramesInFlight());
     GpuDebugState.SetUploadCompletedStates();
 
     return true;

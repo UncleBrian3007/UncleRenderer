@@ -37,6 +37,86 @@ bool ShouldRasterizeClusterSW(ClusterDagClusterData cluster)
         || ComputeProjectedObjectLengthPixels(cluster.Bounds.xyz, maxEdgeLength) < ClusterDAGSwRasterThresholdPixels;
 }
 
+uint GetClusterDagGroupPageIndex(ClusterDagGroupData group)
+{
+    return (group.Flags >> kClusterDagGroupPageIndexShift) & kClusterDagGroupPageIndexMask;
+}
+
+bool IsClusterDagPageResident(uint pageIndex, StructuredBuffer<ClusterDagPageTableEntry> PageTable)
+{
+    const ClusterDagPageTableEntry entry = PageTable[pageIndex];
+    return (entry.Flags & kClusterDagPageResidentFlag) != 0u;
+}
+
+void RecordClusterDagStreamingRequest(uint debugPrintStatsIndex, bool overflow)
+{
+    if (DebugPrintEnabled != 0u && debugPrintStatsIndex != 0xffffffffu)
+    {
+        RWByteAddressBuffer DebugPrintStats = ResourceDescriptorHeap[debugPrintStatsIndex];
+        DebugPrintStats.InterlockedAdd(4u * kClusterDagStreamingRequestStatIndex, overflow ? 0u : 1u);
+        DebugPrintStats.InterlockedAdd(4u * kClusterDagStreamingFallbackStatIndex, 1u);
+        if (overflow)
+        {
+            DebugPrintStats.InterlockedAdd(4u * kClusterDagStreamingRequestOverflowStatIndex, 1u);
+        }
+    }
+}
+
+void RequestClusterDagStreamingPage(
+    uint streamingResourceId,
+    uint pageIndex,
+    uint priority,
+    uint requestCapacity,
+    RWStructuredBuffer<ClusterDagStreamingRequest> StreamingRequests,
+    uint debugPrintStatsIndex)
+{
+    uint requestIndex = 0u;
+    InterlockedAdd(StreamingRequests[0].StreamingResourceId, 1u, requestIndex);
+    const bool overflow = requestIndex >= requestCapacity;
+    RecordClusterDagStreamingRequest(debugPrintStatsIndex, overflow);
+    if (overflow)
+    {
+        return;
+    }
+
+    ClusterDagStreamingRequest request;
+    request.StreamingResourceId = streamingResourceId;
+    request.PageIndex = pageIndex;
+    request.Priority = priority;
+    request.Flags = 0u;
+    StreamingRequests[requestIndex + 1u] = request;
+}
+
+bool ShouldRefineClusterDagStreamingPage(
+    bool streamingEnabled,
+    ClusterDagGroupData nextGroup,
+    uint streamingResourceId,
+    uint requestCapacity,
+    StructuredBuffer<ClusterDagPageTableEntry> PageTable,
+    RWStructuredBuffer<ClusterDagStreamingRequest> StreamingRequests,
+    uint debugPrintStatsIndex)
+{
+    if (!streamingEnabled)
+    {
+        return true;
+    }
+
+    const uint pageIndex = GetClusterDagGroupPageIndex(nextGroup);
+    if (pageIndex == kClusterDagRootPageIndex || IsClusterDagPageResident(pageIndex, PageTable))
+    {
+        return true;
+    }
+
+    RequestClusterDagStreamingPage(
+        streamingResourceId,
+        pageIndex,
+        max(asuint(nextGroup.ParentLODError), 1u),
+        requestCapacity,
+        StreamingRequests,
+        debugPrintStatsIndex);
+    return false;
+}
+
 uint ReserveClusterDagVisibleEntry(
     uint clusterIndex,
     uint drawDataIndex,

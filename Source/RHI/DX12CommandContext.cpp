@@ -205,57 +205,6 @@ void FDX12CommandContext::TransitionResourceEx(ID3D12Resource* Resource, D3D12_R
         return;
     }
 
-    const bool bUseEnhanced = Device && Device->SupportsEnhancedBarriers();
-    ID3D12GraphicsCommandList7* CommandListV7 = bUseEnhanced ? GetCommandList7() : nullptr;
-
-#if defined(_DEBUG)
-    if (bUseEnhanced && !CommandListV7)
-    {
-        assert(false && "Enhanced barriers supported but ID3D12GraphicsCommandList7 query failed.");
-    }
-#endif
-
-    if (CommandListV7)
-    {
-        const D3D12_RESOURCE_DESC Desc = Resource->GetDesc();
-        if (Desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
-        {
-            D3D12_BUFFER_BARRIER BufferBarrier = {};
-            BufferBarrier.SyncBefore = DX12MapStateToBarrierSync(Before);
-            BufferBarrier.SyncAfter = DX12MapStateToBarrierSync(After);
-            BufferBarrier.AccessBefore = DX12MapStateToBarrierAccess(Before);
-            BufferBarrier.AccessAfter = DX12MapStateToBarrierAccess(After);
-            BufferBarrier.pResource = Resource;
-            BufferBarrier.Offset = 0;
-            BufferBarrier.Size = UINT64_MAX;
-
-            D3D12_BARRIER_GROUP Group = {};
-            Group.Type = D3D12_BARRIER_TYPE_BUFFER;
-            Group.NumBarriers = 1;
-            Group.pBufferBarriers = &BufferBarrier;
-            CommandListV7->Barrier(1, &Group);
-            return;
-        }
-
-        D3D12_TEXTURE_BARRIER TextureBarrier = {};
-        TextureBarrier.SyncBefore = DX12MapStateToBarrierSync(Before);
-        TextureBarrier.SyncAfter = DX12MapStateToBarrierSync(After);
-        TextureBarrier.AccessBefore = DX12MapStateToBarrierAccess(Before);
-        TextureBarrier.AccessAfter = DX12MapStateToBarrierAccess(After);
-        TextureBarrier.LayoutBefore = DX12MapStateToTextureLayout(Before);
-        TextureBarrier.LayoutAfter = DX12MapStateToTextureLayout(After);
-        TextureBarrier.pResource = Resource;
-        TextureBarrier.Subresources = DX12MakeTextureBarrierRange(Resource, Subresource);
-        TextureBarrier.Flags = D3D12_TEXTURE_BARRIER_FLAG_NONE;
-
-        D3D12_BARRIER_GROUP Group = {};
-        Group.Type = D3D12_BARRIER_TYPE_TEXTURE;
-        Group.NumBarriers = 1;
-        Group.pTextureBarriers = &TextureBarrier;
-        CommandListV7->Barrier(1, &Group);
-        return;
-    }
-
     D3D12_RESOURCE_BARRIER Barrier = {};
     Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     Barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
@@ -274,50 +223,6 @@ void FDX12CommandContext::UavBarrierEx(ID3D12Resource* Resource)
         return;
     }
 
-    const bool bUseEnhanced = Device && Device->SupportsEnhancedBarriers();
-    ID3D12GraphicsCommandList7* CommandListV7 = bUseEnhanced ? GetCommandList7() : nullptr;
-
-    if (CommandListV7)
-    {
-        const D3D12_RESOURCE_DESC Desc = Resource->GetDesc();
-        if (Desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
-        {
-            D3D12_BUFFER_BARRIER BufferBarrier = {};
-            BufferBarrier.SyncBefore = D3D12_BARRIER_SYNC_ALL;
-            BufferBarrier.SyncAfter = D3D12_BARRIER_SYNC_ALL;
-            BufferBarrier.AccessBefore = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS;
-            BufferBarrier.AccessAfter = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS;
-            BufferBarrier.pResource = Resource;
-            BufferBarrier.Offset = 0;
-            BufferBarrier.Size = UINT64_MAX;
-
-            D3D12_BARRIER_GROUP Group = {};
-            Group.Type = D3D12_BARRIER_TYPE_BUFFER;
-            Group.NumBarriers = 1;
-            Group.pBufferBarriers = &BufferBarrier;
-            CommandListV7->Barrier(1, &Group);
-            return;
-        }
-
-        D3D12_TEXTURE_BARRIER TextureBarrier = {};
-        TextureBarrier.SyncBefore = D3D12_BARRIER_SYNC_ALL;
-        TextureBarrier.SyncAfter = D3D12_BARRIER_SYNC_ALL;
-        TextureBarrier.AccessBefore = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS;
-        TextureBarrier.AccessAfter = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS;
-        TextureBarrier.LayoutBefore = D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS;
-        TextureBarrier.LayoutAfter = D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS;
-        TextureBarrier.pResource = Resource;
-        TextureBarrier.Subresources = DX12MakeTextureBarrierRange(Resource, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
-        TextureBarrier.Flags = D3D12_TEXTURE_BARRIER_FLAG_NONE;
-
-        D3D12_BARRIER_GROUP Group = {};
-        Group.Type = D3D12_BARRIER_TYPE_TEXTURE;
-        Group.NumBarriers = 1;
-        Group.pTextureBarriers = &TextureBarrier;
-        CommandListV7->Barrier(1, &Group);
-        return;
-    }
-
     D3D12_RESOURCE_BARRIER Barrier = {};
     Barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
     Barrier.UAV.pResource = Resource;
@@ -331,27 +236,7 @@ void FDX12CommandContext::TransitionResources(const std::vector<D3D12_RESOURCE_B
         return;
     }
 
-    if (!Device || !Device->SupportsEnhancedBarriers())
-    {
-        CommandList->ResourceBarrier(static_cast<UINT>(Barriers.size()), Barriers.data());
-        return;
-    }
-
-    for (const D3D12_RESOURCE_BARRIER& Barrier : Barriers)
-    {
-        if (Barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_TRANSITION)
-        {
-            TransitionResourceEx(
-                Barrier.Transition.pResource,
-                Barrier.Transition.StateBefore,
-                Barrier.Transition.StateAfter,
-                Barrier.Transition.Subresource);
-        }
-        else if (Barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_UAV)
-        {
-            UavBarrierEx(Barrier.UAV.pResource);
-        }
-    }
+    CommandList->ResourceBarrier(static_cast<UINT>(Barriers.size()), Barriers.data());
 }
 
 void FDX12CommandContext::SetRenderTarget(const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle, const D3D12_CPU_DESCRIPTOR_HANDLE* DsvHandle)

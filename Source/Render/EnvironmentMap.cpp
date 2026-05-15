@@ -20,32 +20,150 @@ namespace
 {
     constexpr uint32_t kEnvBuildRootConstantCount = 56; // 8 params + 12 mips * 4 UAV indices
 
-    D3D12_GPU_DESCRIPTOR_HANDLE GetBindlessGpuHandle(FDX12Device* Device, uint32_t Index)
+    void EmitTransitionBarrier(
+        ID3D12GraphicsCommandList* Cmd,
+        ID3D12Resource* Resource,
+        D3D12_RESOURCE_STATES Before,
+        D3D12_RESOURCE_STATES After,
+        UINT Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES)
     {
-        D3D12_GPU_DESCRIPTOR_HANDLE Handle{};
-        if (!Device || !Device->GetBindlessDescriptorHeap())
-        {
-            return Handle;
-        }
-
-        const UINT Stride = Device->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-        Handle = Device->GetBindlessDescriptorHeap()->GetGPUDescriptorHandleForHeapStart();
-        Handle.ptr += static_cast<UINT64>(Index) * Stride;
-        return Handle;
+        if (Before == After) { return; }
+        const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(Resource, Before, After, Subresource);
+        Cmd->ResourceBarrier(1, &Barrier);
     }
 
-    D3D12_CPU_DESCRIPTOR_HANDLE GetBindlessCpuClearHandle(FDX12Device* Device, uint32_t Index)
+    void EmitTransitionMipBarrier(
+        ID3D12GraphicsCommandList* Cmd,
+        ID3D12Resource* Resource,
+        D3D12_RESOURCE_STATES Before,
+        D3D12_RESOURCE_STATES After,
+        uint16_t MipLevel)
     {
-        D3D12_CPU_DESCRIPTOR_HANDLE Handle{};
-        if (!Device || !Device->GetBindlessCpuDescriptorHeap())
-        {
-            return Handle;
-        }
+        const D3D12_RESOURCE_DESC Desc = Resource->GetDesc();
+        const UINT MipCount = (std::max)(1u, static_cast<UINT>(Desc.MipLevels));
+        const UINT ArraySize = (Desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D)
+            ? 1u
+            : (std::max)(1u, static_cast<UINT>(Desc.DepthOrArraySize));
 
-        const UINT Stride = Device->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-        Handle = Device->GetBindlessCpuDescriptorHeap()->GetCPUDescriptorHandleForHeapStart();
-        Handle.ptr += static_cast<SIZE_T>(Index) * Stride;
-        return Handle;
+        for (UINT ArraySlice = 0; ArraySlice < ArraySize; ++ArraySlice)
+        {
+            EmitTransitionBarrier(Cmd, Resource, Before, After,
+                D3D12CalcSubresource(MipLevel, ArraySlice, 0, MipCount, ArraySize));
+        }
+    }
+
+    void EmitUavBarrier(ID3D12GraphicsCommandList* Cmd, ID3D12Resource* Resource)
+    {
+        const auto Barrier = CD3DX12_RESOURCE_BARRIER::UAV(Resource);
+        Cmd->ResourceBarrier(1, &Barrier);
+    }
+
+    void PassEquirectToCube(
+        ID3D12GraphicsCommandList* Cmd,
+        ID3D12PipelineState* Pipeline,
+        FDX12Device* Device,
+        const FBindlessCubeTexture& RawCube,
+        uint32_t EquirectSrvIndex,
+        uint32_t CubeResolution)
+    {
+        FScopedPixEvent Event(Cmd, L"EnvEquirectToCube");
+        Cmd->SetPipelineState(Pipeline);
+
+        std::array<uint32_t, kEnvBuildRootConstantCount> RootConstants = {};
+        RootConstants[0] = EquirectSrvIndex;
+        RootConstants[1] = RawCube.MipUavIndices[0];
+        RootConstants[2] = CubeResolution;
+        RootConstants[3] = CubeResolution;
+        RootConstants[4] = 0;
+        RootConstants[5] = 6;
+        RootConstants[6] = Device->GetLinearWrapSamplerIndex();
+        RootConstants[7] = 0;
+        Cmd->SetComputeRoot32BitConstants(0, 8, RootConstants.data(), 0);
+
+        const uint32_t GroupCount = (CubeResolution + 7u) / 8u;
+        Cmd->Dispatch(GroupCount, GroupCount, 6);
+        EmitUavBarrier(Cmd, RawCube.Get());
+    }
+
+    void PassCubeMipGen(
+        ID3D12GraphicsCommandList* Cmd,
+        ID3D12PipelineState* Pipeline,
+        FDX12Device* Device,
+        const FBindlessCubeTexture& RawCube,
+        ID3D12Resource* SpdCounterResource,
+        uint32_t SpdCounterUavIndex,
+        D3D12_GPU_DESCRIPTOR_HANDLE SpdCounterGpuHandle,
+        D3D12_CPU_DESCRIPTOR_HANDLE SpdCounterCpuClearHandle,
+        uint32_t CubeResolution,
+        uint32_t GeneratedMipCount,
+        uint16_t MipLevels)
+    {
+        Cmd->SetPipelineState(Pipeline);
+        FScopedPixEvent Event(Cmd, L"EnvCubeMipGenSPD");
+
+        const uint32_t ClearValues[4] = { 0u, 0u, 0u, 0u };
+        Cmd->ClearUnorderedAccessViewUint(SpdCounterGpuHandle, SpdCounterCpuClearHandle, SpdCounterResource, ClearValues, 0, nullptr);
+        EmitUavBarrier(Cmd, SpdCounterResource);
+
+        const uint32_t SpdDispatchX = (CubeResolution + 63u) / 64u;
+        const uint32_t SpdDispatchY = (CubeResolution + 63u) / 64u;
+        const uint32_t FallbackRawUav = RawCube.MipUavIndices.back();
+
+        std::array<uint32_t, kEnvBuildRootConstantCount> RootConstants = {};
+        RootConstants[0] = RawCube.SrvBindlessIndex;
+        RootConstants[1] = SpdCounterUavIndex;
+        RootConstants[2] = CubeResolution;
+        RootConstants[3] = CubeResolution;
+        RootConstants[4] = GeneratedMipCount;
+        RootConstants[5] = SpdDispatchX * SpdDispatchY;
+        RootConstants[6] = 6u;
+        RootConstants[7] = Device->GetLinearClampSamplerIndex();
+        for (uint32_t Mip = 0; Mip < 12; ++Mip)
+        {
+            const size_t RawMipIndex = static_cast<size_t>(Mip) + 1u;
+            RootConstants[8 + Mip * 4] = (RawMipIndex < RawCube.MipUavIndices.size()) ? RawCube.MipUavIndices[RawMipIndex] : FallbackRawUav;
+        }
+        Cmd->SetComputeRoot32BitConstants(0, kEnvBuildRootConstantCount, RootConstants.data(), 0);
+        Cmd->Dispatch(SpdDispatchX, SpdDispatchY, 6);
+        EmitUavBarrier(Cmd, RawCube.Get());
+
+        for (uint16_t Mip = 1; Mip < MipLevels; ++Mip)
+        {
+            EmitTransitionMipBarrier(Cmd, RawCube.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, Mip);
+        }
+    }
+
+    void PassSpecularPrefilter(
+        ID3D12GraphicsCommandList* Cmd,
+        ID3D12PipelineState* Pipeline,
+        FDX12Device* Device,
+        const FBindlessCubeTexture& PrefilteredCube,
+        uint32_t RawCubeSrvIndex,
+        uint32_t CubeResolution,
+        uint16_t MipLevels,
+        uint32_t SampleCount)
+    {
+        FScopedPixEvent Event(Cmd, L"EnvSpecularPrefilter");
+        Cmd->SetPipelineState(Pipeline);
+
+        std::array<uint32_t, kEnvBuildRootConstantCount> RootConstants = {};
+        for (uint16_t Mip = 0; Mip < MipLevels; ++Mip)
+        {
+            const uint32_t MipResolution = (std::max)(1u, CubeResolution >> Mip);
+            RootConstants[0] = RawCubeSrvIndex;
+            RootConstants[1] = PrefilteredCube.MipUavIndices[Mip];
+            RootConstants[2] = MipResolution;
+            RootConstants[3] = MipResolution;
+            RootConstants[4] = Mip;
+            RootConstants[5] = MipLevels;
+            RootConstants[6] = (std::max)(1u, SampleCount);
+            RootConstants[7] = Device->GetLinearClampSamplerIndex();
+            Cmd->SetComputeRoot32BitConstants(0, 8, RootConstants.data(), 0);
+
+            const uint32_t MipGroupCount = (MipResolution + 7u) / 8u;
+            Cmd->Dispatch(MipGroupCount, MipGroupCount, 6);
+            EmitUavBarrier(Cmd, PrefilteredCube.Get());
+        }
     }
 }
 
@@ -117,16 +235,15 @@ bool FEnvironmentMap::InitializeResources(FRenderer& Owner, FDX12Device* Device,
         return false;
     }
 
-    if (!Owner.TextureLoader->LoadOrDefault(L"Assets/Textures/PreintegratedGF.dds", BrdfLutTexture))
+    if (!Owner.TextureLoader->LoadOrDefault(L"Assets/Textures/PreintegratedGF.dds", BrdfLutTexture.Resource))
     {
         LogError(Prefix + " renderer initialization failed: BRDF LUT texture loading failed");
         return false;
     }
 
-    if (BrdfLutTexture)
-    {
-        BrdfLutTexture->SetName(L"BrdfLut");
-    }
+    BrdfLutTexture->SetName(L"BrdfLut");
+    BrdfLutTexture.SrvBindlessIndex = Device->CreateBindlessSrv(BrdfLutTexture.Get(),
+        CD3DX12_SHADER_RESOURCE_VIEW_DESC::Tex2D(BrdfLutTexture->GetDesc().Format, BrdfLutTexture->GetDesc().MipLevels));
 
     return true;
 }
@@ -168,49 +285,21 @@ bool FEnvironmentMap::BuildFromEquirect(FRenderer& Owner, FDX12Device* Device, F
         return false;
     }
 
-    Microsoft::WRL::ComPtr<ID3D12Resource> RawCube;
-    Microsoft::WRL::ComPtr<ID3D12Resource> PrefilteredCube;
-    if (!CreateCubeTexture(Device, L"EnvironmentRawCube", CubeResolution, MipLevels, EnvironmentBuildFormat, RawCube)
-        || !CreateCubeTexture(Device, L"EnvironmentSpecularCube", CubeResolution, MipLevels, EnvironmentBuildFormat, PrefilteredCube))
+    FBindlessCubeTexture RawCube;
+    FBindlessCubeTexture PrefilteredCube;
+    if (!CreateBindlessCubeTexture(Device, L"EnvironmentRawCube", CubeResolution, MipLevels, EnvironmentBuildFormat, RawCube)
+        || !CreateBindlessCubeTexture(Device, L"EnvironmentSpecularCube", CubeResolution, MipLevels, EnvironmentBuildFormat, PrefilteredCube))
     {
         LogWarning("Failed to create environment cube resources with selected build format. Falling back to DDS PMREM.");
         return false;
     }
 
-    const auto EquirectSrvDesc = CD3DX12_SHADER_RESOURCE_VIEW_DESC::Tex2D(DXGI_FORMAT_R32G32B32A32_FLOAT, 1);
-    const auto CubeSrvDesc = CD3DX12_SHADER_RESOURCE_VIEW_DESC::TexCube(EnvironmentBuildFormat, MipLevels);
-
-    std::vector<D3D12_UNORDERED_ACCESS_VIEW_DESC> RawUavs(MipLevels);
-    std::vector<D3D12_UNORDERED_ACCESS_VIEW_DESC> PrefilteredUavs(MipLevels);
-    for (uint16_t Mip = 0; Mip < MipLevels; ++Mip)
-    {
-        RawUavs[Mip] = CD3DX12_UNORDERED_ACCESS_VIEW_DESC::Tex2DArray(EnvironmentBuildFormat, 6, 0, Mip);
-        PrefilteredUavs[Mip] = RawUavs[Mip];
-    }
-
-    const uint32_t EquirectSrvIndex = Device->CreateBindlessSrv(EquirectTexture.Get(), EquirectSrvDesc);
-    const uint32_t RawCubeSrvIndex = Device->CreateBindlessSrv(RawCube.Get(), CubeSrvDesc);
-    if (EquirectSrvIndex == UINT32_MAX || RawCubeSrvIndex == UINT32_MAX)
+    const uint32_t EquirectSrvIndex = Device->CreateBindlessSrv(EquirectTexture.Get(),
+        CD3DX12_SHADER_RESOURCE_VIEW_DESC::Tex2D(DXGI_FORMAT_R32G32B32A32_FLOAT, 1));
+    if (!IsValidBindlessIndex(EquirectSrvIndex))
     {
         LogWarning("Failed to allocate bindless SRV for environment map generation.");
         return false;
-    }
-
-    std::vector<uint32_t> RawUavIndices;
-    std::vector<uint32_t> PrefilteredUavIndices;
-    RawUavIndices.reserve(MipLevels);
-    PrefilteredUavIndices.reserve(MipLevels);
-    for (uint16_t Mip = 0; Mip < MipLevels; ++Mip)
-    {
-        const uint32_t RawUav = Device->CreateBindlessUav(RawCube.Get(), nullptr, RawUavs[Mip]);
-        const uint32_t PrefilteredUav = Device->CreateBindlessUav(PrefilteredCube.Get(), nullptr, PrefilteredUavs[Mip]);
-        if (RawUav == UINT32_MAX || PrefilteredUav == UINT32_MAX)
-        {
-            LogWarning("Failed to allocate bindless UAV for environment map generation.");
-            return false;
-        }
-        RawUavIndices.push_back(RawUav);
-        PrefilteredUavIndices.push_back(PrefilteredUav);
     }
 
     FBindlessBuffer SpdAtomicCounter;
@@ -230,156 +319,43 @@ bool FEnvironmentMap::BuildFromEquirect(FRenderer& Owner, FDX12Device* Device, F
     HR_CHECK(Device->GetDevice()->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, Allocator.Get(), nullptr, IID_PPV_ARGS(Cmd.GetAddressOf())));
     Cmd->SetName(L"EnvironmentBuild_CL");
 
-    const auto EmitTransitionBarrier = [&](ID3D12Resource* Resource, D3D12_RESOURCE_STATES Before, D3D12_RESOURCE_STATES After, UINT Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES)
-    {
-        if (!Resource || Before == After)
-        {
-            return;
-        }
+    ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap(), Device->GetSamplerDescriptorHeap() };
+    Cmd->SetDescriptorHeaps(2, Heaps);
+    Cmd->SetComputeRootSignature(BuildRootSignature.Get());
 
-        const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(Resource, Before, After, Subresource);
-        Cmd->ResourceBarrier(1, &Barrier);
-    };
+    EmitTransitionBarrier(Cmd.Get(), RawCube.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    EmitTransitionBarrier(Cmd.Get(), PrefilteredCube.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
-    const auto EmitTransitionMipBarrier = [&](ID3D12Resource* Resource, D3D12_RESOURCE_STATES Before, D3D12_RESOURCE_STATES After, uint16_t MipLevel)
-    {
-        if (!Resource || Before == After)
-        {
-            return;
-        }
-
-        const D3D12_RESOURCE_DESC Desc = Resource->GetDesc();
-        const UINT MipCount = (std::max)(1u, static_cast<UINT>(Desc.MipLevels));
-        const UINT ArraySize = (Desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D)
-            ? 1u
-            : (std::max)(1u, static_cast<UINT>(Desc.DepthOrArraySize));
-
-        for (UINT ArraySlice = 0; ArraySlice < ArraySize; ++ArraySlice)
-        {
-            EmitTransitionBarrier(Resource, Before, After, D3D12CalcSubresource(MipLevel, ArraySlice, 0, MipCount, ArraySize));
-        }
-    };
-
-    const auto EmitUavBarrier = [&](ID3D12Resource* Resource)
-    {
-        if (!Resource)
-        {
-            return;
-        }
-
-        const auto Barrier = CD3DX12_RESOURCE_BARRIER::UAV(Resource);
-        Cmd->ResourceBarrier(1, &Barrier);
-    };
-
-    std::array<uint32_t, kEnvBuildRootConstantCount> RootConstants = {};
-    {
-        FScopedPixEvent SpdMipEvent(Cmd.Get(), L"EnvEquirectToCube");
-
-        EmitTransitionBarrier(RawCube.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        EmitTransitionBarrier(PrefilteredCube.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-
-        ID3D12DescriptorHeap* Heaps[] = { Device->GetBindlessDescriptorHeap(), Device->GetSamplerDescriptorHeap() };
-        Cmd->SetDescriptorHeaps(2, Heaps);
-        Cmd->SetComputeRootSignature(BuildRootSignature.Get());
-
-        Cmd->SetPipelineState(EquirectToCubePipeline.Get());
-        RootConstants[0] = EquirectSrvIndex;
-        RootConstants[1] = RawUavIndices[0];
-        RootConstants[2] = CubeResolution;
-        RootConstants[3] = CubeResolution;
-        RootConstants[4] = 0;
-        RootConstants[5] = 6;
-        RootConstants[6] = Device->GetLinearWrapSamplerIndex();
-        RootConstants[7] = 0;
-        Cmd->SetComputeRoot32BitConstants(0, 8, RootConstants.data(), 0);
-        const uint32_t GroupCount = (CubeResolution + 7u) / 8u;
-        Cmd->Dispatch(GroupCount, GroupCount, 6);
-
-        EmitUavBarrier(RawCube.Get());
-    }
+    PassEquirectToCube(Cmd.Get(), EquirectToCubePipeline.Get(), Device, RawCube, EquirectSrvIndex, CubeResolution);
 
     if (GeneratedMipCount > 0u)
     {
-        EmitTransitionMipBarrier(RawCube.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, 0);
-
-        Cmd->SetPipelineState(CubeMipGenPipeline.Get());
-        FScopedPixEvent SpdMipEvent(Cmd.Get(), L"EnvCubeMipGenSPD");
-        RootConstants.fill(0u);
-        RootConstants[0] = RawCubeSrvIndex;
-        RootConstants[1] = SpdAtomicCounter.UavBindlessIndex;
-        RootConstants[2] = CubeResolution;
-        RootConstants[3] = CubeResolution;
-        RootConstants[4] = GeneratedMipCount;
-        const uint32_t SpdDispatchX = (CubeResolution + 63u) / 64u;
-        const uint32_t SpdDispatchY = (CubeResolution + 63u) / 64u;
-        RootConstants[5] = SpdDispatchX * SpdDispatchY;
-        RootConstants[6] = 6u;
-        RootConstants[7] = Device->GetLinearClampSamplerIndex();
-        const uint32_t FallbackRawUav = RawUavIndices.back();
-        for (uint32_t Mip = 0; Mip < 12; ++Mip)
-        {
-            const size_t RawMipIndex = static_cast<size_t>(Mip) + 1u;
-            RootConstants[8 + Mip * 4] = (RawMipIndex < RawUavIndices.size()) ? RawUavIndices[RawMipIndex] : FallbackRawUav;
-        }
-
-        const uint32_t ClearValues[4] = { 0u, 0u, 0u, 0u };
-        const D3D12_GPU_DESCRIPTOR_HANDLE CounterGpuHandle = GetBindlessGpuHandle(Device, SpdAtomicCounter.UavBindlessIndex);
-        const D3D12_CPU_DESCRIPTOR_HANDLE CounterCpuHandle = GetBindlessCpuClearHandle(Device, SpdAtomicCounter.UavBindlessIndex);
-        Cmd->ClearUnorderedAccessViewUint(CounterGpuHandle, CounterCpuHandle, SpdAtomicCounter.Get(), ClearValues, 0, nullptr);
-
-        const auto CounterBarrier = CD3DX12_RESOURCE_BARRIER::UAV(SpdAtomicCounter.Get());
-        Cmd->ResourceBarrier(1, &CounterBarrier);
-
-        Cmd->SetComputeRoot32BitConstants(0, kEnvBuildRootConstantCount, RootConstants.data(), 0);
-        Cmd->Dispatch(SpdDispatchX, SpdDispatchY, 6);
-        EmitUavBarrier(RawCube.Get());
-
-        for (uint16_t Mip = 1; Mip < MipLevels; ++Mip)
-        {
-            EmitTransitionMipBarrier(RawCube.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, Mip);
-        }
+        EmitTransitionMipBarrier(Cmd.Get(), RawCube.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, 0);
+        const D3D12_GPU_DESCRIPTOR_HANDLE SpdCounterGpuHandle = Owner.GetBindlessGpuHandle(SpdAtomicCounter.UavBindlessIndex);
+        const D3D12_CPU_DESCRIPTOR_HANDLE SpdCounterCpuClearHandle = Owner.GetBindlessCpuClearHandle(SpdAtomicCounter.UavBindlessIndex);
+        PassCubeMipGen(Cmd.Get(), CubeMipGenPipeline.Get(), Device, RawCube,
+            SpdAtomicCounter.Get(), SpdAtomicCounter.UavBindlessIndex,
+            SpdCounterGpuHandle, SpdCounterCpuClearHandle,
+            CubeResolution, GeneratedMipCount, MipLevels);
     }
     else
     {
-        EmitTransitionBarrier(RawCube.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        EmitTransitionBarrier(Cmd.Get(), RawCube.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     }
 
-    {
-        FScopedPixEvent SpdMipEvent(Cmd.Get(), L"EnvSpecularPrefilter");
-        Cmd->SetPipelineState(SpecularPrefilterPipeline.Get());
-        for (uint16_t Mip = 0; Mip < MipLevels; ++Mip)
-        {
-            const uint32_t MipResolution = (std::max)(1u, CubeResolution >> Mip);
-            RootConstants[0] = RawCubeSrvIndex;
-            RootConstants[1] = PrefilteredUavIndices[Mip];
-            RootConstants[2] = MipResolution;
-            RootConstants[3] = MipResolution;
-            RootConstants[4] = Mip;
-            RootConstants[5] = MipLevels;
-            RootConstants[6] = (std::max)(1u, Config.EnvironmentSpecularSampleCount);
-            RootConstants[7] = Device->GetLinearClampSamplerIndex();
-            Cmd->SetComputeRoot32BitConstants(0, 8, RootConstants.data(), 0);
-            const uint32_t MipGroupCount = (MipResolution + 7u) / 8u;
-            Cmd->Dispatch(MipGroupCount, MipGroupCount, 6);
+    PassSpecularPrefilter(Cmd.Get(), SpecularPrefilterPipeline.Get(), Device, PrefilteredCube,
+        RawCube.SrvBindlessIndex, CubeResolution, MipLevels, Config.EnvironmentSpecularSampleCount);
 
-            EmitUavBarrier(PrefilteredCube.Get());
-        }
-    }
-
-    EmitTransitionBarrier(RawCube.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    EmitTransitionBarrier(PrefilteredCube.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    EmitTransitionBarrier(Cmd.Get(), RawCube.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    EmitTransitionBarrier(Cmd.Get(), PrefilteredCube.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
     HR_CHECK(Cmd->Close());
     ID3D12CommandList* Lists[] = { Cmd.Get() };
     Device->GetGraphicsQueue()->ExecuteCommandLists(1, Lists);
     Device->GetGraphicsQueue()->Flush();
 
-    EnvironmentCubeTexture = PrefilteredCube;
+    EnvironmentCubeTexture = std::move(PrefilteredCube);
     EnvironmentMipCount = static_cast<float>(MipLevels);
-    if (EnvironmentCubeTexture)
-    {
-        EnvironmentCubeTexture->SetName(L"EnvironmentCube");
-    }
 
     return true;
 }

@@ -39,7 +39,6 @@ enum class EDeferredLightingVisualizationMode : uint32_t
 enum class EClusterDAGTraversalMode : uint32_t
 {
     PersistentQueue = 1,
-    SplitQueue = 2,
     LevelSplitQueue = 3
 };
 
@@ -77,7 +76,6 @@ struct FRendererConfig
     bool bLogMeshOptimizationStats = false;
     bool bEnableGraphDump = false;
     bool bEnableGpuTiming = false;
-    bool bForceLegacyBarriers = true;
     bool bEnableModelPixEvents = true;
     float LightYaw = -1.19028997f;
     float LightPitch = -1.07681236f;
@@ -123,6 +121,11 @@ struct FRendererConfig
     float ClusterDAGTargetErrorPixels = 1.0f;
     float ClusterDAGSwRasterThresholdPixels = 16.0f;
     bool bEnableClusterDAGSwRasterHzbReject = true;
+    bool bEnableClusterDAGStreaming = false;
+    uint32_t ClusterDAGStreamingPoolMB = 256;
+    uint32_t ClusterDAGStreamingRequestBufferCapacity = 65536;
+    uint32_t ClusterDAGStreamingMaxPendingPages = 64;
+    uint32_t ClusterDAGStreamingMaxPageInstallsPerFrame = 16;
     bool bEnableClusterDAGForceMip = false;
     uint32_t ClusterDAGForceMipLevel = 0;
     bool bEnableClusterDAGForceMipSkipFrustumCull = false;

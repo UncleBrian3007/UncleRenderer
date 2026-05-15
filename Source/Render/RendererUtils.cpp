@@ -128,7 +128,7 @@ namespace
             Weights = &DefaultWeights;
         }
 
-        const std::array<const void*, 7> StreamData =
+        const std::array<const void*, kMeshVertexStreamCount> StreamData =
         {
             Positions->data(),
             Normals->data(),
@@ -139,7 +139,7 @@ namespace
             Weights->data()
         };
 
-        const std::array<UINT, 7> StreamStrides =
+        const std::array<UINT, kMeshVertexStreamCount> StreamStrides =
         {
             static_cast<UINT>(sizeof(FFloat3)),
             static_cast<UINT>(sizeof(FFloat3)),
@@ -150,7 +150,7 @@ namespace
             static_cast<UINT>(sizeof(FFloat4))
         };
 
-        const std::array<UINT, 7> StreamSizes =
+        const std::array<UINT, kMeshVertexStreamCount> StreamSizes =
         {
             static_cast<UINT>(VertexCount * sizeof(FFloat3)),
             static_cast<UINT>(VertexCount * sizeof(FFloat3)),
@@ -163,98 +163,44 @@ namespace
 
         const UINT IndexBufferSize = static_cast<UINT>(Primitive.Indices.size() * sizeof(uint32_t));
 
-        D3D12_HEAP_PROPERTIES DefaultHeap = {};
-        DefaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
-        DefaultHeap.CreationNodeMask = 1;
-        DefaultHeap.VisibleNodeMask = 1;
-
-        D3D12_HEAP_PROPERTIES UploadHeap = {};
-        UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
-        UploadHeap.CreationNodeMask = 1;
-        UploadHeap.VisibleNodeMask = 1;
-
-        D3D12_RESOURCE_DESC BufferDesc = {};
-        BufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        BufferDesc.Height = 1;
-        BufferDesc.DepthOrArraySize = 1;
-        BufferDesc.MipLevels = 1;
-        BufferDesc.Format = DXGI_FORMAT_UNKNOWN;
-        BufferDesc.SampleDesc.Count = 1;
-        BufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
         OutGeometry.VertexBufferCount = static_cast<uint32_t>(StreamData.size());
         OutGeometry.VertexBufferViews.fill({});
 
-        std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 7> UploadBuffers;
+        std::array<FUploadBuffer, kMeshVertexStreamCount> UploadBuffers;
 
         for (size_t StreamIndex = 0; StreamIndex < StreamData.size(); ++StreamIndex)
         {
-            BufferDesc.Width = StreamSizes[StreamIndex];
-            HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-                &DefaultHeap,
-                D3D12_HEAP_FLAG_NONE,
-                &BufferDesc,
+            CreateBindlessBufferWithUpload(
+                Device,
+                L"PrimitiveVertexBuffer_" + std::to_wstring(StreamIndex),
+                CreateStructuredBufferDesc(VertexCount, StreamStrides[StreamIndex]),
                 D3D12_RESOURCE_STATE_COPY_DEST,
-                nullptr,
-                IID_PPV_ARGS(OutGeometry.VertexBuffers[StreamIndex].ReleaseAndGetAddressOf())));
-            if (OutGeometry.VertexBuffers[StreamIndex])
-            {
-                const std::wstring BufferName = L"PrimitiveVertexBuffer_" + std::to_wstring(StreamIndex);
-                OutGeometry.VertexBuffers[StreamIndex]->SetName(BufferName.c_str());
-            }
-
-            HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-                &UploadHeap,
-                D3D12_HEAP_FLAG_NONE,
-                &BufferDesc,
-                D3D12_RESOURCE_STATE_GENERIC_READ,
-                nullptr,
-                IID_PPV_ARGS(UploadBuffers[StreamIndex].ReleaseAndGetAddressOf())));
-
-            void* VertexData = nullptr;
-            D3D12_RANGE EmptyRange = { 0, 0 };
-            HR_CHECK(UploadBuffers[StreamIndex]->Map(0, &EmptyRange, &VertexData));
-            memcpy(VertexData, StreamData[StreamIndex], StreamSizes[StreamIndex]);
-            UploadBuffers[StreamIndex]->Unmap(0, nullptr);
+                OutGeometry.VertexBuffers[StreamIndex],
+                UploadBuffers[StreamIndex],
+                StreamData[StreamIndex],
+                false, false);
 
             OutGeometry.VertexBufferViews[StreamIndex].BufferLocation = OutGeometry.VertexBuffers[StreamIndex]->GetGPUVirtualAddress();
             OutGeometry.VertexBufferViews[StreamIndex].StrideInBytes = StreamStrides[StreamIndex];
             OutGeometry.VertexBufferViews[StreamIndex].SizeInBytes = StreamSizes[StreamIndex];
         }
 
-        Microsoft::WRL::ComPtr<ID3D12Resource> IndexUploadBuffer;
+        FUploadBuffer IndexUploadBuffer;
         if (bCreateIndexBuffer)
         {
-            BufferDesc.Width = IndexBufferSize;
-            HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-                &DefaultHeap,
-                D3D12_HEAP_FLAG_NONE,
-                &BufferDesc,
+            CreateBindlessBufferWithUpload(
+                Device,
+                L"PrimitiveIndexBuffer",
+                CreateStructuredBufferDesc<uint32_t>(Primitive.Indices.size()),
                 D3D12_RESOURCE_STATE_COPY_DEST,
-                nullptr,
-                IID_PPV_ARGS(OutGeometry.IndexBuffer.GetAddressOf())));
-            if (OutGeometry.IndexBuffer)
-            {
-                OutGeometry.IndexBuffer->SetName(L"PrimitiveIndexBuffer");
-            }
+                OutGeometry.IndexBuffer,
+                IndexUploadBuffer,
+                Primitive.Indices.data(),
+                false, false);
 
             OutGeometry.IndexBufferView.BufferLocation = OutGeometry.IndexBuffer->GetGPUVirtualAddress();
             OutGeometry.IndexBufferView.Format = DXGI_FORMAT_R32_UINT;
             OutGeometry.IndexBufferView.SizeInBytes = IndexBufferSize;
-
-            HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-                &UploadHeap,
-                D3D12_HEAP_FLAG_NONE,
-                &BufferDesc,
-                D3D12_RESOURCE_STATE_GENERIC_READ,
-                nullptr,
-                IID_PPV_ARGS(IndexUploadBuffer.ReleaseAndGetAddressOf())));
-
-            void* IndexData = nullptr;
-            D3D12_RANGE EmptyRange = { 0, 0 };
-            HR_CHECK(IndexUploadBuffer->Map(0, &EmptyRange, &IndexData));
-            memcpy(IndexData, Primitive.Indices.data(), IndexBufferSize);
-            IndexUploadBuffer->Unmap(0, nullptr);
         }
 
         if (UploadBatch && !UploadBatch->bInitialized)
@@ -283,14 +229,14 @@ namespace
                 OutGeometry.VertexBuffers[StreamIndex].Get(),
                 D3D12_RESOURCE_STATE_COPY_DEST,
                 D3D12_RESOURCE_STATE_GENERIC_READ);
-            ActiveBatch->AddUploadBuffer(std::move(UploadBuffers[StreamIndex]));
+            ActiveBatch->AddUploadBuffer(std::move(UploadBuffers[StreamIndex].Resource));
         }
 
         if (bCreateIndexBuffer && IndexUploadBuffer)
         {
             CommandList->CopyBufferRegion(OutGeometry.IndexBuffer.Get(), 0, IndexUploadBuffer.Get(), 0, IndexBufferSize);
             ActiveBatch->Context.TransitionResource(OutGeometry.IndexBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ);
-            ActiveBatch->AddUploadBuffer(std::move(IndexUploadBuffer));
+            ActiveBatch->AddUploadBuffer(std::move(IndexUploadBuffer.Resource));
         }
 
         if (!UploadBatch)
@@ -525,9 +471,7 @@ void RendererUtils::UpdateCullingVisibility(
 
 bool RendererUtils::UpdateGltfSceneAnimation(
     std::vector<FSceneModelResource>& Models,
-    const std::vector<FGltfScene>& Scenes,
-    std::vector<FGltfAnimationPose>& ScenePoses,
-    std::vector<float>& SceneTimes,
+    std::vector<FGltfScene>& Scenes,
     float DeltaTime)
 {
     for (FSceneModelResource& Model : Models)
@@ -540,32 +484,24 @@ bool RendererUtils::UpdateGltfSceneAnimation(
         return false;
     }
 
-    if (ScenePoses.size() != Scenes.size())
+    const bool bHasSkinning = std::any_of(Models.begin(), Models.end(), [](const FSceneModelResource& Model)
     {
-        ScenePoses.resize(Scenes.size());
-        for (size_t Index = 0; Index < Scenes.size(); ++Index)
-        {
-            InitializeGltfAnimationPose(Scenes[Index], ScenePoses[Index]);
-        }
+        return Model.GltfSkinIndex >= 0 && Model.BoneMatrixBufferMapped != nullptr;
+    });
+    if (!bHasSkinning)
+    {
+        return false;
     }
 
-    if (SceneTimes.size() != Scenes.size())
-    {
-        SceneTimes.assign(Scenes.size(), 0.0f);
-    }
-
-    for (size_t Index = 0; Index < Scenes.size(); ++Index)
-    {
-        SceneTimes[Index] += DeltaTime;
-        UpdateGltfAnimationPose(Scenes[Index], SceneTimes[Index], ScenePoses[Index]);
-    }
-
-
-    std::vector<bool> SceneAnimationAdvanced(Scenes.size(), false);
     const bool bAnimationTimeAdvanced = std::abs(DeltaTime) > 1e-6f;
-    for (size_t Index = 0; Index < Scenes.size(); ++Index)
+    for (FGltfScene& Scene : Scenes)
     {
-        SceneAnimationAdvanced[Index] = bAnimationTimeAdvanced && !Scenes[Index].Animations.empty();
+        if (Scene.Pose.LocalMatrices.empty())
+        {
+            InitializeGltfAnimationPose(Scene, Scene.Pose);
+        }
+        Scene.AnimationTime += DeltaTime;
+        UpdateGltfAnimationPose(Scene, Scene.AnimationTime, Scene.Pose);
     }
 
     bool bAnySkinningUpdated = false;
@@ -577,12 +513,13 @@ bool RendererUtils::UpdateGltfSceneAnimation(
         }
 
         const size_t SceneIndex = static_cast<size_t>(Model.GltfSceneIndex);
-        if (SceneIndex >= ScenePoses.size())
+        if (SceneIndex >= Scenes.size())
         {
             continue;
         }
 
-        const std::vector<DirectX::XMFLOAT4X4>& WorldMatrices = ScenePoses[SceneIndex].WorldMatrices;
+        const FGltfScene& Scene = Scenes[SceneIndex];
+        const std::vector<DirectX::XMFLOAT4X4>& WorldMatrices = Scene.Pose.WorldMatrices;
         const size_t NodeIndex = static_cast<size_t>(Model.GltfNodeIndex);
         if (NodeIndex >= WorldMatrices.size())
         {
@@ -595,11 +532,11 @@ bool RendererUtils::UpdateGltfSceneAnimation(
         if (Model.GltfSkinIndex >= 0 && Model.BoneMatrixBufferMapped)
         {
             const size_t SkinIndex = static_cast<size_t>(Model.GltfSkinIndex);
-            if (SkinIndex < Scenes[SceneIndex].Skins.size()
-                && SkinIndex < ScenePoses[SceneIndex].SkinMatrices.size())
+            if (SkinIndex < Scene.Skins.size()
+                && SkinIndex < Scene.Pose.SkinMatrices.size())
             {
-                const FGltfSkin& Skin = Scenes[SceneIndex].Skins[SkinIndex];
-                const std::vector<DirectX::XMFLOAT4X4>& SkinMatrices = ScenePoses[SceneIndex].SkinMatrices[SkinIndex];
+                const FGltfSkin& Skin = Scene.Skins[SkinIndex];
+                const std::vector<DirectX::XMFLOAT4X4>& SkinMatrices = Scene.Pose.SkinMatrices[SkinIndex];
                 const size_t MatrixCount = std::min(SkinMatrices.size(), static_cast<size_t>(Model.BoneMatrixCount));
 
                 const XMMATRIX NodeWorldInv = XMMatrixInverse(nullptr, NodeWorld);
@@ -615,7 +552,7 @@ bool RendererUtils::UpdateGltfSceneAnimation(
                 const size_t CopyBytes = MatrixCount * sizeof(DirectX::XMFLOAT4X4);
                 std::memcpy(Model.BoneMatrixBufferMapped, FinalMatrices.data(), CopyBytes);
 
-                if (SceneAnimationAdvanced[SceneIndex] && MatrixCount > 0)
+                if (bAnimationTimeAdvanced && !Scene.Animations.empty() && MatrixCount > 0)
                 {
                     Model.bSkinningUpdatedThisFrame = true;
                     bAnySkinningUpdated = true;
@@ -686,30 +623,30 @@ void RendererUtils::UpdateSceneConstants(const FUpdateSceneConstantsParams& Para
     const bool bUseClusterDagVertexBuffers =
         Params.bUseClusterDagIndexBuffer
         && AreAllBindlessIndicesValid(
-            Model.ClusterDagVertexBufferBindlessIndices[0],
-            Model.ClusterDagVertexBufferBindlessIndices[1],
-            Model.ClusterDagIndexBufferBindlessIndex);
+            Model.ClusterDagVertexBuffers[0].SrvBindlessIndex,
+            Model.ClusterDagVertexBuffers[1].SrvBindlessIndex,
+            Model.ClusterDagIndexBuffer.SrvBindlessIndex);
     Constants.VertexBufferBindlessIndices = DirectX::XMUINT4(
-        bUseClusterDagVertexBuffers ? Model.ClusterDagVertexBufferBindlessIndices[0] : Model.VertexBufferBindlessIndices[0],
-        bUseClusterDagVertexBuffers ? Model.ClusterDagVertexBufferBindlessIndices[1] : Model.VertexBufferBindlessIndices[1],
-        bUseClusterDagVertexBuffers ? Model.ClusterDagVertexBufferBindlessIndices[2] : Model.VertexBufferBindlessIndices[2],
-        bUseClusterDagVertexBuffers ? Model.ClusterDagVertexBufferBindlessIndices[3] : Model.VertexBufferBindlessIndices[3]);
+        bUseClusterDagVertexBuffers ? Model.ClusterDagVertexBuffers[0].SrvBindlessIndex : Model.Geometry.VertexBuffers[0].SrvBindlessIndex,
+        bUseClusterDagVertexBuffers ? Model.ClusterDagVertexBuffers[1].SrvBindlessIndex : Model.Geometry.VertexBuffers[1].SrvBindlessIndex,
+        bUseClusterDagVertexBuffers ? Model.ClusterDagVertexBuffers[2].SrvBindlessIndex : Model.Geometry.VertexBuffers[2].SrvBindlessIndex,
+        bUseClusterDagVertexBuffers ? Model.ClusterDagVertexBuffers[3].SrvBindlessIndex : Model.Geometry.VertexBuffers[3].SrvBindlessIndex);
     Constants.ExtraBindlessIndices = DirectX::XMUINT4(
         bUseClusterDagVertexBuffers
-            ? Model.ClusterDagColorBufferBindlessIndex
-            : Model.VertexBufferBindlessIndices[4],
+            ? Model.ClusterDagColorBuffer.SrvBindlessIndex
+            : Model.Geometry.VertexBuffers[4].SrvBindlessIndex,
         bUseClusterDagVertexBuffers
-            ? Model.ClusterDagIndexBufferBindlessIndex
-            : Model.IndexBufferBindlessIndex,
-        Params.bUseClusterDagDebugColor && IsValidBindlessIndex(Model.ClusterDagDebugColorBufferBindlessIndex)
-            ? Model.ClusterDagDebugColorBufferBindlessIndex
+            ? Model.ClusterDagIndexBuffer.SrvBindlessIndex
+            : Model.Geometry.IndexBuffer.SrvBindlessIndex,
+        Params.bUseClusterDagDebugColor && IsValidBindlessIndex(Model.ClusterDagDebugColorBuffer.SrvBindlessIndex)
+            ? Model.ClusterDagDebugColorBuffer.SrvBindlessIndex
             : UINT32_MAX,
         0u);
     Constants.SkinningBindlessIndices = DirectX::XMUINT4(
-        Model.VertexBufferBindlessIndices[5],
-        Model.VertexBufferBindlessIndices[6],
-        Model.BoneMatrixBindlessIndex,
-        Model.SkinnedPositionSrvBindlessIndex);
+        Model.Geometry.VertexBuffers[5].SrvBindlessIndex,
+        Model.Geometry.VertexBuffers[6].SrvBindlessIndex,
+        Model.BoneMatrixBuffer.SrvBindlessIndex,
+        Model.SkinnedPositionBuffer.SrvBindlessIndex);
     Constants.ClusterDagPackedPositionOffset = Model.ClusterDagPackedPositionOffset;
     Constants.ClusterDagPackedPositionScale = Model.ClusterDagPackedPositionScale;
     Constants.ClusterDagPackedConstantUV = Model.ClusterDagPackedConstantUV;
@@ -719,44 +656,44 @@ void RendererUtils::UpdateSceneConstants(const FUpdateSceneConstantsParams& Para
         ? Model.ClusterDagVertexPackingMode
         : 0u;
     Constants.MaterialTextureIndices0 = DirectX::XMUINT4(
-        Model.BaseColorBindlessIndex,
-        Model.MetallicRoughnessBindlessIndex,
-        Model.NormalBindlessIndex,
-        Model.EmissiveBindlessIndex);
+        Model.BaseColor.SrvBindlessIndex,
+        Model.MetallicRoughness.SrvBindlessIndex,
+        Model.Normal.SrvBindlessIndex,
+        Model.Emissive.SrvBindlessIndex);
     Constants.MaterialTextureIndices1 = DirectX::XMUINT4(
-        Model.SheenColorBindlessIndex,
-        Model.SheenRoughnessBindlessIndex,
-        Model.ClearcoatBindlessIndex,
-        Model.ClearcoatRoughnessBindlessIndex);
+        Model.SheenColor.SrvBindlessIndex,
+        Model.SheenRoughness.SrvBindlessIndex,
+        Model.Clearcoat.SrvBindlessIndex,
+        Model.ClearcoatRoughness.SrvBindlessIndex);
     Constants.MaterialTextureIndices2 = DirectX::XMUINT4(
-        Model.ClearcoatNormalBindlessIndex,
-        Model.AnisotropyBindlessIndex,
+        Model.ClearcoatNormal.SrvBindlessIndex,
+        Model.Anisotropy.SrvBindlessIndex,
         UINT32_MAX,
         UINT32_MAX);
-    Constants.ClusterDagMaterialPipelineKey = BuildPipelineKey(Model);
+    Constants.ClusterDagMaterialPipelineKey = Model.PipelineKey;
     Constants.GtaoIntensity = Params.bGtaoEnabled ? Params.GtaoIntensity : 0.0f;
 
     Constants.DeferredLightingVisualizationMode = Params.DeferredLightingVisualizationMode;
-    Constants.BaseColorTransformOffsetScale = Model.BaseColorTransformOffsetScale;
-    Constants.BaseColorTransformRotation = Model.BaseColorTransformRotation;
-    Constants.MetallicRoughnessTransformOffsetScale = Model.MetallicRoughnessTransformOffsetScale;
-    Constants.MetallicRoughnessTransformRotation = Model.MetallicRoughnessTransformRotation;
-    Constants.NormalTransformOffsetScale = Model.NormalTransformOffsetScale;
-    Constants.NormalTransformRotation = Model.NormalTransformRotation;
-    Constants.EmissiveTransformOffsetScale = Model.EmissiveTransformOffsetScale;
-    Constants.EmissiveTransformRotation = Model.EmissiveTransformRotation;
-    Constants.SheenColorTransformOffsetScale = Model.SheenColorTransformOffsetScale;
-    Constants.SheenColorTransformRotation = Model.SheenColorTransformRotation;
-    Constants.SheenRoughnessTransformOffsetScale = Model.SheenRoughnessTransformOffsetScale;
-    Constants.SheenRoughnessTransformRotation = Model.SheenRoughnessTransformRotation;
-    Constants.ClearcoatTransformOffsetScale = Model.ClearcoatTransformOffsetScale;
-    Constants.ClearcoatTransformRotation = Model.ClearcoatTransformRotation;
-    Constants.ClearcoatRoughnessTransformOffsetScale = Model.ClearcoatRoughnessTransformOffsetScale;
-    Constants.ClearcoatRoughnessTransformRotation = Model.ClearcoatRoughnessTransformRotation;
-    Constants.ClearcoatNormalTransformOffsetScale = Model.ClearcoatNormalTransformOffsetScale;
-    Constants.ClearcoatNormalTransformRotation = Model.ClearcoatNormalTransformRotation;
-    Constants.AnisotropyTransformOffsetScale = Model.AnisotropyTransformOffsetScale;
-    Constants.AnisotropyTransformRotation = Model.AnisotropyTransformRotation;
+    Constants.BaseColorTransformOffsetScale = Model.BaseColorTransform.OffsetScale;
+    Constants.BaseColorTransformRotation = Model.BaseColorTransform.Rotation;
+    Constants.MetallicRoughnessTransformOffsetScale = Model.MetallicRoughnessTransform.OffsetScale;
+    Constants.MetallicRoughnessTransformRotation = Model.MetallicRoughnessTransform.Rotation;
+    Constants.NormalTransformOffsetScale = Model.NormalTransform.OffsetScale;
+    Constants.NormalTransformRotation = Model.NormalTransform.Rotation;
+    Constants.EmissiveTransformOffsetScale = Model.EmissiveTransform.OffsetScale;
+    Constants.EmissiveTransformRotation = Model.EmissiveTransform.Rotation;
+    Constants.SheenColorTransformOffsetScale = Model.SheenColorTransform.OffsetScale;
+    Constants.SheenColorTransformRotation = Model.SheenColorTransform.Rotation;
+    Constants.SheenRoughnessTransformOffsetScale = Model.SheenRoughnessTransform.OffsetScale;
+    Constants.SheenRoughnessTransformRotation = Model.SheenRoughnessTransform.Rotation;
+    Constants.ClearcoatTransformOffsetScale = Model.ClearcoatTransform.OffsetScale;
+    Constants.ClearcoatTransformRotation = Model.ClearcoatTransform.Rotation;
+    Constants.ClearcoatRoughnessTransformOffsetScale = Model.ClearcoatRoughnessTransform.OffsetScale;
+    Constants.ClearcoatRoughnessTransformRotation = Model.ClearcoatRoughnessTransform.Rotation;
+    Constants.ClearcoatNormalTransformOffsetScale = Model.ClearcoatNormalTransform.OffsetScale;
+    Constants.ClearcoatNormalTransformRotation = Model.ClearcoatNormalTransform.Rotation;
+    Constants.AnisotropyTransformOffsetScale = Model.AnisotropyTransform.OffsetScale;
+    Constants.AnisotropyTransformRotation = Model.AnisotropyTransform.Rotation;
 
     memcpy(Params.ConstantBufferMapped + Params.ConstantBufferOffset, &Constants, sizeof(Constants));
 }
@@ -874,7 +811,7 @@ uint32_t RendererUtils::BuildPipelineKey(const FSceneModelResource& Model)
     const uint32_t UseSheenModel = (Model.ShadingModelId == 1u) ? 1u : 0u;
     const uint32_t UseClearcoatModel = (Model.ShadingModelId == 2u) ? 1u : 0u;
     const uint32_t UseAnisotropyModel = (Model.ShadingModelId == 3u) ? 1u : 0u;
-    const uint32_t UseSkinning = (IsValidBindlessIndex(Model.BoneMatrixBindlessIndex) && Model.BoneMatrixCount > 0) ? 1u : 0u;
+    const uint32_t UseSkinning = (IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) && Model.BoneMatrixCount > 0) ? 1u : 0u;
     const uint32_t UseDoubleSided = Model.bDoubleSided ? 1u : 0u;
     return (UseNormal) | (UseMr << 1) | (UseBase << 2) | (UseEmissive << 3) | (UseAlphaMask << 4)
         | (UseSheenModel << 5) | (UseClearcoatModel << 6) | (UseAnisotropyModel << 7)

@@ -167,13 +167,7 @@ private:
     uint64_t FreezeStartFrameNumber = 0;
     uint32_t ReservoirHistoryFrameCount = 0;
     bool bReservoirHistoryValid = false;
-    bool bCommonPersistentInputsValid = false;
-    bool bBlueNoisePersistentInputsValid = false;
-    bool bOutputPersistentDescriptorsValid = false;
-    bool bReservoirAReadDescriptorsValid = false;
-    bool bReservoirBReadDescriptorsValid = false;
-    bool bReservoirAWriteDescriptorsValid = false;
-    bool bReservoirBWriteDescriptorsValid = false;
+    bool bPersistentInputsValid = false;
     uint32_t CachedLinearClampSamplerIndex = UINT32_MAX;
     uint32_t CachedPrevLinearDepthSrvBindlessIndex = UINT32_MAX;
 

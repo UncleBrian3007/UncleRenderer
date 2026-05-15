@@ -166,68 +166,25 @@ bool FTextureLoader::LoadHdrTexture(const std::wstring& TexturePath, ComPtr<ID3D
     }
     stbi_image_free(Pixels);
 
-    D3D12_RESOURCE_DESC TextureDesc = {};
-    TextureDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    TextureDesc.Width = static_cast<UINT>(Width);
-    TextureDesc.Height = static_cast<UINT>(Height);
-    TextureDesc.DepthOrArraySize = 1;
-    TextureDesc.MipLevels = 1;
-    TextureDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-    TextureDesc.SampleDesc.Count = 1;
-    TextureDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    const FRGTextureDesc TextureRGDesc = { static_cast<uint32_t>(Width), static_cast<uint32_t>(Height), DXGI_FORMAT_R32G32B32A32_FLOAT };
+    FBindlessTexture TextureWrapper;
+    CreateBindlessTexture(Device, std::filesystem::path(TexturePath).filename().wstring(),
+        TextureRGDesc, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST, TextureWrapper, false, false);
+    OutTexture = TextureWrapper.Resource;
 
-    D3D12_HEAP_PROPERTIES DefaultHeap = {};
-    DefaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
-    DefaultHeap.CreationNodeMask = 1;
-    DefaultHeap.VisibleNodeMask = 1;
-
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &DefaultHeap,
-        D3D12_HEAP_FLAG_NONE,
-        &TextureDesc,
-        D3D12_RESOURCE_STATE_COPY_DEST,
-        nullptr,
-        IID_PPV_ARGS(OutTexture.GetAddressOf())));
-
-    if (OutTexture)
-    {
-        const std::filesystem::path ResourcePath(TexturePath);
-        OutTexture->SetName(ResourcePath.filename().c_str());
-    }
-
+    const D3D12_RESOURCE_DESC TextureDesc = CreateTextureResourceDesc(TextureRGDesc);
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT Layout = {};
     UINT NumRows = 0;
     UINT64 RowSizeInBytes = 0;
     UINT64 UploadBufferSize = 0;
     Device->GetDevice()->GetCopyableFootprints(&TextureDesc, 0, 1, 0, &Layout, &NumRows, &RowSizeInBytes, &UploadBufferSize);
 
-    D3D12_HEAP_PROPERTIES UploadHeap = {};
-    UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
-    UploadHeap.CreationNodeMask = 1;
-    UploadHeap.VisibleNodeMask = 1;
-
-    D3D12_RESOURCE_DESC UploadDesc = {};
-    UploadDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    UploadDesc.Width = UploadBufferSize;
-    UploadDesc.Height = 1;
-    UploadDesc.DepthOrArraySize = 1;
-    UploadDesc.MipLevels = 1;
-    UploadDesc.Format = DXGI_FORMAT_UNKNOWN;
-    UploadDesc.SampleDesc.Count = 1;
-    UploadDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-    ComPtr<ID3D12Resource> UploadResource;
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &UploadHeap,
-        D3D12_HEAP_FLAG_NONE,
-        &UploadDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        nullptr,
-        IID_PPV_ARGS(UploadResource.GetAddressOf())));
+    FUploadBuffer UploadBuffer;
+    CreateUploadBuffer(Device, L"", UploadBufferSize, UploadBuffer, nullptr);
 
     uint8_t* MappedData = nullptr;
-    D3D12_RANGE EmptyRange = { 0, 0 };
-    HR_CHECK(UploadResource->Map(0, &EmptyRange, reinterpret_cast<void**>(&MappedData)));
+    const D3D12_RANGE EmptyRange = { 0, 0 };
+    HR_CHECK(UploadBuffer->Map(0, &EmptyRange, reinterpret_cast<void**>(&MappedData)));
 
     const size_t SrcRowPitch = static_cast<size_t>(Width) * sizeof(float) * 4u;
     for (UINT Row = 0; Row < NumRows; ++Row)
@@ -236,7 +193,7 @@ bool FTextureLoader::LoadHdrTexture(const std::wstring& TexturePath, ComPtr<ID3D
         memcpy(MappedData + Layout.Offset + static_cast<size_t>(Row) * Layout.Footprint.RowPitch, SrcRow, SrcRowPitch);
     }
 
-    UploadResource->Unmap(0, nullptr);
+    UploadBuffer->Unmap(0, nullptr);
 
     ComPtr<ID3D12CommandAllocator> UploadAllocator;
     ComPtr<ID3D12GraphicsCommandList> UploadList;
@@ -250,7 +207,7 @@ bool FTextureLoader::LoadHdrTexture(const std::wstring& TexturePath, ComPtr<ID3D
     DstLocation.SubresourceIndex = 0;
 
     D3D12_TEXTURE_COPY_LOCATION SrcLocation = {};
-    SrcLocation.pResource = UploadResource.Get();
+    SrcLocation.pResource = UploadBuffer.Get();
     SrcLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
     SrcLocation.PlacedFootprint = Layout;
 
@@ -263,7 +220,7 @@ bool FTextureLoader::LoadHdrTexture(const std::wstring& TexturePath, ComPtr<ID3D
 
     if (RecordedUpload)
     {
-        RecordedUpload->UploadResource = UploadResource;
+        RecordedUpload->UploadResource = UploadBuffer.Resource;
         RecordedUpload->CommandAllocator = UploadAllocator;
         RecordedUpload->CommandList = UploadList;
     }
@@ -354,67 +311,31 @@ bool FTextureLoader::LoadTextureInternal(const std::wstring& FilePath, ComPtr<ID
         const DXGI_FORMAT BaseFormat = static_cast<DXGI_FORMAT>(Descriptor.format);
         const DXGI_FORMAT Format = bUseSRGB ? MakeSRGBFormat(BaseFormat) : BaseFormat;
 
-        D3D12_RESOURCE_DESC TextureDesc = {};
-        TextureDesc.Dimension = Descriptor.type == ddspp::Texture3D ? D3D12_RESOURCE_DIMENSION_TEXTURE3D : D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        TextureDesc.Width = Descriptor.width;
-        TextureDesc.Height = Descriptor.height;
-        TextureDesc.DepthOrArraySize = Descriptor.type == ddspp::Texture3D ? Depth : static_cast<UINT16>(SliceCount);
-        TextureDesc.MipLevels = static_cast<UINT16>(Descriptor.numMips);
-        TextureDesc.Format = Format;
-        TextureDesc.SampleDesc.Count = 1;
-        TextureDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        const FRGTextureDesc TextureRGDesc = {
+            Descriptor.width,
+            Descriptor.height,
+            Format,
+            static_cast<uint16>(Descriptor.numMips),
+            static_cast<uint16>(Descriptor.type == ddspp::Texture3D ? Depth : SliceCount),
+            Descriptor.type == ddspp::Texture3D ? D3D12_RESOURCE_DIMENSION_TEXTURE3D : D3D12_RESOURCE_DIMENSION_TEXTURE2D
+        };
+        FBindlessTexture TextureWrapper;
+        CreateBindlessTexture(Device, std::filesystem::path(FilePath).filename().wstring(),
+            TextureRGDesc, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST, TextureWrapper, false, false);
+        OutTexture = TextureWrapper.Resource;
 
-        D3D12_HEAP_PROPERTIES DefaultHeap = {};
-        DefaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
-        DefaultHeap.CreationNodeMask = 1;
-        DefaultHeap.VisibleNodeMask = 1;
-
-        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-            &DefaultHeap,
-            D3D12_HEAP_FLAG_NONE,
-            &TextureDesc,
-            D3D12_RESOURCE_STATE_COPY_DEST,
-            nullptr,
-            IID_PPV_ARGS(OutTexture.GetAddressOf())));
-
-        if (OutTexture)
-        {
-            const std::filesystem::path ResourcePath(FilePath);
-            OutTexture->SetName(ResourcePath.filename().c_str());
-        }
-
+        const D3D12_RESOURCE_DESC TextureDesc = CreateTextureResourceDesc(TextureRGDesc);
         std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> Layouts(SubresourceCount);
         std::vector<UINT> NumRows(SubresourceCount);
         UINT64 UploadBufferSize = 0;
         Device->GetDevice()->GetCopyableFootprints(&TextureDesc, 0, SubresourceCount, 0, Layouts.data(), NumRows.data(), nullptr, &UploadBufferSize);
 
-        D3D12_HEAP_PROPERTIES UploadHeap = {};
-        UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
-        UploadHeap.CreationNodeMask = 1;
-        UploadHeap.VisibleNodeMask = 1;
-
-        D3D12_RESOURCE_DESC UploadDesc = {};
-        UploadDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        UploadDesc.Width = UploadBufferSize;
-        UploadDesc.Height = 1;
-        UploadDesc.DepthOrArraySize = 1;
-        UploadDesc.MipLevels = 1;
-        UploadDesc.Format = DXGI_FORMAT_UNKNOWN;
-        UploadDesc.SampleDesc.Count = 1;
-        UploadDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-        ComPtr<ID3D12Resource> UploadResource;
-        HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-            &UploadHeap,
-            D3D12_HEAP_FLAG_NONE,
-            &UploadDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ,
-            nullptr,
-            IID_PPV_ARGS(UploadResource.GetAddressOf())));
+        FUploadBuffer UploadBuffer;
+        CreateUploadBuffer(Device, L"", UploadBufferSize, UploadBuffer, nullptr);
 
         uint8_t* MappedData = nullptr;
-        D3D12_RANGE EmptyRange = { 0, 0 };
-        HR_CHECK(UploadResource->Map(0, &EmptyRange, reinterpret_cast<void**>(&MappedData)));
+        const D3D12_RANGE EmptyRange = { 0, 0 };
+        HR_CHECK(UploadBuffer->Map(0, &EmptyRange, reinterpret_cast<void**>(&MappedData)));
 
         size_t DataOffset = Descriptor.headerSize;
         for (uint32_t ArrayIndex = 0; ArrayIndex < SliceCount; ++ArrayIndex)
@@ -435,7 +356,7 @@ bool FTextureLoader::LoadTextureInternal(const std::wstring& FilePath, ComPtr<ID
 
                 if (DataOffset + SubresourceSize > FileData.size())
                 {
-                    UploadResource->Unmap(0, nullptr);
+                    UploadBuffer->Unmap(0, nullptr);
                     return false;
                 }
 
@@ -457,7 +378,7 @@ bool FTextureLoader::LoadTextureInternal(const std::wstring& FilePath, ComPtr<ID
             }
         }
 
-        UploadResource->Unmap(0, nullptr);
+        UploadBuffer->Unmap(0, nullptr);
 
         ComPtr<ID3D12CommandAllocator> UploadAllocator;
         ComPtr<ID3D12GraphicsCommandList> UploadList;
@@ -473,7 +394,7 @@ bool FTextureLoader::LoadTextureInternal(const std::wstring& FilePath, ComPtr<ID
             DstLocation.SubresourceIndex = Subresource;
 
             D3D12_TEXTURE_COPY_LOCATION SrcLocation = {};
-            SrcLocation.pResource = UploadResource.Get();
+            SrcLocation.pResource = UploadBuffer.Get();
             SrcLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
             SrcLocation.PlacedFootprint = Layouts[Subresource];
 
@@ -487,7 +408,7 @@ bool FTextureLoader::LoadTextureInternal(const std::wstring& FilePath, ComPtr<ID
 
         if (RecordedUpload)
         {
-            RecordedUpload->UploadResource = UploadResource;
+            RecordedUpload->UploadResource = UploadBuffer.Resource;
             RecordedUpload->CommandAllocator = UploadAllocator;
             RecordedUpload->CommandList = UploadList;
         }
@@ -519,68 +440,26 @@ bool FTextureLoader::LoadTextureInternal(const std::wstring& FilePath, ComPtr<ID
     std::vector<uint8_t> TextureData(Pixels, Pixels + static_cast<size_t>(PixelDataSize));
     stbi_image_free(Pixels);
 
-    D3D12_RESOURCE_DESC TextureDesc = {};
-    TextureDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    TextureDesc.Width = static_cast<UINT>(Width);
-    TextureDesc.Height = static_cast<UINT>(Height);
-    TextureDesc.DepthOrArraySize = 1;
-    TextureDesc.MipLevels = 1;
-    TextureDesc.Format = bUseSRGB ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM;
-    TextureDesc.SampleDesc.Count = 1;
-    TextureDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    const DXGI_FORMAT TexFormat = bUseSRGB ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM;
+    const FRGTextureDesc TextureRGDesc = { static_cast<uint32_t>(Width), static_cast<uint32_t>(Height), TexFormat };
+    FBindlessTexture TextureWrapper;
+    CreateBindlessTexture(Device, std::filesystem::path(FilePath).filename().wstring(),
+        TextureRGDesc, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST, TextureWrapper, false, false);
+    OutTexture = TextureWrapper.Resource;
 
-    D3D12_HEAP_PROPERTIES DefaultHeap = {};
-    DefaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
-    DefaultHeap.CreationNodeMask = 1;
-    DefaultHeap.VisibleNodeMask = 1;
-
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &DefaultHeap,
-        D3D12_HEAP_FLAG_NONE,
-        &TextureDesc,
-        D3D12_RESOURCE_STATE_COPY_DEST,
-        nullptr,
-        IID_PPV_ARGS(OutTexture.GetAddressOf())));
-
-    if (OutTexture)
-    {
-        const std::filesystem::path ResourcePath(FilePath);
-        OutTexture->SetName(ResourcePath.filename().c_str());
-    }
-
+    const D3D12_RESOURCE_DESC TextureDesc = CreateTextureResourceDesc(TextureRGDesc);
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT Layout = {};
     UINT NumRows = 0;
     UINT64 RowSizeInBytes = 0;
     UINT64 UploadBufferSize = 0;
     Device->GetDevice()->GetCopyableFootprints(&TextureDesc, 0, 1, 0, &Layout, &NumRows, &RowSizeInBytes, &UploadBufferSize);
 
-    D3D12_HEAP_PROPERTIES UploadHeap = {};
-    UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
-    UploadHeap.CreationNodeMask = 1;
-    UploadHeap.VisibleNodeMask = 1;
-
-    D3D12_RESOURCE_DESC UploadDesc = {};
-    UploadDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    UploadDesc.Width = UploadBufferSize;
-    UploadDesc.Height = 1;
-    UploadDesc.DepthOrArraySize = 1;
-    UploadDesc.MipLevels = 1;
-    UploadDesc.Format = DXGI_FORMAT_UNKNOWN;
-    UploadDesc.SampleDesc.Count = 1;
-    UploadDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-    ComPtr<ID3D12Resource> UploadResource;
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &UploadHeap,
-        D3D12_HEAP_FLAG_NONE,
-        &UploadDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        nullptr,
-        IID_PPV_ARGS(UploadResource.GetAddressOf())));
+    FUploadBuffer UploadBuffer;
+    CreateUploadBuffer(Device, L"", UploadBufferSize, UploadBuffer, nullptr);
 
     uint8_t* MappedData = nullptr;
-    D3D12_RANGE EmptyRange = { 0, 0 };
-    HR_CHECK(UploadResource->Map(0, &EmptyRange, reinterpret_cast<void**>(&MappedData)));
+    const D3D12_RANGE EmptyRange = { 0, 0 };
+    HR_CHECK(UploadBuffer->Map(0, &EmptyRange, reinterpret_cast<void**>(&MappedData)));
 
     for (UINT Row = 0; Row < NumRows; ++Row)
     {
@@ -588,7 +467,7 @@ bool FTextureLoader::LoadTextureInternal(const std::wstring& FilePath, ComPtr<ID
         memcpy(MappedData + Layout.Offset + Row * Layout.Footprint.RowPitch, SrcRow, Width * 4ULL);
     }
 
-    UploadResource->Unmap(0, nullptr);
+    UploadBuffer->Unmap(0, nullptr);
 
     ComPtr<ID3D12CommandAllocator> UploadAllocator;
     ComPtr<ID3D12GraphicsCommandList> UploadList;
@@ -602,7 +481,7 @@ bool FTextureLoader::LoadTextureInternal(const std::wstring& FilePath, ComPtr<ID
     DstLocation.SubresourceIndex = 0;
 
     D3D12_TEXTURE_COPY_LOCATION SrcLocation = {};
-    SrcLocation.pResource = UploadResource.Get();
+    SrcLocation.pResource = UploadBuffer.Get();
     SrcLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
     SrcLocation.PlacedFootprint = Layout;
 
@@ -615,7 +494,7 @@ bool FTextureLoader::LoadTextureInternal(const std::wstring& FilePath, ComPtr<ID
 
     if (RecordedUpload)
     {
-        RecordedUpload->UploadResource = UploadResource;
+        RecordedUpload->UploadResource = UploadBuffer.Resource;
         RecordedUpload->CommandAllocator = UploadAllocator;
         RecordedUpload->CommandList = UploadList;
     }
@@ -655,62 +534,26 @@ bool FTextureLoader::CreateDefaultGridTexture(ComPtr<ID3D12Resource>& OutTexture
         }
     }
 
-    D3D12_RESOURCE_DESC TextureDesc = {};
-    TextureDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    TextureDesc.Width = Width;
-    TextureDesc.Height = Height;
-    TextureDesc.DepthOrArraySize = 1;
-    TextureDesc.MipLevels = 1;
-    TextureDesc.Format = bUseSRGB ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM;
-    TextureDesc.SampleDesc.Count = 1;
-    TextureDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    const DXGI_FORMAT TexFormat = bUseSRGB ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM;
+    const FRGTextureDesc TextureRGDesc = { Width, Height, TexFormat };
+    FBindlessTexture TextureWrapper;
+    CreateBindlessTexture(Device, L"DefaultGridTexture",
+        TextureRGDesc, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST, TextureWrapper, false, false);
+    OutTexture = TextureWrapper.Resource;
 
-    D3D12_HEAP_PROPERTIES DefaultHeap = {};
-    DefaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
-    DefaultHeap.CreationNodeMask = 1;
-    DefaultHeap.VisibleNodeMask = 1;
-
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &DefaultHeap,
-        D3D12_HEAP_FLAG_NONE,
-        &TextureDesc,
-        D3D12_RESOURCE_STATE_COPY_DEST,
-        nullptr,
-        IID_PPV_ARGS(OutTexture.GetAddressOf())));
-
+    const D3D12_RESOURCE_DESC TextureDesc = CreateTextureResourceDesc(TextureRGDesc);
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT Layout = {};
     UINT NumRows = 0;
     UINT64 RowSizeInBytes = 0;
     UINT64 UploadBufferSize = 0;
     Device->GetDevice()->GetCopyableFootprints(&TextureDesc, 0, 1, 0, &Layout, &NumRows, &RowSizeInBytes, &UploadBufferSize);
 
-    D3D12_HEAP_PROPERTIES UploadHeap = {};
-    UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
-    UploadHeap.CreationNodeMask = 1;
-    UploadHeap.VisibleNodeMask = 1;
-
-    D3D12_RESOURCE_DESC UploadDesc = {};
-    UploadDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    UploadDesc.Width = UploadBufferSize;
-    UploadDesc.Height = 1;
-    UploadDesc.DepthOrArraySize = 1;
-    UploadDesc.MipLevels = 1;
-    UploadDesc.Format = DXGI_FORMAT_UNKNOWN;
-    UploadDesc.SampleDesc.Count = 1;
-    UploadDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-    ComPtr<ID3D12Resource> UploadResource;
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &UploadHeap,
-        D3D12_HEAP_FLAG_NONE,
-        &UploadDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        nullptr,
-        IID_PPV_ARGS(UploadResource.GetAddressOf())));
+    FUploadBuffer UploadBuffer;
+    CreateUploadBuffer(Device, L"", UploadBufferSize, UploadBuffer, nullptr);
 
     uint8_t* MappedData = nullptr;
-    D3D12_RANGE EmptyRange = { 0, 0 };
-    HR_CHECK(UploadResource->Map(0, &EmptyRange, reinterpret_cast<void**>(&MappedData)));
+    const D3D12_RANGE EmptyRange = { 0, 0 };
+    HR_CHECK(UploadBuffer->Map(0, &EmptyRange, reinterpret_cast<void**>(&MappedData)));
 
     for (UINT Row = 0; Row < NumRows; ++Row)
     {
@@ -718,7 +561,7 @@ bool FTextureLoader::CreateDefaultGridTexture(ComPtr<ID3D12Resource>& OutTexture
         memcpy(MappedData + Layout.Offset + Row * Layout.Footprint.RowPitch, SrcRow, Width * sizeof(uint32_t));
     }
 
-    UploadResource->Unmap(0, nullptr);
+    UploadBuffer->Unmap(0, nullptr);
 
     ComPtr<ID3D12CommandAllocator> UploadAllocator;
     ComPtr<ID3D12GraphicsCommandList> UploadList;
@@ -732,7 +575,7 @@ bool FTextureLoader::CreateDefaultGridTexture(ComPtr<ID3D12Resource>& OutTexture
     DstLocation.SubresourceIndex = 0;
 
     D3D12_TEXTURE_COPY_LOCATION SrcLocation = {};
-    SrcLocation.pResource = UploadResource.Get();
+    SrcLocation.pResource = UploadBuffer.Get();
     SrcLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
     SrcLocation.PlacedFootprint = Layout;
 
@@ -745,7 +588,7 @@ bool FTextureLoader::CreateDefaultGridTexture(ComPtr<ID3D12Resource>& OutTexture
 
     if (RecordedUpload)
     {
-        RecordedUpload->UploadResource = UploadResource;
+        RecordedUpload->UploadResource = UploadBuffer.Resource;
         RecordedUpload->CommandAllocator = UploadAllocator;
         RecordedUpload->CommandList = UploadList;
     }
@@ -770,66 +613,30 @@ bool FTextureLoader::CreateSolidColorTexture(uint32_t Color, ComPtr<ID3D12Resour
     const uint32_t Height = 1;
     const std::array<uint32_t, 1> TextureData = { Color };
 
-    D3D12_RESOURCE_DESC TextureDesc = {};
-    TextureDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    TextureDesc.Width = Width;
-    TextureDesc.Height = Height;
-    TextureDesc.DepthOrArraySize = 1;
-    TextureDesc.MipLevels = 1;
-    TextureDesc.Format = bUseSRGB ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM;
-    TextureDesc.SampleDesc.Count = 1;
-    TextureDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    const DXGI_FORMAT TexFormat = bUseSRGB ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM;
+    const FRGTextureDesc TextureRGDesc = { Width, Height, TexFormat };
+    FBindlessTexture TextureWrapper;
+    CreateBindlessTexture(Device, L"SolidColorTexture",
+        TextureRGDesc, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST, TextureWrapper, false, false);
+    OutTexture = TextureWrapper.Resource;
 
-    D3D12_HEAP_PROPERTIES DefaultHeap = {};
-    DefaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
-    DefaultHeap.CreationNodeMask = 1;
-    DefaultHeap.VisibleNodeMask = 1;
-
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &DefaultHeap,
-        D3D12_HEAP_FLAG_NONE,
-        &TextureDesc,
-        D3D12_RESOURCE_STATE_COPY_DEST,
-        nullptr,
-        IID_PPV_ARGS(OutTexture.GetAddressOf())));
-
+    const D3D12_RESOURCE_DESC TextureDesc = CreateTextureResourceDesc(TextureRGDesc);
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT Layout = {};
     UINT NumRows = 0;
     UINT64 RowSizeInBytes = 0;
     UINT64 UploadBufferSize = 0;
     Device->GetDevice()->GetCopyableFootprints(&TextureDesc, 0, 1, 0, &Layout, &NumRows, &RowSizeInBytes, &UploadBufferSize);
 
-    D3D12_HEAP_PROPERTIES UploadHeap = {};
-    UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
-    UploadHeap.CreationNodeMask = 1;
-    UploadHeap.VisibleNodeMask = 1;
-
-    D3D12_RESOURCE_DESC UploadDesc = {};
-    UploadDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    UploadDesc.Width = UploadBufferSize;
-    UploadDesc.Height = 1;
-    UploadDesc.DepthOrArraySize = 1;
-    UploadDesc.MipLevels = 1;
-    UploadDesc.Format = DXGI_FORMAT_UNKNOWN;
-    UploadDesc.SampleDesc.Count = 1;
-    UploadDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-    ComPtr<ID3D12Resource> UploadResource;
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &UploadHeap,
-        D3D12_HEAP_FLAG_NONE,
-        &UploadDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        nullptr,
-        IID_PPV_ARGS(UploadResource.GetAddressOf())));
+    FUploadBuffer UploadBuffer;
+    CreateUploadBuffer(Device, L"", UploadBufferSize, UploadBuffer, nullptr);
 
     uint8_t* MappedData = nullptr;
-    D3D12_RANGE EmptyRange = { 0, 0 };
-    HR_CHECK(UploadResource->Map(0, &EmptyRange, reinterpret_cast<void**>(&MappedData)));
+    const D3D12_RANGE EmptyRange = { 0, 0 };
+    HR_CHECK(UploadBuffer->Map(0, &EmptyRange, reinterpret_cast<void**>(&MappedData)));
 
     const uint8_t* SrcRow = reinterpret_cast<const uint8_t*>(TextureData.data());
     memcpy(MappedData + Layout.Offset, SrcRow, sizeof(uint32_t));
-    UploadResource->Unmap(0, nullptr);
+    UploadBuffer->Unmap(0, nullptr);
 
     ComPtr<ID3D12CommandAllocator> UploadAllocator;
     ComPtr<ID3D12GraphicsCommandList> UploadList;
@@ -843,7 +650,7 @@ bool FTextureLoader::CreateSolidColorTexture(uint32_t Color, ComPtr<ID3D12Resour
     DstLocation.SubresourceIndex = 0;
 
     D3D12_TEXTURE_COPY_LOCATION SrcLocation = {};
-    SrcLocation.pResource = UploadResource.Get();
+    SrcLocation.pResource = UploadBuffer.Get();
     SrcLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
     SrcLocation.PlacedFootprint = Layout;
 
@@ -856,7 +663,7 @@ bool FTextureLoader::CreateSolidColorTexture(uint32_t Color, ComPtr<ID3D12Resour
 
     if (RecordedUpload)
     {
-        RecordedUpload->UploadResource = UploadResource;
+        RecordedUpload->UploadResource = UploadBuffer.Resource;
         RecordedUpload->CommandAllocator = UploadAllocator;
         RecordedUpload->CommandList = UploadList;
     }

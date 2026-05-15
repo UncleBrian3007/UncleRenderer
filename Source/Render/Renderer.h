@@ -59,14 +59,6 @@ public:
     using FVisibilityListFrameSrvIndices = FGpuDrivenCulling::FVisibilityListFrameSrvIndices;
     using FMappedConstantBuffer = FMappedUploadBuffer;
 
-    // Nested Types
-    struct FDepthResources
-    {
-        Microsoft::WRL::ComPtr<ID3D12Resource> DepthBuffer;
-        Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> DSVHeap;
-        D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilHandle{};
-    };
-
     struct FIndirectDrawRange
     {
         uint32_t Start = 0;
@@ -74,6 +66,18 @@ public:
         uint32_t PipelineKey = 0;
         std::array<uint32_t, 10> MaterialBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX } };
         std::wstring Name;
+
+        static FIndirectDrawRange Make(uint32_t InStart, uint32_t InPipelineKey,
+                                       const std::array<uint32_t, 10>& InMaterialIndices,
+                                       const std::string& InName = {})
+        {
+            FIndirectDrawRange Range;
+            Range.Start = InStart;
+            Range.PipelineKey = InPipelineKey;
+            Range.MaterialBindlessIndices = InMaterialIndices;
+            Range.Name.assign(InName.begin(), InName.end());
+            return Range;
+        }
     };
 
     struct FGpuDrivenCullingProvider
@@ -219,6 +223,8 @@ public:
     const D3D12_CPU_DESCRIPTOR_HANDLE& GetDSVHandle() const;
     ID3D12Resource* GetDepthBuffer() const;
     D3D12_RESOURCE_STATES& GetDepthBufferState();
+    uint32_t GetCurrentDepthSrvBindlessIndex() const;
+    DXGI_FORMAT GetDepthTypelessFormat() const;
     ID3D12Resource* GetSceneConstantBuffer() const;
     D3D12_GPU_VIRTUAL_ADDRESS GetSceneConstantBufferAddress() const;
     uint8_t* GetSceneConstantBufferMapped() const;
@@ -229,6 +235,8 @@ public:
     D3D12_RESOURCE_STATES& GetMeshletRunCountState();
     ID3D12Resource* GetEnvironmentCubeTexture() const;
     ID3D12Resource* GetBrdfLutTexture() const;
+    uint32_t GetEnvironmentCubeSrvIndex() const;
+    uint32_t GetBrdfLutSrvIndex() const;
     float GetEnvironmentMipCount() const;
     const FRayTracingRuntime& GetRayTracingRuntime() const;
     FRayTracingRuntime& GetRayTracingRuntime();
@@ -293,7 +301,7 @@ protected:
     D3D12_GPU_DESCRIPTOR_HANDLE GetBindlessGpuHandle(uint32_t Index) const;
 
     // Per-Frame Resource Creation
-    bool CreateDepthResources(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT Format, FDepthResources& OutDepthResources);
+    bool CreateDepthResources(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT Format, FDepthStencilTarget& OutDepthResources);
     bool CreateDepthResourcesPerFrame(FDX12Device* Device, uint32_t Width, uint32_t Height, DXGI_FORMAT Format);
     bool CreateSceneConstantBuffersPerFrame(FDX12Device* Device, uint64_t BufferSize);
     bool CreateCullingConstantBuffersPerFrame(FDX12Device* Device);
@@ -307,24 +315,46 @@ protected:
     // Holds indirect draw commands, meshlet data, bounds, and culling cone information.
     struct FGpuDrivenPreparedData
     {
-        std::vector<FIndirectDrawCommand> Commands;     // Indirect draw commands for ExecuteIndirect
-        std::vector<FMeshletDrawData> MeshletDrawData;  // Per-meshlet draw metadata
-        std::vector<DirectX::XMFLOAT4> Bounds;          // Bounding sphere (xyz=center, w=radius)
-        std::vector<DirectX::XMFLOAT4> ConeAxisCutoff;  // Cone axis and cutoff for backface culling
-        std::vector<DirectX::XMFLOAT4> ConeApex;        // Cone apex for backface culling
-        std::vector<uint32_t> RangeOffsets;             // Starting offset for each draw range
+        std::vector<FIndirectDrawCommand> Commands;
+        std::vector<FMeshletDrawData> MeshletDrawData;
+        std::vector<DirectX::XMFLOAT4> Bounds;
+        std::vector<DirectX::XMFLOAT4> ConeAxisCutoff;
+        std::vector<DirectX::XMFLOAT4> ConeApex;
+        std::vector<uint32_t> RangeOffsets;
+
+        void Reserve(size_t Count)
+        {
+            Commands.clear();       Commands.reserve(Count);
+            MeshletDrawData.clear(); MeshletDrawData.reserve(Count);
+            Bounds.clear();          Bounds.reserve(Count);
+            ConeAxisCutoff.clear();  ConeAxisCutoff.reserve(Count);
+            ConeApex.clear();        ConeApex.reserve(Count);
+        }
+
+        void PushDraw(const FIndirectDrawCommand& Cmd,
+                      const FMeshletDrawData& Draw,
+                      DirectX::XMFLOAT4 BoundingSphere,
+                      DirectX::XMFLOAT4 Cone,
+                      DirectX::XMFLOAT4 Apex)
+        {
+            Commands.push_back(Cmd);
+            MeshletDrawData.push_back(Draw);
+            Bounds.push_back(BoundingSphere);
+            ConeAxisCutoff.push_back(Cone);
+            ConeApex.push_back(Apex);
+        }
     };
 
     bool PrepareGpuDrivenDrawData(FGpuDrivenPreparedData& OutData);
     bool CreatePerFrameIndirectBuffers(FDX12Device* Device, const FGpuDrivenPreparedData& Data);
     bool CreateSharedGpuDrivenBuffers(FDX12Device* Device, const FGpuDrivenPreparedData& Data);
     bool UploadGpuDrivenBuffers(FDX12Device* Device, const FGpuDrivenPreparedData& Data);
+    std::vector<FUploadBuffer> PrepareIndirectCommandUploads(FDX12Device* Device, const std::vector<FIndirectDrawCommand>& Commands);
     bool CreateCullingPipelines(FDX12Device* Device);
     bool CreateIndirectCommandSignature(FDX12Device* Device, ID3D12RootSignature* RootSignature);
 
     // Depth Resources
-    std::vector<FDepthResources> DepthResourcesPerFrame;
-    std::vector<D3D12_RESOURCE_STATES> DepthBufferStates;
+    std::vector<FDepthStencilTarget> DepthResourcesPerFrame;
     D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilHandle{};
     DXGI_FORMAT SceneDepthFormat = DXGI_FORMAT_UNKNOWN;
 
@@ -335,8 +365,7 @@ protected:
     D3D12_RECT ShadowScissor{};
 
     // Scene Constants
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SceneConstantBuffers;
-    std::vector<uint8_t*> SceneConstantBufferMapped;
+    std::vector<FMappedConstantBuffer> SceneConstantBuffers;
     uint64_t SceneConstantBufferStride = 0;
 
     // Scene Bounds

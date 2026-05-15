@@ -126,7 +126,7 @@ void FRayTracingShadow::AddPass(FDeferredPassContext& Context) const
         const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = Owner.GetSceneConstantBufferAddress();
         CommandList4->SetComputeRootConstantBufferView(1, ConstantBufferAddress + ConstantBufferOffset);
 
-        const uint32_t BindlessIndices[] =
+        const uint32_t BindlessIndices[FRayTracingRuntime::RayQueryRootConstantDwordCount] =
         {
             DepthBindlessIndex,
             GBufferABindlessIndex,
@@ -135,8 +135,6 @@ void FRayTracingShadow::AddPass(FDeferredPassContext& Context) const
             DispatchWidth,
             DispatchHeight
         };
-        static_assert(_countof(BindlessIndices) <= FRayTracingRuntime::RayQueryRootConstantDwordCount, "Ray query root constants exceed root signature capacity.");
-        assert(_countof(BindlessIndices) <= FRayTracingRuntime::RayQueryRootConstantDwordCount);
         CommandList4->SetComputeRoot32BitConstants(2, _countof(BindlessIndices), BindlessIndices, 0);
 
         CommandList4->Dispatch(GroupCountX, GroupCountY, 1);

@@ -18,6 +18,10 @@ cbuffer ClusterDagLevelSplitNodeCullBindlessConstants : register(b1)
     uint DebugPrintStatsIndex;
     uint DebugLineBufferIndex;
     uint TraversalEpoch;
+    uint PageTableBufferIndex;
+    uint StreamingRequestBufferIndex;
+    uint StreamingRequestCapacity;
+    uint StreamingResourceId;
 };
 
 groupshared uint SharedNextGroups[kClusterDagLevelSplitMaxChildRefsPerGroup];
@@ -92,6 +96,9 @@ void ClusterDagLevelSplitNodeCullCS(uint3 groupId : SV_GroupID, uint groupThread
     RWByteAddressBuffer NextNodeArgs = ResourceDescriptorHeap[NextNodeArgsBufferIndex];
     RWStructuredBuffer<uint> CandidateClusterQueue = ResourceDescriptorHeap[CandidateClusterQueueBufferIndex];
     RWStructuredBuffer<uint> VisitedGroupEpochs = ResourceDescriptorHeap[VisitedGroupEpochBufferIndex];
+    StructuredBuffer<ClusterDagPageTableEntry> PageTable = ResourceDescriptorHeap[PageTableBufferIndex];
+    RWStructuredBuffer<ClusterDagStreamingRequest> StreamingRequests = ResourceDescriptorHeap[StreamingRequestBufferIndex];
+    const bool streamingEnabled = PageTableBufferIndex != 0xffffffffu && StreamingRequestBufferIndex != 0xffffffffu && StreamingRequestCapacity > 0u;
 
     if (groupThreadIndex == 0u)
     {
@@ -184,6 +191,10 @@ void ClusterDagLevelSplitNodeCullCS(uint3 groupId : SV_GroupID, uint groupThread
 #if !USE_CLUSTER_DAG_FAST
                         const ClusterDagGroupData nextGroup = Groups[cluster.GeneratingGroupIndex];
                         if (nextGroup.ChildRefStart > ChildRefCount || nextGroup.ChildRefCount > ChildRefCount - nextGroup.ChildRefStart || nextGroup.ChildRefCount == 0u)
+                        {
+                            refine = false;
+                        }
+                        else if (!ShouldRefineClusterDagStreamingPage(streamingEnabled, nextGroup, StreamingResourceId, StreamingRequestCapacity, PageTable, StreamingRequests, DebugPrintStatsIndex))
                         {
                             refine = false;
                         }

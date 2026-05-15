@@ -129,6 +129,18 @@ struct FIndirectDrawCommand
     uint32_t DrawIndexStart = 0;
     uint32_t DrawDataIndex = 0;
     D3D12_DRAW_ARGUMENTS DrawArguments{};
+
+    static FIndirectDrawCommand Make(D3D12_GPU_VIRTUAL_ADDRESS CbAddress, uint32_t IndexStart, uint32_t IndexCount, uint32_t InstanceIndex, uint32_t InDrawDataIndex = 0)
+    {
+        FIndirectDrawCommand Cmd;
+        Cmd.ConstantBufferAddress = CbAddress;
+        Cmd.DrawIndexStart = IndexStart;
+        Cmd.DrawDataIndex = InDrawDataIndex;
+        Cmd.DrawArguments.VertexCountPerInstance = IndexCount;
+        Cmd.DrawArguments.InstanceCount = 1;
+        Cmd.DrawArguments.StartInstanceLocation = InstanceIndex;
+        return Cmd;
+    }
 };
 
 static_assert(sizeof(FIndirectDrawCommand) == 32, "Indirect command layout must be 32 bytes.");
@@ -234,9 +246,7 @@ namespace RendererUtils
     void UpdateSceneConstants(const FUpdateSceneConstantsParams& Params);
     bool UpdateGltfSceneAnimation(
         std::vector<FSceneModelResource>& Models,
-        const std::vector<FGltfScene>& Scenes,
-        std::vector<FGltfAnimationPose>& ScenePoses,
-        std::vector<float>& SceneTimes,
+        std::vector<FGltfScene>& Scenes,
         float DeltaTime);
     DirectX::XMMATRIX BuildDirectionalLightViewProjection(
         const DirectX::XMFLOAT3& SceneCenter,

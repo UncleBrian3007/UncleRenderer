@@ -110,6 +110,9 @@ void GpuDebugPrintStatsCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     uint clusterDagExpandedOverflow = StatsBuffer.Load(4 * kDebugPrintStatsClusterDagExpandedOverflowIndex);
     uint clusterDagIterationOverflow = StatsBuffer.Load(4 * kDebugPrintStatsClusterDagIterationOverflowIndex);
     uint clusterDagPersistentOverflow = StatsBuffer.Load(4 * kDebugPrintStatsClusterDagPersistentOverflowIndex);
+    uint clusterDagStreamingRequest = StatsBuffer.Load(4 * kClusterDagStreamingRequestStatIndex);
+    uint clusterDagStreamingFallback = StatsBuffer.Load(4 * kClusterDagStreamingFallbackStatIndex);
+    uint clusterDagStreamingRequestOverflow = StatsBuffer.Load(4 * kClusterDagStreamingRequestOverflowStatIndex);
     uint clusterDagPersistentGroupCommitSpin = StatsBuffer.Load(4 * kDebugPrintStatsClusterDagPersistentGroupCommitSpinIndex);
     uint clusterDagPersistentCandidateCommitSpin = StatsBuffer.Load(4 * kDebugPrintStatsClusterDagPersistentCandidateCommitSpinIndex);
     uint clusterDagNonLeafVisible = StatsBuffer.Load(4 * kClusterDagNonLeafVisibleStatIndex);
@@ -193,6 +196,18 @@ void GpuDebugPrintStatsCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     pos = uint2(8, 260);
     PrintLabel(pos, textColor, 'Q', 'C', 'S', 'P', 'I', 'N', ' ', ' ');
     PrintUInt(uint2(8 + 8 * 8, 260), clusterDagPersistentCandidateCommitSpin, textColor);
+
+    pos = uint2(144, 132);
+    PrintLabel(pos, textColor, 'S', 'T', 'R', 'E', 'Q', ' ', ' ', ' ');
+    PrintUInt(uint2(144 + 8 * 8, 132), clusterDagStreamingRequest, textColor);
+
+    pos = uint2(144, 148);
+    PrintLabel(pos, textColor, 'S', 'T', 'F', 'A', 'L', 'L', ' ', ' ');
+    PrintUInt(uint2(144 + 8 * 8, 148), clusterDagStreamingFallback, textColor);
+
+    pos = uint2(144, 164);
+    PrintLabel(pos, textColor, 'S', 'T', 'D', 'R', 'O', 'P', ' ', ' ');
+    PrintUInt(uint2(144 + 8 * 8, 164), clusterDagStreamingRequestOverflow, textColor);
 
     uint histogramStartY = 276u;
 

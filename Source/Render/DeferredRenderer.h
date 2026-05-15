@@ -25,6 +25,8 @@
 #include "Deferred/Cas.h"
 #include "Deferred/ClusterDagVisibilityPass.h"
 #include "Deferred/ClusterDagRuntime.h"
+#include "Deferred/ClusterDagStreamingManager.h"
+#include "Deferred/GBufferLayout.h"
 #include "Deferred/Taa.h"
 #include "Deferred/Tonemap.h"
 #include "../Core/RendererConfig.h"
@@ -37,19 +39,9 @@ class FDeferredFrameOrchestrator;
 class FDeferredBasePass;
 class FDeferredLightingPass;
 class FDeferredResourceImporter;
-struct FModelTextureSet
-{
-    Microsoft::WRL::ComPtr<ID3D12Resource> BaseColor;
-    Microsoft::WRL::ComPtr<ID3D12Resource> MetallicRoughness;
-    Microsoft::WRL::ComPtr<ID3D12Resource> Normal;
-    Microsoft::WRL::ComPtr<ID3D12Resource> Emissive;
-    Microsoft::WRL::ComPtr<ID3D12Resource> SheenColor;
-    Microsoft::WRL::ComPtr<ID3D12Resource> SheenRoughness;
-    Microsoft::WRL::ComPtr<ID3D12Resource> Clearcoat;
-    Microsoft::WRL::ComPtr<ID3D12Resource> ClearcoatRoughness;
-    Microsoft::WRL::ComPtr<ID3D12Resource> ClearcoatNormal;
-    Microsoft::WRL::ComPtr<ID3D12Resource> Anisotropy;
-};
+
+using FDeferredGBufferHandles = std::array<FRGResourceHandle, kDeferredGBufferCount>;
+
 
 class FDeferredRenderer : public FRenderer
 {
@@ -57,7 +49,7 @@ public:
     // Format constants
     static constexpr DXGI_FORMAT LightingBufferFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
     static constexpr DXGI_FORMAT PathTracingBufferFormat = DXGI_FORMAT_R32G32B32A32_FLOAT;
-    static const DXGI_FORMAT GBufferFormats[4];
+    static const DXGI_FORMAT GBufferFormats[kDeferredGBufferCount];
 
     // Transient debug state structs
     struct FRestirGITransientState
@@ -106,6 +98,7 @@ public:
     bool IsClusterDagForceMipSkipFrustumCull() const override;
     uint32_t GetClusterDagVisibleRootCount() const override;
     uint32_t GetClusterDagClusterCount() const override;
+    FClusterDagStreamingManager* GetClusterDagStreamingManager() const { return ClusterDagStreamingManager.get(); }
     D3D12_GPU_VIRTUAL_ADDRESS GetClusterDagSceneConstantBufferAddress() const;
     D3D12_GPU_VIRTUAL_ADDRESS GetClusterDagSceneConstantBufferAddress(uint32_t FrameIndex) const;
 
@@ -150,7 +143,7 @@ public:
         FRGResourceHandle DepthHandle{};
         FRGResourceHandle ObjectIdHandle{};
         FRGResourceHandle VelocityHandle{};
-        std::array<FRGResourceHandle, 4> GBufferHandles{};
+        FDeferredGBufferHandles GBufferHandles{};
         FClusterDagVisibilityFrameResources ClusterDagVisibility;
         FRGResourceHandle LinearDepthHandle{};
         FGtaoFrameResources Gtao;
@@ -174,9 +167,8 @@ private:
     bool InitializeSceneModelResources(FDX12Device* Device, const FRendererConfig& Config);
     bool InitializeEnvironmentAndDescriptorResources(FDX12Device* Device, const FRendererConfig& Config);
     bool InitializeGpuDebugResources(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
-    bool CreateDescriptorHeap(FDX12Device* Device);
     bool CreateClusterDagSceneConstantBuffersPerFrame(FDX12Device* Device, uint32_t ModelCount);
-    bool CreateSceneTextures(FDX12Device* Device, const std::vector<FSceneModelResource>& Models);
+    bool CreateSceneTextures(FDX12Device* Device, std::vector<FSceneModelResource>& Models);
     bool CreateGpuDrivenResources(FDX12Device* Device);
 
     // Frame rendering
@@ -194,7 +186,6 @@ private:
 
     // Config / state helpers
     void ApplyRendererConfig(const FRendererConfig& Config);
-    void InvalidateRestirGiDenoiserHistory();
     DXGI_FORMAT ResolveRestirGiRadianceFormat(FDX12Device* Device) const;
 
 private:
@@ -203,6 +194,7 @@ private:
     friend class FDeferredBasePass;
     friend class FDeferredLightingPass;
     friend class FClusterDagVisibilityPass;
+    friend class FClusterDagStreamingManager;
     friend class FDeferredResourceImporter;
     friend class FGpuDebug;
     friend class FObjectId;
@@ -224,6 +216,7 @@ private:
     std::unique_ptr<FDeferredBasePass>          BasePass;
     std::unique_ptr<FDeferredLightingPass>      LightingPass;
     std::unique_ptr<FClusterDagVisibilityPass>  ClusterDagVisibilityPass;
+    std::unique_ptr<FClusterDagStreamingManager> ClusterDagStreamingManager;
     std::unique_ptr<FGtao>                      Gtao;
     std::unique_ptr<FRayTracingShadow>          RayTracingShadow;
     std::unique_ptr<FSsr>                       Ssr;
@@ -249,7 +242,6 @@ private:
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4>   CompositeLightingPipelines;
 
     // Scene textures and bindless resources
-    std::vector<FModelTextureSet> SceneTextures;
     FBindlessTexture SceneTexture;
     FBindlessTexture LightingBuffer;
     FBindlessTexture VelocityTexture;
@@ -266,7 +258,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> GBufferRTVHeap;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> LinearDepthRtvHeap;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> VelocityRtvHeap;
-    D3D12_CPU_DESCRIPTOR_HANDLE GBufferRTVHandles[4]{};
+    D3D12_CPU_DESCRIPTOR_HANDLE GBufferRTVHandles[kDeferredGBufferCount]{};
     D3D12_CPU_DESCRIPTOR_HANDLE LightingRTVHandle{};
     D3D12_CPU_DESCRIPTOR_HANDLE VelocityRtvHandle{};
     D3D12_CPU_DESCRIPTOR_HANDLE LinearDepthRtvHandle{};
@@ -274,20 +266,7 @@ private:
     DXGI_FORMAT BackBufferFormat = DXGI_FORMAT_UNKNOWN;
 
     // Bindless indices
-    std::array<uint32_t, 4> GBufferBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX } };
-    uint32_t EnvironmentCubeBindlessIndex = UINT32_MAX;
-    uint32_t BrdfLutBindlessIndex = UINT32_MAX;
     uint32_t DirectLightingBindlessIndex = UINT32_MAX;
-    std::vector<uint32_t> DepthBindlessIndices;
-
-    // GBuffer resource state tracking
-    D3D12_RESOURCE_STATES GBufferStates[4] =
-    {
-        D3D12_RESOURCE_STATE_RENDER_TARGET,
-        D3D12_RESOURCE_STATE_RENDER_TARGET,
-        D3D12_RESOURCE_STATE_RENDER_TARGET,
-        D3D12_RESOURCE_STATE_RENDER_TARGET,
-    };
     ID3D12Resource* DirectLightingResource = nullptr;
 
     // ClusterDAG constant buffers
@@ -296,9 +275,7 @@ private:
     uint32_t                                            ClusterDagSceneConstantsPreparedFrame = UINT32_MAX;
 
     // Scene and animation data
-    std::vector<FGltfScene>         GltfScenes;
-    std::vector<FGltfAnimationPose> GltfScenePoses;
-    std::vector<float>              GltfSceneTimes;
+    std::vector<FGltfScene> GltfScenes;
     DirectX::XMFLOAT4X4 SceneWorldMatrix{};
 
     // Camera and view matrices

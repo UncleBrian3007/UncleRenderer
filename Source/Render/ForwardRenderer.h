@@ -49,7 +49,7 @@ private:
     // Initialization
     bool CreateRootSignature(FDX12Device* Device);
     bool CreatePipelineState(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
-    bool CreateSceneTextures(FDX12Device* Device, const std::vector<FSceneModelResource>& Models);
+    bool CreateSceneTextures(FDX12Device* Device, std::vector<FSceneModelResource>& Models);
     bool CreateGpuDrivenResources(FDX12Device* Device);
 
     // Pipeline management
@@ -96,13 +96,7 @@ private:
 
     // Scene resources
     std::unique_ptr<FSkyAtmosphere>                              SkyAtmosphere;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>          SceneTextures;
     Microsoft::WRL::ComPtr<ID3D12Resource>                       SceneTexture;
-    uint32_t EnvironmentCubeBindlessIndex = UINT32_MAX;
-    uint32_t BrdfLutBindlessIndex = UINT32_MAX;
-
     // Scene and animation data
-    std::vector<FGltfScene>         GltfScenes;
-    std::vector<FGltfAnimationPose> GltfScenePoses;
-    std::vector<float>              GltfSceneTimes;
+    std::vector<FGltfScene> GltfScenes;
 };

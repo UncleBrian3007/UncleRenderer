@@ -95,10 +95,7 @@ void FHzb::AddPass(FDeferredPassContext& Context)
         const D3D12_RESOURCE_DESC DepthDesc = DepthBuffer ? DepthBuffer->GetDesc() : D3D12_RESOURCE_DESC{};
         Data.SourceWidth = static_cast<uint32>(DepthDesc.Width);
         Data.SourceHeight = DepthDesc.Height;
-        const uint32_t DepthIndex = Owner.DepthBindlessIndices.empty()
-            ? 0u
-            : (Owner.GetFrameIndex() % static_cast<uint32_t>(Owner.DepthBindlessIndices.size()));
-        Data.DepthBindlessIndex = Owner.DepthBindlessIndices.empty() ? UINT32_MAX : Owner.DepthBindlessIndices[DepthIndex];
+        Data.DepthBindlessIndex = Owner.GetCurrentDepthSrvBindlessIndex();
         Data.HZBSrvMips = HzbSrvMipBindlessIndices;
         Data.HZBUavs = HzbUavBindlessIndices;
         Data.HZBNullUav = HzbNullUavTexture.UavBindlessIndex;
@@ -223,8 +220,7 @@ void FHzb::AddPass(FDeferredPassContext& Context)
             LocalCommandList->SetPipelineState(SelectedPipeline);
             static_assert(sizeof(FHZBConstants) / sizeof(uint32_t) <= kHzbConstantsDwordCount);
             LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(Constants) / sizeof(uint32_t), &Constants, 0);
-            const uint32_t HZBBindlessIndices[] = { Data.DepthBindlessIndex, SourceBindlessIndex, DestIndex0, DestIndex1, DestIndex2, DestIndex3 };
-            static_assert(_countof(HZBBindlessIndices) <= kHzbBindlessDwordCount);
+            const uint32_t HZBBindlessIndices[kHzbBindlessDwordCount] = { Data.DepthBindlessIndex, SourceBindlessIndex, DestIndex0, DestIndex1, DestIndex2, DestIndex3 };
             LocalCommandList->SetComputeRoot32BitConstants(1, _countof(HZBBindlessIndices), HZBBindlessIndices, 0);
 
             const uint32_t GroupX = (Constants.DestWidth + 7) / 8;
@@ -359,42 +355,11 @@ bool FHzb::CreateResources(FDX12Device* Device, uint32_t InWidth, uint32_t InHei
         ++MipCount;
     }
 
-    FRGTextureDesc HzbDesc;
-    HzbDesc.Width = BaseWidth;
-    HzbDesc.Height = BaseHeight;
-    HzbDesc.Format = DXGI_FORMAT_R32G32_FLOAT;
-    HzbDesc.MipLevels = static_cast<uint16_t>(MipCount);
+    const FRGTextureDesc HzbDesc = { BaseWidth, BaseHeight, DXGI_FORMAT_R32G32_FLOAT, static_cast<uint16_t>(MipCount) };
+    CreateBindlessTexture(Device, L"HierarchicalZBuffer", HzbDesc, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, HzbTexture, false, false);
 
-    const D3D12_RESOURCE_DESC ResourceDesc = CreateTexture2DResourceDesc(HzbDesc, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-    const D3D12_HEAP_PROPERTIES HeapProps = CreateHeapProperties(D3D12_HEAP_TYPE_DEFAULT);
-
-    InitializeBindlessTexture(HzbTexture, HzbDesc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &HeapProps,
-        D3D12_HEAP_FLAG_NONE,
-        &ResourceDesc,
-        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-        nullptr,
-        IID_PPV_ARGS(HzbTexture.ReleaseAndGetAddressOf())));
-    HzbTexture->SetName(L"HierarchicalZBuffer");
-
-    FRGTextureDesc NullDesc;
-    NullDesc.Width = 1;
-    NullDesc.Height = 1;
-    NullDesc.Format = DXGI_FORMAT_R32G32_FLOAT;
-    NullDesc.MipLevels = 1;
-
-    const D3D12_RESOURCE_DESC NullResourceDesc = CreateTexture2DResourceDesc(NullDesc, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-
-    InitializeBindlessTexture(HzbNullUavTexture, NullDesc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &HeapProps,
-        D3D12_HEAP_FLAG_NONE,
-        &NullResourceDesc,
-        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-        nullptr,
-        IID_PPV_ARGS(HzbNullUavTexture.ReleaseAndGetAddressOf())));
-    HzbNullUavTexture->SetName(L"HZBNullUavResource");
+    const FRGTextureDesc NullDesc = { 1, 1, DXGI_FORMAT_R32G32_FLOAT };
+    CreateBindlessTexture(Device, L"HZBNullUavResource", NullDesc, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, HzbNullUavTexture, false, false);
 
     return true;
 }

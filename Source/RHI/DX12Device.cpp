@@ -160,9 +160,9 @@ bool FDX12Device::Initialize()
     if (!CreateFactory()) { LogError("Failed to create DXGI factory"); return false; }
     if (!PickAdapter())   { LogError("No suitable adapter found"); return false; }
     if (!CreateDevice())  { LogError("Failed to create D3D12 device"); return false; }
+    RtvDescriptorStride = Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
     if (!QueryRayTracingSupport()) { LogError("Failed to query DXR support"); return false; }
     if (!QueryAtomicInt64Support()) { LogError("Failed to query atomic int64 support"); return false; }
-    if (!QueryEnhancedBarrierSupport()) { LogError("Failed to query enhanced barrier support"); return false; }
     if (!CreateBindlessDescriptorHeap()) { LogError("Failed to create bindless descriptor heap"); return false; }
     if (!CreateSamplerDescriptorHeap()) { LogError("Failed to create sampler descriptor heap"); return false; }
     if (!DetermineShaderModel()) { LogError("Failed to determine shader model"); return false; }
@@ -300,18 +300,12 @@ bool FDX12Device::CreateBindlessDescriptorHeap()
     HeapDesc.NodeMask = 0;
 
     HR_CHECK(Device->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(BindlessDescriptorHeap.ReleaseAndGetAddressOf())));
-    if (BindlessDescriptorHeap)
-    {
-        BindlessDescriptorHeap->SetName(L"BindlessDescriptorHeap");
-    }
+    BindlessDescriptorHeap->SetName(L"BindlessDescriptorHeap");
 
     D3D12_DESCRIPTOR_HEAP_DESC CpuHeapDesc = HeapDesc;
     CpuHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     HR_CHECK(Device->CreateDescriptorHeap(&CpuHeapDesc, IID_PPV_ARGS(BindlessCpuDescriptorHeap.ReleaseAndGetAddressOf())));
-    if (BindlessCpuDescriptorHeap)
-    {
-        BindlessCpuDescriptorHeap->SetName(L"BindlessCpuDescriptorHeap");
-    }
+    BindlessCpuDescriptorHeap->SetName(L"BindlessCpuDescriptorHeap");
 
     BindlessDescriptorCount = HeapDesc.NumDescriptors;
     BindlessDescriptorStride = Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -337,22 +331,6 @@ bool FDX12Device::CreateBindlessDescriptorHeap()
 }
 
 
-bool FDX12Device::QueryEnhancedBarrierSupport()
-{
-    bSupportsEnhancedBarriers = false;
-
-    D3D12_FEATURE_DATA_D3D12_OPTIONS12 Options12 = {};
-    if (FAILED(Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS12, &Options12, sizeof(Options12))))
-    {
-        LogWarning("D3D12 OPTIONS12 query failed; enhanced barriers disabled and legacy barriers will be used.");
-        return true;
-    }
-
-    bSupportsEnhancedBarriers = Options12.EnhancedBarriersSupported == TRUE;
-    LogInfo(std::string("Enhanced Barriers: ") + (bSupportsEnhancedBarriers ? "Enabled" : "Disabled"));
-    return true;
-}
-
 bool FDX12Device::CreateSamplerDescriptorHeap()
 {
     // Create sampler descriptor heap with enough space for multiple samplers
@@ -363,10 +341,7 @@ bool FDX12Device::CreateSamplerDescriptorHeap()
     HeapDesc.NodeMask = 0;
 
     HR_CHECK(Device->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(SamplerDescriptorHeap.ReleaseAndGetAddressOf())));
-    if (SamplerDescriptorHeap)
-    {
-        SamplerDescriptorHeap->SetName(L"SamplerDescriptorHeap");
-    }
+    SamplerDescriptorHeap->SetName(L"SamplerDescriptorHeap");
 
     const uint32_t SamplerDescriptorSize = Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
     CD3DX12_CPU_DESCRIPTOR_HANDLE SamplerHandle(SamplerDescriptorHeap->GetCPUDescriptorHandleForHeapStart());

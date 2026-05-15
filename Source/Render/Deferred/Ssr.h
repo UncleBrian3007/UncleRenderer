@@ -40,7 +40,6 @@ public:
     bool InitializePipelines(FDeferredRenderer& Owner, FDX12Device* Device);
     bool InitializeResources(FDeferredRenderer& Owner, FDX12Device* Device, uint32_t Width, uint32_t Height);
     void ImportPersistentResources(FDeferredPassContext& Context);
-    bool CreatePersistentDescriptors(FDeferredRenderer& Owner, FDX12Device* Device);
     void AddPasses(FDeferredPassContext& Context);
 
     void SetSwEnabled(bool bEnabled) { bSsrSwEnabled = bEnabled; }
@@ -75,7 +74,7 @@ public:
 
     uint32_t GetBaseOutputSrvBindlessIndex() const;
     uint32_t GetLightingSrvBindlessIndex() const;
-    uint32_t GetFallbackSrvBindlessIndex() const { return bFallbackPersistentInputsValid ? SsrFallbackTexture.SrvBindlessIndex : UINT32_MAX; }
+    uint32_t GetFallbackSrvBindlessIndex() const { return bPersistentInputsValid ? SsrFallbackTexture.SrvBindlessIndex : UINT32_MAX; }
 
 private:
     friend class FDeferredRenderer;
@@ -154,15 +153,7 @@ private:
     std::vector<FBindlessBuffer> SsrIndirectArgsPrimaryBuffers;
     std::vector<FBindlessBuffer> SsrIndirectArgsHwMissBuffers;
     uint32_t SsrMaxRayCount = 0;
-    bool bBaseOutputPersistentInputsValid = false;
-    bool bGraphicsPersistentInputsValid = false;
-    bool bRayGatherPersistentInputsValid = false;
-    bool bBuildIndirectArgsPersistentInputsValid = false;
-    bool bSwTracePersistentInputsValid = false;
-    bool bHwTracePersistentInputsValid = false;
-    bool bResolvePersistentInputsValid = false;
-    bool bFallbackPersistentInputsValid = false;
-    bool bDenoisePersistentInputsValid = false;
+    bool bPersistentInputsValid = false;
 
     bool bSsrSwEnabled = true;
     bool bSsrHwEnabled = true;

@@ -16,6 +16,10 @@ cbuffer ClusterDagNodeCullBindlessConstants : register(b1)
     uint DebugPrintStatsIndex;
     uint DebugLineBufferIndex;
     uint TraversalEpoch;
+    uint PageTableBufferIndex;
+    uint StreamingRequestBufferIndex;
+    uint StreamingRequestCapacity;
+    uint StreamingResourceId;
 };
 
 [numthreads(64, 1, 1)]
@@ -28,6 +32,9 @@ void ClusterDagNodeCullCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     RWStructuredBuffer<uint> GroupQueue = ResourceDescriptorHeap[GroupQueueBufferIndex];
     RWStructuredBuffer<uint> CandidateClusterQueue = ResourceDescriptorHeap[CandidateClusterQueueBufferIndex];
     RWStructuredBuffer<uint> VisitedGroupEpochs = ResourceDescriptorHeap[VisitedGroupEpochBufferIndex];
+    StructuredBuffer<ClusterDagPageTableEntry> PageTable = ResourceDescriptorHeap[PageTableBufferIndex];
+    RWStructuredBuffer<ClusterDagStreamingRequest> StreamingRequests = ResourceDescriptorHeap[StreamingRequestBufferIndex];
+    const bool streamingEnabled = PageTableBufferIndex != 0xffffffffu && StreamingRequestBufferIndex != 0xffffffffu && StreamingRequestCapacity > 0u;
 
     const uint currentEpoch = TraversalEpoch;
     const uint maxLoopCount = max(GroupCount * 8u, 1024u);
@@ -122,6 +129,10 @@ void ClusterDagNodeCullCS(uint3 dispatchThreadId : SV_DispatchThreadID)
 #if !USE_CLUSTER_DAG_FAST
                                 const ClusterDagGroupData nextGroup = Groups[cluster.GeneratingGroupIndex];
                                 if (nextGroup.ChildRefStart > ChildRefCount || nextGroup.ChildRefCount > ChildRefCount - nextGroup.ChildRefStart || nextGroup.ChildRefCount == 0u)
+                                {
+                                    refine = false;
+                                }
+                                else if (!ShouldRefineClusterDagStreamingPage(streamingEnabled, nextGroup, StreamingResourceId, StreamingRequestCapacity, PageTable, StreamingRequests, DebugPrintStatsIndex))
                                 {
                                     refine = false;
                                 }

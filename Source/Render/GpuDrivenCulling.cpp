@@ -329,7 +329,7 @@ bool FGpuDrivenCulling::CreateCullingConstantBuffers(FDX12Device* Device, uint32
     CullingConstantBuffers.resize(FramesInFlight);
     CullingConstantBuffersLate.resize(FramesInFlight);
 
-    constexpr uint64_t CullingConstantSize = sizeof(uint32_t) * 60;
+    constexpr uint64_t CullingConstantSize = sizeof(FGpuCullingConstants);
 
     for (uint32_t Index = 0; Index < FramesInFlight; ++Index)
     {
@@ -659,6 +659,74 @@ void FGpuDrivenCulling::AddSharedInputUploadPostCopyBarriers(std::vector<D3D12_R
     AddBarrier(MeshletRangeOffsetBuffer.Get());
     AddBarrier(MeshletConeAxisBuffer.Get());
     AddBarrier(MeshletConeApexBuffer.Get());
+}
+
+void FGpuDrivenCulling::AddInitialUploadPreCopyBarriers(std::vector<D3D12_RESOURCE_BARRIER>& Barriers, uint32_t FramesInFlight) const
+{
+    for (uint32_t FrameIndex = 0; FrameIndex < FramesInFlight; ++FrameIndex)
+    {
+        ID3D12Resource* TemplateBuffer = GetIndirectCommandTemplateBuffer(FrameIndex);
+        if (TemplateBuffer)
+        {
+            Barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(
+                TemplateBuffer,
+                D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST));
+        }
+    }
+    if (HasSharedInputs())
+    {
+        AddSharedInputUploadPreCopyBarriers(Barriers);
+    }
+}
+
+void FGpuDrivenCulling::CopyInitialData(
+    ID3D12GraphicsCommandList* CommandList,
+    const std::vector<FUploadBuffer>& IndirectCommandUploads,
+    uint64_t CommandBufferSize) const
+{
+    if (!CommandList)
+    {
+        return;
+    }
+    if (!IndirectCommandUploads.empty() && CommandBufferSize > 0)
+    {
+        for (uint32_t FrameIndex = 0; FrameIndex < static_cast<uint32_t>(IndirectCommandUploads.size()); ++FrameIndex)
+        {
+            ID3D12Resource* TemplateBuffer = GetIndirectCommandTemplateBuffer(FrameIndex);
+            if (TemplateBuffer && IndirectCommandUploads[FrameIndex].Get())
+            {
+                CommandList->CopyBufferRegion(TemplateBuffer, 0, IndirectCommandUploads[FrameIndex].Get(), 0, CommandBufferSize);
+            }
+        }
+    }
+    if (HasSharedInputs())
+    {
+        CopySharedInputData(CommandList);
+    }
+}
+
+void FGpuDrivenCulling::AddInitialUploadPostCopyBarriers(std::vector<D3D12_RESOURCE_BARRIER>& Barriers, uint32_t FramesInFlight) const
+{
+    for (uint32_t FrameIndex = 0; FrameIndex < FramesInFlight; ++FrameIndex)
+    {
+        ID3D12Resource* TemplateBuffer = GetIndirectCommandTemplateBuffer(FrameIndex);
+        if (TemplateBuffer)
+        {
+            Barriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(
+                TemplateBuffer,
+                D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
+        }
+    }
+    if (HasSharedInputs())
+    {
+        AddSharedInputUploadPostCopyBarriers(Barriers);
+    }
+}
+
+void FGpuDrivenCulling::ResetInitialUploadStates(uint32_t FramesInFlight)
+{
+    ResetCullingStatesToCommon(FramesInFlight);
+    ResetVisibilityStatesToCommon(FramesInFlight);
 }
 
 bool FGpuDrivenCulling::CreateVisibilityResources(FDX12Device* Device, uint32_t FramesInFlight, uint32_t IndirectCommandCount)
@@ -1093,38 +1161,36 @@ void FGpuDrivenCulling::DispatchGpuCulling(
     DirectX::XMVECTOR Planes[6] = {};
     RendererUtils::BuildCameraFrustumPlanes(Camera, Planes);
 
-    std::array<uint32_t, 60> Constants = {};
+    FGpuCullingConstants Constants = {};
     for (uint32_t PlaneIndex = 0; PlaneIndex < 6; ++PlaneIndex)
     {
         DirectX::XMFLOAT4 Plane{};
         DirectX::XMStoreFloat4(&Plane, Planes[PlaneIndex]);
-        std::memcpy(Constants.data() + PlaneIndex * 4, &Plane, sizeof(DirectX::XMFLOAT4));
+        std::memcpy(Constants.FrustumPlanes[PlaneIndex], &Plane, sizeof(DirectX::XMFLOAT4));
     }
 
     const DirectX::XMMATRIX ViewProjection = Camera.GetViewMatrix() * Camera.GetProjectionMatrix();
     DirectX::XMFLOAT4X4 ViewProjectionMatrix = {};
     DirectX::XMStoreFloat4x4(&ViewProjectionMatrix, ViewProjection);
-    std::memcpy(Constants.data() + 24, &ViewProjectionMatrix, sizeof(DirectX::XMFLOAT4X4));
+    std::memcpy(Constants.ViewProjection, &ViewProjectionMatrix, sizeof(DirectX::XMFLOAT4X4));
 
-    Constants[40] = Config.IndirectCommandCount;
-    Constants[41] = bHZBOcclusionEnabled ? 1u : 0u;
-    Constants[42] = HZBCullingMipCount;
-    Constants[43] = HZBCullingWidth;
-    Constants[44] = HZBCullingHeight;
-    Constants[45] = Config.bGpuDebugPrintEnabled ? 1u : 0u;
-    Constants[46] = Config.RangeCount;
-    Constants[47] = ResolvedMode;
+    Constants.IndirectCommandCount              = Config.IndirectCommandCount;
+    Constants.HZBEnabled                        = bHZBOcclusionEnabled ? 1u : 0u;
+    Constants.HZBMipCount                       = HZBCullingMipCount;
+    Constants.HZBWidth                          = HZBCullingWidth;
+    Constants.HZBHeight                         = HZBCullingHeight;
+    Constants.DebugPrintEnabled                 = Config.bGpuDebugPrintEnabled ? 1u : 0u;
+    Constants.RangeCount                        = Config.RangeCount;
+    Constants.CullingMode                       = ResolvedMode;
     const DirectX::XMFLOAT3 CameraPosition = Camera.GetPosition();
-    std::memcpy(Constants.data() + 48, &CameraPosition, sizeof(DirectX::XMFLOAT3));
-    Constants[51] = 0u;
-    std::memcpy(Constants.data() + 52, &Config.ClusterDagTargetErrorPixels, sizeof(float));
-    std::memcpy(Constants.data() + 53, &Config.ViewportHeightPixels, sizeof(float));
-    Constants[54] = Config.ClusterDagVisibleRootCount;
-    Constants[55] = Config.bClusterDagForceMipEnabled ? 1u : 0u;
-    Constants[56] = Config.ClusterDagForceMipLevel;
-    Constants[57] = Config.bClusterDagForceMipSkipFrustumCull ? 1u : 0u;
-    Constants[58] = 0u;
-    std::memcpy(Constants.data() + 59, &Config.ClusterDagSwRasterThresholdPixels, sizeof(float));
+    std::memcpy(Constants.CameraPosition, &CameraPosition, sizeof(DirectX::XMFLOAT3));
+    Constants.ClusterDagTargetErrorPixels       = Config.ClusterDagTargetErrorPixels;
+    Constants.ViewportHeightPixels              = Config.ViewportHeightPixels;
+    Constants.ClusterDagVisibleRootCount        = Config.ClusterDagVisibleRootCount;
+    Constants.ClusterDagForceMipEnabled         = Config.bClusterDagForceMipEnabled ? 1u : 0u;
+    Constants.ClusterDagForceMipLevel           = Config.ClusterDagForceMipLevel;
+    Constants.ClusterDagForceMipSkipFrustumCull = Config.bClusterDagForceMipSkipFrustumCull ? 1u : 0u;
+    Constants.ClusterDagSwRasterThresholdPixels = Config.ClusterDagSwRasterThresholdPixels;
 
     ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
     const char* EventName = (PassName && PassName[0] != '\0') ? PassName : "GpuCulling";
@@ -1168,7 +1234,7 @@ void FGpuDrivenCulling::DispatchGpuCulling(
 
     if (CullingConstantBufferMapped)
     {
-        std::memcpy(CullingConstantBufferMapped, Constants.data(), sizeof(Constants));
+        std::memcpy(CullingConstantBufferMapped, &Constants, sizeof(Constants));
     }
 
     ID3D12DescriptorHeap* Heaps[] = { Config.BindlessDescriptorHeap };
@@ -1278,7 +1344,7 @@ FRenderer::FGpuDrivenCullingProvider FRenderer::GetGpuDrivenCullingProvider(bool
     FGpuDrivenCullingProvider Provider;
     Provider.BindlessDescriptorHeap = Device ? Device->GetBindlessDescriptorHeap() : nullptr;
     Provider.BindlessCpuClearDescriptorHeap = Device ? Device->GetBindlessCpuDescriptorHeap() : nullptr;
-    Provider.BindlessDescriptorStride = Device ? Device->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV) : 0;
+    Provider.BindlessDescriptorStride = Device ? Device->GetBindlessDescriptorStride() : 0;
     Provider.CullingRootSignature = GpuDrivenCullingState.GetCullingRootSignature();
     Provider.MeshletRunRootSignature = GpuDrivenCullingState.GetMeshletRunRootSignature();
     Provider.CullingConstantBufferAddress = GpuDrivenCullingState.GetCullingConstantBufferAddress(CurrentFrameIndex, bLatePass);

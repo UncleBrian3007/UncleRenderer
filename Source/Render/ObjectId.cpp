@@ -87,42 +87,8 @@ bool FObjectId::InitializeResources(FDX12Device* Device, uint32_t Width, uint32_
         return false;
     }
 
-    CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
-        DXGI_FORMAT_R32_UINT,
-        Width,
-        Height,
-        1,
-        1,
-        1,
-        0,
-        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
-
-    const FLOAT Color[] = { 0.0f, 0.0f, 0.0f, 0.0f };
-    CD3DX12_CLEAR_VALUE ClearValue(DXGI_FORMAT_R32_UINT, Color);
-
-    CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
-
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &HeapProps,
-        D3D12_HEAP_FLAG_NONE,
-        &Desc,
-        D3D12_RESOURCE_STATE_RENDER_TARGET,
-        &ClearValue,
-        IID_PPV_ARGS(Texture.ReleaseAndGetAddressOf())));
-    Texture->SetName(L"ObjectIdTexture");
-
-    D3D12_DESCRIPTOR_HEAP_DESC HeapDesc = {};
-    HeapDesc.NumDescriptors = 1;
-    HeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    HeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-    HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&HeapDesc, IID_PPV_ARGS(RtvHeap.ReleaseAndGetAddressOf())));
-    RtvHeap->SetName(L"ObjectIdRtvHeap");
-    RtvHandle = RtvHeap->GetCPUDescriptorHandleForHeapStart();
-
-    D3D12_RENDER_TARGET_VIEW_DESC RtvDesc = {};
-    RtvDesc.Format = DXGI_FORMAT_R32_UINT;
-    RtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
-    Device->GetDevice()->CreateRenderTargetView(Texture.Get(), &RtvDesc, RtvHandle);
+    const FLOAT ClearColor[] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    CreateRenderTarget2D(Device, L"ObjectIdRenderTarget", Width, Height, DXGI_FORMAT_R32_UINT, ClearColor, RenderTarget);
 
     RowPitch = D3D12_TEXTURE_DATA_PITCH_ALIGNMENT;
     Footprint.Offset = 0;
@@ -132,16 +98,10 @@ bool FObjectId::InitializeResources(FDX12Device* Device, uint32_t Width, uint32_
     Footprint.Footprint.Depth = 1;
     Footprint.Footprint.RowPitch = RowPitch;
 
-    CD3DX12_RESOURCE_DESC BufferDesc = CD3DX12_RESOURCE_DESC::Buffer(RowPitch);
-    CD3DX12_HEAP_PROPERTIES ReadbackProps(D3D12_HEAP_TYPE_READBACK);
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &ReadbackProps,
-        D3D12_HEAP_FLAG_NONE,
-        &BufferDesc,
-        D3D12_RESOURCE_STATE_COPY_DEST,
-        nullptr,
-        IID_PPV_ARGS(Readback.ReleaseAndGetAddressOf())));
-    Readback->SetName(L"ObjectIdReadback");
+    if (!CreateReadbackBuffer(Device, L"ObjectIdReadback", RowPitch, Readback))
+    {
+        return false;
+    }
 
     State = D3D12_RESOURCE_STATE_RENDER_TARGET;
     return true;
@@ -151,7 +111,7 @@ FRGResourceHandle FObjectId::ImportResource(FRenderGraph& Graph, uint32_t Width,
 {
     return Graph.ImportTexture(
         "ObjectId",
-        Texture.Get(),
+        RenderTarget.Get(),
         &State,
         { Width, Height, DXGI_FORMAT_R32_UINT });
 }
@@ -244,11 +204,11 @@ void FObjectId::AddPass(FDeferredPassContext& Context) const
         const uint32_t ReadX = (std::min)(ObjectId->GetReadbackX(), Width > 0 ? Width - 1 : 0);
         const uint32_t ReadY = (std::min)(ObjectId->GetReadbackY(), Height > 0 ? Height - 1 : 0);
 
-        D3D12_RESOURCE_BARRIER Barrier = CD3DX12_RESOURCE_BARRIER::Transition(ObjectId->GetTexture(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        D3D12_RESOURCE_BARRIER Barrier = CD3DX12_RESOURCE_BARRIER::Transition(ObjectId->GetRenderTarget(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
         LocalCommandList->ResourceBarrier(1, &Barrier);
 
         D3D12_TEXTURE_COPY_LOCATION Src = {};
-        Src.pResource = ObjectId->GetTexture();
+        Src.pResource = ObjectId->GetRenderTarget();
         Src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
         Src.SubresourceIndex = 0;
 

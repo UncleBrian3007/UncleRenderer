@@ -62,15 +62,7 @@ namespace
 bool FSsr::InitializePipelines(FDeferredRenderer& Owner, FDX12Device* Device)
 {
     (void)Owner;
-    bBaseOutputPersistentInputsValid = false;
-    bGraphicsPersistentInputsValid = false;
-    bRayGatherPersistentInputsValid = false;
-    bBuildIndirectArgsPersistentInputsValid = false;
-    bSwTracePersistentInputsValid = false;
-    bHwTracePersistentInputsValid = false;
-    bResolvePersistentInputsValid = false;
-    bFallbackPersistentInputsValid = false;
-    bDenoisePersistentInputsValid = false;
+    bPersistentInputsValid = false;
 
     return CreateSsrRootSignature(Device)
         && CreateSsrPipeline(Device)
@@ -89,15 +81,7 @@ bool FSsr::InitializePipelines(FDeferredRenderer& Owner, FDX12Device* Device)
 
 bool FSsr::InitializeResources(FDeferredRenderer& Owner, FDX12Device* Device, uint32_t Width, uint32_t Height)
 {
-    bBaseOutputPersistentInputsValid = false;
-    bGraphicsPersistentInputsValid = false;
-    bRayGatherPersistentInputsValid = false;
-    bBuildIndirectArgsPersistentInputsValid = false;
-    bSwTracePersistentInputsValid = false;
-    bHwTracePersistentInputsValid = false;
-    bResolvePersistentInputsValid = false;
-    bFallbackPersistentInputsValid = false;
-    bDenoisePersistentInputsValid = false;
+    bPersistentInputsValid = false;
 
     return CreateSsrResources(Owner, Device, Width, Height);
 }
@@ -113,43 +97,21 @@ void FSsr::ImportPersistentResources(FDeferredPassContext& Context)
     OutResources.SsrResolveHandle = ImportBindlessTexture(Graph, "SSR Resolve", SsrResolveTexture);
 }
 
-bool FSsr::CreatePersistentDescriptors(FDeferredRenderer& Owner, FDX12Device* Device)
-{
-    (void)Owner;
-    CreateBindlessTextureViews(Device, SsrTexture, true, true);
-    CreateBindlessTextureViews(Device, SsrDenoiseTexture, true, false);
-    CreateBindlessTextureViews(Device, SsrFallbackTexture, true, true);
-    CreateBindlessTextureViews(Device, SsrResolveTexture, true, true);
-
-    RefreshPersistentInputValidation();
-    return true;
-}
 
 void FSsr::RefreshPersistentInputValidation()
 {
-    bBaseOutputPersistentInputsValid =
+    bPersistentInputsValid =
         SsrTexture.IsFullyBound() &&
         SsrResolveTexture.IsFullyBound() &&
-        SsrRtvHeap;
-
-    bGraphicsPersistentInputsValid = bBaseOutputPersistentInputsValid && SsrRootSignature;
-    bRayGatherPersistentInputsValid = SsrRayGatherPipeline && SsrRayGatherRootSignature;
-    bBuildIndirectArgsPersistentInputsValid = SsrBuildIndirectArgsPipeline && SsrBuildIndirectArgsRootSignature;
-    bSwTracePersistentInputsValid = bBaseOutputPersistentInputsValid && SsrSwTraceRootSignature && SsrDispatchCommandSignature;
-    bHwTracePersistentInputsValid = bBaseOutputPersistentInputsValid && SsrDispatchCommandSignature;
-    bResolvePersistentInputsValid = bBaseOutputPersistentInputsValid && SsrResolvePipeline && SsrResolveRootSignature;
-
-    bFallbackPersistentInputsValid =
-        SsrFallbackTexture.IsFullyBound();
-
-    bDenoisePersistentInputsValid =
-        SsrDenoiseTexture &&
-        SsrRtvHeap &&
-        SsrTexture.HasSrv() &&
-        SsrResolveTexture.HasSrv() &&
         SsrDenoiseTexture.HasSrv() &&
-        SsrDenoiseRootSignature &&
-        SsrDenoisePipeline;
+        SsrFallbackTexture.IsFullyBound() &&
+        SsrRtvHeap &&
+        SsrRootSignature &&
+        SsrRayGatherPipeline && SsrRayGatherRootSignature &&
+        SsrBuildIndirectArgsPipeline && SsrBuildIndirectArgsRootSignature &&
+        SsrSwTraceRootSignature && SsrDispatchCommandSignature &&
+        SsrResolvePipeline && SsrResolveRootSignature &&
+        SsrDenoiseRootSignature && SsrDenoisePipeline;
 }
 
 void FSsr::AddPasses(FDeferredPassContext& Context)
@@ -181,15 +143,15 @@ uint32_t FSsr::GetBaseOutputSrvBindlessIndex() const
 {
     if (SsrMode == ESSRMode::CS)
     {
-        return bResolvePersistentInputsValid ? SsrResolveTexture.SrvBindlessIndex : UINT32_MAX;
+        return bPersistentInputsValid ? SsrResolveTexture.SrvBindlessIndex : UINT32_MAX;
     }
 
-    return bGraphicsPersistentInputsValid ? SsrTexture.SrvBindlessIndex : UINT32_MAX;
+    return bPersistentInputsValid ? SsrTexture.SrvBindlessIndex : UINT32_MAX;
 }
 
 uint32_t FSsr::GetLightingSrvBindlessIndex() const
 {
-    return (bSsrDenoiseEnabled && bDenoisePersistentInputsValid) ? SsrDenoiseTexture.SrvBindlessIndex : GetBaseOutputSrvBindlessIndex();
+    return (bSsrDenoiseEnabled && bPersistentInputsValid) ? SsrDenoiseTexture.SrvBindlessIndex : GetBaseOutputSrvBindlessIndex();
 }
 
 
@@ -707,8 +669,8 @@ bool FSsr::CreateSsrResources(FDeferredRenderer& Owner, FDX12Device* Device, uin
         SharedFlags,
         D3D12_RESOURCE_STATE_RENDER_TARGET,
         SsrTexture,
-        false,
-        false,
+        true,
+        true,
         &ClearValue);
     CreateBindlessTexture(
         Device,
@@ -717,7 +679,7 @@ bool FSsr::CreateSsrResources(FDeferredRenderer& Owner, FDX12Device* Device, uin
         SharedFlags,
         D3D12_RESOURCE_STATE_RENDER_TARGET,
         SsrDenoiseTexture,
-        false,
+        true,
         false,
         &ClearValue);
     CreateBindlessTexture(
@@ -727,8 +689,8 @@ bool FSsr::CreateSsrResources(FDeferredRenderer& Owner, FDX12Device* Device, uin
         SharedFlags,
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
         SsrResolveTexture,
-        false,
-        false,
+        true,
+        true,
         &ClearValue);
 
     const D3D12_RESOURCE_FLAGS FallbackFlags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
@@ -746,21 +708,18 @@ bool FSsr::CreateSsrResources(FDeferredRenderer& Owner, FDX12Device* Device, uin
         FallbackFlags,
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
         SsrFallbackTexture,
-        false,
-        false);
+        true,
+        true);
 
     D3D12_DESCRIPTOR_HEAP_DESC RtvHeapDesc = {};
     RtvHeapDesc.NumDescriptors = 2;
     RtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     RtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     HR_CHECK(Device->GetDevice()->CreateDescriptorHeap(&RtvHeapDesc, IID_PPV_ARGS(SsrRtvHeap.GetAddressOf())));
-    if (SsrRtvHeap)
-    {
-        SsrRtvHeap->SetName(L"SSR_RTVHeap");
-    }
+    SsrRtvHeap->SetName(L"SSR_RTVHeap");
 
     SsrRtvHandle = SsrRtvHeap->GetCPUDescriptorHandleForHeapStart();
-    const UINT RtvDescriptorSize = Device->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    const uint32_t RtvDescriptorSize = Device->GetRtvDescriptorStride();
     SsrDenoiseRtvHandle = SsrRtvHandle;
     SsrDenoiseRtvHandle.ptr += RtvDescriptorSize;
     D3D12_RENDER_TARGET_VIEW_DESC RtvDesc = {};
@@ -852,6 +811,7 @@ bool FSsr::CreateSsrResources(FDeferredRenderer& Owner, FDX12Device* Device, uin
             true);
     }
 
+    RefreshPersistentInputValidation();
     return true;
 }
 
@@ -910,7 +870,7 @@ void FSsr::AddSsrRayGatherPass(FDeferredPassContext& Context)
     FDeferredRenderer& Owner = Context.Owner;
     FRenderGraph& Graph = Context.Graph;
     const uint32_t FrameIndex = Context.FrameIndex;
-    const std::array<FRGResourceHandle, 4>& GBufferHandles = Context.Resources.GBufferHandles;
+    const FDeferredGBufferHandles& GBufferHandles = Context.Resources.GBufferHandles;
     const FRGResourceHandle LinearDepthHandle = Context.Resources.LinearDepthHandle;
 
     struct FSsrRayGatherPassData
@@ -921,7 +881,7 @@ void FSsr::AddSsrRayGatherPass(FDeferredPassContext& Context)
     Graph.AddPass<FSsrRayGatherPassData>("SSR Ray Gather", [this, &Owner, FrameIndex, GBufferHandles, LinearDepthHandle, &Graph](FSsrRayGatherPassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("SSR");
-        Data.bEnabled = bRayGatherPersistentInputsValid;
+        Data.bEnabled = bPersistentInputsValid;
         if (!Data.bEnabled)
         {
             return;
@@ -957,7 +917,7 @@ void FSsr::AddSsrRayGatherPass(FDeferredPassContext& Context)
         const uint32_t RayCounterUavIndex = SsrRayCounterPrimaryBuffers[LocalFrameIndex].UavBindlessIndex;
         const uint32_t RayListUavIndex = SsrRayListPrimaryBuffers[LocalFrameIndex].UavBindlessIndex;
 
-        if (Owner.GBufferBindlessIndices[0] == UINT32_MAX || Owner.GBufferBindlessIndices[1] == UINT32_MAX || Owner.LinearDepthTexture.SrvBindlessIndex == UINT32_MAX)
+        if (Owner.GBufferA.SrvBindlessIndex == UINT32_MAX || Owner.GBufferB.SrvBindlessIndex == UINT32_MAX || Owner.LinearDepthTexture.SrvBindlessIndex == UINT32_MAX)
         {
             return;
         }
@@ -1002,16 +962,15 @@ void FSsr::AddSsrRayGatherPass(FDeferredPassContext& Context)
         static_assert(sizeof(FSsrRayGatherConstants) / sizeof(uint32_t) <= kSsrRayGatherConstantsDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(1, sizeof(FSsrRayGatherConstants) / sizeof(uint32_t), &Constants, 0);
 
-        const uint32_t BindlessIndices[] =
+        const uint32_t BindlessIndices[kSsrRayGatherBindlessDwordCount] =
         {
-            Owner.GBufferBindlessIndices[0],
-            Owner.GBufferBindlessIndices[1],
+            Owner.GBufferA.SrvBindlessIndex,
+            Owner.GBufferB.SrvBindlessIndex,
             Owner.LinearDepthTexture.SrvBindlessIndex,
             RayCounterUavIndex,
             RayListUavIndex,
             Owner.Device->GetPointClampSamplerIndex()
         };
-        static_assert(_countof(BindlessIndices) <= kSsrRayGatherBindlessDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(2, _countof(BindlessIndices), BindlessIndices, 0);
 
         const uint32_t DispatchX = (Constants.OutputWidth + 7u) / 8u;
@@ -1037,7 +996,7 @@ void FSsr::AddSsrBuildIndirectArgsPass(FDeferredPassContext& Context, bool bHwMi
     Graph.AddPass<FSsrBuildIndirectArgsPassData>(PassName, [this, &Owner, FrameIndex, bHwMiss, &Graph](FSsrBuildIndirectArgsPassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("SSR");
-        Data.bEnabled = bBuildIndirectArgsPersistentInputsValid;
+        Data.bEnabled = bPersistentInputsValid;
         Data.bHwMiss = bHwMiss;
         if (!Data.bEnabled)
         {
@@ -1094,12 +1053,10 @@ void FSsr::AddSsrBuildIndirectArgsPass(FDeferredPassContext& Context, bool bHwMi
         LocalCommandList->SetComputeRootSignature(SsrBuildIndirectArgsRootSignature.Get());
 
         constexpr uint32_t ThreadGroupSizeX = 64u;
-        const uint32_t Constants[] = { ThreadGroupSizeX, SsrMaxRayCount };
-        static_assert(_countof(Constants) <= kSsrBuildIndirectArgsConstantsDwordCount);
+        const uint32_t Constants[kSsrBuildIndirectArgsConstantsDwordCount] = { ThreadGroupSizeX, SsrMaxRayCount };
         LocalCommandList->SetComputeRoot32BitConstants(0, _countof(Constants), Constants, 0);
 
-        const uint32_t BindlessIndices[] = { RayCounterSrvIndex, IndirectArgsUavIndex };
-        static_assert(_countof(BindlessIndices) <= kSsrBuildIndirectArgsBindlessDwordCount);
+        const uint32_t BindlessIndices[kSsrBuildIndirectArgsBindlessDwordCount] = { RayCounterSrvIndex, IndirectArgsUavIndex };
         LocalCommandList->SetComputeRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
 
         LocalCommandList->Dispatch(1, 1, 1);
@@ -1132,12 +1089,12 @@ void FSsr::AddSsrSwTracePass(FDeferredPassContext& Context)
     Graph.AddPass<FSsrSwTracePassData>("SSR SW Trace", [this, &Owner, FrameIndex, FrameState, TaaHandles, LinearDepthHandle, HZBHandle, SsrHandle, &Graph](FSsrSwTracePassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("SSR");
-        Data.bUseHzb = bSsrHzbEnabled && Owner.Hzb->IsReady() && IsValidBindlessIndex(Owner.Hzb->GetSrvBindlessIndex());
+        Data.bUseHzb = bSsrHzbEnabled && Owner.Hzb->IsEnabled() && Owner.Hzb->IsReady() && IsValidBindlessIndex(Owner.Hzb->GetSrvBindlessIndex());
         Data.HistoryIndex = FrameState.TaaReadIndex;
         Data.bUseHistory = FrameState.bTaaHistoryReady && Data.HistoryIndex < TaaHandles.size();
         Data.bUseHzb = Data.bUseHzb && static_cast<bool>(HZBHandle);
         Data.PipelineIndex = BuildSsrPipelineIndex(Data.bUseHzb, bSsrRefineEnabled, bSsrSwEnabled, bSsrHzbFullResDepthEnabled);
-        Data.bEnabled = (bSsrSwEnabled || bSsrHwEnabled) && bSwTracePersistentInputsValid;
+        Data.bEnabled = (bSsrSwEnabled || bSsrHwEnabled) && bPersistentInputsValid;
 
         if (!Data.bEnabled)
         {
@@ -1176,6 +1133,7 @@ void FSsr::AddSsrSwTracePass(FDeferredPassContext& Context)
         Builder.WriteBuffer(HwMissCounterHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         Builder.WriteBuffer(HwMissListHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         Builder.ReadBuffer(IndirectHandle, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
+        Builder.UavBarrier(IndirectHandle);
     }, [this, &Owner, &Graph](const FSsrSwTracePassData& Data, FDX12CommandContext& Cmd)
     {
         if (!Data.bEnabled)
@@ -1183,7 +1141,7 @@ void FSsr::AddSsrSwTracePass(FDeferredPassContext& Context)
             return;
         }
 
-        if (!IsValidBindlessIndex(Owner.GBufferBindlessIndices[2]) || !IsValidBindlessIndex(Owner.LinearDepthTexture.SrvBindlessIndex))
+        if (!IsValidBindlessIndex(Owner.GBufferC.SrvBindlessIndex) || !IsValidBindlessIndex(Owner.LinearDepthTexture.SrvBindlessIndex))
         {
             return;
         }
@@ -1206,9 +1164,6 @@ void FSsr::AddSsrSwTracePass(FDeferredPassContext& Context)
         {
             return;
         }
-
-        const auto UavBarrier = CD3DX12_RESOURCE_BARRIER::UAV(IndirectArgsBuffer);
-Cmd.GetCommandList()->ResourceBarrier(1, &UavBarrier);
 
         ID3D12Resource* SsrOutput = Graph.GetTextureResource(Data.SsrHandle);
         if (!SsrOutput)
@@ -1272,14 +1227,14 @@ Cmd.GetCommandList()->ResourceBarrier(1, &UavBarrier);
 
         const uint32_t SceneColorIndex = Data.bUseHistory && Owner.Taa
             ? Owner.Taa->GetHistorySrvBindlessIndex(Data.HistoryIndex)
-            : Owner.GBufferBindlessIndices[2];
+            : Owner.GBufferC.SrvBindlessIndex;
         if (!IsValidBindlessIndex(SceneColorIndex))
         {
             return;
         }
 
         const uint32_t HzbIndex = Data.bUseHzb && IsValidBindlessIndex(Owner.Hzb->GetSrvBindlessIndex()) ? Owner.Hzb->GetSrvBindlessIndex() : Owner.LinearDepthTexture.SrvBindlessIndex;
-        const uint32_t BindlessIndices[] =
+        const uint32_t BindlessIndices[kSsrSwTraceBindlessDwordCount] =
         {
             Owner.LinearDepthTexture.SrvBindlessIndex,
             SceneColorIndex,
@@ -1292,7 +1247,6 @@ Cmd.GetCommandList()->ResourceBarrier(1, &UavBarrier);
             Owner.Device->GetPointClampSamplerIndex(),
             Owner.Device->GetLinearClampSamplerIndex()
         };
-        static_assert(_countof(BindlessIndices) <= kSsrSwTraceBindlessDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(2, _countof(BindlessIndices), BindlessIndices, 0);
 
         LocalCommandList->ExecuteIndirect(SsrDispatchCommandSignature.Get(), 1, IndirectArgsBuffer, 0, nullptr, 0);
@@ -1324,7 +1278,7 @@ void FSsr::AddSsrHwTracePass(FDeferredPassContext& Context)
         Builder.SetPixGroup("SSR");
         Data.HistoryIndex = FrameState.TaaReadIndex;
         Data.bUseHistory = FrameState.bTaaHistoryReady && Data.HistoryIndex < TaaHandles.size();
-        Data.bEnabled = bSsrHwEnabled && bHwTracePersistentInputsValid && Owner.GetRayTracingRuntime().bRayTracingPipelineReady && Owner.GetRayTracingRuntime().RayQueryRootSignature && Owner.GetRayTracingRuntime().RayQuerySsrHwPipeline;
+        Data.bEnabled = bSsrHwEnabled && bPersistentInputsValid && Owner.GetRayTracingRuntime().bRayTracingPipelineReady && Owner.GetRayTracingRuntime().RayQueryRootSignature && Owner.GetRayTracingRuntime().RayQuerySsrHwPipeline;
         if (!Data.bEnabled)
         {
             return;
@@ -1352,6 +1306,7 @@ void FSsr::AddSsrHwTracePass(FDeferredPassContext& Context)
         Builder.ReadBuffer(RayCounterHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadBuffer(RayListHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadBuffer(IndirectHandle, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
+        Builder.UavBarrier(IndirectHandle);
     }, [this, &Owner, &Graph](const FSsrHwTracePassData& Data, FDX12CommandContext& CmdContext)
     {
         if (!Data.bEnabled)
@@ -1371,7 +1326,7 @@ void FSsr::AddSsrHwTracePass(FDeferredPassContext& Context)
             return;
         }
 
-        if (!IsValidBindlessIndex(Owner.GBufferBindlessIndices[2]))
+        if (!IsValidBindlessIndex(Owner.GBufferC.SrvBindlessIndex))
         {
             return;
         }
@@ -1391,9 +1346,6 @@ void FSsr::AddSsrHwTracePass(FDeferredPassContext& Context)
             return;
         }
 
-        const auto UavBarrier = CD3DX12_RESOURCE_BARRIER::UAV(IndirectArgsBuffer);
-CommandList4->ResourceBarrier(1, &UavBarrier);
-
         ID3D12Resource* SsrOutput = Graph.GetTextureResource(Data.SsrHandle);
         if (!SsrOutput)
         {
@@ -1405,7 +1357,7 @@ CommandList4->ResourceBarrier(1, &UavBarrier);
 
         const uint32_t SceneColorIndex = Data.bUseHistory && Owner.Taa
             ? Owner.Taa->GetHistorySrvBindlessIndex(Data.HistoryIndex)
-            : Owner.GBufferBindlessIndices[2];
+            : Owner.GBufferC.SrvBindlessIndex;
         if (!IsValidBindlessIndex(SceneColorIndex))
         {
             return;
@@ -1426,12 +1378,12 @@ CommandList4->ResourceBarrier(1, &UavBarrier);
         const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = Owner.GetSceneConstantBufferAddress();
         CommandList4->SetComputeRootConstantBufferView(1, ConstantBufferAddress + ConstantBufferOffset);
 
-        if (LocalFrameIndex >= Owner.GetRayTracingRuntime().PathTracingInstanceDataBindlessIndices.size())
+        if (LocalFrameIndex >= Owner.GetRayTracingRuntime().PathTracingInstanceDataBuffers.size())
         {
             return;
         }
 
-        const uint32_t PathTracingInstanceDataBindlessIndex = Owner.GetRayTracingRuntime().PathTracingInstanceDataBindlessIndices[LocalFrameIndex];
+        const uint32_t PathTracingInstanceDataBindlessIndex = Owner.GetRayTracingRuntime().PathTracingInstanceDataBuffers[LocalFrameIndex].SrvBindlessIndex;
         if (!IsValidBindlessIndex(PathTracingInstanceDataBindlessIndex))
         {
             return;
@@ -1444,7 +1396,7 @@ CommandList4->ResourceBarrier(1, &UavBarrier);
             SsrTexture.UavBindlessIndex,
             SceneColorIndex,
             PathTracingInstanceDataBindlessIndex,
-            Owner.EnvironmentCubeBindlessIndex,
+            Owner.GetEnvironmentCubeSrvIndex(),
             Owner.Device->GetLinearClampSamplerIndex(),
             SsrMaxRayCount,
             OutputWidth,
@@ -1468,7 +1420,7 @@ void FSsr::AddSsrResolvePass(FDeferredPassContext& Context)
 {
     FDeferredRenderer& Owner = Context.Owner;
     FRenderGraph& Graph = Context.Graph;
-    const std::array<FRGResourceHandle, 4>& GBufferHandles = Context.Resources.GBufferHandles;
+    const FDeferredGBufferHandles& GBufferHandles = Context.Resources.GBufferHandles;
     const FRGResourceHandle LinearDepthHandle = Context.Resources.LinearDepthHandle;
     const FRGResourceHandle SsrInputHandle = Context.Resources.Ssr.SsrHandle;
     const FRGResourceHandle SsrResolveHandle = Context.Resources.Ssr.SsrResolveHandle;
@@ -1481,7 +1433,7 @@ void FSsr::AddSsrResolvePass(FDeferredPassContext& Context)
     Graph.AddPass<FSsrResolvePassData>("SSR Resolve", [this, &Owner, GBufferHandles, LinearDepthHandle, SsrInputHandle, SsrResolveHandle](FSsrResolvePassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("SSR");
-        Data.bEnabled = bResolvePersistentInputsValid;
+        Data.bEnabled = bPersistentInputsValid;
         if (!Data.bEnabled)
         {
             return;
@@ -1500,7 +1452,7 @@ void FSsr::AddSsrResolvePass(FDeferredPassContext& Context)
         }
 
         if (!IsValidBindlessIndex(Owner.LinearDepthTexture.SrvBindlessIndex)
-            || !IsValidBindlessIndex(Owner.GBufferBindlessIndices[0]) || !IsValidBindlessIndex(Owner.GBufferBindlessIndices[1]))
+            || !IsValidBindlessIndex(Owner.GBufferA.SrvBindlessIndex) || !IsValidBindlessIndex(Owner.GBufferB.SrvBindlessIndex))
         {
             return;
         }
@@ -1531,16 +1483,15 @@ void FSsr::AddSsrResolvePass(FDeferredPassContext& Context)
         static_assert(sizeof(FSsrResolveConstants) / sizeof(uint32_t) <= kSsrResolveConstantsDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(FSsrResolveConstants) / sizeof(uint32_t), &Constants, 0);
 
-        const uint32_t BindlessIndices[] =
+        const uint32_t BindlessIndices[kSsrResolveBindlessDwordCount] =
         {
             SsrTexture.SrvBindlessIndex,
             SsrResolveTexture.UavBindlessIndex,
-            Owner.GBufferBindlessIndices[0],
-            Owner.GBufferBindlessIndices[1],
+            Owner.GBufferA.SrvBindlessIndex,
+            Owner.GBufferB.SrvBindlessIndex,
             Owner.LinearDepthTexture.SrvBindlessIndex,
             Owner.Device->GetPointClampSamplerIndex()
         };
-        static_assert(_countof(BindlessIndices) <= kSsrResolveBindlessDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
 
         const uint32_t DispatchX = (Constants.OutputWidth + 7u) / 8u;
@@ -1555,7 +1506,7 @@ void FSsr::AddSsrPass(FDeferredPassContext& Context)
     FRenderGraph& Graph = Context.Graph;
     const uint32_t FrameIndex = Context.FrameIndex;
     const FDeferredRenderer::FDeferredFrameState& FrameState = Context.FrameState;
-    const std::array<FRGResourceHandle, 4>& GBufferHandles = Context.Resources.GBufferHandles;
+    const FDeferredGBufferHandles& GBufferHandles = Context.Resources.GBufferHandles;
     const FRGResourceHandle LinearDepthHandle = Context.Resources.LinearDepthHandle;
     const std::vector<FRGResourceHandle>& TaaHandles = Context.Resources.Taa.HistoryHandles;
     const FRGResourceHandle HZBHandle = Context.Resources.Hzb.HzbHandle;
@@ -1573,12 +1524,12 @@ void FSsr::AddSsrPass(FDeferredPassContext& Context)
     Graph.AddPass<FSsrPassData>("SSR", [this, &Owner, FrameIndex, GBufferHandles, LinearDepthHandle, TaaHandles, HZBHandle, SsrHandle, FrameState, &Graph](FSsrPassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("SSR");
-        Data.bUseHzb = bSsrHzbEnabled && Owner.Hzb->IsReady() && IsValidBindlessIndex(Owner.Hzb->GetSrvBindlessIndex());
+        Data.bUseHzb = bSsrHzbEnabled && Owner.Hzb->IsEnabled() && Owner.Hzb->IsReady() && IsValidBindlessIndex(Owner.Hzb->GetSrvBindlessIndex());
         Data.HistoryIndex = FrameState.TaaReadIndex;
         Data.bUseHistory = FrameState.bTaaHistoryReady && Data.HistoryIndex < TaaHandles.size();
         Data.bUseHzb = Data.bUseHzb && static_cast<bool>(HZBHandle);
         Data.PipelineIndex = BuildSsrPipelineIndex(Data.bUseHzb, bSsrRefineEnabled, bSsrSwEnabled, bSsrHzbFullResDepthEnabled);
-        Data.bEnabled = (bSsrSwEnabled || bSsrHwEnabled) && bGraphicsPersistentInputsValid;
+        Data.bEnabled = (bSsrSwEnabled || bSsrHwEnabled) && bPersistentInputsValid;
 
         Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(GBufferHandles[1], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -1619,14 +1570,14 @@ void FSsr::AddSsrPass(FDeferredPassContext& Context)
             return;
         }
 
-        if (!IsValidBindlessIndex(Owner.GBufferBindlessIndices[0]) || !IsValidBindlessIndex(Owner.GBufferBindlessIndices[1]) || !IsValidBindlessIndex(Owner.LinearDepthTexture.SrvBindlessIndex))
+        if (!IsValidBindlessIndex(Owner.GBufferA.SrvBindlessIndex) || !IsValidBindlessIndex(Owner.GBufferB.SrvBindlessIndex) || !IsValidBindlessIndex(Owner.LinearDepthTexture.SrvBindlessIndex))
         {
             return;
         }
 
         const uint32_t HistoryIndex = Data.bUseHistory && Owner.Taa
             ? Owner.Taa->GetHistorySrvBindlessIndex(Data.HistoryIndex)
-            : Owner.GBufferBindlessIndices[2];
+            : Owner.GBufferC.SrvBindlessIndex;
         if (!IsValidBindlessIndex(HistoryIndex))
         {
             return;
@@ -1708,10 +1659,10 @@ void FSsr::AddSsrPass(FDeferredPassContext& Context)
         LocalCommandList->SetGraphicsRoot32BitConstants(1, sizeof(FSsrConstants) / sizeof(uint32_t), &SsrConstants, 0);
 
         const uint32_t HzbIndex = IsValidBindlessIndex(Owner.Hzb->GetSrvBindlessIndex()) ? Owner.Hzb->GetSrvBindlessIndex() : Owner.LinearDepthTexture.SrvBindlessIndex;
-        const uint32_t SsrBindlessIndices[] =
+        const uint32_t SsrBindlessIndices[kSsrTraceBindlessDwordCount] =
         {
-            Owner.GBufferBindlessIndices[0],
-            Owner.GBufferBindlessIndices[1],
+            Owner.GBufferA.SrvBindlessIndex,
+            Owner.GBufferB.SrvBindlessIndex,
             Owner.LinearDepthTexture.SrvBindlessIndex,
             HistoryIndex,
             HzbIndex,
@@ -1720,7 +1671,6 @@ void FSsr::AddSsrPass(FDeferredPassContext& Context)
             RayCounterUavIndex,
             RayListUavIndex
         };
-        static_assert(_countof(SsrBindlessIndices) <= kSsrTraceBindlessDwordCount);
         LocalCommandList->SetGraphicsRoot32BitConstants(2, _countof(SsrBindlessIndices), SsrBindlessIndices, 0);
 
         LocalCommandList->DrawInstanced(3, 1, 0, 0);
@@ -1753,7 +1703,7 @@ void FSsr::AddSsrFallbackPass(FDeferredPassContext& Context)
         Builder.SetPixGroup("SSR");
         Data.HistoryIndex = FrameState.TaaReadIndex;
         Data.bUseHistory = FrameState.bTaaHistoryReady && Data.HistoryIndex < TaaHandles.size();
-        Data.bEnabled = bFallbackPersistentInputsValid;
+        Data.bEnabled = bPersistentInputsValid;
         Data.bDoRayTracing = bSsrHwEnabled && Data.bUseHistory;
         if (!Data.bEnabled)
         {
@@ -1869,12 +1819,12 @@ void FSsr::AddSsrFallbackPass(FDeferredPassContext& Context)
         const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = Owner.GetSceneConstantBufferAddress();
         CommandList4->SetComputeRootConstantBufferView(1, ConstantBufferAddress + ConstantBufferOffset);
 
-        if (LocalFrameIndex >= Owner.GetRayTracingRuntime().PathTracingInstanceDataBindlessIndices.size())
+        if (LocalFrameIndex >= Owner.GetRayTracingRuntime().PathTracingInstanceDataBuffers.size())
         {
             return;
         }
 
-        const uint32_t PathTracingInstanceDataBindlessIndex = Owner.GetRayTracingRuntime().PathTracingInstanceDataBindlessIndices[LocalFrameIndex];
+        const uint32_t PathTracingInstanceDataBindlessIndex = Owner.GetRayTracingRuntime().PathTracingInstanceDataBuffers[LocalFrameIndex].SrvBindlessIndex;
         if (PathTracingInstanceDataBindlessIndex == UINT32_MAX)
         {
             return;
@@ -1887,7 +1837,7 @@ void FSsr::AddSsrFallbackPass(FDeferredPassContext& Context)
             FallbackUavIndex,
             SceneColorIndex,
             PathTracingInstanceDataBindlessIndex,
-            Owner.EnvironmentCubeBindlessIndex,
+            Owner.GetEnvironmentCubeSrvIndex(),
             Owner.Device->GetLinearClampSamplerIndex(),
             SsrMaxRayCount,
             OutputWidth,
@@ -1910,7 +1860,7 @@ void FSsr::AddSsrDenoisePass(FDeferredPassContext& Context, FRGResourceHandle In
 {
     FDeferredRenderer& Owner = Context.Owner;
     FRenderGraph& Graph = Context.Graph;
-    const std::array<FRGResourceHandle, 4>& GBufferHandles = Context.Resources.GBufferHandles;
+    const FDeferredGBufferHandles& GBufferHandles = Context.Resources.GBufferHandles;
     const FRGResourceHandle LinearDepthHandle = Context.Resources.LinearDepthHandle;
     const FRGResourceHandle SsrDenoiseHandle = Context.Resources.Ssr.SsrDenoiseHandle;
 
@@ -1922,7 +1872,7 @@ void FSsr::AddSsrDenoisePass(FDeferredPassContext& Context, FRGResourceHandle In
     Graph.AddPass<FSsrDenoisePassData>("SSR Denoise", [this, &Owner, InputHandle, GBufferHandles, LinearDepthHandle, SsrDenoiseHandle](FSsrDenoisePassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("SSR");
-        Data.bEnabled = (bSsrSwEnabled || bSsrHwEnabled) && bSsrDenoiseEnabled && bDenoisePersistentInputsValid;
+        Data.bEnabled = (bSsrSwEnabled || bSsrHwEnabled) && bSsrDenoiseEnabled && bPersistentInputsValid;
 
         Builder.ReadTexture(InputHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -1945,7 +1895,7 @@ void FSsr::AddSsrDenoisePass(FDeferredPassContext& Context, FRGResourceHandle In
         }
 
         const uint32_t SsrInputIndex = (SsrMode == ESSRMode::CS) ? SsrResolveTexture.SrvBindlessIndex : SsrTexture.SrvBindlessIndex;
-        if (Owner.GBufferBindlessIndices[0] == UINT32_MAX || Owner.LinearDepthTexture.SrvBindlessIndex == UINT32_MAX)
+        if (Owner.GBufferA.SrvBindlessIndex == UINT32_MAX || Owner.LinearDepthTexture.SrvBindlessIndex == UINT32_MAX)
         {
             return;
         }
@@ -1976,15 +1926,14 @@ void FSsr::AddSsrDenoisePass(FDeferredPassContext& Context, FRGResourceHandle In
         static_assert(sizeof(FSsrDenoiseConstants) / sizeof(uint32_t) <= kSsrDenoiseConstantsDwordCount);
         LocalCommandList->SetGraphicsRoot32BitConstants(0, sizeof(FSsrDenoiseConstants) / sizeof(uint32_t), &Constants, 0);
 
-        const uint32_t DenoiseBindlessIndices[] =
+        const uint32_t DenoiseBindlessIndices[kSsrDenoiseBindlessDwordCount] =
         {
             SsrInputIndex,
-            Owner.GBufferBindlessIndices[0],
+            Owner.GBufferA.SrvBindlessIndex,
             Owner.LinearDepthTexture.SrvBindlessIndex,
             Owner.Device->GetPointClampSamplerIndex(),
             Owner.Device->GetLinearClampSamplerIndex()
         };
-        static_assert(_countof(DenoiseBindlessIndices) <= kSsrDenoiseBindlessDwordCount);
         LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(DenoiseBindlessIndices), DenoiseBindlessIndices, 0);
 
         LocalCommandList->DrawInstanced(3, 1, 0, 0);

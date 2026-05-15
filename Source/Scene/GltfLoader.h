@@ -131,6 +131,13 @@ struct FGltfSkin
     std::vector<DirectX::XMFLOAT4X4> InverseBindMatrices;
 };
 
+struct FGltfAnimationPose
+{
+    std::vector<DirectX::XMFLOAT4X4> LocalMatrices;
+    std::vector<DirectX::XMFLOAT4X4> WorldMatrices;
+    std::vector<std::vector<DirectX::XMFLOAT4X4>> SkinMatrices;
+};
+
 struct FGltfScene
 {
     std::vector<FMesh> Meshes;
@@ -139,6 +146,8 @@ struct FGltfScene
     std::vector<FGltfNodeTransform> NodeTransforms;
     std::vector<FGltfSkin> Skins;
     std::vector<FGltfAnimation> Animations;
+    FGltfAnimationPose Pose;
+    float AnimationTime = 0.0f;
 };
 
 class FGltfLoader

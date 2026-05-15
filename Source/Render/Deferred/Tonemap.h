@@ -19,9 +19,8 @@ class FTonemap
 {
 public:
     bool InitializePipelines(FDeferredRenderer& Owner, FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
-    bool InitializeResources(FDeferredRenderer& Owner, FDX12Device* Device);
+    bool InitializeResources(FDeferredRenderer& Owner, FDX12Device* Device, uint32_t Width, uint32_t Height);
     void ImportPersistentResources(FDeferredPassContext& Context);
-    bool CreatePersistentDescriptors(FDeferredRenderer& Owner, FDX12Device* Device);
     void AddPasses(FDeferredPassContext& Context) const;
 
     void SetTonemapEnabled(bool bEnabled) { bTonemapEnabled = bEnabled; }
@@ -47,6 +46,7 @@ private:
 private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> TonemapPipeline;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> TonemapRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> TonemapOutputRtvHeap;
 
     bool bTonemapEnabled = true;
     float TonemapExposure = 0.9f;

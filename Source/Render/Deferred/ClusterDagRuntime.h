@@ -51,6 +51,7 @@ public:
     float GetSwRasterThresholdPixels() const { return SwRasterThresholdPixels; }
     uint32_t GetVisibleRootCount() const { return VisibleRootCount; }
     uint32_t GetClusterCount() const { return ClusterCount; }
+    uint32_t GetStreamingPageCount() const { return StreamingPageCount; }
 
 private:
     struct FSceneGroupData
@@ -89,6 +90,11 @@ private:
         uint32_t RangeIndex = 0;        // Which IndirectDrawRange (material/pipeline group) this packet belongs to; used as RunCounts array index
         uint32_t RangeCommandStart = 0; // IndirectDrawRanges[RangeIndex].Start; base slot in the output command buffer for this range, combined with the per-range atomic counter to produce the final output slot
         uint32_t ModelIndex = 0;        // Scene-model index used by the visibility resolve path to recover per-model shading data
+
+        static FClusterDrawData Make(uint32_t InStartIndex, uint32_t InIndexCount, uint32_t InRangeIndex, uint32_t InRangeCommandStart, uint32_t InModelIndex)
+        {
+            return { InStartIndex, InIndexCount, InRangeIndex, InRangeCommandStart, InModelIndex };
+        }
     };
 
     struct FVisibleEntry
@@ -107,16 +113,16 @@ private:
         std::vector<FClusterDrawData> DrawDatas;
         std::vector<FIndirectDrawCommand> CommandTemplates;
         std::vector<uint32_t> RangeOffsets;
+        uint32_t StreamingPageCount = 1;
     };
 
     bool PrepareRuntimeData(FDeferredRenderer& Owner, FPreparedData& OutData);
     bool ValidatePreparedRuntimeData(const FPreparedData& Data) const;
     bool CreateRuntimeResources(FDeferredRenderer& Owner, FDX12Device* Device, const FPreparedData& Data);
+    bool UploadRuntimeResources(FDeferredRenderer& Owner, FDX12Device* Device, const FPreparedData& Data);
     void PopulateCullingConstants(FDeferredRenderer& Owner, const FCamera& Camera) const;
     void AddInitQueuePass(FDeferredPassContext& Context, const char* PassName) const;
     void AddPersistentCullPass(FDeferredPassContext& Context, const char* PassName) const;
-    void AddSplitNodeCullPass(FDeferredPassContext& Context, const char* PassName) const;
-    void AddSplitClusterCullPass(FDeferredPassContext& Context, const char* PassName) const;
     void AddLevelSplitInitPass(FDeferredPassContext& Context, const char* PassName) const;
     void AddLevelSplitPrepareNodePass(FDeferredPassContext& Context, const char* PassName, uint32_t Level) const;
     void AddLevelSplitNodeCullPass(FDeferredPassContext& Context, const char* PassName, uint32_t Level) const;
@@ -125,8 +131,6 @@ private:
     void AddFinalizeIndirectArgsPass(FDeferredPassContext& Context, const char* PassName, const char* PixGroupName = nullptr) const;
     void DispatchInitQueues(FDeferredRenderer& Owner, FDX12CommandContext& CmdContext, const FCamera& Camera, const char* PassName) const;
     void DispatchPersistentCull(FDeferredRenderer& Owner, FDX12CommandContext& CmdContext, const char* PassName) const;
-    void DispatchSplitNodeCull(FDeferredRenderer& Owner, FDX12CommandContext& CmdContext, const char* PassName) const;
-    void DispatchSplitClusterCull(FDeferredRenderer& Owner, FDX12CommandContext& CmdContext, const char* PassName) const;
     void DispatchLevelSplitInit(FDeferredRenderer& Owner, FDX12CommandContext& CmdContext, const FCamera& Camera, const char* PassName) const;
     void DispatchLevelSplitPrepareNode(FDeferredRenderer& Owner, FDX12CommandContext& CmdContext, uint32_t Level, const char* PassName) const;
     void DispatchLevelSplitNodeCull(FDeferredRenderer& Owner, FDX12CommandContext& CmdContext, uint32_t Level, const char* PassName) const;
@@ -136,26 +140,18 @@ private:
 private:
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> InitQueuePipelines;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> PersistentCullPipelines;
-    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> SplitNodeCullPipelines;
-    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> SplitClusterCullPipelines;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2> LevelSplitInitPipelines;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2> LevelSplitPrepareNodePipelines;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> LevelSplitNodeCullPipelines;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2> LevelSplitPrepareClusterPipelines;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> LevelSplitClusterCullPipelines;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> RunAppendPipeline;
     Microsoft::WRL::ComPtr<ID3D12CommandSignature> DispatchCommandSignature;
 
     FBindlessBuffer GroupBuffer;
-    FUploadBuffer GroupUpload;
     FBindlessBuffer ClusterBuffer;
-    FUploadBuffer ClusterUpload;
     FBindlessBuffer ChildRefBuffer;
-    FUploadBuffer ChildRefUpload;
     FBindlessBuffer RootGroupBuffer;
-    FUploadBuffer RootGroupUpload;
     FBindlessBuffer DrawDataBuffer;
-    FUploadBuffer DrawDataUpload;
 
     std::vector<FBindlessBuffer> QueueStateBuffers;
     std::vector<FBindlessBuffer> GroupQueueBuffers;
@@ -189,6 +185,7 @@ private:
     uint32_t RuntimeGroupCount = 0;
     uint32_t RuntimeCommandCount = 0;
     uint32_t RuntimeChildRefCount = 0;
+    uint32_t StreamingPageCount = 1;
     uint32_t RuntimeMaxTraversalLevels = 1;
     bool bResourcesReady = false;
     std::vector<FRenderer::FIndirectDrawRange> IndirectDrawRanges;

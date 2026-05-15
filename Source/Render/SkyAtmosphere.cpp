@@ -22,10 +22,7 @@ bool FSkyAtmosphere::Initialize(FDX12Device* Device, float InSphereRadius, DXGI_
         return false;
     }
 
-    if (ConstantBuffer)
-    {
-        ConstantBuffer->SetName(L"SkyConstantBuffer");
-    }
+    ConstantBuffer->SetName(L"SkyConstantBuffer");
 
     return SkyAtmosphere::CreatePipeline(Device, RenderTargetFormat, Config, RootSignature, PipelineState);
 }
@@ -139,7 +136,7 @@ bool SkyAtmosphere::CreateResources(
     uint8_t*& OutConstantBufferMapped)
 {
     FMappedUploadBuffer SkyConstantBuffer;
-    if (!CreateMappedConstantBuffer(Device, sizeof(FSkyAtmosphereConstants), SkyConstantBuffer))
+    if (!CreateMappedConstantBuffer(Device, L"SkyAtmosphereConstantBuffer", sizeof(FSkyAtmosphereConstants), SkyConstantBuffer))
     {
         return false;
     }

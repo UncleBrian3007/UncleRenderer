@@ -10,6 +10,7 @@
 #include "Deferred/DeferredFrameOrchestrator.h"
 #include "Deferred/DeferredBasePass.h"
 #include "Deferred/ClusterDagVisibilityPass.h"
+#include "Deferred/ClusterDagStreamingManager.h"
 #include "Deferred/DeferredLightingPass.h"
 #include "Deferred/Gtao.h"
 #include "Deferred/RayTracingShadow.h"
@@ -41,30 +42,13 @@
 
 using Microsoft::WRL::ComPtr;
 
-namespace
-{
-    FRGTextureDesc BuildTextureDescFromResource(ID3D12Resource* Resource)
-    {
-        FRGTextureDesc Desc = {};
-        if (Resource == nullptr)
-        {
-            return Desc;
-        }
-
-        const D3D12_RESOURCE_DESC ResourceDesc = Resource->GetDesc();
-        Desc.Width = static_cast<uint32_t>(ResourceDesc.Width);
-        Desc.Height = ResourceDesc.Height;
-        Desc.MipLevels = static_cast<uint16_t>(ResourceDesc.MipLevels);
-        Desc.Format = ResourceDesc.Format;
-        return Desc;
-    }
-}
 
 FDeferredRenderer::FDeferredRenderer()
     : FrameOrchestrator(std::make_unique<FDeferredFrameOrchestrator>())
     , BasePass(std::make_unique<FDeferredBasePass>())
     , LightingPass(std::make_unique<FDeferredLightingPass>())
     , ClusterDagVisibilityPass(std::make_unique<FClusterDagVisibilityPass>())
+    , ClusterDagStreamingManager(std::make_unique<FClusterDagStreamingManager>())
     , Gtao(std::make_unique<FGtao>())
     , Hzb(std::make_unique<FHzb>())
     , RayTracingShadow(std::make_unique<FRayTracingShadow>())
@@ -82,7 +66,7 @@ FDeferredRenderer::FDeferredRenderer()
 {
 }
 
-const DXGI_FORMAT FDeferredRenderer::GBufferFormats[4] =
+const DXGI_FORMAT FDeferredRenderer::GBufferFormats[kDeferredGBufferCount] =
 {
     DXGI_FORMAT_R10G10B10A2_UNORM,
     DXGI_FORMAT_R16G16B16A16_FLOAT,
@@ -252,6 +236,7 @@ void FDeferredRenderer::ApplySsrConfig(const FRendererConfig& Config)
 void FDeferredRenderer::ApplyClusterDAGConfig(const FRendererConfig& Config)
 {
     ClusterDagRuntime->ApplyConfig(Config);
+    ClusterDagStreamingManager->ApplyConfig(Config);
     ClusterDagVisibilityPass->SetEnabled(Config.bEnableClusterDAGVisibilityBuffer);
     ClusterDagVisibilityPass->SetSoftwareRasterHzbRejectEnabled(Config.bEnableClusterDAGSwRasterHzbReject);
 }
@@ -262,7 +247,7 @@ void FDeferredRenderer::ApplyRestirGIConfig(const FRendererConfig& Config)
     if (bCurrentDenoiserEnabled != Config.bEnableRestirGIDenoiser)
     {
         RestirGIDenoiser->SetEnabled(Config.bEnableRestirGIDenoiser);
-        InvalidateRestirGiDenoiserHistory();
+        RestirGIDenoiser->InvalidateHistory();
     }
 
     RestirGI->SetEnabled(Config.bEnableRestirGI);
@@ -287,7 +272,7 @@ void FDeferredRenderer::ApplyRestirGIConfig(const FRendererConfig& Config)
     {
         RestirGI->SetRandomMode(Config.RestirGIRandomMode);
         RestirGI->InvalidateReservoirHistory();
-        InvalidateRestirGiDenoiserHistory();
+        RestirGIDenoiser->InvalidateHistory();
     }
 }
 
@@ -448,7 +433,7 @@ bool FDeferredRenderer::InitializeFrameResources(FDX12Device* Device, uint32_t W
         return false;
     }
 
-    if (!Tonemap->InitializeResources(*this, Device))
+    if (!Tonemap->InitializeResources(*this, Device, Width, Height))
     {
         LogError("Deferred renderer initialization failed: tonemap resource creation failed");
         return false;
@@ -526,6 +511,14 @@ bool FDeferredRenderer::InitializeSceneResources(FDX12Device* Device, DXGI_FORMA
         {
             LogWarning("Deferred renderer ClusterDag runtime resource creation failed; falling back to legacy path.");
         }
+        else if (bClusterDagRuntimeReady && ClusterDagRuntime->HasResources())
+        {
+            const uint32_t PageCount = ClusterDagRuntime->GetStreamingPageCount();
+            if (!ClusterDagStreamingManager->InitializeResources(*this, Device, PageCount, GetFramesInFlight()))
+            {
+                LogWarning("Deferred renderer ClusterDag streaming resource creation failed; streaming feedback will stay disabled.");
+            }
+        }
     }
 
     FSkyPipelineConfig SkyPipelineConfig;
@@ -562,13 +555,6 @@ bool FDeferredRenderer::InitializeSceneModelResources(FDX12Device* Device, const
     {
         LogError("Deferred renderer initialization failed: skinned position buffer creation failed");
         return false;
-    }
-
-    GltfScenePoses.resize(GltfScenes.size());
-    GltfSceneTimes.assign(GltfScenes.size(), 0.0f);
-    for (size_t Index = 0; Index < GltfScenes.size(); ++Index)
-    {
-        InitializeGltfAnimationPose(GltfScenes[Index], GltfScenePoses[Index]);
     }
 
     SceneWorldMatrix = SceneModels.front().WorldMatrix;
@@ -614,6 +600,7 @@ bool FDeferredRenderer::InitializeEnvironmentAndDescriptorResources(FDX12Device*
     }
     BlueNoiseSobolTexture->SetName(L"BlueNoiseSobol");
     InitializeBindlessTexture(BlueNoiseSobolTexture, BuildTextureDescFromResource(BlueNoiseSobolTexture.Get()), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    WriteOrCreateBindlessTextureSrv(Device, BlueNoiseSobolTexture);
 
     if (!TextureLoader->LoadOrDefault(L"Assets/Textures/BlueNoise/scrambling_ranking_128x128_2d_1spp.png", BlueNoiseScramblingRanking1SPPTexture.Resource))
     {
@@ -622,22 +609,11 @@ bool FDeferredRenderer::InitializeEnvironmentAndDescriptorResources(FDX12Device*
     }
     BlueNoiseScramblingRanking1SPPTexture->SetName(L"BlueNoiseScramblingRanking1SPP");
     InitializeBindlessTexture(BlueNoiseScramblingRanking1SPPTexture, BuildTextureDescFromResource(BlueNoiseScramblingRanking1SPPTexture.Get()), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    WriteOrCreateBindlessTextureSrv(Device, BlueNoiseScramblingRanking1SPPTexture);
 
     if (!CreateSceneTextures(Device, SceneModels))
     {
         LogError("Deferred renderer initialization failed: scene texture creation failed");
-        return false;
-    }
-
-    if (!CreateDescriptorHeap(Device))
-    {
-        LogError("Deferred renderer initialization failed: descriptor heap creation failed");
-        return false;
-    }
-
-    if (!Gtao->CreatePersistentDescriptors(*this, Device))
-    {
-        LogError("Deferred renderer initialization failed: GTAO descriptor creation failed");
         return false;
     }
 
@@ -647,18 +623,17 @@ bool FDeferredRenderer::InitializeEnvironmentAndDescriptorResources(FDX12Device*
         return false;
     }
 
-    if (!RestirGI->CreatePersistentDescriptors(*this, Device))
-    {
-        LogError("Deferred renderer initialization failed: ReSTIR GI descriptor creation failed");
-        return false;
-    }
-
     if (!RestirGIDenoiser->CreatePersistentDescriptors(*this, Device))
     {
         LogError("Deferred renderer initialization failed: ReSTIR GI denoiser descriptor creation failed");
         return false;
     }
-    RestirGI->RefreshPersistentInputValidation(*this, Device);
+
+    if (!RestirGI->CreatePersistentDescriptors(*this, Device))
+    {
+        LogError("Deferred renderer initialization failed: ReSTIR GI descriptor creation failed");
+        return false;
+    }
 
     if (!AutoExposure->CreatePersistentDescriptors(*this, Device))
     {
@@ -675,12 +650,6 @@ bool FDeferredRenderer::InitializeEnvironmentAndDescriptorResources(FDX12Device*
     if (!Taa->CreatePersistentDescriptors(*this, Device))
     {
         LogError("Deferred renderer initialization failed: TAA descriptor creation failed");
-        return false;
-    }
-
-    if (!Tonemap->CreatePersistentDescriptors(*this, Device))
-    {
-        LogError("Deferred renderer initialization failed: tonemap descriptor creation failed");
         return false;
     }
 
@@ -772,7 +741,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
 
     ClusterDagSceneConstantsPreparedFrame = UINT32_MAX;
 
-    const bool bAnySkinningUpdated = RendererUtils::UpdateGltfSceneAnimation(SceneModels, GltfScenes, GltfScenePoses, GltfSceneTimes, DeltaTime);
+    const bool bAnySkinningUpdated = RendererUtils::UpdateGltfSceneAnimation(SceneModels, GltfScenes, DeltaTime);
 
     GpuDebugState.PreparePrint(CmdContext);
     GpuDebugState.PrepareLine(CmdContext);
@@ -862,18 +831,18 @@ void FDeferredRenderer::PrepareFrameState(const FCamera& Camera, bool bAnySkinni
     if (!bHasPreviousViewProjection)
     {
         RestirGI->InvalidateReservoirHistory();
-        InvalidateRestirGiDenoiserHistory();
+        RestirGIDenoiser->InvalidateHistory();
     }
 
     if (!RestirGI->IsEnabled())
     {
         RestirGI->InvalidateReservoirHistory();
-        InvalidateRestirGiDenoiserHistory();
+        RestirGIDenoiser->InvalidateHistory();
     }
 
     if (!RestirGIDenoiser->IsEnabled())
     {
-        InvalidateRestirGiDenoiserHistory();
+        RestirGIDenoiser->InvalidateHistory();
     }
 
     OutState.bGtaoJitterActive = Gtao->IsEnabled() && Gtao->IsJitterEnabled();
@@ -901,11 +870,6 @@ void FDeferredRenderer::PrepareFrameState(const FCamera& Camera, bool bAnySkinni
 
     OutState.bRenderShadows = bShadowsEnabled && BasePass->HasShadowPipelines() && ShadowMap;
     OutState.bDoDepthPrepass = bDepthPrepassEnabled && BasePass->HasDepthPrepassPipelines();
-    if (!Hzb->IsEnabled())
-    {
-        Hzb->SetReady(false);
-    }
-
     const bool bPrevHZBReady = Hzb->IsReady();
     OutState.bUseHZBOcclusion = Hzb->IsEnabled() && bPrevHZBReady && IsValidBindlessIndex(Hzb->GetSrvBindlessIndex());
     OutState.bUseHzbTwoPass = bEnableIndirectDraw && OutState.bUseHZBOcclusion && Hzb->IsTwoPassEnabled();
@@ -945,45 +909,27 @@ void FDeferredRenderer::FinalizeFrameState(const FDeferredFrameState& FrameState
     }
 }
 
-void FDeferredRenderer::InvalidateRestirGiDenoiserHistory()
-{
-    RestirGIDenoiser->InvalidateHistory();
-}
 
 void FDeferredRenderer::OnFrameFenceSignaled(uint32_t FrameIndex, uint64_t FenceValue)
 {
-    (void)FenceValue;
-
     Taa->OnFrameFenceSignaled(FrameIndex);
     PathTracing->OnFrameFenceSignaled(FrameIndex);
+    ClusterDagStreamingManager->OnFrameFenceSignaled(FrameIndex, FenceValue);
 }
 
-bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, const std::vector<FSceneModelResource>& Models)
+bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, std::vector<FSceneModelResource>& Models)
 {
-    (void)Device;
-
     if (!TextureLoader)
     {
         return false;
     }
 
-    SceneTextures.clear();
-    SceneTextures.reserve(Models.size());
-
     std::vector<FTextureLoadRequest> Requests;
     Requests.reserve(Models.size() * 10);
 
-    for (const FSceneModelResource& Model : Models)
-    {
-        (void)Model;
-        FModelTextureSet TextureSet;
-        SceneTextures.push_back(TextureSet);
-    }
-
     for (size_t i = 0; i < Models.size(); ++i)
     {
-        const FSceneModelResource& Model = Models[i];
-        FModelTextureSet& TextureSet = SceneTextures[i];
+        FSceneModelResource& Model = Models[i];
 
         if (!Model.BaseColorTexturePath.empty())
         {
@@ -991,7 +937,7 @@ bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, const std::vect
             BaseColorRequest.Path = Model.BaseColorTexturePath;
             BaseColorRequest.bUseSolidColor = false;
             BaseColorRequest.bUseSRGB = true;
-            BaseColorRequest.OutTexture = &TextureSet.BaseColor;
+            BaseColorRequest.OutTexture = &Model.BaseColor.Resource;
             Requests.push_back(BaseColorRequest);
         }
 
@@ -1000,7 +946,7 @@ bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, const std::vect
             FTextureLoadRequest MetallicRoughnessRequest;
             MetallicRoughnessRequest.Path = Model.MetallicRoughnessTexturePath;
             MetallicRoughnessRequest.bUseSolidColor = false;
-            MetallicRoughnessRequest.OutTexture = &TextureSet.MetallicRoughness;
+            MetallicRoughnessRequest.OutTexture = &Model.MetallicRoughness.Resource;
             Requests.push_back(MetallicRoughnessRequest);
         }
 
@@ -1009,7 +955,7 @@ bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, const std::vect
             FTextureLoadRequest NormalRequest;
             NormalRequest.Path = Model.NormalTexturePath;
             NormalRequest.bUseSolidColor = false;
-            NormalRequest.OutTexture = &TextureSet.Normal;
+            NormalRequest.OutTexture = &Model.Normal.Resource;
             Requests.push_back(NormalRequest);
         }
 
@@ -1019,7 +965,7 @@ bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, const std::vect
             EmissiveRequest.Path = Model.EmissiveTexturePath;
             EmissiveRequest.bUseSolidColor = false;
             EmissiveRequest.bUseSRGB = true;
-            EmissiveRequest.OutTexture = &TextureSet.Emissive;
+            EmissiveRequest.OutTexture = &Model.Emissive.Resource;
             Requests.push_back(EmissiveRequest);
         }
 
@@ -1029,7 +975,7 @@ bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, const std::vect
             SheenColorRequest.Path = Model.SheenColorTexturePath;
             SheenColorRequest.bUseSolidColor = false;
             SheenColorRequest.bUseSRGB = true;
-            SheenColorRequest.OutTexture = &TextureSet.SheenColor;
+            SheenColorRequest.OutTexture = &Model.SheenColor.Resource;
             Requests.push_back(SheenColorRequest);
         }
 
@@ -1038,7 +984,7 @@ bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, const std::vect
             FTextureLoadRequest SheenRoughnessRequest;
             SheenRoughnessRequest.Path = Model.SheenRoughnessTexturePath;
             SheenRoughnessRequest.bUseSolidColor = false;
-            SheenRoughnessRequest.OutTexture = &TextureSet.SheenRoughness;
+            SheenRoughnessRequest.OutTexture = &Model.SheenRoughness.Resource;
             Requests.push_back(SheenRoughnessRequest);
         }
 
@@ -1047,7 +993,7 @@ bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, const std::vect
             FTextureLoadRequest ClearcoatRequest;
             ClearcoatRequest.Path = Model.ClearcoatTexturePath;
             ClearcoatRequest.bUseSolidColor = false;
-            ClearcoatRequest.OutTexture = &TextureSet.Clearcoat;
+            ClearcoatRequest.OutTexture = &Model.Clearcoat.Resource;
             Requests.push_back(ClearcoatRequest);
         }
 
@@ -1056,7 +1002,7 @@ bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, const std::vect
             FTextureLoadRequest ClearcoatRoughnessRequest;
             ClearcoatRoughnessRequest.Path = Model.ClearcoatRoughnessTexturePath;
             ClearcoatRoughnessRequest.bUseSolidColor = false;
-            ClearcoatRoughnessRequest.OutTexture = &TextureSet.ClearcoatRoughness;
+            ClearcoatRoughnessRequest.OutTexture = &Model.ClearcoatRoughness.Resource;
             Requests.push_back(ClearcoatRoughnessRequest);
         }
 
@@ -1065,7 +1011,7 @@ bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, const std::vect
             FTextureLoadRequest ClearcoatNormalRequest;
             ClearcoatNormalRequest.Path = Model.ClearcoatNormalTexturePath;
             ClearcoatNormalRequest.bUseSolidColor = false;
-            ClearcoatNormalRequest.OutTexture = &TextureSet.ClearcoatNormal;
+            ClearcoatNormalRequest.OutTexture = &Model.ClearcoatNormal.Resource;
             Requests.push_back(ClearcoatNormalRequest);
         }
 
@@ -1074,20 +1020,40 @@ bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, const std::vect
             FTextureLoadRequest AnisotropyRequest;
             AnisotropyRequest.Path = Model.AnisotropyTexturePath;
             AnisotropyRequest.bUseSolidColor = false;
-            AnisotropyRequest.OutTexture = &TextureSet.Anisotropy;
+            AnisotropyRequest.OutTexture = &Model.Anisotropy.Resource;
             Requests.push_back(AnisotropyRequest);
         }
     }
 
     LogInfo("Loading " + std::to_string(Requests.size()) + " textures in parallel for " + std::to_string(Models.size()) + " models");
-    const bool bSuccess = TextureLoader->LoadTexturesParallel(Requests);
-
-    if (!bSuccess)
+    if (!TextureLoader->LoadTexturesParallel(Requests))
     {
         LogError("Failed to load scene textures");
+        return false;
     }
 
-    return bSuccess;
+    for (FSceneModelResource& Model : Models)
+    {
+        const auto RegisterSrv = [&](FBindlessTexture& Tex)
+        {
+            if (!Tex.Get()) { return; }
+            const D3D12_RESOURCE_DESC Desc = Tex->GetDesc();
+            Tex.SrvBindlessIndex = Device->CreateBindlessSrv(Tex.Get(),
+                CD3DX12_SHADER_RESOURCE_VIEW_DESC::Tex2D(Desc.Format, Desc.MipLevels));
+        };
+        RegisterSrv(Model.BaseColor);
+        RegisterSrv(Model.MetallicRoughness);
+        RegisterSrv(Model.Normal);
+        RegisterSrv(Model.Emissive);
+        RegisterSrv(Model.SheenColor);
+        RegisterSrv(Model.SheenRoughness);
+        RegisterSrv(Model.Clearcoat);
+        RegisterSrv(Model.ClearcoatRoughness);
+        RegisterSrv(Model.ClearcoatNormal);
+        RegisterSrv(Model.Anisotropy);
+    }
+
+    return true;
 }
 
 
@@ -1116,11 +1082,11 @@ void FDeferredRenderer::WriteSceneConstants(const FCamera& Camera, const FSceneM
     bool bHasPreviousSkinning = false;
     const uint32_t FrameCount = GetFramesInFlight();
     const uint32_t PrevFrameIndex = FrameCount > 0 ? (GetFrameIndex() + FrameCount - 1u) % FrameCount : 0u;
-    if (IsValidBindlessIndex(Model.BoneMatrixBindlessIndex)
+    if (IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex)
         && Model.BoneMatrixCount > 0
-        && PrevFrameIndex < Model.SkinnedPositionSrvBindlessIndices.size())
+        && PrevFrameIndex < Model.SkinnedPositionBuffers.size())
     {
-        PreviousSkinnedPositionBindlessIndex = Model.SkinnedPositionSrvBindlessIndices[PrevFrameIndex];
+        PreviousSkinnedPositionBindlessIndex = Model.SkinnedPositionBuffers[PrevFrameIndex].SrvBindlessIndex;
         bHasPreviousSkinning = IsValidBindlessIndex(PreviousSkinnedPositionBindlessIndex);
     }
 
@@ -1128,7 +1094,7 @@ void FDeferredRenderer::WriteSceneConstants(const FCamera& Camera, const FSceneM
     const bool bUseClusterDagDebugColor =
         (VisualizationMode == EDeferredLightingVisualizationMode::ClusterDagClusters
             || VisualizationMode == EDeferredLightingVisualizationMode::ClusterDagMip)
-        && IsValidBindlessIndex(Model.ClusterDagDebugColorBufferBindlessIndex);
+        && Model.ClusterDagDebugColorBuffer.HasSrv();
 
     RendererUtils::FUpdateSceneConstantsParams Params;
     Params.Camera = &Camera;
@@ -1230,35 +1196,35 @@ bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     }
 
     bool bCreatedAnyResource = false;
-    bool bPreparedLegacyGpuDrivenData = false;
-    bool bHasLegacyIndirectCommands = false;
+    bool bPreparedMeshletGpuDrivenData = false;
+    bool bHasMeshletIndirectCommands = false;
 
     // Step 1: Prepare indirect draw data
     FGpuDrivenPreparedData PreparedData;
     if (!PrepareGpuDrivenDrawData(PreparedData))
     {
-        LogWarning("Failed to prepare legacy GPU-driven draw data");
+        LogWarning("Failed to prepare meshlet GPU-driven draw data");
     }
     else
     {
-        bPreparedLegacyGpuDrivenData = true;
-        bHasLegacyIndirectCommands = !PreparedData.Commands.empty();
+        bPreparedMeshletGpuDrivenData = true;
+        bHasMeshletIndirectCommands = !PreparedData.Commands.empty();
 
-        if (bHasLegacyIndirectCommands && !CreatePerFrameIndirectBuffers(Device, PreparedData))
+        if (bHasMeshletIndirectCommands && !CreatePerFrameIndirectBuffers(Device, PreparedData))
         {
-            LogWarning("Failed to create legacy GPU-driven per-frame indirect buffers");
+            LogWarning("Failed to create meshlet GPU-driven per-frame indirect buffers");
         }
         else if (!CreateSharedGpuDrivenBuffers(Device, PreparedData))
         {
-            LogWarning("Failed to create legacy GPU-driven shared buffers");
+            LogWarning("Failed to create meshlet GPU-driven shared buffers");
         }
         else if (!UploadGpuDrivenBuffers(Device, PreparedData))
         {
-            LogWarning("Failed to upload legacy GPU-driven buffers");
+            LogWarning("Failed to upload meshlet GPU-driven buffers");
         }
         else
         {
-            bCreatedAnyResource = bHasLegacyIndirectCommands || bPreparedLegacyGpuDrivenData;
+            bCreatedAnyResource = bHasMeshletIndirectCommands || bPreparedMeshletGpuDrivenData;
         }
     }
 

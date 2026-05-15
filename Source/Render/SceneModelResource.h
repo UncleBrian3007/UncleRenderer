@@ -1,5 +1,6 @@
 #pragma once
 
+#include "GpuResource.h"
 #include <wrl.h>
 #include <d3d12.h>
 #include <DirectXMath.h>
@@ -13,11 +14,20 @@
 #include "../Scene/Mesh.h"
 #include "../Scene/ClusterDAG.h"
 
+constexpr uint32_t kMeshVertexStreamCount = 7;
+constexpr uint32_t kClusterDagVertexStreamCount = 4;
+
+struct FTextureTransform
+{
+    DirectX::XMFLOAT4 OffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
+    DirectX::XMFLOAT2 Rotation{ 1.0f, 0.0f };
+};
+
 struct FMeshGeometryBuffers
 {
-    std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 7> VertexBuffers;
-    Microsoft::WRL::ComPtr<ID3D12Resource> IndexBuffer;
-    std::array<D3D12_VERTEX_BUFFER_VIEW, 7> VertexBufferViews{};
+    std::array<FBindlessBuffer, kMeshVertexStreamCount> VertexBuffers;
+    FBindlessBuffer IndexBuffer;
+    std::array<D3D12_VERTEX_BUFFER_VIEW, kMeshVertexStreamCount> VertexBufferViews{};
     D3D12_INDEX_BUFFER_VIEW IndexBufferView{};
     uint32_t VertexBufferCount = 0;
     uint32_t IndexCount = 0;
@@ -31,6 +41,11 @@ struct FMeshletDrawData
     uint32_t IndexCount;
     uint32_t RangeIndex;
     uint32_t GroupIndex;
+
+    static FMeshletDrawData Make(uint32_t InStartIndex, uint32_t InIndexCount, uint32_t InRangeIndex, uint32_t InGroupIndex)
+    {
+        return { InStartIndex, InIndexCount, InRangeIndex, InGroupIndex };
+    }
 };
 
 struct FSceneModelResource
@@ -70,44 +85,34 @@ struct FSceneModelResource
     std::wstring ClearcoatNormalTexturePath;
     std::wstring AnisotropyTexturePath;
     bool bHasNormalMap = true;
-    std::array<uint32_t, 7> VertexBufferBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX } };
-    uint32_t IndexBufferBindlessIndex = UINT32_MAX;
-    uint32_t BaseColorBindlessIndex = UINT32_MAX;
-    uint32_t MetallicRoughnessBindlessIndex = UINT32_MAX;
-    uint32_t NormalBindlessIndex = UINT32_MAX;
-    uint32_t EmissiveBindlessIndex = UINT32_MAX;
-    uint32_t SheenColorBindlessIndex = UINT32_MAX;
-    uint32_t SheenRoughnessBindlessIndex = UINT32_MAX;
-    uint32_t ClearcoatBindlessIndex = UINT32_MAX;
-    uint32_t ClearcoatRoughnessBindlessIndex = UINT32_MAX;
-    uint32_t ClearcoatNormalBindlessIndex = UINT32_MAX;
-    uint32_t AnisotropyBindlessIndex = UINT32_MAX;
-    DirectX::XMFLOAT4 BaseColorTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
-    DirectX::XMFLOAT2 BaseColorTransformRotation{ 1.0f, 0.0f };
-    DirectX::XMFLOAT4 MetallicRoughnessTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
-    DirectX::XMFLOAT2 MetallicRoughnessTransformRotation{ 1.0f, 0.0f };
-    DirectX::XMFLOAT4 NormalTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
-    DirectX::XMFLOAT2 NormalTransformRotation{ 1.0f, 0.0f };
-    DirectX::XMFLOAT4 EmissiveTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
-    DirectX::XMFLOAT2 EmissiveTransformRotation{ 1.0f, 0.0f };
-    DirectX::XMFLOAT4 SheenColorTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
-    DirectX::XMFLOAT2 SheenColorTransformRotation{ 1.0f, 0.0f };
-    DirectX::XMFLOAT4 SheenRoughnessTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
-    DirectX::XMFLOAT2 SheenRoughnessTransformRotation{ 1.0f, 0.0f };
-    DirectX::XMFLOAT4 ClearcoatTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
-    DirectX::XMFLOAT2 ClearcoatTransformRotation{ 1.0f, 0.0f };
-    DirectX::XMFLOAT4 ClearcoatRoughnessTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
-    DirectX::XMFLOAT2 ClearcoatRoughnessTransformRotation{ 1.0f, 0.0f };
-    DirectX::XMFLOAT4 ClearcoatNormalTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
-    DirectX::XMFLOAT2 ClearcoatNormalTransformRotation{ 1.0f, 0.0f };
-    DirectX::XMFLOAT4 AnisotropyTransformOffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
-    DirectX::XMFLOAT2 AnisotropyTransformRotation{ 1.0f, 0.0f };
+    FBindlessTexture BaseColor;
+    FBindlessTexture MetallicRoughness;
+    FBindlessTexture Normal;
+    FBindlessTexture Emissive;
+    FBindlessTexture SheenColor;
+    FBindlessTexture SheenRoughness;
+    FBindlessTexture Clearcoat;
+    FBindlessTexture ClearcoatRoughness;
+    FBindlessTexture ClearcoatNormal;
+    FBindlessTexture Anisotropy;
+    FTextureTransform BaseColorTransform;
+    FTextureTransform MetallicRoughnessTransform;
+    FTextureTransform NormalTransform;
+    FTextureTransform EmissiveTransform;
+    FTextureTransform SheenColorTransform;
+    FTextureTransform SheenRoughnessTransform;
+    FTextureTransform ClearcoatTransform;
+    FTextureTransform ClearcoatRoughnessTransform;
+    FTextureTransform ClearcoatNormalTransform;
+    FTextureTransform AnisotropyTransform;
     std::string Name;
     DirectX::XMFLOAT3 BoundsMin{ 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT3 BoundsMax{ 0.0f, 0.0f, 0.0f };
     uint32_t ObjectId = 0;
+    uint32_t PipelineKey = 0;
     bool bUseSkinning = false;
     bool bSkinningUpdatedThisFrame = false;
+    uint32_t LastSkinnedSlot = UINT32_MAX;
     bool bUseMeshletCulling = false;
     DirectX::XMFLOAT4X4 ModelTransform{};
         int GltfSceneIndex = -1;
@@ -126,25 +131,15 @@ struct FSceneModelResource
     DirectX::XMFLOAT4 ClusterDagPackedPositionScale{ 1.0f, 1.0f, 1.0f, 0.0f };
     DirectX::XMFLOAT4 ClusterDagPackedConstantUV{ 0.0f, 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT4 ClusterDagPackedConstantColor{ 1.0f, 1.0f, 1.0f, 1.0f };
-    uint32_t BoneMatrixBindlessIndex = UINT32_MAX;
     uint32_t BoneMatrixCount = 0;
-    Microsoft::WRL::ComPtr<ID3D12Resource> BoneMatrixBuffer;
+    FBindlessBuffer BoneMatrixBuffer;
     uint8_t* BoneMatrixBufferMapped = nullptr;
-    std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 4> ClusterDagVertexBuffers;
-    std::array<uint32_t, 4> ClusterDagVertexBufferBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX } };
-    Microsoft::WRL::ComPtr<ID3D12Resource> ClusterDagIndexBuffer;
-    uint32_t ClusterDagIndexBufferBindlessIndex = UINT32_MAX;
-    Microsoft::WRL::ComPtr<ID3D12Resource> ClusterDagColorBuffer;
-    uint32_t ClusterDagColorBufferBindlessIndex = UINT32_MAX;
-    Microsoft::WRL::ComPtr<ID3D12Resource> ClusterDagDebugColorBuffer;
-    uint32_t ClusterDagDebugColorBufferBindlessIndex = UINT32_MAX;
-    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> SkinnedPositionBuffers;
-    std::vector<uint32_t> SkinnedPositionSrvBindlessIndices;
-    std::vector<uint32_t> SkinnedPositionUavBindlessIndices;
-    std::vector<D3D12_RESOURCE_STATES> SkinnedPositionStates;
-    Microsoft::WRL::ComPtr<ID3D12Resource> SkinnedPositionBuffer;
-    uint32_t SkinnedPositionSrvBindlessIndex = UINT32_MAX;
-    uint32_t SkinnedPositionUavBindlessIndex = UINT32_MAX;
+    std::array<FBindlessBuffer, kClusterDagVertexStreamCount> ClusterDagVertexBuffers;
+    FBindlessBuffer ClusterDagIndexBuffer;
+    FBindlessBuffer ClusterDagColorBuffer;
+    FBindlessBuffer ClusterDagDebugColorBuffer;
+    std::vector<FBindlessBuffer> SkinnedPositionBuffers;
+    FBindlessBuffer SkinnedPositionBuffer;
     std::vector<FMesh::FMeshlet> Meshlets;
     std::vector<FMesh::FMeshletBounds> MeshletBounds;
     std::vector<uint32_t> MeshletIndices;

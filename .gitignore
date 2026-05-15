@@ -49,7 +49,6 @@ x64
 obj
 /packages
 *.log
-/AGENTS.md
 *.patch
 *.vmesh
 /.claude

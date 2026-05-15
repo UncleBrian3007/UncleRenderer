@@ -4,6 +4,7 @@
 #include <d3d12.h>
 #include <wrl.h>
 
+#include "GpuResource.h"
 #include "RenderGraph.h"
 
 class FDX12Device;
@@ -20,10 +21,10 @@ public:
     void RequestReadback(uint32_t X, uint32_t Y);
     bool ConsumeReadback(uint32_t& OutObjectId);
 
-    bool IsReady() const { return Texture && Pipeline; }
-    ID3D12Resource* GetTexture() const { return Texture.Get(); }
+    bool IsReady() const { return RenderTarget && Pipeline; }
+    ID3D12Resource* GetRenderTarget() const { return RenderTarget.Get(); }
     D3D12_RESOURCE_STATES* GetStatePtr() { return &State; }
-    const D3D12_CPU_DESCRIPTOR_HANDLE& GetRtvHandle() const { return RtvHandle; }
+    const D3D12_CPU_DESCRIPTOR_HANDLE& GetRtvHandle() const { return RenderTarget.RtvHandle; }
     ID3D12PipelineState* GetPipeline() const { return Pipeline.Get(); }
     bool IsReadbackRequested() const { return bReadbackRequested; }
     uint32_t GetReadbackX() const { return ReadbackX; }
@@ -34,10 +35,8 @@ public:
     void SetReadbackRecorded() { bReadbackRecorded = true; }
 
 private:
-    Microsoft::WRL::ComPtr<ID3D12Resource> Texture;
-    Microsoft::WRL::ComPtr<ID3D12Resource> Readback;
-    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> RtvHeap;
-    D3D12_CPU_DESCRIPTOR_HANDLE RtvHandle{};
+    FRenderTarget RenderTarget;
+    FReadbackBuffer Readback;
     D3D12_RESOURCE_STATES State = D3D12_RESOURCE_STATE_RENDER_TARGET;
     bool bReadbackRequested = false;
     bool bReadbackRecorded = false;

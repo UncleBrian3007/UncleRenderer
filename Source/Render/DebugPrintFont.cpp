@@ -1,4 +1,5 @@
 #include "DebugPrintFont.h"
+#include "GpuResource.h"
 
 #include "../RHI/DX12Device.h"
 #include "../RHI/DX12Commons.h"
@@ -92,105 +93,49 @@ bool CreateDebugPrintFontResources(
         Glyph.Advance = Src.xadvance;
     }
 
-    D3D12_RESOURCE_DESC TextureDesc = {};
-    TextureDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    TextureDesc.Width = AtlasWidth;
-    TextureDesc.Height = AtlasHeight;
-    TextureDesc.DepthOrArraySize = 1;
-    TextureDesc.MipLevels = 1;
-    TextureDesc.Format = DXGI_FORMAT_R8_UNORM;
-    TextureDesc.SampleDesc.Count = 1;
-    TextureDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    // Font texture
+    const FRGTextureDesc AtlasDesc = { AtlasWidth, AtlasHeight, DXGI_FORMAT_R8_UNORM };
+    FBindlessTexture FontTexture;
+    CreateBindlessTexture(Device, L"DebugPrintFontAtlas", AtlasDesc, D3D12_RESOURCE_FLAG_NONE,
+        D3D12_RESOURCE_STATE_COMMON, FontTexture, false, false);
 
-    D3D12_HEAP_PROPERTIES DefaultHeap = {};
-    DefaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
-    DefaultHeap.CreationNodeMask = 1;
-    DefaultHeap.VisibleNodeMask = 1;
-
-    ComPtr<ID3D12Resource> FontTexture;
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &DefaultHeap,
-        D3D12_HEAP_FLAG_NONE,
-        &TextureDesc,
-        D3D12_RESOURCE_STATE_COMMON,
-        nullptr,
-        IID_PPV_ARGS(FontTexture.GetAddressOf())));
-
+    // Atlas upload buffer - texture row pitch requires manual row copy
+    const D3D12_RESOURCE_DESC AtlasD3DDesc = CreateTextureResourceDesc(AtlasDesc);
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT Layout = {};
     UINT NumRows = 0;
     UINT64 RowSizeInBytes = 0;
     UINT64 UploadBufferSize = 0;
-    Device->GetDevice()->GetCopyableFootprints(&TextureDesc, 0, 1, 0, &Layout, &NumRows, &RowSizeInBytes, &UploadBufferSize);
+    Device->GetDevice()->GetCopyableFootprints(&AtlasD3DDesc, 0, 1, 0, &Layout, &NumRows, &RowSizeInBytes, &UploadBufferSize);
 
-    D3D12_HEAP_PROPERTIES UploadHeap = {};
-    UploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
-    UploadHeap.CreationNodeMask = 1;
-    UploadHeap.VisibleNodeMask = 1;
-
-    D3D12_RESOURCE_DESC UploadDesc = {};
-    UploadDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    UploadDesc.Width = UploadBufferSize;
-    UploadDesc.Height = 1;
-    UploadDesc.DepthOrArraySize = 1;
-    UploadDesc.MipLevels = 1;
-    UploadDesc.Format = DXGI_FORMAT_UNKNOWN;
-    UploadDesc.SampleDesc.Count = 1;
-    UploadDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-    ComPtr<ID3D12Resource> UploadResource;
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &UploadHeap,
-        D3D12_HEAP_FLAG_NONE,
-        &UploadDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        nullptr,
-        IID_PPV_ARGS(UploadResource.GetAddressOf())));
-
-    uint8_t* Mapped = nullptr;
-    D3D12_RANGE EmptyRange = { 0, 0 };
-    HR_CHECK(UploadResource->Map(0, &EmptyRange, reinterpret_cast<void**>(&Mapped)));
-    for (UINT Row = 0; Row < NumRows; ++Row)
+    FUploadBuffer AtlasUpload;
+    CreateUploadBuffer(Device, L"DebugPrintFontAtlasUpload", UploadBufferSize, AtlasUpload, nullptr);
     {
-        const uint8_t* SrcRow = Bitmap.data() + Row * AtlasWidth;
-        memcpy(Mapped + Layout.Offset + Row * Layout.Footprint.RowPitch, SrcRow, AtlasWidth);
+        uint8_t* Mapped = nullptr;
+        const D3D12_RANGE EmptyRange = { 0, 0 };
+        HR_CHECK(AtlasUpload->Map(0, &EmptyRange, reinterpret_cast<void**>(&Mapped)));
+        for (UINT Row = 0; Row < NumRows; ++Row)
+        {
+            memcpy(Mapped + Layout.Offset + Row * Layout.Footprint.RowPitch,
+                Bitmap.data() + Row * AtlasWidth, AtlasWidth);
+        }
+        AtlasUpload->Unmap(0, nullptr);
     }
-    UploadResource->Unmap(0, nullptr);
 
-    const uint64_t GlyphBufferSize = sizeof(FDebugPrintGlyph) * Glyphs.size();
-    D3D12_RESOURCE_DESC GlyphDesc = {};
-    GlyphDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    GlyphDesc.Width = GlyphBufferSize;
-    GlyphDesc.Height = 1;
-    GlyphDesc.DepthOrArraySize = 1;
-    GlyphDesc.MipLevels = 1;
-    GlyphDesc.Format = DXGI_FORMAT_UNKNOWN;
-    GlyphDesc.SampleDesc.Count = 1;
-    GlyphDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-    ComPtr<ID3D12Resource> GlyphBuffer;
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &DefaultHeap,
-        D3D12_HEAP_FLAG_NONE,
-        &GlyphDesc,
+    // Glyph buffer + upload
+    FBindlessBuffer GlyphBuffer;
+    FUploadBuffer GlyphUpload;
+    CreateBindlessBufferWithUpload(
+        Device,
+        L"DebugPrintGlyphBuffer",
+        CreateStructuredBufferDesc<FDebugPrintGlyph>(Glyphs.size()),
         D3D12_RESOURCE_STATE_COMMON,
-        nullptr,
-        IID_PPV_ARGS(GlyphBuffer.GetAddressOf())));
+        GlyphBuffer,
+        GlyphUpload,
+        Glyphs.data(),
+        false,
+        false);
 
-    D3D12_RESOURCE_DESC GlyphUploadDesc = GlyphDesc;
-    ComPtr<ID3D12Resource> GlyphUpload;
-    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
-        &UploadHeap,
-        D3D12_HEAP_FLAG_NONE,
-        &GlyphUploadDesc,
-        D3D12_RESOURCE_STATE_GENERIC_READ,
-        nullptr,
-        IID_PPV_ARGS(GlyphUpload.GetAddressOf())));
-
-    uint8_t* GlyphMapped = nullptr;
-    HR_CHECK(GlyphUpload->Map(0, &EmptyRange, reinterpret_cast<void**>(&GlyphMapped)));
-    memcpy(GlyphMapped, Glyphs.data(), GlyphBufferSize);
-    GlyphUpload->Unmap(0, nullptr);
-
+    // GPU upload
     ComPtr<ID3D12CommandAllocator> UploadAllocator;
     ComPtr<ID3D12GraphicsCommandList> UploadList;
     HR_CHECK(Device->GetDevice()->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(UploadAllocator.GetAddressOf())));
@@ -209,32 +154,26 @@ bool CreateDebugPrintFontResources(
     DstLocation.SubresourceIndex = 0;
 
     D3D12_TEXTURE_COPY_LOCATION SrcLocation = {};
-    SrcLocation.pResource = UploadResource.Get();
+    SrcLocation.pResource = AtlasUpload.Get();
     SrcLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
     SrcLocation.PlacedFootprint = Layout;
 
     UploadList->CopyTextureRegion(&DstLocation, 0, 0, 0, &SrcLocation, nullptr);
-    UploadList->CopyBufferRegion(GlyphBuffer.Get(), 0, GlyphUpload.Get(), 0, GlyphBufferSize);
+    UploadList->CopyBufferRegion(GlyphBuffer.Get(), 0, GlyphUpload.Get(), 0, GlyphBuffer.Desc.Size);
 
-    const D3D12_RESOURCE_BARRIER Barriers[] = {
+    const D3D12_RESOURCE_BARRIER PostCopyBarriers[] = {
         CD3DX12_RESOURCE_BARRIER::Transition(FontTexture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
         CD3DX12_RESOURCE_BARRIER::Transition(GlyphBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
     };
-    UploadList->ResourceBarrier(_countof(Barriers), Barriers);
+    UploadList->ResourceBarrier(_countof(PostCopyBarriers), PostCopyBarriers);
 
     HR_CHECK(UploadList->Close());
     ID3D12CommandList* Lists[] = { UploadList.Get() };
     Device->GetGraphicsQueue()->ExecuteCommandLists(1, Lists);
     Device->GetGraphicsQueue()->Flush();
 
-    if (FontTexture)
-    {
-        FontTexture->SetName(L"DebugPrintFontAtlas");
-    }
-    if (GlyphBuffer)
-    {
-        GlyphBuffer->SetName(L"DebugPrintGlyphBuffer");
-    }
+    CreateBindlessTextureSrv(Device, FontTexture);
+    CreateBindlessBufferSrv(Device, GlyphBuffer);
 
     OutResources.FontTexture = FontTexture;
     OutResources.GlyphBuffer = GlyphBuffer;

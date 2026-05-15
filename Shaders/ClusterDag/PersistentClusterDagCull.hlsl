@@ -27,6 +27,10 @@ cbuffer ClusterDagPersistentBindlessConstants : register(b1)
     uint HwVisibleEntryIndicesIndex;
     uint SwVisibleEntryIndicesIndex;
     uint DrawDataVisibleEntryIndicesIndex;
+    uint PageTableBufferIndex;
+    uint StreamingRequestBufferIndex;
+    uint StreamingRequestCapacity;
+    uint StreamingResourceId;
 };
 
 void EmitVisibleClusterDagCandidate(
@@ -134,6 +138,9 @@ void PersistentClusterDagCullCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     RWStructuredBuffer<uint> HwVisibleEntryIndices = ResourceDescriptorHeap[HwVisibleEntryIndicesIndex];
     RWStructuredBuffer<uint> SwVisibleEntryIndices = ResourceDescriptorHeap[SwVisibleEntryIndicesIndex];
     RWStructuredBuffer<uint> DrawDataVisibleEntryIndices = ResourceDescriptorHeap[DrawDataVisibleEntryIndicesIndex];
+    StructuredBuffer<ClusterDagPageTableEntry> PageTable = ResourceDescriptorHeap[PageTableBufferIndex];
+    RWStructuredBuffer<ClusterDagStreamingRequest> StreamingRequests = ResourceDescriptorHeap[StreamingRequestBufferIndex];
+    const bool streamingEnabled = PageTableBufferIndex != 0xffffffffu && StreamingRequestBufferIndex != 0xffffffffu && StreamingRequestCapacity > 0u;
 
     const uint currentEpoch = TraversalEpoch;
     const uint maxLoopCount = max((GroupCount + ClusterCount) * 8u, 1024u);
@@ -229,6 +236,10 @@ void PersistentClusterDagCullCS(uint3 dispatchThreadId : SV_DispatchThreadID)
 #if !USE_CLUSTER_DAG_FAST
                                 const ClusterDagGroupData nextGroup = Groups[cluster.GeneratingGroupIndex];
                                 if (nextGroup.ChildRefStart > ChildRefCount || nextGroup.ChildRefCount > ChildRefCount - nextGroup.ChildRefStart || nextGroup.ChildRefCount == 0u)
+                                {
+                                    refine = false;
+                                }
+                                else if (!ShouldRefineClusterDagStreamingPage(streamingEnabled, nextGroup, StreamingResourceId, StreamingRequestCapacity, PageTable, StreamingRequests, DebugPrintStatsIndex))
                                 {
                                     refine = false;
                                 }

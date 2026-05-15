@@ -76,188 +76,61 @@ bool FDeferredBasePass::InitializeResources(FDeferredRenderer& Owner, FDX12Devic
         return false;
     }
 
+    for (uint32_t Index = 0; Index < static_cast<uint32_t>(Owner.DepthResourcesPerFrame.size()); ++Index)
+    {
+        Owner.DepthResourcesPerFrame[Index].SrvBindlessIndex = InDevice->CreateBindlessSrv(
+            Owner.DepthResourcesPerFrame[Index].Resource.Get(),
+            CD3DX12_SHADER_RESOURCE_VIEW_DESC::Tex2D(DXGI_FORMAT_R24_UNORM_X8_TYPELESS, 1));
+    }
+
     return true;
 }
 
 bool FDeferredBasePass::CreateGBufferResources(FDX12Device* InDevice, uint32_t Width, uint32_t Height) const
 {
-    if (Owner == nullptr)
-    {
-        return false;
-    }
+    FBindlessTexture* Targets[kDeferredGBufferCount] = { &Owner->GBufferA, &Owner->GBufferB, &Owner->GBufferC, &Owner->GBufferD };
+    const wchar_t* GBufferNames[kDeferredGBufferCount] = { L"GBufferA", L"GBufferB", L"GBufferC", L"GBufferD" };
 
-    FBindlessTexture* Targets[4] = { &Owner->GBufferA, &Owner->GBufferB, &Owner->GBufferC, &Owner->GBufferD };
-    const wchar_t* GBufferNames[4] = { L"GBufferA", L"GBufferB", L"GBufferC", L"GBufferD" };
-
-    CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
-
-    const UINT RtvDescriptorSize = InDevice->GetDevice()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-    D3D12_CPU_DESCRIPTOR_HANDLE RtvHandle = {};
-    RtvHandle.ptr = 0;
+    const uint32_t RtvDescriptorSize = InDevice->GetRtvDescriptorStride();
 
     D3D12_DESCRIPTOR_HEAP_DESC RtvHeapDesc = {};
-    RtvHeapDesc.NumDescriptors = 6;
+    RtvHeapDesc.NumDescriptors = kDeferredGBufferCount + 1;
     RtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     RtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     HR_CHECK(InDevice->GetDevice()->CreateDescriptorHeap(&RtvHeapDesc, IID_PPV_ARGS(Owner->GBufferRTVHeap.GetAddressOf())));
-    if (Owner->GBufferRTVHeap)
+    Owner->GBufferRTVHeap->SetName(L"GBufferRTVHeap");
+
+    D3D12_CPU_DESCRIPTOR_HANDLE RtvHandle = Owner->GBufferRTVHeap->GetCPUDescriptorHandleForHeapStart();
+
+    const FLOAT ClearColor[] = { 0.0f, 0.0f, 0.0f, 1.0f };
+    for (uint32_t i = 0; i < kDeferredGBufferCount; ++i)
     {
-        Owner->GBufferRTVHeap->SetName(L"GBufferRTVHeap");
-    }
-
-    RtvHandle = Owner->GBufferRTVHeap->GetCPUDescriptorHandleForHeapStart();
-
-    for (int i = 0; i < 4; ++i)
-    {
-        CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
-            FDeferredRenderer::GBufferFormats[i],
-            Width,
-            Height,
-            1,
-            1,
-            1,
-            0,
-            D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
-
-        const FLOAT Color[] = { 0.0f, 0.0f, 0.0f, 1.0f };
-        CD3DX12_CLEAR_VALUE ClearValue(Desc.Format, Color);
-
-        HR_CHECK(InDevice->GetDevice()->CreateCommittedResource(
-            &HeapProps,
-            D3D12_HEAP_FLAG_NONE,
-            &Desc,
-            D3D12_RESOURCE_STATE_RENDER_TARGET,
-            &ClearValue,
-            IID_PPV_ARGS(Targets[i]->GetAddressOf())));
-
-        Targets[i]->Get()->SetName(GBufferNames[i]);
-        InitializeBindlessTexture(*Targets[i], { Width, Height, FDeferredRenderer::GBufferFormats[i] }, D3D12_RESOURCE_STATE_RENDER_TARGET);
-
+        CD3DX12_CLEAR_VALUE ClearValue(FDeferredRenderer::GBufferFormats[i], ClearColor);
+        CreateBindlessTexture(InDevice, GBufferNames[i], { Width, Height, FDeferredRenderer::GBufferFormats[i] }, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_RESOURCE_STATE_RENDER_TARGET, *Targets[i], false, false, &ClearValue);
+        Targets[i]->SrvBindlessIndex = InDevice->CreateBindlessSrv(Targets[i]->Get(),
+            CD3DX12_SHADER_RESOURCE_VIEW_DESC::Tex2D(FDeferredRenderer::GBufferFormats[i], 1));
         Owner->GBufferRTVHandles[i] = RtvHandle;
-        D3D12_RENDER_TARGET_VIEW_DESC RtvDesc = {};
-        RtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
-        RtvDesc.Format = FDeferredRenderer::GBufferFormats[i];
-        InDevice->GetDevice()->CreateRenderTargetView(Targets[i]->Get(), &RtvDesc, RtvHandle);
+        WriteTexture2DRtv(InDevice, Targets[i]->Get(), FDeferredRenderer::GBufferFormats[i], RtvHandle);
         RtvHandle.ptr += RtvDescriptorSize;
-
-        Owner->GBufferStates[i] = D3D12_RESOURCE_STATE_RENDER_TARGET;
     }
 
-    CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
-        FDeferredRenderer::LightingBufferFormat,
-        Width,
-        Height,
-        1,
-        1,
-        1,
-        0,
-        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-
-    const FLOAT LightingClearColor[] = { 0.0f, 0.0f, 0.0f, 1.0f };
-    CD3DX12_CLEAR_VALUE LightingClear(Desc.Format, LightingClearColor);
-
-    HR_CHECK(InDevice->GetDevice()->CreateCommittedResource(
-        &HeapProps,
-        D3D12_HEAP_FLAG_NONE,
-        &Desc,
-        D3D12_RESOURCE_STATE_RENDER_TARGET,
-        &LightingClear,
-        IID_PPV_ARGS(Owner->LightingBuffer.GetAddressOf())));
-
-    Owner->LightingBuffer->SetName(L"LightingBuffer");
-    InitializeBindlessTexture(Owner->LightingBuffer, { Width, Height, FDeferredRenderer::LightingBufferFormat }, D3D12_RESOURCE_STATE_RENDER_TARGET);
-
+    CD3DX12_CLEAR_VALUE LightingClear(FDeferredRenderer::LightingBufferFormat, ClearColor);
+    CreateBindlessTexture(InDevice, L"LightingBuffer", { Width, Height, FDeferredRenderer::LightingBufferFormat }, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_RENDER_TARGET, Owner->LightingBuffer, false, false, &LightingClear);
     Owner->LightingRTVHandle = RtvHandle;
-    D3D12_RENDER_TARGET_VIEW_DESC LightingRtvDesc = {};
-    LightingRtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
-    LightingRtvDesc.Format = FDeferredRenderer::LightingBufferFormat;
-    InDevice->GetDevice()->CreateRenderTargetView(Owner->LightingBuffer.Get(), &LightingRtvDesc, RtvHandle);
-    RtvHandle.ptr += RtvDescriptorSize;
-
-    Desc = CD3DX12_RESOURCE_DESC::Tex2D(
-        Owner->BackBufferFormat,
-        Width,
-        Height,
-        1,
-        1,
-        1,
-        0,
-        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
-
-    const FLOAT TonemapClearColor[] = { 0.0f, 0.0f, 0.0f, 1.0f };
-    CD3DX12_CLEAR_VALUE TonemapClear(Desc.Format, TonemapClearColor);
-
-    HR_CHECK(InDevice->GetDevice()->CreateCommittedResource(
-        &HeapProps,
-        D3D12_HEAP_FLAG_NONE,
-        &Desc,
-        D3D12_RESOURCE_STATE_RENDER_TARGET,
-        &TonemapClear,
-        IID_PPV_ARGS(Owner->TonemapOutput.GetAddressOf())));
-
-    Owner->TonemapOutput->SetName(L"TonemapOutput");
-    InitializeBindlessTexture(Owner->TonemapOutput, { Width, Height, Owner->BackBufferFormat }, D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-    Owner->TonemapOutputRtvHandle = RtvHandle;
-    D3D12_RENDER_TARGET_VIEW_DESC TonemapRtvDesc = {};
-    TonemapRtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
-    TonemapRtvDesc.Format = Owner->BackBufferFormat;
-    InDevice->GetDevice()->CreateRenderTargetView(Owner->TonemapOutput.Get(), &TonemapRtvDesc, RtvHandle);
+    WriteTexture2DRtv(InDevice, Owner->LightingBuffer.Get(), FDeferredRenderer::LightingBufferFormat, RtvHandle);
+    WriteOrCreateBindlessTextureSrv(InDevice, Owner->LightingBuffer);
 
     return true;
 }
 
 bool FDeferredBasePass::CreateVelocityResources(FDX12Device* InDevice, uint32_t Width, uint32_t Height) const
 {
-    if (Owner == nullptr)
-    {
-        return false;
-    }
-
-    CD3DX12_HEAP_PROPERTIES HeapProps(D3D12_HEAP_TYPE_DEFAULT);
-    CD3DX12_RESOURCE_DESC Desc = CD3DX12_RESOURCE_DESC::Tex2D(
-        DXGI_FORMAT_R16G16B16A16_FLOAT,
-        Width,
-        Height,
-        1,
-        1,
-        1,
-        0,
-        D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
-
+    const FRGTextureDesc VelocityDesc = { Width, Height, DXGI_FORMAT_R16G16B16A16_FLOAT };
     const FLOAT Color[] = { 0.0f, 0.0f, 0.0f, 0.0f };
     CD3DX12_CLEAR_VALUE ClearValue(DXGI_FORMAT_R16G16B16A16_FLOAT, Color);
-
-    HR_CHECK(InDevice->GetDevice()->CreateCommittedResource(
-        &HeapProps,
-        D3D12_HEAP_FLAG_NONE,
-        &Desc,
-        D3D12_RESOURCE_STATE_RENDER_TARGET,
-        &ClearValue,
-        IID_PPV_ARGS(Owner->VelocityTexture.GetAddressOf())));
-
-    if (Owner->VelocityTexture)
-    {
-        Owner->VelocityTexture->SetName(L"Velocity");
-    }
-    InitializeBindlessTexture(Owner->VelocityTexture, { Width, Height, DXGI_FORMAT_R16G16B16A16_FLOAT }, D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-    D3D12_DESCRIPTOR_HEAP_DESC RtvHeapDesc = {};
-    RtvHeapDesc.NumDescriptors = 1;
-    RtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    RtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-    HR_CHECK(InDevice->GetDevice()->CreateDescriptorHeap(&RtvHeapDesc, IID_PPV_ARGS(Owner->VelocityRtvHeap.GetAddressOf())));
-
-    if (Owner->VelocityRtvHeap)
-    {
-        Owner->VelocityRtvHeap->SetName(L"VelocityRtvHeap");
-    }
-
-    Owner->VelocityRtvHandle = Owner->VelocityRtvHeap->GetCPUDescriptorHandleForHeapStart();
-    D3D12_RENDER_TARGET_VIEW_DESC RtvDesc = {};
-    RtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
-    RtvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-    InDevice->GetDevice()->CreateRenderTargetView(Owner->VelocityTexture.Get(), &RtvDesc, Owner->VelocityRtvHandle);
+    CreateBindlessTexture(InDevice, L"Velocity", VelocityDesc, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_RESOURCE_STATE_RENDER_TARGET, Owner->VelocityTexture, false, false, &ClearValue);
+    WriteOrCreateBindlessTextureSrv(InDevice, Owner->VelocityTexture);
+    CreateTexture2DRtv(InDevice, L"VelocityRtvHeap", Owner->VelocityTexture.Get(), DXGI_FORMAT_R16G16B16A16_FLOAT, Owner->VelocityRtvHeap, Owner->VelocityRtvHandle);
 
     Owner->bHasPreviousViewProjection = false;
     Owner->bHasPreviousUnjitteredViewProjection = false;
@@ -507,12 +380,12 @@ bool FDeferredBasePass::BuildDeferredBasePassPsoDesc(uint32_t PipelineKey, bool 
     OutDesc.DepthStencilState.FrontFace.StencilPassOp = D3D12_STENCIL_OP_KEEP;
     OutDesc.DepthStencilState.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS;
     OutDesc.DepthStencilState.BackFace = OutDesc.DepthStencilState.FrontFace;
-    OutDesc.NumRenderTargets = 5;
-    OutDesc.RTVFormats[0] = FDeferredRenderer::GBufferFormats[0];
-    OutDesc.RTVFormats[1] = FDeferredRenderer::GBufferFormats[1];
-    OutDesc.RTVFormats[2] = FDeferredRenderer::GBufferFormats[2];
-    OutDesc.RTVFormats[3] = FDeferredRenderer::GBufferFormats[3];
-    OutDesc.RTVFormats[4] = DeferredBasePassLightingFormat;
+    OutDesc.NumRenderTargets = kDeferredGBufferCount + 1u;
+    for (uint32_t i = 0; i < kDeferredGBufferCount; ++i)
+    {
+        OutDesc.RTVFormats[i] = FDeferredRenderer::GBufferFormats[i];
+    }
+    OutDesc.RTVFormats[kDeferredGBufferCount] = DeferredBasePassLightingFormat;
     OutDesc.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
     OutDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
     return true;
@@ -792,13 +665,12 @@ void FDeferredBasePass::AddShadowPass(FDeferredPassContext& Context) const
             }
             const uint64_t ConstantBufferOffset = Owner.SceneConstantBufferStride * ModelIndex;
 
-            const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBindlessIndex) && Model.BoneMatrixCount > 0;
+            const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) && Model.BoneMatrixCount > 0;
             SetShadowPipeline(bUseSkinning, Model.bDoubleSided);
 
             const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = Owner.GetSceneConstantBufferAddress();
             LocalCommandList->SetGraphicsRootConstantBufferView(0, ConstantBufferAddress + ConstantBufferOffset);
-            const uint32_t BindlessIndices[] = { 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u };
-            static_assert(_countof(BindlessIndices) <= kBasePassBindlessDwordCount);
+            const uint32_t BindlessIndices[kBasePassBindlessDwordCount] = { 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u };
             LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
             static_assert(1u <= kBasePassPerDrawDwordCount);
             LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
@@ -886,8 +758,7 @@ void FDeferredBasePass::AddDepthPrepass(FDeferredPassContext& Context) const
             if (DagIndirectBuffer && DagRunCountBuffer && !DagRanges.empty())
             {
                 ID3D12PipelineState* CurrentDagPipeline = nullptr;
-                const uint32_t ZeroBindlessIndices[10] = {};
-                static_assert(_countof(ZeroBindlessIndices) <= kBasePassBindlessDwordCount);
+                const uint32_t ZeroBindlessIndices[kBasePassBindlessDwordCount] = {};
                 for (size_t RangeIndex = 0; RangeIndex < DagRanges.size(); ++RangeIndex)
                 {
                     const FRenderer::FIndirectDrawRange& Range = DagRanges[RangeIndex];
@@ -927,7 +798,7 @@ void FDeferredBasePass::AddDepthPrepass(FDeferredPassContext& Context) const
             }
             const uint64_t ConstantBufferOffset = Owner.SceneConstantBufferStride * ModelIndex;
 
-            const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBindlessIndex) && Model.BoneMatrixCount > 0;
+            const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) && Model.BoneMatrixCount > 0;
             ID3D12PipelineState* DesiredPipeline = bUseSkinning ? DepthPrepassPipelinesSkinned[Model.bDoubleSided ? 1u : 0u].Get() : DepthPrepassPipelines[Model.bDoubleSided ? 1u : 0u].Get();
             if (DesiredPipeline != CurrentPipeline)
             {
@@ -937,8 +808,7 @@ void FDeferredBasePass::AddDepthPrepass(FDeferredPassContext& Context) const
 
             const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = Owner.GetSceneConstantBufferAddress();
             LocalCommandList->SetGraphicsRootConstantBufferView(0, ConstantBufferAddress + ConstantBufferOffset);
-            const uint32_t BindlessIndices[] = { 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u };
-            static_assert(_countof(BindlessIndices) <= kBasePassBindlessDwordCount);
+            const uint32_t BindlessIndices[kBasePassBindlessDwordCount] = { 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u };
             LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
             static_assert(1u <= kBasePassPerDrawDwordCount);
             LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
@@ -981,7 +851,7 @@ void FDeferredBasePass::AddBasePass(FDeferredPassContext& Context, bool bClearTa
         Data.bAllowSkinningFallback = bAllowSkinningFallback;
         Data.Camera = &Context.Camera;
 
-        for (int i = 0; i < 4; ++i)
+        for (uint32_t i = 0; i < kDeferredGBufferCount; ++i)
         {
             Builder.WriteTexture(Context.Resources.GBufferHandles[i], D3D12_RESOURCE_STATE_RENDER_TARGET);
         }
@@ -993,7 +863,7 @@ void FDeferredBasePass::AddBasePass(FDeferredPassContext& Context, bool bClearTa
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
 
 
-        D3D12_CPU_DESCRIPTOR_HANDLE BasePassRTVs[5] =
+        D3D12_CPU_DESCRIPTOR_HANDLE BasePassRTVs[kDeferredGBufferCount + 1u] =
         {
             Owner.GBufferRTVHandles[0],
             Owner.GBufferRTVHandles[1],
@@ -1150,7 +1020,7 @@ void FDeferredBasePass::AddBasePass(FDeferredPassContext& Context, bool bClearTa
                         continue;
                     }
 
-                    const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBindlessIndex) && Model.BoneMatrixCount > 0;
+                    const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) && Model.BoneMatrixCount > 0;
                     if (!bUseSkinning)
                     {
                         continue;
@@ -1160,26 +1030,24 @@ void FDeferredBasePass::AddBasePass(FDeferredPassContext& Context, bool bClearTa
 
                     const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = Owner.GetSceneConstantBufferAddress();
                     LocalCommandList->SetGraphicsRootConstantBufferView(0, ConstantBufferAddress + ConstantBufferOffset);
-                    const uint32_t BindlessIndices[] =
+                    const uint32_t BindlessIndices[kBasePassBindlessDwordCount] =
                     {
-                        Model.BaseColorBindlessIndex,
-                        Model.MetallicRoughnessBindlessIndex,
-                        Model.NormalBindlessIndex,
-                        Model.EmissiveBindlessIndex,
-                        Model.SheenColorBindlessIndex,
-                        Model.SheenRoughnessBindlessIndex,
-                        Model.ClearcoatBindlessIndex,
-                        Model.ClearcoatRoughnessBindlessIndex,
-                        Model.ClearcoatNormalBindlessIndex,
-                        Model.AnisotropyBindlessIndex
+                        Model.BaseColor.SrvBindlessIndex,
+                        Model.MetallicRoughness.SrvBindlessIndex,
+                        Model.Normal.SrvBindlessIndex,
+                        Model.Emissive.SrvBindlessIndex,
+                        Model.SheenColor.SrvBindlessIndex,
+                        Model.SheenRoughness.SrvBindlessIndex,
+                        Model.Clearcoat.SrvBindlessIndex,
+                        Model.ClearcoatRoughness.SrvBindlessIndex,
+                        Model.ClearcoatNormal.SrvBindlessIndex,
+                        Model.Anisotropy.SrvBindlessIndex
                     };
-                    static_assert(_countof(BindlessIndices) <= kBasePassBindlessDwordCount);
                     LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
                     static_assert(1u <= kBasePassPerDrawDwordCount);
                     LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
 
-                    const uint32_t ModelPipelineKey = RendererUtils::BuildPipelineKey(Model);
-                    const uint32_t PipelineKey = BuildDeferredBasePassPipelineKey(ModelPipelineKey, Owner.GetDeferredLightingVisualizationMode());
+                    const uint32_t PipelineKey = BuildDeferredBasePassPipelineKey(Model.PipelineKey, Owner.GetDeferredLightingVisualizationMode());
                     if (!EnsureBasePassPipelineOrFail(PipelineKey, true, "DeferredBasePass/SkinningFallback"))
                     {
                         return;
@@ -1221,27 +1089,25 @@ void FDeferredBasePass::AddBasePass(FDeferredPassContext& Context, bool bClearTa
 
                 const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = Owner.GetSceneConstantBufferAddress();
                 LocalCommandList->SetGraphicsRootConstantBufferView(0, ConstantBufferAddress + ConstantBufferOffset);
-                const uint32_t BindlessIndices[] =
+                const uint32_t BindlessIndices[kBasePassBindlessDwordCount] =
                 {
-                    Model.BaseColorBindlessIndex,
-                    Model.MetallicRoughnessBindlessIndex,
-                    Model.NormalBindlessIndex,
-                    Model.EmissiveBindlessIndex,
-                    Model.SheenColorBindlessIndex,
-                    Model.SheenRoughnessBindlessIndex,
-                    Model.ClearcoatBindlessIndex,
-                    Model.ClearcoatRoughnessBindlessIndex,
-                    Model.ClearcoatNormalBindlessIndex,
-                    Model.AnisotropyBindlessIndex
+                    Model.BaseColor.SrvBindlessIndex,
+                    Model.MetallicRoughness.SrvBindlessIndex,
+                    Model.Normal.SrvBindlessIndex,
+                    Model.Emissive.SrvBindlessIndex,
+                    Model.SheenColor.SrvBindlessIndex,
+                    Model.SheenRoughness.SrvBindlessIndex,
+                    Model.Clearcoat.SrvBindlessIndex,
+                    Model.ClearcoatRoughness.SrvBindlessIndex,
+                    Model.ClearcoatNormal.SrvBindlessIndex,
+                    Model.Anisotropy.SrvBindlessIndex
                 };
-                static_assert(_countof(BindlessIndices) <= kBasePassBindlessDwordCount);
                 LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
                 static_assert(1u <= kBasePassPerDrawDwordCount);
                 LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
 
-                const uint32_t ModelPipelineKey = RendererUtils::BuildPipelineKey(Model);
-                const bool bUseSkinning = (ModelPipelineKey & (1u << 8)) != 0;
-                const uint32_t PipelineKey = BuildDeferredBasePassPipelineKey(ModelPipelineKey, Owner.GetDeferredLightingVisualizationMode());
+                const bool bUseSkinning = (Model.PipelineKey & (1u << 8)) != 0;
+                const uint32_t PipelineKey = BuildDeferredBasePassPipelineKey(Model.PipelineKey, Owner.GetDeferredLightingVisualizationMode());
                 if (!EnsureBasePassPipelineOrFail(PipelineKey, bUseSkinning, "DeferredBasePass/Direct"))
                 {
                     return;
@@ -1352,7 +1218,7 @@ void FDeferredBasePass::AddVelocityPass(FDeferredPassContext& Context) const
             bool bNeedsVelocity = Data.bCameraMoved;
             if (!bNeedsVelocity)
             {
-                const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBindlessIndex) && Model.BoneMatrixCount > 0;
+                const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) && Model.BoneMatrixCount > 0;
                 const bool bWorldMoved = Model.bHasPreviousWorldMatrix && IsWorldTransformChanged(Model.WorldMatrix, Model.PreviousWorldMatrix);
                 const bool bSkinningMoved = bUseSkinning && Data.bAnySkinningUpdated && Model.bSkinningUpdatedThisFrame;
                 bNeedsVelocity = bWorldMoved || bSkinningMoved;
@@ -1364,7 +1230,7 @@ void FDeferredBasePass::AddVelocityPass(FDeferredPassContext& Context) const
             }
 
             const bool bUseAlphaMask = Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask);
-            const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBindlessIndex) && Model.BoneMatrixCount > 0;
+            const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) && Model.BoneMatrixCount > 0;
             const uint32_t PipelineIndex = (bUseAlphaMask ? 1u : 0u) | (Model.bDoubleSided ? 2u : 0u);
             ID3D12PipelineState* Pipeline = bUseSkinning ? VelocityPipelinesSkinned[PipelineIndex].Get() : VelocityPipelines[PipelineIndex].Get();
 
@@ -1373,20 +1239,19 @@ void FDeferredBasePass::AddVelocityPass(FDeferredPassContext& Context) const
             LocalCommandList->SetPipelineState(Pipeline);
             LocalCommandList->SetGraphicsRootConstantBufferView(0, ConstantBufferAddress + ConstantBufferOffset);
 
-            const uint32_t BindlessIndices[] =
+            const uint32_t BindlessIndices[kBasePassBindlessDwordCount] =
             {
-                Model.BaseColorBindlessIndex,
-                Model.MetallicRoughnessBindlessIndex,
-                Model.NormalBindlessIndex,
-                Model.EmissiveBindlessIndex,
-                Model.SheenColorBindlessIndex,
-                Model.SheenRoughnessBindlessIndex,
-                Model.ClearcoatBindlessIndex,
-                Model.ClearcoatRoughnessBindlessIndex,
-                Model.ClearcoatNormalBindlessIndex,
-                Model.AnisotropyBindlessIndex
+                Model.BaseColor.SrvBindlessIndex,
+                Model.MetallicRoughness.SrvBindlessIndex,
+                Model.Normal.SrvBindlessIndex,
+                Model.Emissive.SrvBindlessIndex,
+                Model.SheenColor.SrvBindlessIndex,
+                Model.SheenRoughness.SrvBindlessIndex,
+                Model.Clearcoat.SrvBindlessIndex,
+                Model.ClearcoatRoughness.SrvBindlessIndex,
+                Model.ClearcoatNormal.SrvBindlessIndex,
+                Model.Anisotropy.SrvBindlessIndex
             };
-            static_assert(_countof(BindlessIndices) <= kBasePassBindlessDwordCount);
             LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
             static_assert(1u <= kBasePassPerDrawDwordCount);
             LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);

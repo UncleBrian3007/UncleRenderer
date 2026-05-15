@@ -6,6 +6,10 @@
 static const uint kClusterDagCommandStride = 32u;
 static const uint kClusterDagPipelineKeyDoubleSidedBit = RENDER_PIPELINE_KEY_DOUBLE_SIDED_BIT;
 static const uint kClusterDagPipelineKeyDoubleSidedMask = RENDER_PIPELINE_KEY_DOUBLE_SIDED_MASK;
+static const uint kClusterDagGroupPageIndexShift = 16u;
+static const uint kClusterDagGroupPageIndexMask = 0xffffu;
+static const uint kClusterDagPageResidentFlag = 1u;
+static const uint kClusterDagRootPageIndex = 0u;
 
 struct ClusterDagGroupData
 {
@@ -53,6 +57,22 @@ struct ClusterDagVisibleEntry
     uint DrawDataIndex;
 };
 
+struct ClusterDagStreamingRequest
+{
+    uint StreamingResourceId;
+    uint PageIndex;
+    uint Priority;
+    uint Flags;
+};
+
+struct ClusterDagPageTableEntry
+{
+    uint PhysicalPageIndex;
+    uint Flags;
+    uint LastUsedFrame;
+    uint Reserved;
+};
+
 void CopyClusterDagCommandTemplate(uint srcIndex, uint dstIndex, ByteAddressBuffer CommandTemplates, RWByteAddressBuffer OutputCommands)
 {
     const uint srcBase = srcIndex * kClusterDagCommandStride;
@@ -70,6 +90,9 @@ static const uint kClusterDagNonLeafFrustumCulledStatIndex = 13u;
 static const uint kClusterDagVisibleMipHistogramBaseStatIndex = 14u;
 static const uint kClusterDagVisibleMipHistogramBucketCount = 6u;
 static const uint kClusterDagVisibleMipHistogramOverflowBucket = kClusterDagVisibleMipHistogramBucketCount - 1u;
+static const uint kClusterDagStreamingRequestStatIndex = 26u;
+static const uint kClusterDagStreamingFallbackStatIndex = 27u;
+static const uint kClusterDagStreamingRequestOverflowStatIndex = 28u;
 
 static const uint kQueueStateTotalVisibleClustersOffset = 0u;
 static const uint kQueueStatePeakGroupQueueDepthOffset = 4u;

@@ -121,13 +121,12 @@ void FAutoExposure::AddPass(FDeferredPassContext& Context) const
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         static_assert(sizeof(FAutoExposureConstants) / sizeof(uint32_t) <= kAutoExposureConstantsDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(Constants) / sizeof(uint32_t), &Constants, 0);
-        const uint32_t AutoExposureBindlessIndices[] =
+        const uint32_t AutoExposureBindlessIndices[kAutoExposureBindlessDwordCount] =
         {
             Owner.LightingBuffer.SrvBindlessIndex,
             LuminanceTextures[Data.ReadIndex].SrvBindlessIndex,
             LuminanceTextures[Data.WriteIndex].UavBindlessIndex
         };
-        static_assert(_countof(AutoExposureBindlessIndices) <= kAutoExposureBindlessDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(1, _countof(AutoExposureBindlessIndices), AutoExposureBindlessIndices, 0);
         LocalCommandList->Dispatch(1, 1, 1);
     });

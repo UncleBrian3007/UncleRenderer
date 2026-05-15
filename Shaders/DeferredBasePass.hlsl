@@ -236,6 +236,56 @@ struct PSOutputVelocity
     float4 Velocity : SV_Target0;
 };
 
+float4 BuildShadingModelCustomData(
+    float2 sheenColorUV,
+    float2 sheenRoughnessUV,
+    float2 clearcoatUV,
+    float2 clearcoatRoughnessUV,
+    float2 anisotropyUV)
+{
+    float4 customData = 0.0f.xxxx;
+#if SHADINGMODEL_SHEEN
+    float3 sheenColor = SheenColorFactor;
+    float sheenRoughness = SheenRoughnessFactor;
+    if (SheenColorTextureIndex != 0xFFFFFFFFu)
+    {
+        Texture2D SheenColorTexture = ResourceDescriptorHeap[SheenColorTextureIndex];
+        sheenColor *= SheenColorTexture.Sample(AlbedoSampler, sheenColorUV).rgb;
+    }
+    if (SheenRoughnessTextureIndex != 0xFFFFFFFFu)
+    {
+        Texture2D SheenRoughnessTexture = ResourceDescriptorHeap[SheenRoughnessTextureIndex];
+        sheenRoughness *= SheenRoughnessTexture.Sample(AlbedoSampler, sheenRoughnessUV).a;
+    }
+    customData = float4(sheenColor, sheenRoughness);
+#endif
+#if SHADINGMODEL_CLEARCOAT
+    float clearcoat = ClearcoatFactor;
+    float clearcoatRoughness = ClearcoatRoughnessFactor;
+    if (ClearcoatTextureIndex != 0xFFFFFFFFu)
+    {
+        Texture2D ClearcoatTexture = ResourceDescriptorHeap[ClearcoatTextureIndex];
+        clearcoat *= ClearcoatTexture.Sample(AlbedoSampler, clearcoatUV).r;
+    }
+    if (ClearcoatRoughnessTextureIndex != 0xFFFFFFFFu)
+    {
+        Texture2D ClearcoatRoughnessTexture = ResourceDescriptorHeap[ClearcoatRoughnessTextureIndex];
+        clearcoatRoughness *= ClearcoatRoughnessTexture.Sample(AlbedoSampler, clearcoatRoughnessUV).g;
+    }
+    customData = float4(clearcoat, clearcoatRoughness, 0.0f, 0.0f);
+#endif
+#if SHADINGMODEL_ANISOTROPY
+    float anisotropyValue = 1.0f;
+    if (AnisotropyTextureIndex != 0xFFFFFFFFu)
+    {
+        Texture2D AnisotropyTexture = ResourceDescriptorHeap[AnisotropyTextureIndex];
+        anisotropyValue = AnisotropyTexture.Sample(AlbedoSampler, anisotropyUV).r;
+    }
+    customData = float4(anisotropyValue, AnisotropyStrength, 0.0f, 0.0f);
+#endif
+    return customData;
+}
+
 PSOutputVelocity DeferredBasePassVelocityPS(VSOutput Input)
 {
     PSOutputVelocity Output;
@@ -291,8 +341,9 @@ PSOutput DeferredBasePassPS(VSOutput Input, bool IsFrontFace : SV_IsFrontFace)
     float2 clearcoatUV = ApplyTextureTransform(Input.UV, ClearcoatTransformOffsetScale, ClearcoatTransformRotation);
     float2 clearcoatRoughnessUV = ApplyTextureTransform(Input.UV, ClearcoatRoughnessTransformOffsetScale, ClearcoatRoughnessTransformRotation);
     float2 clearcoatNormalUV = ApplyTextureTransform(Input.UV, ClearcoatNormalTransformOffsetScale, ClearcoatNormalTransformRotation);
+    float2 anisotropyUV = 0.0f.xx;
 #if SHADINGMODEL_ANISOTROPY
-    float2 anisotropyUV = ApplyTextureTransform(Input.UV, AnisotropyTransformOffsetScale, AnisotropyTransformRotation);
+    anisotropyUV = ApplyTextureTransform(Input.UV, AnisotropyTransformOffsetScale, AnisotropyTransformRotation);
 #endif
 
     float3 worldNormal = normalize(Input.Normal);
@@ -346,7 +397,12 @@ PSOutput DeferredBasePassPS(VSOutput Input, bool IsFrontFace : SV_IsFrontFace)
 
     Output.GBufferC = float4(albedo, 1.0);
 
-    float4 customData = 0.0f;
+    float4 customData = BuildShadingModelCustomData(
+        sheenColorUV,
+        sheenRoughnessUV,
+        clearcoatUV,
+        clearcoatRoughnessUV,
+        anisotropyUV);
 #if USE_CLUSTER_DAG_DEBUG_VIEW
     const bool bClusterDagDebugView =
         DeferredLightingVisualizationMode == LIGHTING_VISUALIZATION_CLUSTER_DAG_CLUSTERS
@@ -355,91 +411,6 @@ PSOutput DeferredBasePassPS(VSOutput Input, bool IsFrontFace : SV_IsFrontFace)
     {
         customData = (ExtraBindlessIndices.z != 0xffffffffu) ? Input.ClusterDagDebug : 0.0f.xxxx;
     }
-#if !SHADINGMODEL_SHEEN && !SHADINGMODEL_CLEARCOAT && !SHADINGMODEL_ANISOTROPY
-#else
-    else
-    {
-#if SHADINGMODEL_SHEEN
-        float3 sheenColor = SheenColorFactor;
-        float sheenRoughness = SheenRoughnessFactor;
-        if (SheenColorTextureIndex != 0xFFFFFFFFu)
-        {
-            Texture2D SheenColorTexture = ResourceDescriptorHeap[SheenColorTextureIndex];
-            sheenColor *= SheenColorTexture.Sample(AlbedoSampler, sheenColorUV).rgb;
-        }
-        if (SheenRoughnessTextureIndex != 0xFFFFFFFFu)
-        {
-            Texture2D SheenRoughnessTexture = ResourceDescriptorHeap[SheenRoughnessTextureIndex];
-            sheenRoughness *= SheenRoughnessTexture.Sample(AlbedoSampler, sheenRoughnessUV).a;
-        }
-        customData = float4(sheenColor, sheenRoughness);
-#endif
-#if SHADINGMODEL_CLEARCOAT
-        float clearcoat = ClearcoatFactor;
-        float clearcoatRoughness = ClearcoatRoughnessFactor;
-        if (ClearcoatTextureIndex != 0xFFFFFFFFu)
-        {
-            Texture2D ClearcoatTexture = ResourceDescriptorHeap[ClearcoatTextureIndex];
-            clearcoat *= ClearcoatTexture.Sample(AlbedoSampler, clearcoatUV).r;
-        }
-        if (ClearcoatRoughnessTextureIndex != 0xFFFFFFFFu)
-        {
-            Texture2D ClearcoatRoughnessTexture = ResourceDescriptorHeap[ClearcoatRoughnessTextureIndex];
-            clearcoatRoughness *= ClearcoatRoughnessTexture.Sample(AlbedoSampler, clearcoatRoughnessUV).g;
-        }
-        customData = float4(clearcoat, clearcoatRoughness, 0.0f, 0.0f);
-#endif
-#if SHADINGMODEL_ANISOTROPY
-        float anisotropyValue = 1.0f;
-        if (AnisotropyTextureIndex != 0xFFFFFFFFu)
-        {
-            Texture2D AnisotropyTexture = ResourceDescriptorHeap[AnisotropyTextureIndex];
-            anisotropyValue = AnisotropyTexture.Sample(AlbedoSampler, anisotropyUV).r;
-        }
-        customData = float4(anisotropyValue, AnisotropyStrength, 0.0f, 0.0f);
-#endif
-    }
-#endif
-#else
-#if SHADINGMODEL_SHEEN
-    float3 sheenColor = SheenColorFactor;
-    float sheenRoughness = SheenRoughnessFactor;
-    if (SheenColorTextureIndex != 0xFFFFFFFFu)
-    {
-        Texture2D SheenColorTexture = ResourceDescriptorHeap[SheenColorTextureIndex];
-        sheenColor *= SheenColorTexture.Sample(AlbedoSampler, sheenColorUV).rgb;
-    }
-    if (SheenRoughnessTextureIndex != 0xFFFFFFFFu)
-    {
-        Texture2D SheenRoughnessTexture = ResourceDescriptorHeap[SheenRoughnessTextureIndex];
-        sheenRoughness *= SheenRoughnessTexture.Sample(AlbedoSampler, sheenRoughnessUV).a;
-    }
-    customData = float4(sheenColor, sheenRoughness);
-#endif
-#if SHADINGMODEL_CLEARCOAT
-    float clearcoat = ClearcoatFactor;
-    float clearcoatRoughness = ClearcoatRoughnessFactor;
-    if (ClearcoatTextureIndex != 0xFFFFFFFFu)
-    {
-        Texture2D ClearcoatTexture = ResourceDescriptorHeap[ClearcoatTextureIndex];
-        clearcoat *= ClearcoatTexture.Sample(AlbedoSampler, clearcoatUV).r;
-    }
-    if (ClearcoatRoughnessTextureIndex != 0xFFFFFFFFu)
-    {
-        Texture2D ClearcoatRoughnessTexture = ResourceDescriptorHeap[ClearcoatRoughnessTextureIndex];
-        clearcoatRoughness *= ClearcoatRoughnessTexture.Sample(AlbedoSampler, clearcoatRoughnessUV).g;
-    }
-    customData = float4(clearcoat, clearcoatRoughness, 0.0f, 0.0f);
-#endif
-#if SHADINGMODEL_ANISOTROPY
-    float anisotropyValue = 1.0f;
-    if (AnisotropyTextureIndex != 0xFFFFFFFFu)
-    {
-        Texture2D AnisotropyTexture = ResourceDescriptorHeap[AnisotropyTextureIndex];
-        anisotropyValue = AnisotropyTexture.Sample(AlbedoSampler, anisotropyUV).r;
-    }
-    customData = float4(anisotropyValue, AnisotropyStrength, 0.0f, 0.0f);
-#endif
 #endif
     Output.GBufferD = customData;
 
