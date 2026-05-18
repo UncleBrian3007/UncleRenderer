@@ -19,6 +19,7 @@
 #include <cstring>
 #include <functional>
 #include <string>
+#include <unordered_map>
 
 using Microsoft::WRL::ComPtr;
 
@@ -147,9 +148,11 @@ namespace
     struct FClusterDagStreamingShaderBindings
     {
         uint32_t PageTableBufferIndex = UINT32_MAX;
+        uint32_t PageDataBufferIndex = UINT32_MAX;
         uint32_t StreamingRequestBufferIndex = UINT32_MAX;
         uint32_t StreamingRequestCapacity = 0;
         uint32_t StreamingResourceId = 0;
+        uint32_t PageSlotBytes = 0;
     };
 
     FClusterDagStreamingShaderBindings BuildClusterDagStreamingShaderBindings(const FDeferredRenderer& Owner, uint32_t FrameIndex)
@@ -159,9 +162,11 @@ namespace
         if (StreamingManager != nullptr && StreamingManager->IsEnabled())
         {
             Bindings.PageTableBufferIndex = StreamingManager->GetPageTableSrvBindlessIndex();
+            Bindings.PageDataBufferIndex = StreamingManager->GetPageDataSrvBindlessIndex();
             Bindings.StreamingRequestBufferIndex = StreamingManager->GetFeedbackUavBindlessIndex(FrameIndex);
             Bindings.StreamingRequestCapacity = StreamingManager->GetRequestCapacity();
             Bindings.StreamingResourceId = StreamingManager->GetStreamingResourceId();
+            Bindings.PageSlotBytes = StreamingManager->GetPageSlotBytes();
         }
         return Bindings;
     }
@@ -325,6 +330,7 @@ bool FClusterDagRuntime::InitializeResources(FDeferredRenderer& Owner, FDX12Devi
     RuntimeCommandCount = 0;
     RuntimeChildRefCount = 0;
     StreamingPageCount = 1;
+    StreamingPageSources.clear();
     RuntimeMaxTraversalLevels = 1;
     bResourcesReady = false;
     VisibleRootCount = 0; 
@@ -623,6 +629,7 @@ bool FClusterDagRuntime::PrepareRuntimeData(FDeferredRenderer& Owner, FPreparedD
     RuntimeGroupCount = 0;
     RuntimeChildRefCount = 0;
     StreamingPageCount = 1;
+    StreamingPageSources.clear();
     VisibleRootCount = 0; 
     ClusterCount = 0;
 
@@ -782,6 +789,170 @@ bool FClusterDagRuntime::PrepareRuntimeData(FDeferredRenderer& Owner, FPreparedD
             const uint32_t PageIndex = LocalGroupIndex == RuntimeHierarchy.RootGroupIndex
                 ? GClusterDagRootStreamingPageIndex
                 : BaseGroupIndex + LocalGroupIndex + 1u;
+            if (PageIndex != GClusterDagRootStreamingPageIndex)
+            {
+                if (OutData.StreamingPageSources.size() <= PageIndex)
+                {
+                    OutData.StreamingPageSources.resize(PageIndex + 1u);
+                }
+
+                FClusterDagStreamingPageSource& PageSource = OutData.StreamingPageSources[PageIndex];
+                PageSource.bValid = !Model.ClusterDagSourceFilePath.empty()
+                    && !Model.ClusterDagCacheFilePath.empty()
+                    && Model.ClusterDagMeshIndex != GClusterDAGInvalidIndex
+                    && Model.ClusterDagPrimitiveIndex != GClusterDAGInvalidIndex
+                    && Model.ClusterDagPackedVertexData.IsValid();
+                PageSource.PageIndex = PageIndex;
+                PageSource.MeshIndex = Model.ClusterDagMeshIndex;
+                PageSource.DagIndex = Model.ClusterDagPrimitiveIndex;
+                PageSource.LocalPageIndex = LocalGroupIndex + 1u;
+                PageSource.GlobalGroupIndex = BaseGroupIndex + LocalGroupIndex;
+                PageSource.SceneGroupBounds[0] = GroupData.Bounds.x;
+                PageSource.SceneGroupBounds[1] = GroupData.Bounds.y;
+                PageSource.SceneGroupBounds[2] = GroupData.Bounds.z;
+                PageSource.SceneGroupBounds[3] = GroupData.Bounds.w;
+                PageSource.SceneGroupLodBounds[0] = GroupData.LodBounds.x;
+                PageSource.SceneGroupLodBounds[1] = GroupData.LodBounds.y;
+                PageSource.SceneGroupLodBounds[2] = GroupData.LodBounds.z;
+                PageSource.SceneGroupLodBounds[3] = GroupData.LodBounds.w;
+                PageSource.SceneGroupParentLODError = GroupData.ParentLODError;
+                PageSource.SceneGroupChildRefCount = RuntimeGroup.ChildRefCount;
+                PageSource.SceneGroupFlags = (RuntimeGroup.Flags & GClusterDagGroupFlagsLowMask)
+                    | ((PageIndex & GClusterDagGroupFlagsLowMask) << GClusterDagGroupPageIndexShift);
+                PageSource.SceneGroupMipLevel = RuntimeGroup.MipLevel;
+                PageSource.SceneGroupChildRefs.clear();
+                PageSource.SceneGroupChildRefs.reserve(RuntimeGroup.ChildRefCount);
+                for (uint32_t ChildRefOffset = 0u; ChildRefOffset < RuntimeGroup.ChildRefCount; ++ChildRefOffset)
+                {
+                    FRuntimeClusterChildRef ChildRef = RuntimeHierarchy.ChildRefs[RuntimeGroup.ChildRefStart + ChildRefOffset];
+                    if (ChildRef.ClusterIndex != GClusterDAGInvalidIndex)
+                    {
+                        ChildRef.ClusterIndex += BaseClusterIndex;
+                    }
+                    PageSource.SceneGroupChildRefs.push_back(ChildRef);
+                }
+
+                std::vector<uint32_t> PageClusterIndices;
+                PageClusterIndices.reserve(RuntimeGroup.ChildRefCount);
+                for (uint32_t ChildRefOffset = 0u; ChildRefOffset < RuntimeGroup.ChildRefCount; ++ChildRefOffset)
+                {
+                    const FRuntimeClusterChildRef& ChildRef = RuntimeHierarchy.ChildRefs[RuntimeGroup.ChildRefStart + ChildRefOffset];
+                    if (ChildRef.ClusterIndex != GClusterDAGInvalidIndex && ChildRef.ClusterIndex < RuntimeHierarchy.Clusters.size())
+                    {
+                        PageClusterIndices.push_back(ChildRef.ClusterIndex);
+                    }
+                }
+                std::sort(PageClusterIndices.begin(), PageClusterIndices.end());
+                PageClusterIndices.erase(std::unique(PageClusterIndices.begin(), PageClusterIndices.end()), PageClusterIndices.end());
+
+                PageSource.ScenePageClusters.clear();
+                PageSource.ScenePageClusters.reserve(PageClusterIndices.size());
+                PageSource.ScenePageDrawDatas.clear();
+                PageSource.ScenePagePackedIndices.clear();
+                PageSource.ScenePagePackedPositions.clear();
+                PageSource.ScenePagePackedNormals.clear();
+                PageSource.ScenePagePackedUVs.clear();
+                PageSource.ScenePagePackedTangents.clear();
+                PageSource.ScenePagePackedColors.clear();
+                std::unordered_map<uint32_t, uint32_t> PageVertexRemap;
+                for (uint32_t LocalClusterIndex : PageClusterIndices)
+                {
+                    const FRuntimeCluster& RuntimeCluster = RuntimeHierarchy.Clusters[LocalClusterIndex];
+                    FClusterDagStreamingPageSource::FSceneClusterRecord ClusterRecord;
+                    ClusterRecord.GlobalClusterIndex = BaseClusterIndex + LocalClusterIndex;
+
+                    const DirectX::XMFLOAT4 SceneBounds = TransformBoundingSphere(
+                        DirectX::XMFLOAT4(RuntimeCluster.Bounds.Center.x, RuntimeCluster.Bounds.Center.y, RuntimeCluster.Bounds.Center.z, RuntimeCluster.Bounds.Radius),
+                        World,
+                        ModelScale);
+                    const DirectX::XMFLOAT4 SceneLodBounds = TransformBoundingSphere(
+                        DirectX::XMFLOAT4(RuntimeCluster.LodBoundsCenter.x, RuntimeCluster.LodBoundsCenter.y, RuntimeCluster.LodBoundsCenter.z, RuntimeCluster.LodBoundsRadius),
+                        World,
+                        ModelScale);
+                    ClusterRecord.Bounds[0] = SceneBounds.x;
+                    ClusterRecord.Bounds[1] = SceneBounds.y;
+                    ClusterRecord.Bounds[2] = SceneBounds.z;
+                    ClusterRecord.Bounds[3] = SceneBounds.w;
+                    ClusterRecord.LodBounds[0] = SceneLodBounds.x;
+                    ClusterRecord.LodBounds[1] = SceneLodBounds.y;
+                    ClusterRecord.LodBounds[2] = SceneLodBounds.z;
+                    ClusterRecord.LodBounds[3] = SceneLodBounds.w;
+                    ClusterRecord.LODError = RuntimeCluster.LODError * ModelScale;
+                    ClusterRecord.MaxEdgeLength = RuntimeCluster.MaxEdgeLength * ModelScale;
+                    ClusterRecord.GroupIndex = RuntimeCluster.GroupIndex != GClusterDAGInvalidIndex ? BaseGroupIndex + RuntimeCluster.GroupIndex : GClusterDAGInvalidIndex;
+                    ClusterRecord.GeneratingGroupIndex = RuntimeCluster.GeneratingGroupIndex != GClusterDAGInvalidIndex ? BaseGroupIndex + RuntimeCluster.GeneratingGroupIndex : GClusterDAGInvalidIndex;
+                    ClusterRecord.DrawDataStart = BaseDrawDataIndex + RuntimeCluster.DrawDataStart;
+                    ClusterRecord.DrawDataCount = RuntimeCluster.DrawDataCount;
+                    ClusterRecord.TriangleCount = RuntimeCluster.TriangleCount;
+                    ClusterRecord.MipLevel = RuntimeCluster.MipLevel;
+                    PageSource.ScenePageClusters.push_back(ClusterRecord);
+
+                    if (RuntimeCluster.DrawDataStart > RuntimeHierarchy.DrawDatas.size()
+                        || RuntimeCluster.DrawDataCount > RuntimeHierarchy.DrawDatas.size() - RuntimeCluster.DrawDataStart)
+                    {
+                        PageSource.bValid = false;
+                        continue;
+                    }
+
+                    for (uint32_t DrawDataOffset = 0u; DrawDataOffset < RuntimeCluster.DrawDataCount; ++DrawDataOffset)
+                    {
+                        const uint32_t LocalDrawDataIndex = RuntimeCluster.DrawDataStart + DrawDataOffset;
+                        const FRuntimeClusterDrawData& RuntimeDrawData = RuntimeHierarchy.DrawDatas[LocalDrawDataIndex];
+                        const uint32_t PageLocalIndexStart = static_cast<uint32_t>(PageSource.ScenePagePackedIndices.size());
+                        FClusterDagStreamingPageSource::FSceneDrawDataRecord DrawRecord;
+                        DrawRecord.GlobalDrawDataIndex = BaseDrawDataIndex + LocalDrawDataIndex;
+                        DrawRecord.StartIndex = PageLocalIndexStart;
+                        DrawRecord.IndexCount = RuntimeDrawData.IndexCount;
+                        DrawRecord.RangeIndex = RangeIndex;
+                        DrawRecord.RangeCommandStart = IndirectDrawRanges[RangeIndex].Start;
+                        DrawRecord.ModelIndex = SortedIndex;
+                        PageSource.ScenePageDrawDatas.push_back(DrawRecord);
+
+                        if (RuntimeDrawData.IndexStart <= RuntimeHierarchy.PackedIndices.size()
+                            && RuntimeDrawData.IndexCount <= RuntimeHierarchy.PackedIndices.size() - RuntimeDrawData.IndexStart)
+                        {
+                            for (uint32_t IndexOffset = 0u; IndexOffset < RuntimeDrawData.IndexCount; ++IndexOffset)
+                            {
+                                const uint32_t SourceVertexIndex = RuntimeHierarchy.PackedIndices[RuntimeDrawData.IndexStart + IndexOffset];
+                                uint32_t PageVertexIndex = 0u;
+                                const auto RemapIt = PageVertexRemap.find(SourceVertexIndex);
+                                if (RemapIt != PageVertexRemap.end())
+                                {
+                                    PageVertexIndex = RemapIt->second;
+                                }
+                                else
+                                {
+                                    PageVertexIndex = static_cast<uint32_t>(PageSource.ScenePagePackedPositions.size());
+                                    PageVertexRemap.emplace(SourceVertexIndex, PageVertexIndex);
+                                    if (SourceVertexIndex < Model.ClusterDagPackedVertexData.Positions.size())
+                                    {
+                                        PageSource.ScenePagePackedPositions.push_back(Model.ClusterDagPackedVertexData.Positions[SourceVertexIndex]);
+                                    }
+                                    if (SourceVertexIndex < Model.ClusterDagPackedVertexData.Normals.size())
+                                    {
+                                        PageSource.ScenePagePackedNormals.push_back(Model.ClusterDagPackedVertexData.Normals[SourceVertexIndex]);
+                                    }
+                                    if (SourceVertexIndex < Model.ClusterDagPackedVertexData.UVs.size())
+                                    {
+                                        PageSource.ScenePagePackedUVs.push_back(Model.ClusterDagPackedVertexData.UVs[SourceVertexIndex]);
+                                    }
+                                    if (SourceVertexIndex < Model.ClusterDagPackedVertexData.Tangents.size())
+                                    {
+                                        PageSource.ScenePagePackedTangents.push_back(Model.ClusterDagPackedVertexData.Tangents[SourceVertexIndex]);
+                                    }
+                                    if (SourceVertexIndex < Model.ClusterDagPackedVertexData.Colors.size())
+                                    {
+                                        PageSource.ScenePagePackedColors.push_back(Model.ClusterDagPackedVertexData.Colors[SourceVertexIndex]);
+                                    }
+                                }
+                                PageSource.ScenePagePackedIndices.push_back(PageVertexIndex);
+                            }
+                        }
+                    }
+                }
+                PageSource.SourceFilePath = Model.ClusterDagSourceFilePath;
+                PageSource.CacheFilePath = Model.ClusterDagCacheFilePath;
+            }
             GroupData.Flags = (RuntimeGroup.Flags & GClusterDagGroupFlagsLowMask)
                 | ((PageIndex & GClusterDagGroupFlagsLowMask) << GClusterDagGroupPageIndexShift);
             GroupData.MipLevel = RuntimeGroup.MipLevel;
@@ -863,6 +1034,7 @@ bool FClusterDagRuntime::PrepareRuntimeData(FDeferredRenderer& Owner, FPreparedD
     VisibleRootCount = PreparedVisibleRootCount;
     ClusterCount = PreparedClusterCount;
     StreamingPageCount = (std::max)(OutData.StreamingPageCount, 1u);
+    StreamingPageSources = OutData.StreamingPageSources;
     return PreparedVisibleRootCount > 0 && PreparedClusterCount > 0;
 }
 
@@ -873,6 +1045,7 @@ bool FClusterDagRuntime::CreateRuntimeResources(FDeferredRenderer& Owner, FDX12D
     RuntimeGroupCount = static_cast<uint32_t>(Data.Groups.size());
     RuntimeChildRefCount = static_cast<uint32_t>(Data.ChildRefs.size());
     StreamingPageCount = (std::max)(Data.StreamingPageCount, 1u);
+    StreamingPageSources = Data.StreamingPageSources;
     RuntimeMaxTraversalLevels = 1;
     for (const FSceneGroupData& Group : Data.Groups)
     {
@@ -998,7 +1171,7 @@ bool FClusterDagRuntime::CreateRuntimeResources(FDeferredRenderer& Owner, FDX12D
         CreatePerFrameBuffer(
             FrameIndex,
             L"ClusterDagCandidateClusterQueue",
-            CreateRWStructuredBufferDesc<uint32_t>(Data.Clusters.size()),
+            CreateRWStructuredBufferDesc<FCandidateClusterEntry>(Data.Clusters.size()),
             CandidateClusterQueueBuffers[FrameIndex],
             true,
             true);
@@ -1371,8 +1544,10 @@ void FClusterDagRuntime::AddPersistentCullPass(FDeferredPassContext& Context, co
             if (FClusterDagStreamingManager* StreamingManager = Owner.GetClusterDagStreamingManager(); StreamingManager && StreamingManager->IsEnabled())
             {
                 FRGBufferHandle PageTableHandle = ImportBindlessBuffer(Context.Graph, "ClusterDAG_StreamingPageTablePersistent", StreamingManager->PageTableBuffer);
+                FRGBufferHandle PageDataHandle = ImportBindlessBuffer(Context.Graph, "ClusterDAG_StreamingPageDataPersistent", StreamingManager->PageDataBuffer);
                 FRGBufferHandle FeedbackHandle = ImportBindlessBuffer(Context.Graph, "ClusterDAG_StreamingFeedbackPersistent", StreamingManager->FeedbackBuffers[FrameIndex].Gpu);
                 Builder.ReadBuffer(PageTableHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                Builder.ReadBuffer(PageDataHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
                 Builder.WriteBuffer(FeedbackHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
                 Builder.UavBarrier(FeedbackHandle);
             }
@@ -1530,8 +1705,10 @@ void FClusterDagRuntime::AddLevelSplitNodeCullPass(FDeferredPassContext& Context
             if (FClusterDagStreamingManager* StreamingManager = Context.Owner.GetClusterDagStreamingManager(); StreamingManager && StreamingManager->IsEnabled())
             {
                 FRGBufferHandle PageTableHandle = ImportBindlessBuffer(Context.Graph, "ClusterDAG_StreamingPageTableLevelNode", StreamingManager->PageTableBuffer);
+                FRGBufferHandle PageDataHandle = ImportBindlessBuffer(Context.Graph, "ClusterDAG_StreamingPageDataLevelNode", StreamingManager->PageDataBuffer);
                 FRGBufferHandle FeedbackHandle = ImportBindlessBuffer(Context.Graph, "ClusterDAG_StreamingFeedbackLevelNode", StreamingManager->FeedbackBuffers[FrameIndex].Gpu);
                 Builder.ReadBuffer(PageTableHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                Builder.ReadBuffer(PageDataHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
                 Builder.WriteBuffer(FeedbackHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
                 Builder.UavBarrier(FeedbackHandle);
             }
@@ -1780,9 +1957,11 @@ void FClusterDagRuntime::DispatchPersistentCull(FDeferredRenderer& Owner, FDX12C
         uint32_t SwVisibleEntryIndicesIndex;
         uint32_t DrawDataVisibleEntryIndicesIndex;
         uint32_t PageTableBufferIndex;
+        uint32_t PageDataBufferIndex;
         uint32_t StreamingRequestBufferIndex;
         uint32_t StreamingRequestCapacity;
         uint32_t StreamingResourceId;
+        uint32_t PageSlotBytes;
     };
 
     const uint32_t TraversalEpoch = ComputeTraversalEpoch(Owner);
@@ -1813,9 +1992,11 @@ void FClusterDagRuntime::DispatchPersistentCull(FDeferredRenderer& Owner, FDX12C
         SwVisibleEntryIndexBuffers[FrameIndex].UavBindlessIndex,
         DrawDataVisibleEntryIndexBuffers[FrameIndex].UavBindlessIndex,
         StreamingBindings.PageTableBufferIndex,
+        StreamingBindings.PageDataBufferIndex,
         StreamingBindings.StreamingRequestBufferIndex,
         StreamingBindings.StreamingRequestCapacity,
-        StreamingBindings.StreamingResourceId
+        StreamingBindings.StreamingResourceId,
+        StreamingBindings.PageSlotBytes
     };
 
     ID3D12DescriptorHeap* Heaps[] = { GpuDrivenCullingProvider.BindlessDescriptorHeap };
@@ -1850,7 +2031,7 @@ void FClusterDagRuntime::DispatchLevelSplitInit(FDeferredRenderer& Owner, FDX12C
     const uint32_t DebugStatsIndex = GpuDrivenCullingProvider.GpuDebugPrintStatsUavBindlessIndex;
     const uint32_t TraversalEpoch = ComputeTraversalEpoch(Owner);
 
-    struct FClusterDagLevelSplitInitConstants
+    struct FClusterDagLevelSplitInitBindlessConstants
     {
         uint32_t RootGroupBufferIndex;
         uint32_t QueueStateBufferIndex;
@@ -1870,7 +2051,7 @@ void FClusterDagRuntime::DispatchLevelSplitInit(FDeferredRenderer& Owner, FDX12C
         uint32_t DrawDataVisibleEntryIndicesIndex;
     };
 
-    const FClusterDagLevelSplitInitConstants InitConstants =
+    const FClusterDagLevelSplitInitBindlessConstants InitConstants =
     {
         RootGroupBuffer.SrvBindlessIndex,
         QueueStateBuffers[FrameIndex].UavBindlessIndex,
@@ -1916,13 +2097,13 @@ void FClusterDagRuntime::DispatchLevelSplitPrepareNode(FDeferredRenderer& Owner,
     CommandList->SetComputeRootSignature(GpuDrivenCullingProvider.CullingRootSignature);
     CommandList->SetComputeRootConstantBufferView(0, GpuDrivenCullingProvider.CullingConstantBufferAddress);
 
-    struct FClusterDagLevelSplitPrepareNodeConstants
+    struct FClusterDagLevelSplitPrepareNodeBindlessConstants
     {
         uint32_t CurrentNodeArgsBufferIndex;
         uint32_t NextNodeArgsBufferIndex;
     };
 
-    const FClusterDagLevelSplitPrepareNodeConstants PrepareNodeConstants =
+    const FClusterDagLevelSplitPrepareNodeBindlessConstants PrepareNodeConstants =
     {
         LevelSplitNodeArgsBuffers[CurrentBufferIndex][FrameIndex].UavBindlessIndex,
         LevelSplitNodeArgsBuffers[NextBufferIndex][FrameIndex].UavBindlessIndex
@@ -1956,7 +2137,7 @@ void FClusterDagRuntime::DispatchLevelSplitNodeCull(FDeferredRenderer& Owner, FD
     const uint32_t DebugStatsIndex = GpuDrivenCullingProvider.GpuDebugPrintStatsUavBindlessIndex;
     const uint32_t TraversalEpoch = ComputeTraversalEpoch(Owner);
 
-    struct FClusterDagLevelSplitNodeCullConstants
+    struct FClusterDagLevelSplitNodeCullBindlessConstants
     {
         uint32_t GroupBufferIndex;
         uint32_t ClusterBufferIndex;
@@ -1974,13 +2155,15 @@ void FClusterDagRuntime::DispatchLevelSplitNodeCull(FDeferredRenderer& Owner, FD
         uint32_t DebugLineBufferIndex;
         uint32_t TraversalEpoch;
         uint32_t PageTableBufferIndex;
+        uint32_t PageDataBufferIndex;
         uint32_t StreamingRequestBufferIndex;
         uint32_t StreamingRequestCapacity;
         uint32_t StreamingResourceId;
+        uint32_t PageSlotBytes;
     };
 
     const FClusterDagStreamingShaderBindings StreamingBindings = BuildClusterDagStreamingShaderBindings(Owner, FrameIndex);
-    const FClusterDagLevelSplitNodeCullConstants NodeCullConstants =
+    const FClusterDagLevelSplitNodeCullBindlessConstants NodeCullConstants =
     {
         GroupBuffer.SrvBindlessIndex,
         ClusterBuffer.SrvBindlessIndex,
@@ -1998,9 +2181,11 @@ void FClusterDagRuntime::DispatchLevelSplitNodeCull(FDeferredRenderer& Owner, FD
         GpuDrivenCullingProvider.GpuDebugLineBufferUavBindlessIndex,
         TraversalEpoch,
         StreamingBindings.PageTableBufferIndex,
+        StreamingBindings.PageDataBufferIndex,
         StreamingBindings.StreamingRequestBufferIndex,
         StreamingBindings.StreamingRequestCapacity,
-        StreamingBindings.StreamingResourceId
+        StreamingBindings.StreamingResourceId,
+        StreamingBindings.PageSlotBytes
     };
 
     CommandList->SetPipelineState(NodeCullPipelineState);
@@ -2023,13 +2208,13 @@ void FClusterDagRuntime::DispatchLevelSplitPrepareCluster(FDeferredRenderer& Own
     CommandList->SetComputeRootSignature(GpuDrivenCullingProvider.CullingRootSignature);
     CommandList->SetComputeRootConstantBufferView(0, GpuDrivenCullingProvider.CullingConstantBufferAddress);
 
-    struct FClusterDagLevelSplitPrepareClusterConstants
+    struct FClusterDagLevelSplitPrepareClusterBindlessConstants
     {
         uint32_t QueueStateBufferIndex;
         uint32_t ClusterDispatchArgsBufferIndex;
     };
 
-    const FClusterDagLevelSplitPrepareClusterConstants PrepareClusterConstants =
+    const FClusterDagLevelSplitPrepareClusterBindlessConstants PrepareClusterConstants =
     {
         QueueStateBuffers[FrameIndex].UavBindlessIndex,
         LevelSplitClusterArgsBuffers[FrameIndex].UavBindlessIndex
@@ -2060,7 +2245,7 @@ void FClusterDagRuntime::DispatchLevelSplitClusterCull(FDeferredRenderer& Owner,
 
     const uint32_t DebugStatsIndex = GpuDrivenCullingProvider.GpuDebugPrintStatsUavBindlessIndex;
 
-    struct FClusterDagLevelSplitClusterCullConstants
+    struct FClusterDagLevelSplitClusterCullBindlessConstants
     {
         uint32_t ClusterBufferIndex;
         uint32_t DrawDataIndex;
@@ -2076,9 +2261,11 @@ void FClusterDagRuntime::DispatchLevelSplitClusterCull(FDeferredRenderer& Owner,
         uint32_t HwVisibleEntryIndicesIndex;
         uint32_t SwVisibleEntryIndicesIndex;
         uint32_t DrawDataVisibleEntryIndicesIndex;
+        uint32_t PageDataBufferIndex;
     };
 
-    const FClusterDagLevelSplitClusterCullConstants ClusterCullConstants =
+    const FClusterDagStreamingShaderBindings StreamingBindings = BuildClusterDagStreamingShaderBindings(Owner, FrameIndex);
+    const FClusterDagLevelSplitClusterCullBindlessConstants ClusterCullConstants =
     {
         ClusterBuffer.SrvBindlessIndex,
         DrawDataBuffer.SrvBindlessIndex,
@@ -2093,7 +2280,8 @@ void FClusterDagRuntime::DispatchLevelSplitClusterCull(FDeferredRenderer& Owner,
         VisibleEntryCounterBuffers[FrameIndex].UavBindlessIndex,
         HwVisibleEntryIndexBuffers[FrameIndex].UavBindlessIndex,
         SwVisibleEntryIndexBuffers[FrameIndex].UavBindlessIndex,
-        DrawDataVisibleEntryIndexBuffers[FrameIndex].UavBindlessIndex
+        DrawDataVisibleEntryIndexBuffers[FrameIndex].UavBindlessIndex,
+        StreamingBindings.PageDataBufferIndex
     };
 
     CommandList->SetPipelineState(ClusterCullPipelineState);

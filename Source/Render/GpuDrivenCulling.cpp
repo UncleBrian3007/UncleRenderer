@@ -18,9 +18,16 @@ using Microsoft::WRL::ComPtr;
 
 namespace
 {
-    constexpr uint32_t kGpuCullingBindlessDwordCount   = 24;
+    constexpr uint32_t kGpuCullingBindlessDwordCount   = 32;
     constexpr uint32_t kMeshletRunBindlessDwordCount   = 8;
     constexpr uint32_t kVisibilityListBindlessDwordCount = 8;
+
+    struct FClearCountsConstants
+    {
+        uint32_t Count0Index;
+        uint32_t Count1Index;
+    };
+    static_assert(sizeof(FClearCountsConstants) / sizeof(uint32_t) <= kVisibilityListBindlessDwordCount);
 
     bool ArePerFrameMappedUploadBuffersValid(const std::vector<FMappedUploadBuffer>& Buffers, size_t ExpectedFrameCount)
     {
@@ -905,18 +912,7 @@ void FGpuDrivenCulling::DispatchBuildVisibilityLists(
     CommandList->SetComputeRootSignature(VisibilityListRootSignature.Get());
     CommandList->SetComputeRootConstantBufferView(0, CullingConstantBufferAddress);
 
-    struct FClearCountsConstants
-    {
-        uint32_t Count0Index;
-        uint32_t Count1Index;
-        uint32_t Padding0;
-        uint32_t Padding1;
-        uint32_t Padding2;
-        uint32_t Padding3;
-    };
-
-    static_assert(sizeof(FClearCountsConstants) / sizeof(uint32_t) <= kVisibilityListBindlessDwordCount);
-    const FClearCountsConstants ClearConstants = { VisibleCountIndex, InvisibleCountIndex, 0, 0, 0, 0 };
+    const FClearCountsConstants ClearConstants = { VisibleCountIndex, InvisibleCountIndex };
     CommandList->SetPipelineState(ClearVisibilityCountsPipeline.Get());
     CommandList->SetComputeRoot32BitConstants(1, sizeof(ClearConstants) / sizeof(uint32_t), &ClearConstants, 0);
     CommandList->Dispatch(1, 1, 1);
@@ -933,11 +929,10 @@ void FGpuDrivenCulling::DispatchBuildVisibilityLists(
         uint32_t InvisibleListIndex;
         uint32_t VisibleCountIndex;
         uint32_t InvisibleCountIndex;
-        uint32_t Padding0;
     };
 
     static_assert(sizeof(FBuildListsConstants) / sizeof(uint32_t) <= kVisibilityListBindlessDwordCount);
-    const FBuildListsConstants BuildConstants = { VisibilityIndex, VisibleListIndex, InvisibleListIndex, VisibleCountIndex, InvisibleCountIndex, 0 };
+    const FBuildListsConstants BuildConstants = { VisibilityIndex, VisibleListIndex, InvisibleListIndex, VisibleCountIndex, InvisibleCountIndex };
     CommandList->SetPipelineState(BuildVisibilityListsPipeline.Get());
     CommandList->SetComputeRoot32BitConstants(1, sizeof(BuildConstants) / sizeof(uint32_t), &BuildConstants, 0);
     const uint32_t DispatchCount = (IndirectCommandCount + 63) / 64;
@@ -975,18 +970,7 @@ void FGpuDrivenCulling::DispatchBuildEarlyRejectList(
     CommandList->SetComputeRootSignature(VisibilityListRootSignature.Get());
     CommandList->SetComputeRootConstantBufferView(0, CullingConstantBufferAddress);
 
-    struct FClearCountsConstants
-    {
-        uint32_t Count0Index;
-        uint32_t Count1Index;
-        uint32_t Padding0;
-        uint32_t Padding1;
-        uint32_t Padding2;
-        uint32_t Padding3;
-    };
-
-    static_assert(sizeof(FClearCountsConstants) / sizeof(uint32_t) <= kVisibilityListBindlessDwordCount);
-    const FClearCountsConstants ClearConstants = { RejectCountIndex, RejectCountIndex, 0, 0, 0, 0 };
+    const FClearCountsConstants ClearConstants = { RejectCountIndex, RejectCountIndex };
     CommandList->SetPipelineState(ClearVisibilityCountsPipeline.Get());
     CommandList->SetComputeRoot32BitConstants(1, sizeof(ClearConstants) / sizeof(uint32_t), &ClearConstants, 0);
     CommandList->Dispatch(1, 1, 1);
@@ -999,13 +983,10 @@ void FGpuDrivenCulling::DispatchBuildEarlyRejectList(
         uint32_t VisibilityIndex;
         uint32_t RejectListIndex;
         uint32_t RejectCountIndex;
-        uint32_t Padding0;
-        uint32_t Padding1;
-        uint32_t Padding2;
     };
 
     static_assert(sizeof(FEarlyRejectConstants) / sizeof(uint32_t) <= kVisibilityListBindlessDwordCount);
-    const FEarlyRejectConstants RejectConstants = { VisibilityIndex, RejectListIndex, RejectCountIndex, 0, 0, 0 };
+    const FEarlyRejectConstants RejectConstants = { VisibilityIndex, RejectListIndex, RejectCountIndex };
     CommandList->SetPipelineState(BuildEarlyRejectListPipeline.Get());
     CommandList->SetComputeRoot32BitConstants(1, sizeof(RejectConstants) / sizeof(uint32_t), &RejectConstants, 0);
     const uint32_t DispatchCount = (IndirectCommandCount + 63) / 64;
@@ -1055,17 +1036,10 @@ void FGpuDrivenCulling::DispatchMergeVisibilityLists(
     struct FClearFlagsConstants
     {
         uint32_t FlagsIndex;
-        uint32_t Padding0;
-        uint32_t Padding1;
-        uint32_t Padding2;
-        uint32_t Padding3;
-        uint32_t Padding4;
-        uint32_t Padding5;
-        uint32_t Padding6;
     };
 
     static_assert(sizeof(FClearFlagsConstants) / sizeof(uint32_t) <= kVisibilityListBindlessDwordCount);
-    const FClearFlagsConstants ClearFlagsConstants = { FlagsIndex, 0, 0, 0, 0, 0, 0, 0 };
+    const FClearFlagsConstants ClearFlagsConstants = { FlagsIndex };
     CommandList->SetPipelineState(ClearVisibilityFlagsPipeline.Get());
     CommandList->SetComputeRoot32BitConstants(1, sizeof(ClearFlagsConstants) / sizeof(uint32_t), &ClearFlagsConstants, 0);
     const uint32_t FlagDispatchCount = (IndirectCommandCount + 63) / 64;
@@ -1087,18 +1061,7 @@ void FGpuDrivenCulling::DispatchMergeVisibilityLists(
 
     static_assert(sizeof(FMergeConstants) / sizeof(uint32_t) <= kVisibilityListBindlessDwordCount);
     const FMergeConstants MergeConstants = { ListAIndex, ListBIndex, CountAIndex, CountBIndex, OutputListIndex, OutputCountIndex, FlagsIndex };
-    struct FClearCountsConstants
-    {
-        uint32_t Count0Index;
-        uint32_t Count1Index;
-        uint32_t Padding0;
-        uint32_t Padding1;
-        uint32_t Padding2;
-        uint32_t Padding3;
-    };
-
-    static_assert(sizeof(FClearCountsConstants) / sizeof(uint32_t) <= kVisibilityListBindlessDwordCount);
-    const FClearCountsConstants ClearConstants = { OutputCountIndex, OutputCountIndex, 0, 0, 0, 0 };
+    const FClearCountsConstants ClearConstants = { OutputCountIndex, OutputCountIndex };
     CommandList->SetPipelineState(ClearVisibilityCountsPipeline.Get());
     CommandList->SetComputeRoot32BitConstants(1, sizeof(ClearConstants) / sizeof(uint32_t), &ClearConstants, 0);
     CommandList->Dispatch(1, 1, 1);

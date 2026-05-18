@@ -121,12 +121,15 @@ struct FSceneModelResource
     int GltfSkinIndex = -1;
     uint32_t ClusterDagMeshIndex = GClusterDAGInvalidIndex;
     uint32_t ClusterDagPrimitiveIndex = GClusterDAGInvalidIndex;
+    std::wstring ClusterDagSourceFilePath;
+    std::wstring ClusterDagCacheFilePath;
     uint32_t ClusterDagRuntimeClusterOffset = 0;
     uint32_t ClusterDagRuntimeClusterCount = 0;
     uint32_t ClusterDagIndexCount = 0;
     bool bUseClusterDagRuntime = false;
     uint32_t ClusterDagVertexPackingMode = 0;
     FRuntimeClusterHierarchy ClusterDagRuntimeHierarchy;
+    FClusterDAGPackedVertexData ClusterDagPackedVertexData;
     DirectX::XMFLOAT4 ClusterDagPackedPositionOffset{ 0.0f, 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT4 ClusterDagPackedPositionScale{ 1.0f, 1.0f, 1.0f, 0.0f };
     DirectX::XMFLOAT4 ClusterDagPackedConstantUV{ 0.0f, 0.0f, 0.0f, 0.0f };

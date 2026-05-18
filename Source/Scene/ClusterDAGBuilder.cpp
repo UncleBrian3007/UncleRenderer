@@ -32,11 +32,16 @@
 
 namespace
 {
-    constexpr uint32_t GVmeshVersion = 15;
+    constexpr uint32_t GVmeshVersion = 16;
     constexpr uint32_t GClusterDAGBuildSemanticVersion = 3;
     constexpr size_t GAttributeFloatCount = 5;
     constexpr uint32_t GClusterDAGMinGroupSize = 8;
     constexpr uint32_t GClusterDAGMaxGroupSize = 32;
+    constexpr uint32_t GVmeshPageAlignment = 4096;
+    constexpr uint32_t GVmeshStreamingPageSlotBytes = GClusterDAGVmeshStreamingPageSlotBytes;
+    constexpr uint32_t GVmeshPageFlagRoot = GClusterDAGVmeshPageFlagRoot;
+    constexpr uint32_t GVmeshPageFlagRestorePayload = GClusterDAGVmeshPageFlagRestorePayload;
+    constexpr uint32_t GVmeshPageFlagStreamingPayload = GClusterDAGVmeshPageFlagStreamingPayload;
 
     struct FVmeshCacheHeader
     {
@@ -46,6 +51,8 @@ namespace
         uint64_t SourceFileSize = 0;
         uint64_t ParamsHash = 0;
         uint32_t MeshCount = 0;
+        uint32_t TotalPageCount = 0;
+        uint64_t PageDirectoryOffset = 0;
     };
 
     struct FVmeshDagHeader
@@ -76,6 +83,28 @@ namespace
         FFloat4 PackedPositionScale{ 1.0f, 1.0f, 1.0f, 0.0f };
         FFloat4 PackedConstantUV{ 0.0f, 0.0f, 0.0f, 0.0f };
         FFloat4 PackedConstantColor{ 1.0f, 1.0f, 1.0f, 1.0f };
+    };
+
+    struct FVmeshPageDirEntry
+    {
+        uint64_t FileOffset = 0;
+        uint32_t PayloadBytes = 0;
+        uint32_t MeshIndex = 0;
+        uint32_t DagIndex = 0;
+        uint32_t LocalPageIndex = 0;
+        uint32_t Flags = 0;
+    };
+
+    struct FVmeshStreamingPagePayloadHeader
+    {
+        uint32_t LocalPageIndex = 0;
+        uint32_t RuntimeGroupIndex = GClusterDAGInvalidIndex;
+        uint32_t RuntimeGroupCount = 0;
+        uint32_t RuntimeChildRefCount = 0;
+        uint32_t RuntimeClusterCount = 0;
+        uint32_t RuntimeDrawDataCount = 0;
+        uint32_t RuntimePackedIndexCount = 0;
+        uint32_t Reserved = 0;
     };
 
     struct FBuildState
@@ -175,7 +204,7 @@ namespace
     };
 
     template <typename T>
-    bool WriteValue(std::ofstream& Stream, const T& Value)
+    bool WriteValue(std::ostream& Stream, const T& Value)
     {
         static_assert(std::is_trivially_copyable_v<T>);
         Stream.write(reinterpret_cast<const char*>(&Value), sizeof(T));
@@ -183,7 +212,7 @@ namespace
     }
 
     template <typename T>
-    bool ReadValue(std::ifstream& Stream, T& Value)
+    bool ReadValue(std::istream& Stream, T& Value)
     {
         static_assert(std::is_trivially_copyable_v<T>);
         Stream.read(reinterpret_cast<char*>(&Value), sizeof(T));
@@ -191,7 +220,7 @@ namespace
     }
 
     template <typename T>
-    bool WritePodVector(std::ofstream& Stream, const std::vector<T>& Values)
+    bool WritePodVector(std::ostream& Stream, const std::vector<T>& Values)
     {
         static_assert(std::is_trivially_copyable_v<T>);
         if (!Values.empty())
@@ -202,7 +231,7 @@ namespace
     }
 
     template <typename T>
-    bool ReadPodVector(std::ifstream& Stream, std::vector<T>& Values, uint32_t Count)
+    bool ReadPodVector(std::istream& Stream, std::vector<T>& Values, uint32_t Count)
     {
         static_assert(std::is_trivially_copyable_v<T>);
         Values.resize(Count);
@@ -2535,6 +2564,565 @@ bool BuildClusterDAGPackedVertexData(const FClusterDAG& Dag, FClusterDAGPackedVe
     return true;
 }
 
+namespace
+{
+    struct FVmeshDagPayload
+    {
+        FVmeshDagHeader Header;
+        std::vector<uint8_t> Bytes;
+        std::vector<std::vector<uint8_t>> StreamingPages;
+    };
+
+    struct FVmeshMeshPayload
+    {
+        std::vector<FVmeshDagPayload> Dags;
+    };
+
+    uint64_t AlignUp(uint64_t Value, uint64_t Alignment)
+    {
+        return Alignment > 0 ? ((Value + Alignment - 1ull) / Alignment) * Alignment : Value;
+    }
+
+    bool WritePadding(std::ostream& Stream, uint64_t ByteCount)
+    {
+        static const std::array<char, 256> ZeroBytes{};
+        while (ByteCount > 0)
+        {
+            const uint64_t ChunkBytes = std::min<uint64_t>(ByteCount, ZeroBytes.size());
+            Stream.write(ZeroBytes.data(), static_cast<std::streamsize>(ChunkBytes));
+            if (!Stream.good())
+            {
+                return false;
+            }
+            ByteCount -= ChunkBytes;
+        }
+        return true;
+    }
+
+    void FillVmeshDagHeader(const FClusterDAG& Dag, const FClusterDAGPackedVertexData& PackedVertexData, FVmeshDagHeader& OutHeader)
+    {
+        OutHeader = {};
+        OutHeader.ClusterCount = static_cast<uint32_t>(Dag.Clusters.size());
+        OutHeader.GroupCount = static_cast<uint32_t>(Dag.Groups.size());
+        OutHeader.PositionCount = 0;
+        OutHeader.NormalCount = 0;
+        OutHeader.UVCount = 0;
+        OutHeader.TangentCount = 0;
+        OutHeader.ColorCount = 0;
+        OutHeader.TriangleIndexCount = static_cast<uint32_t>(Dag.TriangleIndices.size());
+        OutHeader.ExternalEdgeCount = static_cast<uint32_t>(Dag.ExternalEdges.size());
+        OutHeader.ClusterVertexCount = static_cast<uint32_t>(Dag.ClusterVertices.size());
+        OutHeader.RuntimeGroupCount = static_cast<uint32_t>(Dag.RuntimeHierarchy.Groups.size());
+        OutHeader.RuntimeClusterCount = static_cast<uint32_t>(Dag.RuntimeHierarchy.Clusters.size());
+        OutHeader.RuntimeChildRefCount = static_cast<uint32_t>(Dag.RuntimeHierarchy.ChildRefs.size());
+        OutHeader.RuntimeDrawDataCount = static_cast<uint32_t>(Dag.RuntimeHierarchy.DrawDatas.size());
+        OutHeader.RuntimePackedIndexCount = 0;
+        OutHeader.PackedPositionCount = static_cast<uint32_t>(PackedVertexData.Positions.size());
+        OutHeader.PackedNormalCount = static_cast<uint32_t>(PackedVertexData.Normals.size());
+        OutHeader.PackedUVCount = static_cast<uint32_t>(PackedVertexData.UVs.size());
+        OutHeader.PackedTangentCount = static_cast<uint32_t>(PackedVertexData.Tangents.size());
+        OutHeader.PackedColorCount = static_cast<uint32_t>(PackedVertexData.Colors.size());
+        OutHeader.RuntimeRootGroupIndex = Dag.RuntimeHierarchy.RootGroupIndex;
+        OutHeader.RootGroupIndex = Dag.RootGroupIndex;
+        OutHeader.PackedPositionOffset = PackedVertexData.PositionOffset;
+        OutHeader.PackedPositionScale = PackedVertexData.PositionScale;
+        OutHeader.PackedConstantUV = FFloat4(PackedVertexData.ConstantUV.x, PackedVertexData.ConstantUV.y, 0.0f, 0.0f);
+        OutHeader.PackedConstantColor = PackedVertexData.ConstantColor;
+    }
+
+    bool WriteClusterDAGPayload(std::ostream& Stream, const FClusterDAG& Dag, const FClusterDAGPackedVertexData& PackedVertexData)
+    {
+        static const std::vector<FFloat3> EmptyFloat3s;
+        static const std::vector<FFloat2> EmptyFloat2s;
+        static const std::vector<FFloat4> EmptyFloat4s;
+
+        if (!WritePodVector(Stream, Dag.Clusters)
+            || !WritePodVector(Stream, EmptyFloat3s)
+            || !WritePodVector(Stream, EmptyFloat3s)
+            || !WritePodVector(Stream, EmptyFloat2s)
+            || !WritePodVector(Stream, EmptyFloat4s)
+            || !WritePodVector(Stream, EmptyFloat4s)
+            || !WritePodVector(Stream, Dag.TriangleIndices)
+            || !WritePodVector(Stream, Dag.ExternalEdges)
+            || !WritePodVector(Stream, Dag.ClusterVertices)
+            || !WritePodVector(Stream, Dag.RuntimeHierarchy.Groups)
+            || !WritePodVector(Stream, Dag.RuntimeHierarchy.Clusters)
+            || !WritePodVector(Stream, Dag.RuntimeHierarchy.ChildRefs)
+            || !WritePodVector(Stream, Dag.RuntimeHierarchy.DrawDatas)
+            || !WritePodVector(Stream, PackedVertexData.Positions)
+            || !WritePodVector(Stream, PackedVertexData.Normals)
+            || !WritePodVector(Stream, PackedVertexData.UVs)
+            || !WritePodVector(Stream, PackedVertexData.Tangents)
+            || !WritePodVector(Stream, PackedVertexData.Colors))
+        {
+            return false;
+        }
+
+        for (const FClusterGroup& Group : Dag.Groups)
+        {
+            const uint32_t ChildCount = static_cast<uint32_t>(Group.ChildRefs.size());
+            const uint32_t ParentCount = static_cast<uint32_t>(Group.ParentRefs.size());
+            if (!WriteValue(Stream, Group.BoundsCenter)
+                || !WriteValue(Stream, Group.BoundsRadius)
+                || !WriteValue(Stream, Group.LodBoundsCenter)
+                || !WriteValue(Stream, Group.LodBoundsRadius)
+                || !WriteValue(Stream, Group.ParentLODError)
+                || !WriteValue(Stream, Group.MipLevel)
+                || !WriteValue(Stream, Group.bRoot)
+                || !WriteValue(Stream, ChildCount)
+                || !WriteValue(Stream, ParentCount)
+                || !WritePodVector(Stream, Group.ChildRefs)
+                || !WritePodVector(Stream, Group.ParentRefs))
+            {
+                return false;
+            }
+        }
+
+        return Stream.good();
+    }
+
+    bool ReadClusterDAGPayload(std::istream& Stream, const FVmeshDagHeader& DagHeader, FClusterDAG& Dag)
+    {
+        Dag.RootGroupIndex = DagHeader.RootGroupIndex;
+        if (!ReadPodVector(Stream, Dag.Clusters, DagHeader.ClusterCount)
+            || !ReadPodVector(Stream, Dag.Positions, DagHeader.PositionCount)
+            || !ReadPodVector(Stream, Dag.Normals, DagHeader.NormalCount)
+            || !ReadPodVector(Stream, Dag.UVs, DagHeader.UVCount)
+            || !ReadPodVector(Stream, Dag.Tangents, DagHeader.TangentCount)
+            || !ReadPodVector(Stream, Dag.Colors, DagHeader.ColorCount)
+            || !ReadPodVector(Stream, Dag.TriangleIndices, DagHeader.TriangleIndexCount)
+            || !ReadPodVector(Stream, Dag.ExternalEdges, DagHeader.ExternalEdgeCount)
+            || !ReadPodVector(Stream, Dag.ClusterVertices, DagHeader.ClusterVertexCount)
+            || !ReadPodVector(Stream, Dag.RuntimeHierarchy.Groups, DagHeader.RuntimeGroupCount)
+            || !ReadPodVector(Stream, Dag.RuntimeHierarchy.Clusters, DagHeader.RuntimeClusterCount)
+            || !ReadPodVector(Stream, Dag.RuntimeHierarchy.ChildRefs, DagHeader.RuntimeChildRefCount)
+            || !ReadPodVector(Stream, Dag.RuntimeHierarchy.DrawDatas, DagHeader.RuntimeDrawDataCount)
+            || !ReadPodVector(Stream, Dag.PackedVertexData.Positions, DagHeader.PackedPositionCount)
+            || !ReadPodVector(Stream, Dag.PackedVertexData.Normals, DagHeader.PackedNormalCount)
+            || !ReadPodVector(Stream, Dag.PackedVertexData.UVs, DagHeader.PackedUVCount)
+            || !ReadPodVector(Stream, Dag.PackedVertexData.Tangents, DagHeader.PackedTangentCount)
+            || !ReadPodVector(Stream, Dag.PackedVertexData.Colors, DagHeader.PackedColorCount))
+        {
+            return false;
+        }
+
+        Dag.RuntimeHierarchy.RootGroupIndex = DagHeader.RuntimeRootGroupIndex;
+        Dag.PackedVertexData.PositionOffset = DagHeader.PackedPositionOffset;
+        Dag.PackedVertexData.PositionScale = DagHeader.PackedPositionScale;
+        Dag.PackedVertexData.ConstantUV = FFloat2(DagHeader.PackedConstantUV.x, DagHeader.PackedConstantUV.y);
+        Dag.PackedVertexData.ConstantColor = DagHeader.PackedConstantColor;
+        if (!Dag.PackedVertexData.IsValid() && !Dag.Positions.empty())
+        {
+            BuildClusterDAGPackedVertexData(Dag, Dag.PackedVertexData);
+        }
+        if (!RebuildRuntimeClusterDrawData(Dag))
+        {
+            return false;
+        }
+
+        Dag.Groups.resize(DagHeader.GroupCount);
+        for (uint32_t GroupIndex = 0; GroupIndex < DagHeader.GroupCount; ++GroupIndex)
+        {
+            FClusterGroup& Group = Dag.Groups[GroupIndex];
+            uint32_t ChildCount = 0;
+            uint32_t ParentCount = 0;
+            if (!ReadValue(Stream, Group.BoundsCenter)
+                || !ReadValue(Stream, Group.BoundsRadius)
+                || !ReadValue(Stream, Group.LodBoundsCenter)
+                || !ReadValue(Stream, Group.LodBoundsRadius)
+                || !ReadValue(Stream, Group.ParentLODError)
+                || !ReadValue(Stream, Group.MipLevel)
+                || !ReadValue(Stream, Group.bRoot)
+                || !ReadValue(Stream, ChildCount)
+                || !ReadValue(Stream, ParentCount)
+                || !ReadPodVector(Stream, Group.ChildRefs, ChildCount)
+                || !ReadPodVector(Stream, Group.ParentRefs, ParentCount))
+            {
+                return false;
+            }
+        }
+
+        return Stream.good();
+    }
+
+    bool IsEmptyClusterDAG(const FClusterDAG& Dag)
+    {
+        return Dag.Clusters.empty()
+            && Dag.Groups.empty()
+            && Dag.Positions.empty()
+            && Dag.Normals.empty()
+            && Dag.UVs.empty()
+            && Dag.Tangents.empty()
+            && Dag.Colors.empty()
+            && Dag.TriangleIndices.empty()
+            && Dag.ExternalEdges.empty()
+            && Dag.ClusterVertices.empty()
+            && Dag.RootGroupIndex == GClusterDAGInvalidIndex;
+    }
+
+    bool ValidateLoadedClusterDAG(const FClusterDAG& Dag)
+    {
+        return IsEmptyClusterDAG(Dag) || (Dag.IsValid() && Dag.HasRuntimeHierarchy());
+    }
+
+    template <typename T>
+    bool PodEqual(const T& A, const T& B)
+    {
+        static_assert(std::is_trivially_copyable_v<T>);
+        return std::memcmp(&A, &B, sizeof(T)) == 0;
+    }
+
+    template <typename T>
+    bool PodVectorEqual(const std::vector<T>& A, const std::vector<T>& B)
+    {
+        static_assert(std::is_trivially_copyable_v<T>);
+        if (A.size() != B.size())
+        {
+            return false;
+        }
+        return A.empty() || std::memcmp(A.data(), B.data(), A.size() * sizeof(T)) == 0;
+    }
+
+    bool ClusterGroupsEqual(const std::vector<FClusterGroup>& A, const std::vector<FClusterGroup>& B)
+    {
+        if (A.size() != B.size())
+        {
+            return false;
+        }
+
+        for (size_t GroupIndex = 0; GroupIndex < A.size(); ++GroupIndex)
+        {
+            const FClusterGroup& GroupA = A[GroupIndex];
+            const FClusterGroup& GroupB = B[GroupIndex];
+            if (!PodEqual(GroupA.BoundsCenter, GroupB.BoundsCenter)
+                || GroupA.BoundsRadius != GroupB.BoundsRadius
+                || !PodEqual(GroupA.LodBoundsCenter, GroupB.LodBoundsCenter)
+                || GroupA.LodBoundsRadius != GroupB.LodBoundsRadius
+                || GroupA.ParentLODError != GroupB.ParentLODError
+                || GroupA.MipLevel != GroupB.MipLevel
+                || GroupA.bRoot != GroupB.bRoot
+                || !PodVectorEqual(GroupA.ChildRefs, GroupB.ChildRefs)
+                || !PodVectorEqual(GroupA.ParentRefs, GroupB.ParentRefs))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    bool PackedVertexDataEqual(const FClusterDAGPackedVertexData& A, const FClusterDAGPackedVertexData& B)
+    {
+        return PodVectorEqual(A.Positions, B.Positions)
+            && PodVectorEqual(A.Normals, B.Normals)
+            && PodVectorEqual(A.UVs, B.UVs)
+            && PodVectorEqual(A.Tangents, B.Tangents)
+            && PodVectorEqual(A.Colors, B.Colors)
+            && PodEqual(A.PositionOffset, B.PositionOffset)
+            && PodEqual(A.PositionScale, B.PositionScale)
+            && PodEqual(A.ConstantUV, B.ConstantUV)
+            && PodEqual(A.ConstantColor, B.ConstantColor);
+    }
+
+    bool RuntimeHierarchyEqual(const FRuntimeClusterHierarchy& A, const FRuntimeClusterHierarchy& B)
+    {
+        return PodVectorEqual(A.Groups, B.Groups)
+            && PodVectorEqual(A.Clusters, B.Clusters)
+            && PodVectorEqual(A.ChildRefs, B.ChildRefs)
+            && PodVectorEqual(A.DrawDatas, B.DrawDatas)
+            && PodVectorEqual(A.PackedIndices, B.PackedIndices)
+            && A.RootGroupIndex == B.RootGroupIndex;
+    }
+
+    bool PrepareSerializableClusterDAG(FClusterDAG& Dag)
+    {
+        if (IsEmptyClusterDAG(Dag))
+        {
+            return true;
+        }
+
+        if (!Dag.PackedVertexData.IsValid() && !BuildClusterDAGPackedVertexData(Dag, Dag.PackedVertexData))
+        {
+            return false;
+        }
+
+        return RebuildRuntimeClusterDrawData(Dag);
+    }
+
+    bool SerializableClusterDAGEqual(FClusterDAG Expected, FClusterDAG Actual)
+    {
+        if (!PrepareSerializableClusterDAG(Expected) || !PrepareSerializableClusterDAG(Actual))
+        {
+            return false;
+        }
+
+        if (IsEmptyClusterDAG(Expected) || IsEmptyClusterDAG(Actual))
+        {
+            return IsEmptyClusterDAG(Expected) && IsEmptyClusterDAG(Actual);
+        }
+
+        return Expected.RootGroupIndex == Actual.RootGroupIndex
+            && PodVectorEqual(Expected.Clusters, Actual.Clusters)
+            && ClusterGroupsEqual(Expected.Groups, Actual.Groups)
+            && PodVectorEqual(Expected.TriangleIndices, Actual.TriangleIndices)
+            && PodVectorEqual(Expected.ExternalEdges, Actual.ExternalEdges)
+            && PodVectorEqual(Expected.ClusterVertices, Actual.ClusterVertices)
+            && RuntimeHierarchyEqual(Expected.RuntimeHierarchy, Actual.RuntimeHierarchy)
+            && PackedVertexDataEqual(Expected.PackedVertexData, Actual.PackedVertexData);
+    }
+
+    bool BuildVmeshDagPayload(const FClusterDAG& Dag, FVmeshDagPayload& OutPayload)
+    {
+        FClusterDAGPackedVertexData PackedVertexData = Dag.PackedVertexData;
+        if (!PackedVertexData.IsValid())
+        {
+            BuildClusterDAGPackedVertexData(Dag, PackedVertexData);
+        }
+
+        FillVmeshDagHeader(Dag, PackedVertexData, OutPayload.Header);
+
+        std::ostringstream Stream(std::ios::out | std::ios::binary);
+        if (!WriteClusterDAGPayload(Stream, Dag, PackedVertexData))
+        {
+            return false;
+        }
+
+        const std::string Bytes = Stream.str();
+        OutPayload.Bytes.assign(Bytes.begin(), Bytes.end());
+        return true;
+    }
+
+    bool BuildVmeshStreamingPagePayload(const FClusterDAG& Dag, uint32_t LocalGroupIndex, std::vector<uint8_t>& OutBytes)
+    {
+        OutBytes.clear();
+        if (LocalGroupIndex >= Dag.RuntimeHierarchy.Groups.size())
+        {
+            return false;
+        }
+
+        const FRuntimeClusterHierarchy& Runtime = Dag.RuntimeHierarchy;
+        const FRuntimeClusterGroup& RuntimeGroup = Runtime.Groups[LocalGroupIndex];
+        if (RuntimeGroup.ChildRefStart > Runtime.ChildRefs.size()
+            || RuntimeGroup.ChildRefCount > Runtime.ChildRefs.size() - RuntimeGroup.ChildRefStart
+            || RuntimeGroup.ParentRefStart > Runtime.ChildRefs.size()
+            || RuntimeGroup.ParentRefCount > Runtime.ChildRefs.size() - RuntimeGroup.ParentRefStart)
+        {
+            return false;
+        }
+
+        std::vector<FRuntimeClusterChildRef> PageChildRefs;
+        PageChildRefs.reserve(static_cast<size_t>(RuntimeGroup.ChildRefCount) + RuntimeGroup.ParentRefCount);
+        PageChildRefs.insert(
+            PageChildRefs.end(),
+            Runtime.ChildRefs.begin() + RuntimeGroup.ChildRefStart,
+            Runtime.ChildRefs.begin() + RuntimeGroup.ChildRefStart + RuntimeGroup.ChildRefCount);
+        PageChildRefs.insert(
+            PageChildRefs.end(),
+            Runtime.ChildRefs.begin() + RuntimeGroup.ParentRefStart,
+            Runtime.ChildRefs.begin() + RuntimeGroup.ParentRefStart + RuntimeGroup.ParentRefCount);
+
+        std::vector<uint32_t> ClusterIndices;
+        ClusterIndices.reserve(PageChildRefs.size());
+        for (const FRuntimeClusterChildRef& ChildRef : PageChildRefs)
+        {
+            if (ChildRef.ClusterIndex != GClusterDAGInvalidIndex && ChildRef.ClusterIndex < Runtime.Clusters.size())
+            {
+                ClusterIndices.push_back(ChildRef.ClusterIndex);
+            }
+        }
+        std::sort(ClusterIndices.begin(), ClusterIndices.end());
+        ClusterIndices.erase(std::unique(ClusterIndices.begin(), ClusterIndices.end()), ClusterIndices.end());
+
+        std::vector<FRuntimeCluster> PageClusters;
+        std::vector<FRuntimeClusterDrawData> PageDrawDatas;
+        std::vector<uint32_t> PagePackedIndices;
+        PageClusters.reserve(ClusterIndices.size());
+        for (uint32_t ClusterIndex : ClusterIndices)
+        {
+            const FRuntimeCluster& Cluster = Runtime.Clusters[ClusterIndex];
+            PageClusters.push_back(Cluster);
+            if (Cluster.DrawDataStart > Runtime.DrawDatas.size()
+                || Cluster.DrawDataCount > Runtime.DrawDatas.size() - Cluster.DrawDataStart)
+            {
+                return false;
+            }
+
+            for (uint32_t DrawDataOffset = 0; DrawDataOffset < Cluster.DrawDataCount; ++DrawDataOffset)
+            {
+                const FRuntimeClusterDrawData& DrawData = Runtime.DrawDatas[Cluster.DrawDataStart + DrawDataOffset];
+                PageDrawDatas.push_back(DrawData);
+                if (DrawData.IndexStart > Runtime.PackedIndices.size()
+                    || DrawData.IndexCount > Runtime.PackedIndices.size() - DrawData.IndexStart)
+                {
+                    return false;
+                }
+
+                PagePackedIndices.insert(
+                    PagePackedIndices.end(),
+                    Runtime.PackedIndices.begin() + DrawData.IndexStart,
+                    Runtime.PackedIndices.begin() + DrawData.IndexStart + DrawData.IndexCount);
+            }
+        }
+
+        FVmeshStreamingPagePayloadHeader Header;
+        Header.LocalPageIndex = LocalGroupIndex == Runtime.RootGroupIndex ? 0u : LocalGroupIndex + 1u;
+        Header.RuntimeGroupIndex = LocalGroupIndex;
+        Header.RuntimeGroupCount = 1u;
+        Header.RuntimeChildRefCount = static_cast<uint32_t>(PageChildRefs.size());
+        Header.RuntimeClusterCount = static_cast<uint32_t>(PageClusters.size());
+        Header.RuntimeDrawDataCount = static_cast<uint32_t>(PageDrawDatas.size());
+        Header.RuntimePackedIndexCount = static_cast<uint32_t>(PagePackedIndices.size());
+
+        std::ostringstream Stream(std::ios::out | std::ios::binary);
+        if (!WriteValue(Stream, Header)
+            || !WriteValue(Stream, RuntimeGroup)
+            || !WritePodVector(Stream, PageChildRefs)
+            || !WritePodVector(Stream, PageClusters)
+            || !WritePodVector(Stream, PageDrawDatas)
+            || !WritePodVector(Stream, PagePackedIndices))
+        {
+            return false;
+        }
+
+        const std::string Bytes = Stream.str();
+        OutBytes.assign(Bytes.begin(), Bytes.end());
+        return OutBytes.size() <= GVmeshStreamingPageSlotBytes;
+    }
+
+#if defined(_DEBUG)
+    bool ValidateVmeshCacheRoundTrip(
+        const std::wstring& CacheFilePath,
+        const std::wstring& SourceFilePath,
+        const FClusterDAGBuildParams& Params,
+        const std::vector<std::vector<FClusterDAG>>& ExpectedMeshClusterDAGs)
+    {
+        std::vector<std::vector<FClusterDAG>> LoadedMeshClusterDAGs;
+        if (!LoadClusterDAGCacheFile(CacheFilePath, SourceFilePath, Params, LoadedMeshClusterDAGs)
+            || LoadedMeshClusterDAGs.size() != ExpectedMeshClusterDAGs.size())
+        {
+            return false;
+        }
+
+        for (size_t MeshIndex = 0; MeshIndex < ExpectedMeshClusterDAGs.size(); ++MeshIndex)
+        {
+            if (LoadedMeshClusterDAGs[MeshIndex].size() != ExpectedMeshClusterDAGs[MeshIndex].size())
+            {
+                return false;
+            }
+
+            for (size_t DagIndex = 0; DagIndex < ExpectedMeshClusterDAGs[MeshIndex].size(); ++DagIndex)
+            {
+                if (!SerializableClusterDAGEqual(ExpectedMeshClusterDAGs[MeshIndex][DagIndex], LoadedMeshClusterDAGs[MeshIndex][DagIndex]))
+                {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+#endif
+}
+
+bool LoadClusterDAGStreamingPageDirectory(
+    const std::wstring& CacheFilePath,
+    const std::wstring& SourceFilePath,
+    const FClusterDAGBuildParams& Params,
+    std::vector<FClusterDAGStreamingPageDesc>& OutPageDirectory)
+{
+    OutPageDirectory.clear();
+
+    uint64_t SourceWriteTime = 0;
+    uint64_t SourceFileSize = 0;
+    if (!GetFileSignature(SourceFilePath, SourceWriteTime, SourceFileSize))
+    {
+        return false;
+    }
+
+    std::ifstream Stream(std::filesystem::path(CacheFilePath), std::ios::binary);
+    if (!Stream.is_open())
+    {
+        return false;
+    }
+
+    FVmeshCacheHeader Header;
+    if (!ReadValue(Stream, Header))
+    {
+        return false;
+    }
+
+    if (Header.Magic[0] != 'V' || Header.Magic[1] != 'M' || Header.Magic[2] != 'E' || Header.Magic[3] != 'S')
+    {
+        return false;
+    }
+
+    if (Header.Version != GVmeshVersion
+        || Header.SourceWriteTime != SourceWriteTime
+        || Header.SourceFileSize != SourceFileSize
+        || Header.ParamsHash != HashClusterDAGBuildParams(Params))
+    {
+        return false;
+    }
+
+    std::vector<uint32_t> DagCounts(Header.MeshCount);
+    for (uint32_t MeshIndex = 0; MeshIndex < Header.MeshCount; ++MeshIndex)
+    {
+        if (!ReadValue(Stream, DagCounts[MeshIndex]))
+        {
+            OutPageDirectory.clear();
+            return false;
+        }
+
+        for (uint32_t DagIndex = 0; DagIndex < DagCounts[MeshIndex]; ++DagIndex)
+        {
+            FVmeshDagHeader DagHeader;
+            if (!ReadValue(Stream, DagHeader))
+            {
+                OutPageDirectory.clear();
+                return false;
+            }
+        }
+    }
+
+    if (Header.PageDirectoryOffset < sizeof(FVmeshCacheHeader))
+    {
+        OutPageDirectory.clear();
+        return false;
+    }
+
+    Stream.seekg(static_cast<std::streamoff>(Header.PageDirectoryOffset), std::ios::beg);
+    if (!Stream.good())
+    {
+        OutPageDirectory.clear();
+        return false;
+    }
+
+    OutPageDirectory.reserve(Header.TotalPageCount);
+    for (uint32_t PageIndex = 0; PageIndex < Header.TotalPageCount; ++PageIndex)
+    {
+        FVmeshPageDirEntry Entry;
+        if (!ReadValue(Stream, Entry)
+            || Entry.MeshIndex >= Header.MeshCount
+            || Entry.DagIndex >= DagCounts[Entry.MeshIndex]
+            || Entry.PayloadBytes > GVmeshStreamingPageSlotBytes)
+        {
+            OutPageDirectory.clear();
+            return false;
+        }
+
+        FClusterDAGStreamingPageDesc Desc;
+        Desc.FileOffset = Entry.FileOffset;
+        Desc.PayloadBytes = Entry.PayloadBytes;
+        Desc.MeshIndex = Entry.MeshIndex;
+        Desc.DagIndex = Entry.DagIndex;
+        Desc.LocalPageIndex = Entry.LocalPageIndex;
+        Desc.Flags = Entry.Flags;
+        OutPageDirectory.push_back(Desc);
+    }
+
+    return true;
+}
+
 bool LoadClusterDAGCacheFile(
     const std::wstring& CacheFilePath,
     const std::wstring& SourceFilePath,
@@ -2576,6 +3164,7 @@ bool LoadClusterDAGCacheFile(
     }
 
     OutMeshClusterDAGs.resize(Header.MeshCount);
+    std::vector<std::vector<FVmeshDagHeader>> DagHeaders(Header.MeshCount);
     for (uint32_t MeshIndex = 0; MeshIndex < Header.MeshCount; ++MeshIndex)
     {
         uint32_t DagCount = 0;
@@ -2587,96 +3176,10 @@ bool LoadClusterDAGCacheFile(
 
         std::vector<FClusterDAG>& MeshDAGs = OutMeshClusterDAGs[MeshIndex];
         MeshDAGs.resize(DagCount);
+        DagHeaders[MeshIndex].resize(DagCount);
         for (uint32_t DagIndex = 0; DagIndex < DagCount; ++DagIndex)
         {
-            FVmeshDagHeader DagHeader;
-            if (!ReadValue(Stream, DagHeader))
-            {
-                OutMeshClusterDAGs.clear();
-                return false;
-            }
-
-            FClusterDAG& Dag = MeshDAGs[DagIndex];
-            Dag.RootGroupIndex = DagHeader.RootGroupIndex;
-            if (!ReadPodVector(Stream, Dag.Clusters, DagHeader.ClusterCount)
-                || !ReadPodVector(Stream, Dag.Positions, DagHeader.PositionCount)
-                || !ReadPodVector(Stream, Dag.Normals, DagHeader.NormalCount)
-                || !ReadPodVector(Stream, Dag.UVs, DagHeader.UVCount)
-                || !ReadPodVector(Stream, Dag.Tangents, DagHeader.TangentCount)
-                || !ReadPodVector(Stream, Dag.Colors, DagHeader.ColorCount)
-                || !ReadPodVector(Stream, Dag.TriangleIndices, DagHeader.TriangleIndexCount)
-                || !ReadPodVector(Stream, Dag.ExternalEdges, DagHeader.ExternalEdgeCount)
-                || !ReadPodVector(Stream, Dag.ClusterVertices, DagHeader.ClusterVertexCount)
-                || !ReadPodVector(Stream, Dag.RuntimeHierarchy.Groups, DagHeader.RuntimeGroupCount)
-                || !ReadPodVector(Stream, Dag.RuntimeHierarchy.Clusters, DagHeader.RuntimeClusterCount)
-                || !ReadPodVector(Stream, Dag.RuntimeHierarchy.ChildRefs, DagHeader.RuntimeChildRefCount)
-                || !ReadPodVector(Stream, Dag.RuntimeHierarchy.DrawDatas, DagHeader.RuntimeDrawDataCount)
-                || !ReadPodVector(Stream, Dag.PackedVertexData.Positions, DagHeader.PackedPositionCount)
-                || !ReadPodVector(Stream, Dag.PackedVertexData.Normals, DagHeader.PackedNormalCount)
-                || !ReadPodVector(Stream, Dag.PackedVertexData.UVs, DagHeader.PackedUVCount)
-                || !ReadPodVector(Stream, Dag.PackedVertexData.Tangents, DagHeader.PackedTangentCount)
-                || !ReadPodVector(Stream, Dag.PackedVertexData.Colors, DagHeader.PackedColorCount))
-            {
-                OutMeshClusterDAGs.clear();
-                return false;
-            }
-
-            Dag.RuntimeHierarchy.RootGroupIndex = DagHeader.RuntimeRootGroupIndex;
-            Dag.PackedVertexData.PositionOffset = DagHeader.PackedPositionOffset;
-            Dag.PackedVertexData.PositionScale = DagHeader.PackedPositionScale;
-            Dag.PackedVertexData.ConstantUV = FFloat2(DagHeader.PackedConstantUV.x, DagHeader.PackedConstantUV.y);
-            Dag.PackedVertexData.ConstantColor = DagHeader.PackedConstantColor;
-            if (!Dag.PackedVertexData.IsValid() && !Dag.Positions.empty())
-            {
-                BuildClusterDAGPackedVertexData(Dag, Dag.PackedVertexData);
-            }
-            if (!RebuildRuntimeClusterDrawData(Dag))
-            {
-                OutMeshClusterDAGs.clear();
-                return false;
-            }
-
-            Dag.Groups.resize(DagHeader.GroupCount);
-            for (uint32_t GroupIndex = 0; GroupIndex < DagHeader.GroupCount; ++GroupIndex)
-            {
-                FClusterGroup& Group = Dag.Groups[GroupIndex];
-                if (!ReadValue(Stream, Group.BoundsCenter)
-                    || !ReadValue(Stream, Group.BoundsRadius)
-                    || !ReadValue(Stream, Group.LodBoundsCenter)
-                    || !ReadValue(Stream, Group.LodBoundsRadius)
-                    || !ReadValue(Stream, Group.ParentLODError)
-                    || !ReadValue(Stream, Group.MipLevel)
-                    || !ReadValue(Stream, Group.bRoot))
-                {
-                    OutMeshClusterDAGs.clear();
-                    return false;
-                }
-
-                uint32_t ChildCount = 0;
-                uint32_t ParentCount = 0;
-                if (!ReadValue(Stream, ChildCount)
-                    || !ReadValue(Stream, ParentCount)
-                    || !ReadPodVector(Stream, Group.ChildRefs, ChildCount)
-                    || !ReadPodVector(Stream, Group.ParentRefs, ParentCount))
-                {
-                    OutMeshClusterDAGs.clear();
-                    return false;
-                }
-            }
-
-            const bool bEmptyDag =
-                Dag.Clusters.empty() &&
-                Dag.Groups.empty() &&
-                Dag.Positions.empty() &&
-                Dag.Normals.empty() &&
-                Dag.UVs.empty() &&
-                Dag.Tangents.empty() &&
-                Dag.Colors.empty() &&
-                Dag.TriangleIndices.empty() &&
-                Dag.ExternalEdges.empty() &&
-                Dag.ClusterVertices.empty() &&
-                Dag.RootGroupIndex == GClusterDAGInvalidIndex;
-            if (!bEmptyDag && (!Dag.IsValid() || !Dag.HasRuntimeHierarchy()))
+            if (!ReadValue(Stream, DagHeaders[MeshIndex][DagIndex]))
             {
                 OutMeshClusterDAGs.clear();
                 return false;
@@ -2684,10 +3187,112 @@ bool LoadClusterDAGCacheFile(
         }
     }
 
-    LogInfo("Cluster DAG cache metadata loaded: path="
+    if (Header.PageDirectoryOffset < sizeof(FVmeshCacheHeader))
+    {
+        OutMeshClusterDAGs.clear();
+        return false;
+    }
+
+    Stream.seekg(static_cast<std::streamoff>(Header.PageDirectoryOffset), std::ios::beg);
+    if (!Stream.good())
+    {
+        OutMeshClusterDAGs.clear();
+        return false;
+    }
+
+    std::vector<FVmeshPageDirEntry> PageDirectory(Header.TotalPageCount);
+    for (FVmeshPageDirEntry& Entry : PageDirectory)
+    {
+        if (!ReadValue(Stream, Entry)
+            || Entry.MeshIndex >= Header.MeshCount
+            || Entry.DagIndex >= DagHeaders[Entry.MeshIndex].size()
+            || Entry.PayloadBytes > GVmeshStreamingPageSlotBytes)
+        {
+            OutMeshClusterDAGs.clear();
+            return false;
+        }
+    }
+
+    for (uint32_t MeshIndex = 0; MeshIndex < Header.MeshCount; ++MeshIndex)
+    {
+        for (uint32_t DagIndex = 0; DagIndex < DagHeaders[MeshIndex].size(); ++DagIndex)
+        {
+            std::vector<FVmeshPageDirEntry> DagPages;
+            for (const FVmeshPageDirEntry& Entry : PageDirectory)
+            {
+                if (Entry.MeshIndex == MeshIndex
+                    && Entry.DagIndex == DagIndex
+                    && (Entry.Flags & GVmeshPageFlagRestorePayload) != 0u)
+                {
+                    DagPages.push_back(Entry);
+                }
+            }
+
+            if (DagPages.empty())
+            {
+                OutMeshClusterDAGs.clear();
+                return false;
+            }
+
+            std::sort(DagPages.begin(), DagPages.end(), [](const FVmeshPageDirEntry& A, const FVmeshPageDirEntry& B)
+            {
+                return A.LocalPageIndex < B.LocalPageIndex;
+            });
+
+            std::vector<uint8_t> PayloadBytes;
+            for (uint32_t PageOrdinal = 0; PageOrdinal < DagPages.size(); ++PageOrdinal)
+            {
+                const FVmeshPageDirEntry& Page = DagPages[PageOrdinal];
+                if (Page.LocalPageIndex != PageOrdinal)
+                {
+                    OutMeshClusterDAGs.clear();
+                    return false;
+                }
+
+                const size_t DestOffset = PayloadBytes.size();
+                PayloadBytes.resize(DestOffset + Page.PayloadBytes);
+                if (Page.PayloadBytes > 0u)
+                {
+                    Stream.seekg(static_cast<std::streamoff>(Page.FileOffset), std::ios::beg);
+                    if (!Stream.good())
+                    {
+                        OutMeshClusterDAGs.clear();
+                        return false;
+                    }
+
+                    Stream.read(
+                        reinterpret_cast<char*>(PayloadBytes.data() + DestOffset),
+                        static_cast<std::streamsize>(Page.PayloadBytes));
+                    if (!Stream.good())
+                    {
+                        OutMeshClusterDAGs.clear();
+                        return false;
+                    }
+                }
+            }
+
+            std::string PayloadString;
+            if (!PayloadBytes.empty())
+            {
+                PayloadString.assign(reinterpret_cast<const char*>(PayloadBytes.data()), PayloadBytes.size());
+            }
+            std::istringstream PayloadStream(PayloadString, std::ios::in | std::ios::binary);
+            FClusterDAG& Dag = OutMeshClusterDAGs[MeshIndex][DagIndex];
+            if (!ReadClusterDAGPayload(PayloadStream, DagHeaders[MeshIndex][DagIndex], Dag)
+                || !ValidateLoadedClusterDAG(Dag))
+            {
+                OutMeshClusterDAGs.clear();
+                return false;
+            }
+        }
+    }
+
+    LogInfo("Cluster DAG streaming cache loaded: path="
         + StringUtils::WideToUtf8(CacheFilePath)
         + ", meshes="
-        + std::to_string(Header.MeshCount));
+        + std::to_string(Header.MeshCount)
+        + ", pages="
+        + std::to_string(Header.TotalPageCount));
 
     return true;
 }
@@ -2711,6 +3316,113 @@ bool SaveClusterDAGCacheFile(
     Header.ParamsHash = HashClusterDAGBuildParams(Params);
     Header.MeshCount = static_cast<uint32_t>(MeshClusterDAGs.size());
 
+    std::vector<FVmeshMeshPayload> MeshPayloads(Header.MeshCount);
+    for (uint32_t MeshIndex = 0; MeshIndex < Header.MeshCount; ++MeshIndex)
+    {
+        const std::vector<FClusterDAG>& MeshDAGs = MeshClusterDAGs[MeshIndex];
+        FVmeshMeshPayload& MeshPayload = MeshPayloads[MeshIndex];
+        MeshPayload.Dags.resize(MeshDAGs.size());
+        for (uint32_t DagIndex = 0; DagIndex < MeshDAGs.size(); ++DagIndex)
+        {
+            if (!BuildVmeshDagPayload(MeshDAGs[DagIndex], MeshPayload.Dags[DagIndex]))
+            {
+                return false;
+            }
+
+            FVmeshDagPayload& DagPayload = MeshPayload.Dags[DagIndex];
+            const FRuntimeClusterHierarchy& Runtime = MeshDAGs[DagIndex].RuntimeHierarchy;
+            DagPayload.StreamingPages.resize(Runtime.Groups.size());
+            for (uint32_t LocalGroupIndex = 0; LocalGroupIndex < Runtime.Groups.size(); ++LocalGroupIndex)
+            {
+                if (LocalGroupIndex == Runtime.RootGroupIndex)
+                {
+                    continue;
+                }
+
+                if (!BuildVmeshStreamingPagePayload(MeshDAGs[DagIndex], LocalGroupIndex, DagPayload.StreamingPages[LocalGroupIndex]))
+                {
+                    return false;
+                }
+            }
+
+            const uint32_t RestorePageCount = (std::max)(1u, static_cast<uint32_t>((DagPayload.Bytes.size() + GVmeshStreamingPageSlotBytes - 1ull) / GVmeshStreamingPageSlotBytes));
+            const uint32_t StreamingPageCount = Runtime.Groups.empty() ? 0u : static_cast<uint32_t>(Runtime.Groups.size() - 1u);
+            Header.TotalPageCount += RestorePageCount + StreamingPageCount;
+        }
+    }
+
+    Header.PageDirectoryOffset = sizeof(FVmeshCacheHeader);
+    for (const FVmeshMeshPayload& MeshPayload : MeshPayloads)
+    {
+        Header.PageDirectoryOffset += sizeof(uint32_t);
+        Header.PageDirectoryOffset += static_cast<uint64_t>(MeshPayload.Dags.size()) * sizeof(FVmeshDagHeader);
+    }
+
+    struct FVmeshPageWrite
+    {
+        FVmeshPageDirEntry Entry;
+        const std::vector<uint8_t>* Bytes = nullptr;
+        uint32_t SourceOffset = 0;
+    };
+
+    std::vector<FVmeshPageWrite> PageWrites;
+    PageWrites.reserve(Header.TotalPageCount);
+    uint64_t NextPayloadOffset = AlignUp(
+        Header.PageDirectoryOffset + static_cast<uint64_t>(Header.TotalPageCount) * sizeof(FVmeshPageDirEntry),
+        GVmeshPageAlignment);
+
+    for (uint32_t MeshIndex = 0; MeshIndex < MeshPayloads.size(); ++MeshIndex)
+    {
+        const FVmeshMeshPayload& MeshPayload = MeshPayloads[MeshIndex];
+        for (uint32_t DagIndex = 0; DagIndex < MeshPayload.Dags.size(); ++DagIndex)
+        {
+            const FVmeshDagPayload& DagPayload = MeshPayload.Dags[DagIndex];
+            const uint32_t RestorePageCount = (std::max)(1u, static_cast<uint32_t>((DagPayload.Bytes.size() + GVmeshStreamingPageSlotBytes - 1ull) / GVmeshStreamingPageSlotBytes));
+            for (uint32_t PageIndex = 0; PageIndex < RestorePageCount; ++PageIndex)
+            {
+                const uint64_t SourceOffset = static_cast<uint64_t>(PageIndex) * GVmeshStreamingPageSlotBytes;
+                const uint32_t PayloadBytes = SourceOffset < DagPayload.Bytes.size()
+                    ? static_cast<uint32_t>(std::min<uint64_t>(GVmeshStreamingPageSlotBytes, DagPayload.Bytes.size() - SourceOffset))
+                    : 0u;
+
+                FVmeshPageWrite PageWrite;
+                PageWrite.Entry.FileOffset = NextPayloadOffset;
+                PageWrite.Entry.PayloadBytes = PayloadBytes;
+                PageWrite.Entry.MeshIndex = MeshIndex;
+                PageWrite.Entry.DagIndex = DagIndex;
+                PageWrite.Entry.LocalPageIndex = PageIndex;
+                PageWrite.Entry.Flags = GVmeshPageFlagRestorePayload | (PageIndex == 0u ? GVmeshPageFlagRoot | GVmeshPageFlagStreamingPayload : 0u);
+                PageWrite.Bytes = &DagPayload.Bytes;
+                PageWrite.SourceOffset = static_cast<uint32_t>(SourceOffset);
+                PageWrites.push_back(PageWrite);
+
+                NextPayloadOffset = AlignUp(NextPayloadOffset + PayloadBytes, GVmeshPageAlignment);
+            }
+
+            for (uint32_t LocalGroupIndex = 0; LocalGroupIndex < DagPayload.StreamingPages.size(); ++LocalGroupIndex)
+            {
+                if (LocalGroupIndex == DagPayload.Header.RuntimeRootGroupIndex)
+                {
+                    continue;
+                }
+
+                const std::vector<uint8_t>& StreamingPageBytes = DagPayload.StreamingPages[LocalGroupIndex];
+                FVmeshPageWrite PageWrite;
+                PageWrite.Entry.FileOffset = NextPayloadOffset;
+                PageWrite.Entry.PayloadBytes = static_cast<uint32_t>(StreamingPageBytes.size());
+                PageWrite.Entry.MeshIndex = MeshIndex;
+                PageWrite.Entry.DagIndex = DagIndex;
+                PageWrite.Entry.LocalPageIndex = LocalGroupIndex + 1u;
+                PageWrite.Entry.Flags = GVmeshPageFlagStreamingPayload;
+                PageWrite.Bytes = &StreamingPageBytes;
+                PageWrite.SourceOffset = 0u;
+                PageWrites.push_back(PageWrite);
+
+                NextPayloadOffset = AlignUp(NextPayloadOffset + StreamingPageBytes.size(), GVmeshPageAlignment);
+            }
+        }
+    }
+
     const std::filesystem::path TargetPath(CacheFilePath);
     const std::filesystem::path TempPath = TargetPath.wstring() + L".tmp";
     std::error_code ErrorCode;
@@ -2730,96 +3442,49 @@ bool SaveClusterDAGCacheFile(
         return false;
     }
 
-    for (const std::vector<FClusterDAG>& MeshDAGs : MeshClusterDAGs)
+    for (uint32_t MeshIndex = 0; MeshIndex < MeshClusterDAGs.size(); ++MeshIndex)
     {
+        const std::vector<FClusterDAG>& MeshDAGs = MeshClusterDAGs[MeshIndex];
         const uint32_t DagCount = static_cast<uint32_t>(MeshDAGs.size());
         if (!WriteValue(Stream, DagCount))
         {
             return false;
         }
 
-        for (const FClusterDAG& Dag : MeshDAGs)
+        for (const FVmeshDagPayload& DagPayload : MeshPayloads[MeshIndex].Dags)
         {
-            FClusterDAGPackedVertexData PackedVertexData = Dag.PackedVertexData;
-            if (!PackedVertexData.IsValid())
-            {
-                BuildClusterDAGPackedVertexData(Dag, PackedVertexData);
-            }
-
-            FVmeshDagHeader DagHeader;
-            DagHeader.ClusterCount = static_cast<uint32_t>(Dag.Clusters.size());
-            DagHeader.GroupCount = static_cast<uint32_t>(Dag.Groups.size());
-            DagHeader.PositionCount = 0;
-            DagHeader.NormalCount = 0;
-            DagHeader.UVCount = 0;
-            DagHeader.TangentCount = 0;
-            DagHeader.ColorCount = 0;
-            DagHeader.TriangleIndexCount = static_cast<uint32_t>(Dag.TriangleIndices.size());
-            DagHeader.ExternalEdgeCount = static_cast<uint32_t>(Dag.ExternalEdges.size());
-            DagHeader.ClusterVertexCount = static_cast<uint32_t>(Dag.ClusterVertices.size());
-            DagHeader.RuntimeGroupCount = static_cast<uint32_t>(Dag.RuntimeHierarchy.Groups.size());
-            DagHeader.RuntimeClusterCount = static_cast<uint32_t>(Dag.RuntimeHierarchy.Clusters.size());
-            DagHeader.RuntimeChildRefCount = static_cast<uint32_t>(Dag.RuntimeHierarchy.ChildRefs.size());
-            DagHeader.RuntimeDrawDataCount = static_cast<uint32_t>(Dag.RuntimeHierarchy.DrawDatas.size());
-            DagHeader.RuntimePackedIndexCount = 0;
-            DagHeader.PackedPositionCount = static_cast<uint32_t>(PackedVertexData.Positions.size());
-            DagHeader.PackedNormalCount = static_cast<uint32_t>(PackedVertexData.Normals.size());
-            DagHeader.PackedUVCount = static_cast<uint32_t>(PackedVertexData.UVs.size());
-            DagHeader.PackedTangentCount = static_cast<uint32_t>(PackedVertexData.Tangents.size());
-            DagHeader.PackedColorCount = static_cast<uint32_t>(PackedVertexData.Colors.size());
-            DagHeader.RuntimeRootGroupIndex = Dag.RuntimeHierarchy.RootGroupIndex;
-            DagHeader.RootGroupIndex = Dag.RootGroupIndex;
-            DagHeader.PackedPositionOffset = PackedVertexData.PositionOffset;
-            DagHeader.PackedPositionScale = PackedVertexData.PositionScale;
-            DagHeader.PackedConstantUV = FFloat4(PackedVertexData.ConstantUV.x, PackedVertexData.ConstantUV.y, 0.0f, 0.0f);
-            DagHeader.PackedConstantColor = PackedVertexData.ConstantColor;
-
-            static const std::vector<FFloat3> EmptyFloat3s;
-            static const std::vector<FFloat2> EmptyFloat2s;
-            static const std::vector<FFloat4> EmptyFloat4s;
-            static const std::vector<uint32_t> EmptyUint32s;
-
-            if (!WriteValue(Stream, DagHeader)
-                || !WritePodVector(Stream, Dag.Clusters)
-                || !WritePodVector(Stream, EmptyFloat3s)
-                || !WritePodVector(Stream, EmptyFloat3s)
-                || !WritePodVector(Stream, EmptyFloat2s)
-                || !WritePodVector(Stream, EmptyFloat4s)
-                || !WritePodVector(Stream, EmptyFloat4s)
-                || !WritePodVector(Stream, Dag.TriangleIndices)
-                || !WritePodVector(Stream, Dag.ExternalEdges)
-                || !WritePodVector(Stream, Dag.ClusterVertices)
-                || !WritePodVector(Stream, Dag.RuntimeHierarchy.Groups)
-                || !WritePodVector(Stream, Dag.RuntimeHierarchy.Clusters)
-                || !WritePodVector(Stream, Dag.RuntimeHierarchy.ChildRefs)
-                || !WritePodVector(Stream, Dag.RuntimeHierarchy.DrawDatas)
-                || !WritePodVector(Stream, PackedVertexData.Positions)
-                || !WritePodVector(Stream, PackedVertexData.Normals)
-                || !WritePodVector(Stream, PackedVertexData.UVs)
-                || !WritePodVector(Stream, PackedVertexData.Tangents)
-                || !WritePodVector(Stream, PackedVertexData.Colors))
+            if (!WriteValue(Stream, DagPayload.Header))
             {
                 return false;
             }
+        }
+    }
 
-            for (const FClusterGroup& Group : Dag.Groups)
+    for (const FVmeshPageWrite& PageWrite : PageWrites)
+    {
+        if (!WriteValue(Stream, PageWrite.Entry))
+        {
+            return false;
+        }
+    }
+
+    for (const FVmeshPageWrite& PageWrite : PageWrites)
+    {
+        const uint64_t CurrentOffset = static_cast<uint64_t>(Stream.tellp());
+        if (CurrentOffset > PageWrite.Entry.FileOffset
+            || !WritePadding(Stream, PageWrite.Entry.FileOffset - CurrentOffset))
+        {
+            return false;
+        }
+
+        if (PageWrite.Entry.PayloadBytes > 0u)
+        {
+            Stream.write(
+                reinterpret_cast<const char*>(PageWrite.Bytes->data() + PageWrite.SourceOffset),
+                static_cast<std::streamsize>(PageWrite.Entry.PayloadBytes));
+            if (!Stream.good())
             {
-                const uint32_t ChildCount = static_cast<uint32_t>(Group.ChildRefs.size());
-                const uint32_t ParentCount = static_cast<uint32_t>(Group.ParentRefs.size());
-                if (!WriteValue(Stream, Group.BoundsCenter)
-                    || !WriteValue(Stream, Group.BoundsRadius)
-                    || !WriteValue(Stream, Group.LodBoundsCenter)
-                    || !WriteValue(Stream, Group.LodBoundsRadius)
-                    || !WriteValue(Stream, Group.ParentLODError)
-                    || !WriteValue(Stream, Group.MipLevel)
-                    || !WriteValue(Stream, Group.bRoot)
-                    || !WriteValue(Stream, ChildCount)
-                    || !WriteValue(Stream, ParentCount)
-                    || !WritePodVector(Stream, Group.ChildRefs)
-                    || !WritePodVector(Stream, Group.ParentRefs))
-                {
-                    return false;
-                }
+                return false;
             }
         }
     }
@@ -2845,10 +3510,21 @@ bool SaveClusterDAGCacheFile(
         return false;
     }
 
-    LogInfo("Cluster DAG cache metadata saved: path="
+#if defined(_DEBUG)
+    if (!ValidateVmeshCacheRoundTrip(CacheFilePath, SourceFilePath, Params, MeshClusterDAGs))
+    {
+        LogWarning("Cluster DAG streaming cache roundtrip validation failed: " + StringUtils::WideToUtf8(CacheFilePath));
+        std::filesystem::remove(TargetPath, ErrorCode);
+        return false;
+    }
+#endif
+
+    LogInfo("Cluster DAG streaming cache saved: path="
         + StringUtils::WideToUtf8(CacheFilePath)
         + ", meshes="
-        + std::to_string(Header.MeshCount));
+        + std::to_string(Header.MeshCount)
+        + ", pages="
+        + std::to_string(Header.TotalPageCount));
 
     return true;
 }

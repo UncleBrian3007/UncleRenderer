@@ -14,11 +14,11 @@
 
 constexpr DXGI_FORMAT GClusterDagVisibility64Format = DXGI_FORMAT_R32G32_UINT;
 
-constexpr uint32_t kVisibilityPassConstantsDwordCount = 4;
+constexpr uint32_t kVisibilityPassConstantsDwordCount = 6;
 constexpr uint32_t kSoftwareRasterArgsBindlessDwordCount = 2;
-constexpr uint32_t kSoftwareRasterBindlessDwordCount = 14;
+constexpr uint32_t kSoftwareRasterBindlessDwordCount = 15;
 constexpr uint32_t kDepthExportBindlessDwordCount = 1;
-constexpr uint32_t kVisibilityResolveBindlessDwordCount = 4;
+constexpr uint32_t kVisibilityResolveBindlessDwordCount = 5;
 
 bool FClusterDagVisibilityPass::InitializePipelines(FDeferredRenderer& Owner, FDX12Device* Device)
 {
@@ -85,12 +85,16 @@ void FClusterDagVisibilityPass::AddVisibilityPass(FDeferredPassContext& Context)
         FRGResourceHandle Visibility64Handle{};
         FRGBufferHandle DagIndirectHandle{};
         FRGBufferHandle DrawDataVisibleEntryHandle{};
+        FRGBufferHandle VisibleEntryHandle{};
+        FRGBufferHandle PageDataHandle{};
         ID3D12Resource* DagIndirectBuffer = nullptr;
         ID3D12Resource* DagRunCountBuffer = nullptr;
         const std::vector<FRenderer::FIndirectDrawRange>* DagRanges = nullptr;
         const FCamera* Camera = nullptr;
         uint32_t Visibility64UavIndex = UINT32_MAX;
         uint32_t DrawDataVisibleEntrySrvIndex = UINT32_MAX;
+        uint32_t VisibleEntrySrvIndex = UINT32_MAX;
+        uint32_t PageDataSrvIndex = UINT32_MAX;
     };
 
     Context.Graph.AddPass<FPassData>("ClusterDagVisibility", [this, &Context](FPassData& Data, FRGPassBuilder& Builder)
@@ -108,15 +112,28 @@ void FClusterDagVisibilityPass::AddVisibilityPass(FDeferredPassContext& Context)
         Data.Camera = &Context.Camera;
         Data.Visibility64UavIndex = VisibilityTexture64.UavBindlessIndex;
         Data.DrawDataVisibleEntrySrvIndex = Runtime->DrawDataVisibleEntryIndexBuffers[Context.FrameIndex].SrvBindlessIndex;
+        Data.VisibleEntrySrvIndex = Runtime->VisibleEntryBuffers[Context.FrameIndex].SrvBindlessIndex;
+        if (FClusterDagStreamingManager* StreamingManager = Owner->GetClusterDagStreamingManager(); StreamingManager && StreamingManager->IsEnabled())
+        {
+            Data.PageDataSrvIndex = StreamingManager->GetPageDataSrvBindlessIndex();
+        }
 
         if (Data.bEnabled)
         {
             Data.DagIndirectHandle = ImportBindlessBuffer(Context.Graph, "ClusterDagIndirectCommandsVisibility", Runtime->IndirectCommandBuffers[Context.FrameIndex]);
             Data.DrawDataVisibleEntryHandle = ImportBindlessBuffer(Context.Graph, "ClusterDagDrawDataVisibleEntryVisibility", Runtime->DrawDataVisibleEntryIndexBuffers[Context.FrameIndex]);
+            Data.VisibleEntryHandle = ImportBindlessBuffer(Context.Graph, "ClusterDagVisibleEntriesVisibility", Runtime->VisibleEntryBuffers[Context.FrameIndex]);
             Builder.WriteTexture(Data.Visibility64Handle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             Builder.WriteTexture(Context.Resources.DepthHandle, D3D12_RESOURCE_STATE_DEPTH_WRITE);
             Builder.ReadBuffer(Data.DagIndirectHandle, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
             Builder.ReadBuffer(Data.DrawDataVisibleEntryHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            Builder.ReadBuffer(Data.VisibleEntryHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            if (Data.PageDataSrvIndex != UINT32_MAX)
+            {
+                FClusterDagStreamingManager* StreamingManager = Owner->GetClusterDagStreamingManager();
+                Data.PageDataHandle = ImportBindlessBuffer(Context.Graph, "ClusterDagStreamingPageDataVisibility", StreamingManager->GetPageDataBuffer());
+                Builder.ReadBuffer(Data.PageDataHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            }
         }
     }, [this](const FPassData& Data, FDX12CommandContext& Cmd)
     {
@@ -151,7 +168,9 @@ void FClusterDagVisibilityPass::AddVisibilityPass(FDeferredPassContext& Context)
         const uint32_t VisibilityExtraConstants[] =
         {
             Data.Visibility64UavIndex,
-            Data.DrawDataVisibleEntrySrvIndex
+            Data.DrawDataVisibleEntrySrvIndex,
+            Data.VisibleEntrySrvIndex,
+            Data.PageDataSrvIndex
         };
         CommandList->SetGraphicsRoot32BitConstants(1, _countof(VisibilityExtraConstants), VisibilityExtraConstants, 2);
 
@@ -223,6 +242,7 @@ void FClusterDagVisibilityPass::AddSoftwareRasterPass(FDeferredPassContext& Cont
         FRGBufferHandle ClusterDataHandle{};
         FRGBufferHandle DrawDataHandle{};
         FRGBufferHandle SceneDataHandle{};
+        FRGBufferHandle PageDataHandle{};
         FRGBufferHandle DispatchArgsHandle{};
         FRGResourceHandle HzbHandle{};
         ID3D12Resource* DispatchArgsBuffer = nullptr;
@@ -273,6 +293,13 @@ void FClusterDagVisibilityPass::AddSoftwareRasterPass(FDeferredPassContext& Cont
         Data.BindlessIndices[11] = Data.bUseHzbReject ? Owner->Hzb->GetWidth() : 0u;
         Data.BindlessIndices[12] = Data.bUseHzbReject ? Owner->Hzb->GetHeight() : 0u;
         Data.BindlessIndices[13] = Data.bUseHzbReject ? Owner->Hzb->GetMipCount() : 0u;
+        Data.BindlessIndices[14] = UINT32_MAX;
+        if (FClusterDagStreamingManager* StreamingManager = Owner->GetClusterDagStreamingManager(); StreamingManager && StreamingManager->IsEnabled())
+        {
+            Data.BindlessIndices[14] = StreamingManager->GetPageDataSrvBindlessIndex();
+            Data.PageDataHandle = ImportBindlessBuffer(Context.Graph, "ClusterDagSWPageData", StreamingManager->GetPageDataBuffer());
+            Builder.ReadBuffer(Data.PageDataHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        }
 
         Builder.WriteTexture(Data.Visibility64Handle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         Builder.ReadTexture(Data.DepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -358,16 +385,18 @@ void FClusterDagVisibilityPass::AddResolvePass(FDeferredPassContext& Context) co
         FRGBufferHandle VisibleEntryHandle{};
         FRGBufferHandle DrawDataHandle{};
         FRGBufferHandle SceneDataHandle{};
+        FRGBufferHandle PageDataHandle{};
         uint32_t Visibility64SrvIndex = UINT32_MAX;
         uint32_t VisibleEntrySrvIndex = UINT32_MAX;
         uint32_t DrawDataSrvIndex = UINT32_MAX;
         uint32_t SceneDataSrvIndex = UINT32_MAX;
+        uint32_t PageDataSrvIndex = UINT32_MAX;
     };
 
     Context.Graph.AddPass<FPassData>("ClusterDagResolve", [this, &Context](FPassData& Data, FRGPassBuilder& Builder)
     {
-		FClusterDagRuntime* Runtime = Owner->ClusterDagRuntime.get();
-		Data.bEnabled = static_cast<bool>(Context.Resources.ClusterDagVisibility.Visibility64Handle);
+        FClusterDagRuntime* Runtime = Owner->ClusterDagRuntime.get();
+        Data.bEnabled = static_cast<bool>(Context.Resources.ClusterDagVisibility.Visibility64Handle);
         if (!Data.bEnabled)
         {
             return;
@@ -381,6 +410,12 @@ void FClusterDagVisibilityPass::AddResolvePass(FDeferredPassContext& Context) co
         Data.VisibleEntrySrvIndex = Runtime->VisibleEntryBuffers[Context.FrameIndex].SrvBindlessIndex;
         Data.DrawDataSrvIndex = Runtime->DrawDataBuffer.SrvBindlessIndex;
         Data.SceneDataSrvIndex = Owner->ClusterDagSceneConstantBuffers[Context.FrameIndex].SrvBindlessIndex;
+        if (FClusterDagStreamingManager* StreamingManager = Owner->GetClusterDagStreamingManager(); StreamingManager && StreamingManager->IsEnabled())
+        {
+            Data.PageDataSrvIndex = StreamingManager->GetPageDataSrvBindlessIndex();
+            Data.PageDataHandle = ImportBindlessBuffer(Context.Graph, "ClusterDagResolvePageData", StreamingManager->GetPageDataBuffer());
+            Builder.ReadBuffer(Data.PageDataHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        }
 
         Builder.ReadTexture(Data.Visibility64Handle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadBuffer(Data.VisibleEntryHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -412,7 +447,8 @@ void FClusterDagVisibilityPass::AddResolvePass(FDeferredPassContext& Context) co
             Data.Visibility64SrvIndex,
             Data.VisibleEntrySrvIndex,
             Data.DrawDataSrvIndex,
-            Data.SceneDataSrvIndex
+            Data.SceneDataSrvIndex,
+            Data.PageDataSrvIndex
         };
         CommandList->SetGraphicsRoot32BitConstants(0, _countof(ResolveIndices), ResolveIndices, 0);
 

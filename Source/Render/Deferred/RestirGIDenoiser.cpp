@@ -16,6 +16,21 @@ using Microsoft::WRL::ComPtr;
 constexpr uint32_t kRestirGIDenoiserConstantsDwordCount = 10;
 constexpr uint32_t kRestirGIDenoiserBindlessDwordCount  = 16;
 
+struct FRestirGiDenoiserConstants
+{
+    uint32_t Width            = 0;
+    uint32_t Height           = 0;
+    uint32_t HistoryValid     = 0;
+    uint32_t PassIndex        = 0;
+    float    DepthThresholdScale = 1.03f;
+    float    NormalThreshold  = 0.9f;
+    float    BlendStrength    = 1.0f;
+    uint32_t MipLevel         = 0;
+    float    Padding1         = 0.0f;
+    float    Padding2         = 0.0f;
+};
+static_assert(sizeof(FRestirGiDenoiserConstants) / sizeof(uint32_t) <= kRestirGIDenoiserConstantsDwordCount);
+
 bool FRestirGIDenoiser::ShouldResetHistoryForFreeze(const FDeferredRenderer& Owner) const
 {
     if (!Owner.RestirGI->IsEnabled() || !IsEnabled() || !Owner.RestirGI->IsFreezeFrame())
@@ -97,50 +112,53 @@ bool FRestirGIDenoiser::InitializePipelines(FDeferredRenderer& Owner, FDX12Devic
 
 void FRestirGIDenoiser::AddPasses(FDeferredPassContext& Context) const
 {
-    FDeferredRenderer& Owner = Context.Owner;
-    FRenderGraph& Graph = Context.Graph;
-    const FDeferredGBufferHandles& GBufferHandles = Context.Resources.GBufferHandles;
-    const FRGResourceHandle DepthHandle = Context.Resources.DepthHandle;
-    const FRGResourceHandle VelocityHandle = Context.Resources.VelocityHandle;
-    const FRGResourceHandle LinearDepthHandle = Context.Resources.LinearDepthHandle;
-    const FRGResourceHandle InputSHHandle = Context.Resources.RestirGI.RestirGiInputSHHandle;
-    const FRGResourceHandle VarianceHandle = Context.Resources.RestirGI.RestirGiVarianceHandle;
-    FRestirGIDenoiserFrameResources& DenoiserResources = Context.Resources.RestirGIDenoiser;
-    const FRGResourceHandle HistorySHHandle = DenoiserResources.HistorySHHandle;
-    const FRGResourceHandle HistoryIrradianceHandle = DenoiserResources.HistoryIrradianceHandle;
-    const FRGResourceHandle HistoryCountAHandle = DenoiserResources.HistoryCountAHandle;
-    const FRGResourceHandle HistoryCountBHandle = DenoiserResources.HistoryCountBHandle;
-    const FRGResourceHandle PrevLinearDepthHandle = DenoiserResources.PrevLinearDepthHandle;
-    const FRGResourceHandle PrevNormalHandle = DenoiserResources.PrevNormalHandle;
-    FRGResourceHandle& ShMipHandle = DenoiserResources.ShMipHandle;
-    FRGResourceHandle& LinearDepthMipHandle = DenoiserResources.LinearDepthMipHandle;
-    FRGBufferHandle& SpdAtomicCounterHandle = DenoiserResources.SpdAtomicCounterHandle;
-
-    if (!IsEnabled())
-    {
-        return;
-    }
-
-    FRGResourceHandle& PreBlurSHHandle = DenoiserResources.PreBlurSHHandle;
-    FRGResourceHandle& TemporalSHHandle = DenoiserResources.TemporalSHHandle;
-    PreBlurSHHandle = {};
-    TemporalSHHandle = {};
-    ShMipHandle = {};
-    LinearDepthMipHandle = {};
-    SpdAtomicCounterHandle = {};
-
     if (!IsReady())
     {
         return;
     }
 
+    FDeferredRenderer& Owner = Context.Owner;
+    FRenderGraph& Graph = Context.Graph;
+    const FDeferredGBufferHandles& GBufferHandles = Context.Resources.GBufferHandles;
+    const FRGResourceHandle DepthHandle           = Context.Resources.DepthHandle;
+    const FRGResourceHandle VelocityHandle        = Context.Resources.VelocityHandle;
+    const FRGResourceHandle LinearDepthHandle     = Context.Resources.LinearDepthHandle;
+    const FRGResourceHandle InputSHHandle         = Context.Resources.RestirGI.RestirGiInputSHHandle;
+    const FRGResourceHandle VarianceHandle        = Context.Resources.RestirGI.RestirGiVarianceHandle;
+
+    FRestirGIDenoiserFrameResources& DenoiserResources = Context.Resources.RestirGIDenoiser;
+    const FRGResourceHandle HistorySHHandle         = DenoiserResources.HistorySHHandle;
+    const FRGResourceHandle HistoryIrradianceHandle = DenoiserResources.HistoryIrradianceHandle;
+    const FRGResourceHandle HistoryCountAHandle     = DenoiserResources.HistoryCountAHandle;
+    const FRGResourceHandle HistoryCountBHandle     = DenoiserResources.HistoryCountBHandle;
+    const FRGResourceHandle PrevLinearDepthHandle   = DenoiserResources.PrevLinearDepthHandle;
+    const FRGResourceHandle PrevNormalHandle        = DenoiserResources.PrevNormalHandle;
+    FRGResourceHandle& PreBlurSHHandle        = DenoiserResources.PreBlurSHHandle        = {};
+    FRGResourceHandle& TemporalSHHandle       = DenoiserResources.TemporalSHHandle       = {};
+    FRGResourceHandle& ShMipHandle            = DenoiserResources.ShMipHandle            = {};
+    FRGResourceHandle& LinearDepthMipHandle   = DenoiserResources.LinearDepthMipHandle   = {};
+    FRGBufferHandle&   SpdAtomicCounterHandle = DenoiserResources.SpdAtomicCounterHandle = {};
+
     AddFreezeResetPass(Owner, Graph, HistorySHHandle, HistoryCountAHandle, HistoryCountBHandle);
     AddPreBlurPass(Owner, Graph, GBufferHandles, LinearDepthHandle, InputSHHandle, VarianceHandle, PreBlurSHHandle);
-    AddTemporalAccumulationPass(Owner, Graph, GBufferHandles, DepthHandle, VelocityHandle, LinearDepthHandle, InputSHHandle, VarianceHandle, PreBlurSHHandle, TemporalSHHandle, HistorySHHandle, HistoryCountAHandle, HistoryCountBHandle, PrevLinearDepthHandle, PrevNormalHandle);
+    AddTemporalAccumulationPass(
+        Owner, Graph, GBufferHandles,
+        DepthHandle, VelocityHandle, LinearDepthHandle,
+        InputSHHandle, VarianceHandle, PreBlurSHHandle, TemporalSHHandle,
+        HistorySHHandle, HistoryCountAHandle, HistoryCountBHandle,
+        PrevLinearDepthHandle, PrevNormalHandle);
     AddShMipGenPass(Owner, Graph, TemporalSHHandle, ShMipHandle, SpdAtomicCounterHandle);
     AddLinearDepthMipGenPass(Owner, Graph, LinearDepthHandle, LinearDepthMipHandle, SpdAtomicCounterHandle);
-    AddHistoryReconstructionPass(Owner, Graph, GBufferHandles, LinearDepthHandle, InputSHHandle, VarianceHandle, HistorySHHandle, HistoryCountBHandle, TemporalSHHandle, ShMipHandle, LinearDepthMipHandle);
-    AddFinalBlurPass(Owner, Graph, GBufferHandles, LinearDepthHandle, InputSHHandle, VarianceHandle, TemporalSHHandle, HistoryIrradianceHandle, HistorySHHandle, HistoryCountBHandle);
+    AddHistoryReconstructionPass(
+        Owner, Graph, GBufferHandles,
+        LinearDepthHandle, InputSHHandle, VarianceHandle,
+        HistorySHHandle, HistoryCountBHandle, TemporalSHHandle,
+        ShMipHandle, LinearDepthMipHandle);
+    AddFinalBlurPass(
+        Owner, Graph, GBufferHandles,
+        LinearDepthHandle, InputSHHandle, VarianceHandle,
+        TemporalSHHandle, HistoryIrradianceHandle,
+        HistorySHHandle, HistoryCountBHandle);
 }
 
 void FRestirGIDenoiser::AddFreezeResetPass(FDeferredRenderer& Owner, FRenderGraph& Graph, FRGResourceHandle HistorySHHandle, FRGResourceHandle HistoryCountAHandle, FRGResourceHandle HistoryCountBHandle) const
@@ -439,32 +457,10 @@ void FRestirGIDenoiser::AddHistoryReconstructionPass(FDeferredRenderer& Owner, F
             return;
         }
 
-        struct FRestirGiDenoiserConstants
-        {
-            uint32_t Width;
-            uint32_t Height;
-            uint32_t HistoryValid;
-            uint32_t PassIndex;
-            float DepthThresholdScale;
-            float NormalThreshold;
-            float BlendStrength;
-            uint32_t MipLevel;
-            float Padding1;
-            float Padding2;
-        };
-        FRestirGiDenoiserConstants Constants =
-        {
-            static_cast<uint32_t>(Owner.Viewport.Width),
-            static_cast<uint32_t>(Owner.Viewport.Height),
-            0u,
-            4u,
-            1.03f,
-            0.9f,
-            1.0f,
-            0u,
-            0.0f,
-            0.0f
-        };
+        FRestirGiDenoiserConstants Constants = {};
+        Constants.Width   = static_cast<uint32_t>(Owner.Viewport.Width);
+        Constants.Height  = static_cast<uint32_t>(Owner.Viewport.Height);
+        Constants.PassIndex = 4u;
         const uint32_t DispatchX = (Constants.Width + 7u) / 8u;
         const uint32_t DispatchY = (Constants.Height + 7u) / 8u;
 
@@ -493,7 +489,6 @@ void FRestirGIDenoiser::AddHistoryReconstructionPass(FDeferredRenderer& Owner, F
         LocalCommandList->SetComputeRootSignature(RootSignature.Get());
         LocalCommandList->SetComputeRootConstantBufferView(2, Owner.GetSceneConstantBufferAddress());
         LocalCommandList->SetPipelineState(HistoryReconstructionPipeline.Get());
-        static_assert(sizeof(FRestirGiDenoiserConstants) / sizeof(uint32_t) <= kRestirGIDenoiserConstantsDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(FRestirGiDenoiserConstants) / sizeof(uint32_t), &Constants, 0);
         LocalCommandList->SetComputeRoot32BitConstants(1, _countof(Bindless), Bindless, 0);
         LocalCommandList->Dispatch(DispatchX, DispatchY, 1);
@@ -545,32 +540,10 @@ void FRestirGIDenoiser::AddFinalBlurPass(FDeferredRenderer& Owner, FRenderGraph&
             return;
         }
 
-        struct FRestirGiDenoiserConstants
-        {
-            uint32_t Width;
-            uint32_t Height;
-            uint32_t HistoryValid;
-            uint32_t PassIndex;
-            float DepthThresholdScale;
-            float NormalThreshold;
-            float BlendStrength;
-            uint32_t MipLevel;
-            float Padding1;
-            float Padding2;
-        };
-        FRestirGiDenoiserConstants Constants =
-        {
-            static_cast<uint32_t>(Owner.Viewport.Width),
-            static_cast<uint32_t>(Owner.Viewport.Height),
-            0u,
-            5u,
-            1.03f,
-            0.9f,
-            1.0f,
-            0u,
-            0.0f,
-            0.0f
-        };
+        FRestirGiDenoiserConstants Constants = {};
+        Constants.Width   = static_cast<uint32_t>(Owner.Viewport.Width);
+        Constants.Height  = static_cast<uint32_t>(Owner.Viewport.Height);
+        Constants.PassIndex = 5u;
 
         const uint32_t Bindless[kRestirGIDenoiserBindlessDwordCount] =
         {
@@ -597,13 +570,11 @@ void FRestirGIDenoiser::AddFinalBlurPass(FDeferredRenderer& Owner, FRenderGraph&
         LocalCommandList->SetComputeRootSignature(RootSignature.Get());
         LocalCommandList->SetComputeRootConstantBufferView(2, Owner.GetSceneConstantBufferAddress());
         LocalCommandList->SetPipelineState(FinalBlurPipeline.Get());
-        static_assert(sizeof(FRestirGiDenoiserConstants) / sizeof(uint32_t) <= kRestirGIDenoiserConstantsDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(FRestirGiDenoiserConstants) / sizeof(uint32_t), &Constants, 0);
         LocalCommandList->SetComputeRoot32BitConstants(1, _countof(Bindless), Bindless, 0);
         LocalCommandList->Dispatch((Constants.Width + 7u) / 8u, (Constants.Height + 7u) / 8u, 1);
     });
 }
-
 
 void FRestirGIDenoiser::AddPreBlurPass(FDeferredRenderer& Owner, FRenderGraph& Graph, const FDeferredGBufferHandles& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle InputSHHandle, FRGResourceHandle VarianceHandle, FRGResourceHandle& PreBlurSHHandle) const
 {
@@ -652,25 +623,9 @@ void FRestirGIDenoiser::AddPreBlurPass(FDeferredRenderer& Owner, FRenderGraph& G
             return;
         }
 
-        struct FRestirGiDenoiserConstants
-        {
-            uint32_t Width = 0;
-            uint32_t Height = 0;
-            uint32_t HistoryValid = 0;
-            uint32_t PassIndex = 0;
-            float DepthThresholdScale = 1.03f;
-            float NormalThreshold = 0.9f;
-            float BlendStrength = 1.0f;
-            uint32_t MipLevel = 0;
-            float Padding1 = 0.0f;
-            float Padding2 = 0.0f;
-        };
-
         FRestirGiDenoiserConstants Constants = {};
-        Constants.Width = static_cast<uint32_t>(Owner.Viewport.Width);
+        Constants.Width  = static_cast<uint32_t>(Owner.Viewport.Width);
         Constants.Height = static_cast<uint32_t>(Owner.Viewport.Height);
-        Constants.PassIndex = 0u;
-        Constants.MipLevel = 0u;
 
         ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
@@ -698,7 +653,6 @@ void FRestirGIDenoiser::AddPreBlurPass(FDeferredRenderer& Owner, FRenderGraph& G
         };
 
         LocalCommandList->SetPipelineState(PreBlurPipeline.Get());
-        static_assert(sizeof(FRestirGiDenoiserConstants) / sizeof(uint32_t) <= kRestirGIDenoiserConstantsDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(FRestirGiDenoiserConstants) / sizeof(uint32_t), &Constants, 0);
         LocalCommandList->SetComputeRoot32BitConstants(1, _countof(PreBlurBindless), PreBlurBindless, 0);
         LocalCommandList->Dispatch((Constants.Width + 7u) / 8u, (Constants.Height + 7u) / 8u, 1);
@@ -767,22 +721,8 @@ void FRestirGIDenoiser::AddTemporalAccumulationPass(FDeferredRenderer& Owner, FR
             return;
         }
 
-        struct FRestirGiDenoiserConstants
-        {
-            uint32_t Width = 0;
-            uint32_t Height = 0;
-            uint32_t HistoryValid = 0;
-            uint32_t PassIndex = 0;
-            float DepthThresholdScale = 1.03f;
-            float NormalThreshold = 0.9f;
-            float BlendStrength = 1.0f;
-            uint32_t MipLevel = 0;
-            float Padding1 = 0.0f;
-            float Padding2 = 0.0f;
-        };
-
         FRestirGiDenoiserConstants Constants = {};
-        Constants.Width = static_cast<uint32_t>(Owner.Viewport.Width);
+        Constants.Width  = static_cast<uint32_t>(Owner.Viewport.Width);
         Constants.Height = static_cast<uint32_t>(Owner.Viewport.Height);
         const bool bResetHistoryThisFrame = ShouldResetHistoryForFreeze(Owner);
         Constants.HistoryValid = (bHistoryValid && !bResetHistoryThisFrame) ? 1u : 0u;
@@ -815,7 +755,6 @@ void FRestirGIDenoiser::AddTemporalAccumulationPass(FDeferredRenderer& Owner, FR
         };
 
         LocalCommandList->SetPipelineState(TemporalAccumulationPipeline.Get());
-        static_assert(sizeof(FRestirGiDenoiserConstants) / sizeof(uint32_t) <= kRestirGIDenoiserConstantsDwordCount);
         LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(FRestirGiDenoiserConstants) / sizeof(uint32_t), &Constants, 0);
         LocalCommandList->SetComputeRoot32BitConstants(1, _countof(TemporalBindless), TemporalBindless, 0);
         LocalCommandList->Dispatch((Constants.Width + 7u) / 8u, (Constants.Height + 7u) / 8u, 1);

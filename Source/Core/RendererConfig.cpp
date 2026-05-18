@@ -925,6 +925,45 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
         }
     }
 
+    if (LowerKey == "clusterdagstreamingpageslotbytes")
+    {
+        try
+        {
+            const int32_t ParsedValue = std::stoi(Value);
+            OutConfig.ClusterDAGStreamingPageSlotBytes = static_cast<uint32_t>(std::clamp(ParsedValue, 4096, 16 * 1024 * 1024));
+        }
+        catch (...)
+        {
+            LogWarning("Invalid Cluster DAG streaming page slot bytes in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "clusterdagstreamingmaxioinflight")
+    {
+        try
+        {
+            const int32_t ParsedValue = std::stoi(Value);
+            OutConfig.ClusterDAGStreamingMaxIoInFlight = static_cast<uint32_t>(std::clamp(ParsedValue, 1, 1024));
+        }
+        catch (...)
+        {
+            LogWarning("Invalid Cluster DAG streaming max IO in flight in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "clusterdagstreamingmaxpageuploadbytesperframe")
+    {
+        try
+        {
+            const int32_t ParsedValue = std::stoi(Value);
+            OutConfig.ClusterDAGStreamingMaxPageUploadBytesPerFrame = static_cast<uint32_t>(std::clamp(ParsedValue, 4096, 1024 * 1024 * 1024));
+        }
+        catch (...)
+        {
+            LogWarning("Invalid Cluster DAG streaming max page upload bytes per frame in renderer config: " + Value);
+        }
+    }
+
     if (LowerKey == "clusterdagforcemip" || LowerKey == "enableclusterdagforcemip")
     {
         OutConfig.bEnableClusterDAGForceMip = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");

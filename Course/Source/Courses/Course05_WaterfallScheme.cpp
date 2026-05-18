@@ -39,10 +39,30 @@ namespace
             auto& nd = T.nodes[i];
             int l = nd.l, r = nd.r, m = (l + r) / 2;
             nd.pivot = input[m];
-            if (m - l > 1) { int c = nc++; nd.l = c; T.nodes[c] = {l,m,i,0}; stk.push(c); }
-            else            { nd.l = ~l; T.leaves[l] = {input[l], i}; }
-            if (r - m > 1) { int c = nc++; nd.r = c; T.nodes[c] = {m,r,i,0}; stk.push(c); }
-            else            { nd.r = ~m; T.leaves[m] = {input[m], i}; }
+            if (m - l > 1)
+            {
+                int c = nc++;
+                nd.l = c;
+                T.nodes[c] = { l, m, i, 0 };
+                stk.push(c);
+            }
+            else
+            {
+                nd.l = ~l;
+                T.leaves[l] = { input[l], i };
+            }
+            if (r - m > 1)
+            {
+                int c = nc++;
+                nd.r = c;
+                T.nodes[c] = { m, r, i, 0 };
+                stk.push(c);
+            }
+            else
+            {
+                nd.r = ~m;
+                T.leaves[m] = { input[m], i };
+            }
         }
         return T;
     }
@@ -70,7 +90,9 @@ void Course05_Run(CourseRunner& Runner)
     std::mt19937 Rng(13);
     std::uniform_int_distribution<int> Dist(0, 1000);
 
-    for (uint32_t N : { 8u, 64u, 256u, 2048u })
+    // Waterfall scheme requires all threads in one threadgroup to spin together.
+    // N must not exceed kBlockSize (1024); multi-group dispatch breaks coherency.
+    for (uint32_t N : { 8u, 64u, 256u, 1024u })
     {
         std::vector<int> Input(N);
         for (int& V : Input) V = Dist(Rng);
@@ -96,39 +118,23 @@ void Course05_Run(CourseRunner& Runner)
         Runner.ZeroBuffer(NodeBuf,  N * sizeof(GpuNode05));
         Runner.ZeroBuffer(LeafBuf,  N * sizeof(GpuLeaf05));
 
-        // Seed: counters[0]=1 (first node slot taken), task[0]=1 (root task).
-        // Root node: left=0, right=N, parent=-1.
+        // Counters[0]=1 (root occupies slot 0), Counters[1]=0 (no leaves yet).
         int InitCounters[2] = { 1, 0 };
         Runner.Upload(CntBuf, InitCounters, sizeof(InitCounters));
-        int InitTask[1] = { 1 };
-        // Write task[0]=1 via a small upload.
-        GpuBuffer TmpUpload = Runner.CreateUploadBuffer(sizeof(int), L"TaskSeed");
-        {
-            void* Mapped; D3D12_RANGE R={0,0}; TmpUpload.Resource->Map(0,&R,&Mapped);
-            *(int*)Mapped = 1; TmpUpload.Resource->Unmap(0,nullptr);
-        }
-        // Manual copy just for the first int of TaskBuf.
-        Runner.Flush();  // flush any pending
-        {
-            // Re-open cmd list via a manual transition + copy.
-            GpuBuffer TmpUpload2 = Runner.CreateUploadBuffer(N * sizeof(int), L"TaskFull");
-            std::vector<int> TaskInit(N, 0); TaskInit[0] = 1;
-            Runner.Upload(TaskBuf, TaskInit.data(), N * sizeof(int));
-        }
 
-        // Root node.
+        // task[0]=1 kicks off the root node.
+        std::vector<int> TaskInit(N, 0); TaskInit[0] = 1;
+        Runner.Upload(TaskBuf, TaskInit.data(), N * sizeof(int));
+
+        // Root node covers the full sorted range [0, N).
         GpuNode05 RootNode = { 0, (int)N, -1, 0 };
-        GpuBuffer TmpNodeUpload = Runner.CreateUploadBuffer(sizeof(GpuNode05), L"RootNode");
-        {
-            void* M; D3D12_RANGE R={0,0}; TmpNodeUpload.Resource->Map(0,&R,&M);
-            memcpy(M, &RootNode, sizeof(GpuNode05)); TmpNodeUpload.Resource->Unmap(0,nullptr);
-        }
+        Runner.Upload(NodeBuf, &RootNode, sizeof(GpuNode05));
 
         struct Constants { uint32_t Size, P0, P1, P2; };
         Constants C = { N, 0, 0, 0 };
 
         static constexpr uint32_t kBlockSize = 1024;
-        uint32_t Groups = ((N - 1u) + kBlockSize - 1u) / kBlockSize;
+        uint32_t Groups = 1;  // must be 1: waterfall is a single-group algorithm
 
         CourseRunner::DispatchDesc Desc;
         Desc.RootSig        = RS.Get();

@@ -126,6 +126,9 @@ struct FRendererConfig
     uint32_t ClusterDAGStreamingRequestBufferCapacity = 65536;
     uint32_t ClusterDAGStreamingMaxPendingPages = 64;
     uint32_t ClusterDAGStreamingMaxPageInstallsPerFrame = 16;
+    uint32_t ClusterDAGStreamingPageSlotBytes = 131072;
+    uint32_t ClusterDAGStreamingMaxIoInFlight = 8;
+    uint32_t ClusterDAGStreamingMaxPageUploadBytesPerFrame = 8388608;
     bool bEnableClusterDAGForceMip = false;
     uint32_t ClusterDAGForceMipLevel = 0;
     bool bEnableClusterDAGForceMipSkipFrustumCull = false;

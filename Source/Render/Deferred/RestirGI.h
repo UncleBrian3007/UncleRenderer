@@ -51,8 +51,8 @@ public:
     void SetSamplesPerPixel(uint32_t Samples) { SamplesPerPixel = Samples; }
     uint32_t GetSamplesPerPixel() const { return SamplesPerPixel; }
 
-    void SetIntensity(float Intensity) { Intensity_ = Intensity; }
-    float GetIntensity() const { return Intensity_; }
+    void SetIntensity(float InIntensity) { Intensity = InIntensity; }
+    float GetIntensity() const { return Intensity; }
 
     void SetRayLength(float Value) { RayLength = Value; }
     float GetRayLength() const { return RayLength; }
@@ -131,7 +131,6 @@ private:
     bool CreatePipeline(FDX12Device* Device);
     DXGI_FORMAT ResolveRadianceFormat(FDX12Device* Device) const;
     bool CreateResources(FDX12Device* Device, uint32_t Width, uint32_t Height);
-    uint32_t GetDepthBindlessIndexForRestir(FDeferredRenderer& Owner) const;
     void DispatchRestirPass(FDeferredPassContext& Context, FDX12CommandContext& Cmd, ID3D12PipelineState* PipelineState, uint32_t SpatialPassIndex, const uint32_t BindlessIndices[30], uint32_t DispatchWidth, uint32_t DispatchHeight, bool bPassEnabled) const;
     void AddInitialSamplingPass(FDeferredPassContext& Context) const;
     void AddTemporalResamplingPass(FDeferredPassContext& Context) const;
@@ -143,7 +142,7 @@ private:
 private:
     bool bEnabled = false;
     uint32_t SamplesPerPixel = 2;
-    float Intensity_ = 1.0f;
+    float Intensity = 1.0f;
     float RayLength = 1000.0f;
     float ClampThreshold = 10.0f;
     bool bTemporalReuse = true;

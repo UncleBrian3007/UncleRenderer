@@ -36,7 +36,7 @@ void InitClusterDagQueuesCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     StructuredBuffer<uint> RootGroups = ResourceDescriptorHeap[RootGroupBufferIndex];
     RWByteAddressBuffer QueueState = ResourceDescriptorHeap[QueueStateBufferIndex];
     RWStructuredBuffer<uint> GroupQueue = ResourceDescriptorHeap[GroupQueueBufferIndex];
-    RWStructuredBuffer<uint> CandidateClusterQueue = ResourceDescriptorHeap[CandidateClusterQueueBufferIndex];
+    RWStructuredBuffer<ClusterDagCandidateClusterEntry> CandidateClusterQueue = ResourceDescriptorHeap[CandidateClusterQueueBufferIndex];
     RWStructuredBuffer<uint> VisitedGroupEpochs = ResourceDescriptorHeap[VisitedGroupEpochBufferIndex];
     RWByteAddressBuffer RunCounts = ResourceDescriptorHeap[RunCountBufferIndex];
     RWByteAddressBuffer VisibleEntryCounters = ResourceDescriptorHeap[VisibleEntryCountersIndex];
@@ -96,7 +96,10 @@ void InitClusterDagQueuesCS(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     if (threadIndex < CandidateQueueCapacity)
     {
-        CandidateClusterQueue[threadIndex] = 0xffffffffu;
+        ClusterDagCandidateClusterEntry emptyEntry;
+        emptyEntry.ClusterIndex = 0xffffffffu;
+        emptyEntry.PageDataBase = 0xffffffffu;
+        CandidateClusterQueue[threadIndex] = emptyEntry;
     }
 #endif
 

@@ -28,9 +28,11 @@ cbuffer ClusterDagPersistentBindlessConstants : register(b1)
     uint SwVisibleEntryIndicesIndex;
     uint DrawDataVisibleEntryIndicesIndex;
     uint PageTableBufferIndex;
+    uint PageDataBufferIndex;
     uint StreamingRequestBufferIndex;
     uint StreamingRequestCapacity;
     uint StreamingResourceId;
+    uint PageSlotBytes;
 };
 
 void EmitVisibleClusterDagCandidate(
@@ -46,6 +48,9 @@ void EmitVisibleClusterDagCandidate(
     RWStructuredBuffer<uint> HwVisibleEntryIndices,
     RWStructuredBuffer<uint> SwVisibleEntryIndices,
     RWStructuredBuffer<uint> DrawDataVisibleEntryIndices,
+    bool UsePagedDrawDatas,
+    uint PagedPageBase,
+    ByteAddressBuffer PageData,
     uint DebugPrintStatsIndex)
 {
     const bool isLeaf = cluster.GeneratingGroupIndex == 0xffffffffu;
@@ -58,10 +63,11 @@ void EmitVisibleClusterDagCandidate(
     for (uint packetOffset = 0u; packetOffset < cluster.DrawDataCount; ++packetOffset)
     {
         const uint drawDataIndex = cluster.DrawDataStart + packetOffset;
-        const ClusterDagDrawData drawData = DrawDatas[drawDataIndex];
+        const ClusterDagDrawData drawData = LoadClusterDagDrawData(drawDataIndex, UsePagedDrawDatas, PagedPageBase, DrawDatas, PageData);
         ReserveClusterDagVisibleEntry(
             clusterIndex,
             drawDataIndex,
+            UsePagedDrawDatas ? PagedPageBase : 0xffffffffu,
             rasterizeSW,
             VisibleEntries,
             VisibleEntryCounters,
@@ -131,16 +137,18 @@ void PersistentClusterDagCullCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     RWByteAddressBuffer RunCounts = ResourceDescriptorHeap[RunCountsIndex];
     RWByteAddressBuffer QueueState = ResourceDescriptorHeap[QueueStateBufferIndex];
     RWStructuredBuffer<uint> GroupQueue = ResourceDescriptorHeap[GroupQueueBufferIndex];
-    RWStructuredBuffer<uint> CandidateClusterQueue = ResourceDescriptorHeap[CandidateClusterQueueBufferIndex];
+    RWStructuredBuffer<ClusterDagCandidateClusterEntry> CandidateClusterQueue = ResourceDescriptorHeap[CandidateClusterQueueBufferIndex];
     RWStructuredBuffer<uint> VisitedGroupEpochs = ResourceDescriptorHeap[VisitedGroupEpochBufferIndex];
     RWStructuredBuffer<ClusterDagVisibleEntry> VisibleEntries = ResourceDescriptorHeap[VisibleEntriesIndex];
     RWByteAddressBuffer VisibleEntryCounters = ResourceDescriptorHeap[VisibleEntryCountersIndex];
     RWStructuredBuffer<uint> HwVisibleEntryIndices = ResourceDescriptorHeap[HwVisibleEntryIndicesIndex];
     RWStructuredBuffer<uint> SwVisibleEntryIndices = ResourceDescriptorHeap[SwVisibleEntryIndicesIndex];
     RWStructuredBuffer<uint> DrawDataVisibleEntryIndices = ResourceDescriptorHeap[DrawDataVisibleEntryIndicesIndex];
-    StructuredBuffer<ClusterDagPageTableEntry> PageTable = ResourceDescriptorHeap[PageTableBufferIndex];
-    RWStructuredBuffer<ClusterDagStreamingRequest> StreamingRequests = ResourceDescriptorHeap[StreamingRequestBufferIndex];
     const bool streamingEnabled = PageTableBufferIndex != 0xffffffffu && StreamingRequestBufferIndex != 0xffffffffu && StreamingRequestCapacity > 0u;
+    const bool pagedFetchEnabled = streamingEnabled && PageDataBufferIndex != 0xffffffffu && PageSlotBytes > 0u;
+    StructuredBuffer<ClusterDagPageTableEntry> PageTable = ResourceDescriptorHeap[streamingEnabled ? PageTableBufferIndex : GroupBufferIndex];
+    ByteAddressBuffer PageData = ResourceDescriptorHeap[pagedFetchEnabled ? PageDataBufferIndex : CommandTemplatesIndex];
+    RWStructuredBuffer<ClusterDagStreamingRequest> StreamingRequests = ResourceDescriptorHeap[streamingEnabled ? StreamingRequestBufferIndex : VisitedGroupEpochBufferIndex];
 
     const uint currentEpoch = TraversalEpoch;
     const uint maxLoopCount = max((GroupCount + ClusterCount) * 8u, 1024u);
@@ -170,7 +178,22 @@ void PersistentClusterDagCullCS(uint3 dispatchThreadId : SV_DispatchThreadID)
             if (groupIndex < GroupCount)
 #endif
             {
-                const ClusterDagGroupData group = Groups[groupIndex];
+                const ClusterDagGroupData fallbackGroup = Groups[groupIndex];
+                bool usePagedChildRefs = false;
+                uint pagedPageBase = 0u;
+                uint pagedChildRefBase = 0u;
+                ClusterDagGroupData group = fallbackGroup;
+                TryLoadClusterDagPagedGroup(
+                    groupIndex,
+                    fallbackGroup,
+                    pagedFetchEnabled,
+                    PageTable,
+                    PageData,
+                    PageSlotBytes,
+                    group,
+                    usePagedChildRefs,
+                    pagedPageBase,
+                    pagedChildRefBase);
 #if USE_CLUSTER_DAG_FAST
                 if (true)
 #else
@@ -180,7 +203,7 @@ void PersistentClusterDagCullCS(uint3 dispatchThreadId : SV_DispatchThreadID)
                     [loop]
                     for (uint childOffset = 0u; childOffset < group.ChildRefCount; ++childOffset)
                     {
-                        const ClusterChildRef childRef = ChildRefs[group.ChildRefStart + childOffset];
+                        const ClusterChildRef childRef = LoadClusterDagChildRef(childOffset, group, usePagedChildRefs, pagedChildRefBase, ChildRefs, PageData);
 #if !USE_CLUSTER_DAG_FAST
                         if (childRef.ClusterIndex == 0xffffffffu || childRef.ClusterIndex >= ClusterCount)
                         {
@@ -188,7 +211,7 @@ void PersistentClusterDagCullCS(uint3 dispatchThreadId : SV_DispatchThreadID)
                         }
 #endif
 
-                        const ClusterDagClusterData cluster = Clusters[childRef.ClusterIndex];
+                        const ClusterDagClusterData cluster = LoadClusterDagCluster(childRef.ClusterIndex, usePagedChildRefs, pagedPageBase, Clusters, PageData);
                         const bool isLeaf = cluster.GeneratingGroupIndex == 0xffffffffu;
                         const float3 lodCenter = cluster.LodBounds.xyz;
                         const float lodRadius = cluster.LodBounds.w;
@@ -284,14 +307,17 @@ void PersistentClusterDagCullCS(uint3 dispatchThreadId : SV_DispatchThreadID)
 
                         if (cluster.DrawDataCount <= kPersistentClusterDagInlineCandidateDrawDataCount)
                         {
-                            EmitVisibleClusterDagCandidate(childRef.ClusterIndex, cluster, DrawDatas, CommandTemplates, OutputCommands, RunCounts, QueueState, VisibleEntries, VisibleEntryCounters, HwVisibleEntryIndices, SwVisibleEntryIndices, DrawDataVisibleEntryIndices, DebugPrintStatsIndex);
+                            EmitVisibleClusterDagCandidate(childRef.ClusterIndex, cluster, DrawDatas, CommandTemplates, OutputCommands, RunCounts, QueueState, VisibleEntries, VisibleEntryCounters, HwVisibleEntryIndices, SwVisibleEntryIndices, DrawDataVisibleEntryIndices, usePagedChildRefs, pagedPageBase, PageData, DebugPrintStatsIndex);
                         }
                         else
                         {
                             uint candidateSlot = 0xffffffffu;
                             if (TryReserveClusterDagQueueSlot(QueueState, kQueueStatePass0CandidateWriteOffset, ClusterCount, candidateSlot))
                             {
-                                CandidateClusterQueue[candidateSlot] = childRef.ClusterIndex;
+                                ClusterDagCandidateClusterEntry candidateEntry;
+                                candidateEntry.ClusterIndex = childRef.ClusterIndex;
+                                candidateEntry.PageDataBase = usePagedChildRefs ? pagedPageBase : 0xffffffffu;
+                                CandidateClusterQueue[candidateSlot] = candidateEntry;
                                 IncrementClusterDagPending(QueueState);
                                 DeviceMemoryBarrier();
                                 CommitClusterDagQueueSlot(
@@ -318,7 +344,9 @@ void PersistentClusterDagCullCS(uint3 dispatchThreadId : SV_DispatchThreadID)
 
         if (TryPopClusterDagQueue(QueueState, kQueueStatePass0CandidateReadOffset, kQueueStatePass0CandidateCommittedWriteOffset, workIndex))
         {
-            const uint clusterIndex = CandidateClusterQueue[workIndex];
+            const ClusterDagCandidateClusterEntry candidateEntry = CandidateClusterQueue[workIndex];
+            const uint clusterIndex = candidateEntry.ClusterIndex;
+            const bool usePagedCandidate = candidateEntry.PageDataBase != 0xffffffffu;
 
 #if USE_CLUSTER_DAG_FAST
             if (true)
@@ -326,8 +354,8 @@ void PersistentClusterDagCullCS(uint3 dispatchThreadId : SV_DispatchThreadID)
             if (clusterIndex < ClusterCount)
 #endif
             {
-                const ClusterDagClusterData cluster = Clusters[clusterIndex];
-                EmitVisibleClusterDagCandidate(clusterIndex, cluster, DrawDatas, CommandTemplates, OutputCommands, RunCounts, QueueState, VisibleEntries, VisibleEntryCounters, HwVisibleEntryIndices, SwVisibleEntryIndices, DrawDataVisibleEntryIndices, DebugPrintStatsIndex);
+                const ClusterDagClusterData cluster = LoadClusterDagCluster(clusterIndex, usePagedCandidate, candidateEntry.PageDataBase, Clusters, PageData);
+                EmitVisibleClusterDagCandidate(clusterIndex, cluster, DrawDatas, CommandTemplates, OutputCommands, RunCounts, QueueState, VisibleEntries, VisibleEntryCounters, HwVisibleEntryIndices, SwVisibleEntryIndices, DrawDataVisibleEntryIndices, usePagedCandidate, candidateEntry.PageDataBase, PageData, DebugPrintStatsIndex);
             }
 
             DecrementClusterDagPending(QueueState);

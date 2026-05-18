@@ -175,7 +175,6 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <ClCompile Include="Source\Render\RenderGraph.cpp" />
     <ClCompile Include="Source\Render\ShaderCompiler.cpp" />
     <ClCompile Include="Source\Scene\Camera.cpp" />
-    <ClCompile Include="Source\Scene\Material.cpp" />
     <ClCompile Include="Source\Scene\Mesh.cpp" />
     <ClCompile Include="Source\Scene\Transform.cpp" />
     <ClCompile Include="ThirdParty\imgui\backends\imgui_impl_dx12.cpp" Condition="Exists('$(ProjectDir)ThirdParty\imgui\backends\imgui_impl_dx12.cpp')" />
@@ -279,7 +278,6 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <ClInclude Include="Source\Scene\ClusterDAG.h" />
     <ClInclude Include="Source\Scene\GltfAnimation.h" />
     <ClInclude Include="Source\Scene\GltfLoader.h" />
-    <ClInclude Include="Source\Scene\Material.h" />
     <ClInclude Include="Source\Scene\Mesh.h" />
     <ClInclude Include="Source\Scene\MergedClusterSimplifier.h" />
     <ClInclude Include="Source\Scene\SceneJsonLoader.h" />
@@ -423,9 +421,6 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
       <FileType>Document</FileType>
     </None>
     <None Include="Shaders\GpuDrivenCulling\CullMeshletVisibilityList.hlsl">
-      <FileType>Document</FileType>
-    </None>
-    <None Include="Shaders\ClusterDag\SelectClusterLOD.hlsl">
       <FileType>Document</FileType>
     </None>
     <None Include="Shaders\GpuDrivenCulling\MergeVisibilityLists.hlsl">

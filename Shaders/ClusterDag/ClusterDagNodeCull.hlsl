@@ -30,11 +30,11 @@ void ClusterDagNodeCullCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     StructuredBuffer<ClusterChildRef> ChildRefs = ResourceDescriptorHeap[ChildRefBufferIndex];
     RWByteAddressBuffer QueueState = ResourceDescriptorHeap[QueueStateBufferIndex];
     RWStructuredBuffer<uint> GroupQueue = ResourceDescriptorHeap[GroupQueueBufferIndex];
-    RWStructuredBuffer<uint> CandidateClusterQueue = ResourceDescriptorHeap[CandidateClusterQueueBufferIndex];
+    RWStructuredBuffer<ClusterDagCandidateClusterEntry> CandidateClusterQueue = ResourceDescriptorHeap[CandidateClusterQueueBufferIndex];
     RWStructuredBuffer<uint> VisitedGroupEpochs = ResourceDescriptorHeap[VisitedGroupEpochBufferIndex];
-    StructuredBuffer<ClusterDagPageTableEntry> PageTable = ResourceDescriptorHeap[PageTableBufferIndex];
-    RWStructuredBuffer<ClusterDagStreamingRequest> StreamingRequests = ResourceDescriptorHeap[StreamingRequestBufferIndex];
     const bool streamingEnabled = PageTableBufferIndex != 0xffffffffu && StreamingRequestBufferIndex != 0xffffffffu && StreamingRequestCapacity > 0u;
+    StructuredBuffer<ClusterDagPageTableEntry> PageTable = ResourceDescriptorHeap[streamingEnabled ? PageTableBufferIndex : GroupBufferIndex];
+    RWStructuredBuffer<ClusterDagStreamingRequest> StreamingRequests = ResourceDescriptorHeap[streamingEnabled ? StreamingRequestBufferIndex : VisitedGroupEpochBufferIndex];
 
     const uint currentEpoch = TraversalEpoch;
     const uint maxLoopCount = max(GroupCount * 8u, 1024u);
@@ -178,7 +178,10 @@ void ClusterDagNodeCullCS(uint3 dispatchThreadId : SV_DispatchThreadID)
                         uint candidateSlot = 0xffffffffu;
                         if (TryReserveClusterDagQueueSlot(QueueState, kQueueStatePass0CandidateWriteOffset, ClusterCount, candidateSlot))
                         {
-                            CandidateClusterQueue[candidateSlot] = childRef.ClusterIndex;
+                            ClusterDagCandidateClusterEntry candidateEntry;
+                            candidateEntry.ClusterIndex = childRef.ClusterIndex;
+                            candidateEntry.PageDataBase = 0xffffffffu;
+                            CandidateClusterQueue[candidateSlot] = candidateEntry;
                             DeviceMemoryBarrier();
                             CommitClusterDagQueueSlot(
                                 QueueState,

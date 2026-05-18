@@ -1,185 +1,122 @@
-# ClusterDAG Streaming v1/v2
+# ClusterDAG Streaming v1/v2 - 피드백 루프와 우선순위 스케줄러
 
-## Overview
+## 문서 역할
 
-Initial version (v1) of the ClusterDAG streaming system. It implements a GPU-driven feedback loop that detects non-resident pages during traversal, reports them to the CPU, and toggles resident bits in the page table.
+이 문서는 ClusterDAG streaming의 초기 구조인 v1/v2를 설명한다. v1/v2는 GPU가 "필요하지만 아직 resident가 아닌 page"를 feedback buffer에 기록하고, CPU가 그 요청을 읽어 page table의 resident bit를 갱신하는 기반을 만들었다.
 
-**Important**: v2 still does **not perform actual disk I/O or page data uploads**. It adds a CPU-side priority scheduler on top of the v1 feedback loop: request `Priority` is consumed, duplicate page requests are merged with `max(Priority)`, and pending pages are installed from highest priority to lowest.
+현재 구현은 v3 단계까지 진행되어 실제 `.vmesh` page directory, disk I/O, `PageDataBuffer` upload, shader-side paged fetch 일부가 들어가 있다. 따라서 이 문서는 최신 전체 동작 설명이 아니라 다음을 위한 기준 문서로 둔다.
 
----
+- GPU feedback/readback 구조 이해
+- pending page priority scheduler 이해
+- v3에서 확장된 부분이 어디에서 출발했는지 확인
 
-## Architecture
+최신 실제 I/O와 page data 경로는 `ClusterDAG-Streaming-v3-Plan.md`를 기준으로 본다.
 
-### Frame Flow
+## v1/v2 범위
+
+### v1
+
+- GPU traversal 중 non-resident page를 발견하면 feedback UAV에 request를 기록한다.
+- CPU는 frame fence signal 이후 feedback readback buffer를 map해서 request를 소비한다.
+- page table CPU mirror를 갱신하고, 다음 frame에 GPU page table buffer로 업로드한다.
+- page 0(root)은 시작부터 resident이고, non-root page는 요청 전까지 non-resident다.
+
+### v2
+
+- v1 feedback loop 위에 CPU-side priority scheduler를 추가했다.
+- 같은 page의 중복 request는 `max(Priority)`로 병합한다.
+- pending page가 꽉 차면 더 낮은 priority request는 drop하고, 더 높은 priority request는 기존 최저 priority pending page를 대체한다.
+- 설치 순서는 priority 내림차순, 최초 요청 serial 오름차순이다.
+
+### v1/v2에 없던 것
+
+- 실제 disk I/O 없음
+- `.vmesh` page directory 없음
+- `PageDataBuffer`에 page payload upload 없음
+- GPU upload fence 완료 후 resident 전환 없음
+- shader가 physical page slot에서 payload를 직접 읽는 경로 없음
+- eviction 없음
+
+## Frame Flow
 
 ```text
-GPU (each frame)
-  - Detect non-resident pages during ClusterDAG node traversal
-  - Write streaming requests to feedback UAV
-  - Feedback buffer remains in GPU memory
+GPU traversal
+  - ClusterDAG traversal 중 non-resident page 감지
+  - feedback UAV에 streaming request 기록
+  - 해당 branch refinement 중단
 
-Readback (each frame)
-  - Copy feedback buffer to CPU readback buffer
-  - Readback becomes mappable after GPU fence signal
+GPU readback pass
+  - feedback UAV 내용을 frame별 readback buffer로 copy
 
-CPU (OnFrameFenceSignaled)
-  - ConsumeFeedback()    : read requests from readback buffer
-  - QueueRequestedPage() : merge non-resident pages by max priority
-  - MarkPageResident()   : set resident bit in priority order
+CPU OnFrameFenceSignaled
+  - readback buffer map
+  - request count와 request entries 소비
+  - duplicate page request 병합
+  - pending queue 갱신
 
-GPU (next frame)
-  - Upload page table if bPageTableUploadDirty == true
-  - Shader calls IsClusterDagPageResident()
-  - Resident pages continue refinement
-  - Non-resident pages record a request and halt refinement
+다음 frame begin
+  - pending page를 priority 순서로 resident 처리
+  - page table upload dirty이면 PageTableBuffer 갱신
+  - feedback buffer counter clear
 ```
 
-### Key Resources
+v3에서는 위 flow의 "pending page를 resident 처리" 단계가 disk read, GPU upload, upload fence retire를 거친 뒤 resident로 바뀌도록 확장되었다.
 
-| Resource | Purpose | Created | Written by |
-|----------|---------|---------|------------|
-| **PageTableBuffer** | Page table SRV (GPU read) | yes | CPU on each resident bit change |
-| **PageTableUpload** | Persistently mapped upload buffer | yes | `UpdateMappedPageTable()` |
-| **FeedbackBuffers** (per-frame) | Shader feedback UAV | yes | Shaders write requests |
-| **FeedbackReadbackBuffers** (per-frame) | CPU-mappable readback buffer | yes | GPU copies feedback into it |
-| **PageDataBuffer** | Physical page data pool | yes | **Not yet implemented** |
+## 주요 리소스
 
----
+| Resource | v1/v2 역할 | v3 이후 상태 |
+|----------|------------|--------------|
+| `PageTableBuffer` | shader가 읽는 page table SRV | 계속 사용 |
+| `PageTableUpload` | CPU mirror를 GPU로 복사하기 위한 mapped upload buffer | 계속 사용 |
+| `FeedbackBuffers` | shader request 기록용 frame별 UAV | 계속 사용 |
+| `FeedbackReadbackBuffers` | CPU request 소비용 frame별 readback buffer | 계속 사용 |
+| `PageDataBuffer` | 생성만 되고 실제 payload는 없음 | v3.2부터 physical page slot pool |
 
-## Implementation
-
-### 1. Initialization (InitializeResources)
+## Page Table
 
 ```cpp
-// Page table: CPU-side mirror + GPU buffer for all page entries
-PageTableEntries = std::vector<FClusterDagPageTableEntry>(PageCount);
-CreateBindlessBuffer(..., PageTableBuffer, ...);  // GPU SRV
-
-// Persistently mapped upload buffer for page table updates
-CreateMappedUploadBuffer(..., PageTableUpload);
-
-// Per-frame feedback UAV and readback buffers
-for each frame:
-    CreateBindlessBuffer(..., FeedbackBuffers[frame], ...);
-    CreateReadbackBuffer(..., FeedbackReadbackBuffers[frame], ...);
-
-// Reserved for future page data uploads, not used by v1/v2
-PageDataBuffer = CreateBindlessBuffer(StreamingPoolMB * 1MB);
-```
-
-### 2. Page Table Initialization (InitializePageTable)
-
-```cpp
-// Page 0 (root): always resident at startup
-// All other pages: non-resident until requested
-for (uint32_t PageIndex = 0; PageIndex < PageCount; ++PageIndex)
+struct FClusterDagPageTableEntry
 {
-    if (PageIndex == 0)
-    {
-        Entry.Flags |= GClusterDagPageResidentFlag;
-        Entry.PhysicalPageIndex = 0;
-    }
-    else
-    {
-        Entry.Flags = 0;
-        Entry.PhysicalPageIndex = 0xffffffffu;
-    }
-}
+    uint32_t PhysicalPageIndex;
+    uint32_t Flags;
+    uint32_t LastUsedFrame;
+    uint32_t Reserved;
+};
 ```
 
-### 3. Begin Frame Pass (AddBeginFramePass)
+v1/v2에서는 `PhysicalPageIndex`가 사실상 logical page index처럼 쓰였고 resident bit만 중요했다. v3.2부터는 `PhysicalPageIndex`가 `PageDataBuffer` 안의 physical slot index를 의미한다.
+
+초기화 규칙:
 
 ```cpp
-void AddBeginFramePass(FDeferredPassContext& Context)
+// Page 0(root): startup resident
+Entry[0].PhysicalPageIndex = 0;
+Entry[0].Flags |= GClusterDagPageResidentFlag;
+
+// Non-root: request 전까지 non-resident
+Entry[N].PhysicalPageIndex = 0xffffffffu;
+Entry[N].Flags = 0;
+```
+
+## Streaming Request
+
+```cpp
+struct FClusterDagStreamingRequest
 {
-    // 1. Mark pending pages as resident.
-    InstallPendingPages(FrameNumber);
-
-    // 2. Upload page table to GPU if resident state changed.
-    if (bPageTableUploadDirty)
-    {
-        UpdateMappedPageTable();
-        // RenderGraph pass copies PageTableUpload to PageTableBuffer.
-    }
-
-    // 3. Clear feedback UAV counter.
-}
+    uint32_t StreamingResourceId;
+    uint32_t PageIndex;
+    uint32_t Priority;
+    uint32_t Flags;
+};
 ```
 
-### 4. Feedback Readback and Consume
+request buffer의 첫 entry는 실제 request가 아니라 counter 용도로 사용한다. shader는 `InterlockedAdd`로 request index를 확보하고, capacity를 넘으면 overflow counter를 증가시킨다.
 
-```cpp
-// AddFeedbackReadbackPass()
-// GPU copies FeedbackBuffer to FeedbackReadback.
+`Priority`는 현재 traversal에서 관측한 LOD error 기반 값이다. v2 scheduler는 같은 page의 request를 병합할 때 가장 큰 priority를 유지한다.
 
-// After OnFrameFenceSignaled()
-void ConsumeFeedback(uint32_t FrameIndex)
-{
-    FClusterDagStreamingRequest* Requests = Map(FeedbackReadbackBuffers[FrameIndex]);
-
-    // Requests[0].StreamingResourceId is repurposed as the total request count.
-    const uint32_t RequestCount = Requests[0].StreamingResourceId;
-    const uint32_t FrameNumber = Owner->GetFrameNumber();
-
-    for (uint32_t RequestIndex = 0; RequestIndex < RequestCount; ++RequestIndex)
-    {
-        const FClusterDagStreamingRequest& Request = Requests[RequestIndex + 1u];
-        if (Request.StreamingResourceId == StreamingResourceId
-            && Request.PageIndex < PageCount)
-        {
-            QueueRequestedPage(Request.PageIndex, Request.Priority, FrameNumber);
-        }
-    }
-
-    Unmap(FeedbackReadbackBuffers[FrameIndex]);
-}
-```
-
-### 5. Priority Scheduler (v2)
-
-```cpp
-// Pending entry:
-// { PageIndex, Priority, FirstRequestSerial, LastRequestFrame }
-
-// Duplicate page requests merge by max priority.
-Pending.Priority = max(Pending.Priority, Request.Priority);
-
-// When the pending cap is full, a new request replaces the current lowest
-// priority pending page only if its priority is strictly higher.
-
-// Installation order:
-// 1. Priority descending
-// 2. FirstRequestSerial ascending
-```
-
-### 6. Mark Page Resident (MarkPageResident)
-
-```cpp
-void MarkPageResident(uint32_t PageIndex, uint32_t FrameNumber)
-{
-    FClusterDagPageTableEntry& Entry = PageTableEntries[PageIndex];
-
-    const bool bWasResident = (Entry.Flags & GClusterDagPageResidentFlag) != 0u;
-    Entry.PhysicalPageIndex = PageIndex;
-    Entry.Flags |= GClusterDagPageResidentFlag;
-    Entry.LastUsedFrame = FrameNumber;
-
-    if (!bWasResident)
-    {
-        bPageTableUploadDirty = true;
-    }
-}
-```
-
-### 7. GPU Shader Residency Check (IsClusterDagPageResident)
+## Shader Gate
 
 ```hlsl
-bool IsClusterDagPageResident(uint pageIndex, StructuredBuffer<ClusterDagPageTableEntry> PageTable)
-{
-    const ClusterDagPageTableEntry entry = PageTable[pageIndex];
-    return (entry.Flags & kClusterDagPageResidentFlag) != 0u;
-}
-
 bool ShouldRefineClusterDagStreamingPage(...)
 {
     if (!streamingEnabled)
@@ -189,172 +126,89 @@ bool ShouldRefineClusterDagStreamingPage(...)
     if (pageIndex == 0 || IsClusterDagPageResident(pageIndex, PageTable))
         return true;
 
-    RequestClusterDagStreamingPage(
-        streamingResourceId,
-        pageIndex,
-        max(asuint(nextGroup.ParentLODError), 1u),
-        StreamingRequests);
+    RequestClusterDagStreamingPage(...);
     return false;
 }
 ```
 
----
+이 함수가 v1/v2의 핵심이다. resident page는 계속 refine하고, non-resident page는 request만 남긴 뒤 현재 branch를 멈춘다. v3.3에서도 non-resident page에 대한 안전장치는 이 구조를 유지한다.
 
-## Configuration
+## Scheduler 동작
+
+```text
+QueueRequestedPage(page, priority)
+  - 이미 resident이면 무시
+  - 이미 pending이면 priority = max(old, new)
+  - pending cap 여유가 있으면 추가
+  - cap이 꽉 찼고 새 request가 최저 priority보다 높으면 교체
+  - 아니면 drop
+
+InstallPendingPages()
+  - priority desc
+  - first request serial asc
+  - MaxPageInstallsPerFrame 만큼 처리
+```
+
+v3에서는 `InstallPendingPages()`의 의미가 바뀌었다. 즉시 resident로 바꾸지 않고 다음 pipeline으로 나뉜다.
+
+```text
+IssuePageReads()
+PollIoCompletions()
+IssuePageUploads()
+RetireCompletedUploads()
+```
+
+## Config와 UI
+
+v1/v2 기준 config:
 
 ```ini
 [ClusterDAG]
-bEnableClusterDAGStreaming=true/false
+bEnableClusterDAGStreaming=true
 ClusterDAGStreamingPoolMB=256
 ClusterDAGStreamingRequestBufferCapacity=65536
 ClusterDAGStreamingMaxPendingPages=64
 ClusterDAGStreamingMaxPageInstallsPerFrame=16
 ```
 
-### UI (ImGui)
+현재 UI에는 v3에서 추가된 다음 항목도 함께 표시된다.
 
-- "Cluster DAG Streaming" toggle
-- "Cluster DAG Stream Pool MB" input
-- "Cluster DAG Installs/Frame" input
-- Read-only scheduler stats: resident/pending/install and request/drop/replacement counts
+- `Cluster DAG Max IO In Flight`
+- `Cluster DAG Max Upload MB/Frame`
+- `Cluster DAG Page Slot KB` read-only 표시
+- request, I/O, upload, slot pool stats
 
-### Debug Stats
+`ClusterDAGStreamingPageSlotBytes` config 필드는 legacy로 남아 있지만 runtime slot size는 `.vmesh`와 맞춘 `GClusterDAGVmeshStreamingPageSlotBytes`를 사용한다.
 
-Added in `GpuDebugPrintStats.hlsl`:
+## Debug Stats
 
-- `STREQ`: streaming requests recorded this frame
-- `STFALL`: traversal halts due to a non-resident page
-- `STDROP`: requests dropped due to feedback buffer overflow
+v1/v2에서 중요한 GPU debug stat:
 
----
+- `STREQ`: shader가 기록한 streaming request 수
+- `STFALL`: non-resident page 때문에 refinement를 멈춘 수
+- `STDROP`: feedback request buffer overflow로 drop된 수
 
-## Current Limitations
+v3에서는 여기에 CPU/ImGui 쪽 I/O, upload, slot pool counter가 추가되었다.
 
-### Not Yet Implemented (v3+)
+## v3와의 관계
 
-1. **Actual disk I/O**
-   - `PageDataBuffer` is allocated but never populated from disk.
-   - v1/v2 only signal "this page is needed"; no page data is transferred.
+v3는 v1/v2를 대체하기보다 확장한다.
 
-2. **Page eviction policy**
-   - Once resident, a page is never evicted.
-   - There is no policy for pool exhaustion yet.
+| 단계 | v1/v2 | v3 |
+|------|-------|----|
+| request 생성 | GPU feedback UAV | 동일 |
+| request 소비 | frame fence 이후 CPU readback | 동일 |
+| 중복 request 병합 | priority scheduler | 동일 |
+| page 설치 | resident bit 즉시 set | disk read + GPU upload + fence retire 후 resident |
+| payload 저장 | 없음 | `.vmesh` page directory |
+| GPU payload | 없음 | `PageDataBuffer` physical slot |
+| shader fetch | global scene/model buffers | v3.3부터 group/child-ref는 paged fetch |
 
-3. **Bandwidth / QoS control**
-   - `MaxPageInstallsPerFrame` is a CPU-side throttle only.
-   - There is no GPU-to-CPU bandwidth management yet.
+## 참고 파일
 
-### Implemented
-
-- GPU feedback loop (per-frame request collection via UAV)
-- CPU readback after GPU writes
-- Priority scheduling with max-priority request merge
-- Resident bit update and GPU page table synchronization
-- Request statistics for overflow, pending drops, and priority replacement
-
----
-
-## Data Structures
-
-### FClusterDagPageTableEntry
-
-```cpp
-struct FClusterDagPageTableEntry
-{
-    uint32_t PhysicalPageIndex;  // physical slot index in the streaming pool
-    uint32_t Flags;              // bit 0: resident flag
-    uint32_t LastUsedFrame;      // frame number when last marked resident
-    uint32_t Reserved;
-};
-// 16 bytes per entry
-```
-
-### FClusterDagStreamingRequest
-
-```cpp
-struct FClusterDagStreamingRequest
-{
-    // Requests[0].StreamingResourceId is repurposed as a total request counter.
-    // For Requests[1+], this field holds the source resource ID for validation.
-    uint32_t StreamingResourceId;
-    uint32_t PageIndex;
-    uint32_t Priority;  // max(asuint(ParentLODError), 1); consumed by v2 CPU scheduler
-    uint32_t Flags;
-};
-```
-
-### FClusterDagGroupData (Shader)
-
-```hlsl
-struct ClusterDagGroupData
-{
-    uint4 BvhData;
-    uint Flags;          // bits [31:16]: streaming page index
-    float ParentLODError;
-    // ...
-};
-// Page index extraction: (Flags >> 16) & 0xffff
-```
-
----
-
-## Page Indexing
-
-### Root Page (index 0)
-
-```cpp
-GClusterDagRootPageIndex = 0;
-PageTableEntries[0].Flags |= GClusterDagPageResidentFlag;
-```
-
-### Non-Root Pages (index 1+)
-
-```cpp
-// Assigned in ClusterDagRuntime.cpp during DAG build.
-PageIndex = BaseGroupIndex + LocalGroupIndex + 1;
-Group.Flags = (PageIndex & 0xffff) << 16;
-```
-
-### Page Count
-
-```cpp
-StreamingPageCount = Groups.size();
-```
-
----
-
-## Performance Characteristics
-
-| Property | Detail |
-|----------|--------|
-| **GPU overhead** | `InterlockedAdd`-based feedback, so atomic contention is possible |
-| **CPU overhead** | O(RequestCount) readback processing plus O(PendingCount log PendingCount) install sorting |
-| **Memory** | PageTableBuffer: 16 bytes * page count; Feedback UAV: per-frame |
-| **Latency** | Request readback and page table visibility are delayed by frame scheduling |
-
----
-
-## Planned Work (v3+)
-
-1. **Disk I/O integration**
-   - Read actual page data from `.vmesh` asset files.
-   - Populate `PageDataBuffer` via upload heaps or DMA.
-
-2. **Page eviction**
-   - Track resident page usage with `LastUsedFrame`.
-   - Evict LRU pages when the pool is full.
-
-3. **Fallback under memory pressure**
-   - Define behavior when the feedback buffer overflows.
-   - Degrade gracefully instead of silently dropping important pages.
-
----
-
-## Reference Files
-
-- `Source/Render/Deferred/ClusterDagStreamingManager.h/cpp`: streaming manager lifecycle
-- `Source/Render/Deferred/ClusterDagRuntime.cpp`: page index assignment and shader binding setup
-- `Shaders/ClusterDag/ClusterDagTraversalCommon.hlsl`: residency check and request recording
-- `Shaders/ClusterDag/ClusterDagNodeCull.hlsl`: streaming gate during traversal
-- `Source/Core/RendererConfig.h/cpp`: configuration fields
-- `Source/Core/Application.cpp`: ImGui UI controls
+- `Source/Render/Deferred/ClusterDagStreamingManager.h/cpp`
+- `Source/Render/Deferred/ClusterDagRuntime.cpp`
+- `Shaders/ClusterDag/ClusterDagTraversalCommon.hlsl`
+- `Shaders/ClusterDag/ClusterDagNodeCull.hlsl`
+- `Source/Core/RendererConfig.h/cpp`
+- `Source/Core/Application.cpp`

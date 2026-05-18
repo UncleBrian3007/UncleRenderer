@@ -47,7 +47,7 @@ void InitClusterDagLevelSplitQueuesCS(uint3 dispatchThreadId : SV_DispatchThread
     RWStructuredBuffer<uint> NodeCandidates1 = ResourceDescriptorHeap[NodeCandidateBuffer1Index];
     RWByteAddressBuffer NodeArgs0 = ResourceDescriptorHeap[NodeArgsBuffer0Index];
     RWByteAddressBuffer NodeArgs1 = ResourceDescriptorHeap[NodeArgsBuffer1Index];
-    RWStructuredBuffer<uint> CandidateClusterQueue = ResourceDescriptorHeap[CandidateClusterQueueBufferIndex];
+    RWStructuredBuffer<ClusterDagCandidateClusterEntry> CandidateClusterQueue = ResourceDescriptorHeap[CandidateClusterQueueBufferIndex];
     RWStructuredBuffer<uint> VisitedGroupEpochs = ResourceDescriptorHeap[VisitedGroupEpochBufferIndex];
     RWByteAddressBuffer RunCounts = ResourceDescriptorHeap[RunCountBufferIndex];
     RWByteAddressBuffer VisibleEntryCounters = ResourceDescriptorHeap[VisibleEntryCountersIndex];
@@ -84,7 +84,10 @@ void InitClusterDagLevelSplitQueuesCS(uint3 dispatchThreadId : SV_DispatchThread
 
     if (threadIndex < CandidateQueueCapacity)
     {
-        CandidateClusterQueue[threadIndex] = 0xffffffffu;
+        ClusterDagCandidateClusterEntry emptyEntry;
+        emptyEntry.ClusterIndex = 0xffffffffu;
+        emptyEntry.PageDataBase = 0xffffffffu;
+        CandidateClusterQueue[threadIndex] = emptyEntry;
     }
 
     if (threadIndex < GroupCount)

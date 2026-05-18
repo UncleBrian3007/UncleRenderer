@@ -1,4 +1,5 @@
 #include "SceneConstants.hlsl"
+#include "ClusterDag/ClusterDagCommon.hlsl"
 #include "ClusterDagPackedVertex.hlsli"
 
 struct VSInput
@@ -17,6 +18,8 @@ cbuffer ClusterDagVisibilityDrawConstants : register(b2)
     uint DrawDataIndex;
     uint Visibility64UavIndex;
     uint DrawDataVisibleEntryIndex;
+    uint VisibleEntryBufferIndex;
+    uint PageDataBufferIndex;
 };
 
 VSOutput ClusterDagVisibilityVS(VSInput Input)
@@ -25,11 +28,51 @@ VSOutput ClusterDagVisibilityVS(VSInput Input)
     StructuredBuffer<float3> PositionBuffer = ResourceDescriptorHeap[VertexBufferBindlessIndices.x];
     StructuredBuffer<ClusterDagPackedPosition> PackedPositionBuffer = ResourceDescriptorHeap[VertexBufferBindlessIndices.x];
     StructuredBuffer<uint> IndexBuffer = ResourceDescriptorHeap[ExtraBindlessIndices.y];
+    StructuredBuffer<uint> DrawDataVisibleEntries = ResourceDescriptorHeap[DrawDataVisibleEntryIndex];
+    StructuredBuffer<ClusterDagVisibleEntry> VisibleEntries = ResourceDescriptorHeap[VisibleEntryBufferIndex];
 
-    const uint vertexIndex = IndexBuffer[Input.VertexId + DrawIndexStart];
-    const float3 position = ClusterDagVertexPackingMode != 0u
-        ? DecodeClusterDagPackedPosition(PackedPositionBuffer[vertexIndex])
-        : PositionBuffer[vertexIndex];
+    float3 position = 0.0f.xxx;
+    bool positionLoaded = false;
+    bool allowGlobalFallback = true;
+    const uint visibleEntryIndex = DrawDataVisibleEntries[DrawDataIndex];
+    if (visibleEntryIndex != 0xffffffffu)
+    {
+        const ClusterDagVisibleEntry visibleEntry = VisibleEntries[visibleEntryIndex];
+        const bool usePageData = PageDataBufferIndex != 0xffffffffu && HasClusterDagPageData(visibleEntry);
+        ClusterDagDrawData drawData;
+        drawData.StartIndex = DrawIndexStart;
+        drawData.IndexCount = 0u;
+        drawData.RangeIndex = 0u;
+        drawData.RangeCommandStart = 0u;
+        drawData.ModelIndex = 0u;
+        uint pageVertexIndex = 0u;
+        if (usePageData)
+        {
+            allowGlobalFallback = false;
+            ByteAddressBuffer PageData = ResourceDescriptorHeap[PageDataBufferIndex];
+            if (LoadClusterDagPagedVertexIndex(visibleEntry, drawData, Input.VertexId / 3u, Input.VertexId % 3u, PageData, pageVertexIndex))
+            {
+                uint packedXy = 0u;
+                uint packedZ = 0u;
+                if (LoadClusterDagPagedPackedPositionWords(visibleEntry, pageVertexIndex, PageData, packedXy, packedZ))
+                {
+                    ClusterDagPackedPosition packedPosition;
+                    packedPosition.XY = packedXy;
+                    packedPosition.Z = packedZ;
+                    position = DecodeClusterDagPackedPosition(packedPosition);
+                    positionLoaded = true;
+                }
+            }
+        }
+    }
+
+    if (!positionLoaded && allowGlobalFallback)
+    {
+        const uint vertexIndex = IndexBuffer[Input.VertexId + DrawIndexStart];
+        position = ClusterDagVertexPackingMode != 0u
+            ? DecodeClusterDagPackedPosition(PackedPositionBuffer[vertexIndex])
+            : PositionBuffer[vertexIndex];
+    }
     const float4 worldPosition = mul(float4(position, 1.0f), World);
     const float4 viewPosition = mul(worldPosition, View);
     Output.Position = mul(viewPosition, Projection);

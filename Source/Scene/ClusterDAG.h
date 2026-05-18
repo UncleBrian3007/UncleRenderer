@@ -236,8 +236,28 @@ struct FClusterDAGBuildParams
     uint32_t ConvergeTriangleThreshold = 128;
 };
 
+constexpr uint32_t GClusterDAGVmeshPageFlagRoot = 1u << 0;
+constexpr uint32_t GClusterDAGVmeshPageFlagRestorePayload = 1u << 1;
+constexpr uint32_t GClusterDAGVmeshPageFlagStreamingPayload = 1u << 2;
+constexpr uint32_t GClusterDAGVmeshStreamingPageSlotBytes = 131072u;
+
+struct FClusterDAGStreamingPageDesc
+{
+    uint64_t FileOffset = 0;
+    uint32_t PayloadBytes = 0;
+    uint32_t MeshIndex = 0;
+    uint32_t DagIndex = 0;
+    uint32_t LocalPageIndex = 0;
+    uint32_t Flags = 0;
+};
+
 uint64_t HashClusterDAGBuildParams(const FClusterDAGBuildParams& Params);
 bool BuildClusterDAGPackedVertexData(const FClusterDAG& Dag, FClusterDAGPackedVertexData& OutPackedVertexData);
+bool LoadClusterDAGStreamingPageDirectory(
+    const std::wstring& CacheFilePath,
+    const std::wstring& SourceFilePath,
+    const FClusterDAGBuildParams& Params,
+    std::vector<FClusterDAGStreamingPageDesc>& OutPageDirectory);
 bool LoadClusterDAGCacheFile(
     const std::wstring& CacheFilePath,
     const std::wstring& SourceFilePath,

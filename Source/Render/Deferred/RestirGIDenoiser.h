@@ -39,8 +39,8 @@ public:
     void FinalizeFrame(FDeferredRenderer& Owner);
     void InvalidateHistory();
 
-    void SetEnabled(bool bEnabled) { bEnabled_ = bEnabled; }
-    bool IsEnabled() const { return bEnabled_; }
+    void SetEnabled(bool bInEnabled) { bEnabled = bInEnabled; }
+    bool IsEnabled() const { return bEnabled; }
 
     void SetFreezeHistoryResetPeriod(uint32_t InPeriod) { FreezeHistoryResetPeriod = InPeriod; }
     uint32_t GetFreezeHistoryResetPeriod() const { return FreezeHistoryResetPeriod; }
@@ -66,7 +66,7 @@ private:
     void AddFinalBlurPass(FDeferredRenderer& Owner, FRenderGraph& Graph, const std::array<FRGResourceHandle, kDeferredGBufferCount>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle InputSHHandle, FRGResourceHandle VarianceHandle, FRGResourceHandle TemporalSHHandle, FRGResourceHandle HistoryIrradianceHandle, FRGResourceHandle HistorySHHandle, FRGResourceHandle HistoryCountHandle) const;
 
 private:
-    bool bEnabled_ = true;
+    bool bEnabled = true;
     uint32_t FreezeHistoryResetPeriod = 3;
     bool bHistoryValid = false;
     bool bPersistentInputsValid = false;

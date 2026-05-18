@@ -6,6 +6,7 @@
 #include <vector>
 #include <wrl.h>
 
+#include "ClusterDagStreamingManager.h"
 #include "../GpuResource.h"
 #include "../Renderer.h"
 #include "../../Scene/ClusterDAG.h"
@@ -52,6 +53,7 @@ public:
     uint32_t GetVisibleRootCount() const { return VisibleRootCount; }
     uint32_t GetClusterCount() const { return ClusterCount; }
     uint32_t GetStreamingPageCount() const { return StreamingPageCount; }
+    const std::vector<FClusterDagStreamingPageSource>& GetStreamingPageSources() const { return StreamingPageSources; }
 
 private:
     struct FSceneGroupData
@@ -101,8 +103,17 @@ private:
     {
         uint32_t ClusterIndex = 0;
         uint32_t DrawDataIndex = 0;
+        uint32_t PageDataBase = 0xffffffffu;
+        uint32_t Reserved = 0;
     };
-    static_assert(sizeof(FVisibleEntry) == 8, "FVisibleEntry must match cluster DAG visibility shader layout");
+    static_assert(sizeof(FVisibleEntry) == 16, "FVisibleEntry must match cluster DAG visibility shader layout");
+
+    struct FCandidateClusterEntry
+    {
+        uint32_t ClusterIndex = GClusterDAGInvalidIndex;
+        uint32_t PageDataBase = GClusterDAGInvalidIndex;
+    };
+    static_assert(sizeof(FCandidateClusterEntry) == 8, "FCandidateClusterEntry must match cluster DAG queue shader layout");
 
     struct FPreparedData
     {
@@ -113,6 +124,7 @@ private:
         std::vector<FClusterDrawData> DrawDatas;
         std::vector<FIndirectDrawCommand> CommandTemplates;
         std::vector<uint32_t> RangeOffsets;
+        std::vector<FClusterDagStreamingPageSource> StreamingPageSources;
         uint32_t StreamingPageCount = 1;
     };
 
@@ -189,4 +201,5 @@ private:
     uint32_t RuntimeMaxTraversalLevels = 1;
     bool bResourcesReady = false;
     std::vector<FRenderer::FIndirectDrawRange> IndirectDrawRanges;
+    std::vector<FClusterDagStreamingPageSource> StreamingPageSources;
 };

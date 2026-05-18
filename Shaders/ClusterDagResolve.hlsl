@@ -1,7 +1,5 @@
 #include "Common.hlsli"
-#include "OctahedralEncoding.hlsli"
-#include "ClusterDag/ClusterDagCommon.hlsl"
-#include "SceneConstantsFields.hlsli"
+#include "ClusterDag/ClusterDagGeometryFetch.hlsl"
 #include "../Source/Core/LightingVisualizationShared.h"
 
 struct VSOutput
@@ -10,23 +8,13 @@ struct VSOutput
     float2 UV : TEXCOORD0;
 };
 
-struct ClusterDagResolveSceneData
-{
-    SCENE_CONSTANTS_FIELDS
-};
-
-struct ClusterDagPackedPosition
-{
-    uint XY;
-    uint Z;
-};
-
 cbuffer ClusterDagResolveBindlessConstants : register(b0)
 {
     uint Visibility64TextureIndex;
     uint VisibleEntryBufferIndex;
     uint DrawDataBufferIndex;
     uint SceneDataBufferIndex;
+    uint PageDataBufferIndex;
 };
 
 SamplerState MaterialSampler : register(s0);
@@ -48,69 +36,6 @@ float4 DecodeDebugColor(uint packedColor)
         ((packedColor >> 8) & 0xffu) * inv255,
         ((packedColor >> 16) & 0xffu) * inv255,
         ((packedColor >> 24) & 0xffu) * inv255);
-}
-
-int SignExtend10(uint value)
-{
-    return (value & 0x200u) != 0u
-        ? int(value | 0xFFFFFC00u)
-        : int(value & 0x3FFu);
-}
-
-float DecodeSnorm10(uint value)
-{
-    return max((float)SignExtend10(value) / 511.0f, -1.0f);
-}
-
-float3 DecodeClusterDagPackedPosition(
-    ClusterDagPackedPosition packedPosition,
-    ClusterDagResolveSceneData sceneData)
-{
-    const uint qx = packedPosition.XY & 0xFFFFu;
-    const uint qy = packedPosition.XY >> 16u;
-    const uint qz = packedPosition.Z & 0xFFFFu;
-    return sceneData.ClusterDagPackedPositionOffset.xyz
-        + float3(qx, qy, qz) * sceneData.ClusterDagPackedPositionScale.xyz;
-}
-
-float2 DecodeClusterDagPackedUV(uint packedUV)
-{
-    return float2(
-        f16tof32(packedUV & 0xFFFFu),
-        f16tof32(packedUV >> 16u));
-}
-
-float4 DecodeClusterDagPackedTangent(uint packedTangent)
-{
-    const float3 tangent = normalize(float3(
-        DecodeSnorm10(packedTangent & 0x3FFu),
-        DecodeSnorm10((packedTangent >> 10u) & 0x3FFu),
-        DecodeSnorm10((packedTangent >> 20u) & 0x3FFu)));
-    const float tangentSign = ((packedTangent >> 30u) & 0x1u) != 0u ? -1.0f : 1.0f;
-    return float4(tangent, tangentSign);
-}
-
-float4 DecodeClusterDagPackedColor(uint packedColor)
-{
-    const float inv255 = 1.0f / 255.0f;
-    return float4(
-        (packedColor & 0xFFu) * inv255,
-        ((packedColor >> 8u) & 0xFFu) * inv255,
-        ((packedColor >> 16u) & 0xFFu) * inv255,
-        ((packedColor >> 24u) & 0xFFu) * inv255);
-}
-
-float3 BuildClusterDagFallbackTangentDirection(float3 normal)
-{
-    const float3 up = abs(normal.z) < 0.999f
-        ? float3(0.0f, 0.0f, 1.0f)
-        : float3(0.0f, 1.0f, 0.0f);
-    return normalize(cross(up, normal));
-}
-
-float4 BuildClusterDagFallbackTangent(float3 normal)
-{
-    return float4(BuildClusterDagFallbackTangentDirection(normal), 1.0f);
 }
 
 float3 InterpolateFloat3(float3 v0, float3 v1, float3 v2, float2 barycentrics)
@@ -178,90 +103,6 @@ bool ComputeFrontFace(float4 clip0, float4 clip1, float4 clip2)
     return signedArea >= 0.0f;
 }
 
-void LoadTriangleIndices(
-    ClusterDagResolveSceneData sceneData,
-    ClusterDagDrawData drawData,
-    uint primitiveId,
-    out uint index0,
-    out uint index1,
-    out uint index2)
-{
-    StructuredBuffer<uint> IndexBuffer = ResourceDescriptorHeap[sceneData.ExtraBindlessIndices.y];
-    const uint baseIndex = drawData.StartIndex + primitiveId * 3u;
-    index0 = IndexBuffer[baseIndex + 0u];
-    index1 = IndexBuffer[baseIndex + 1u];
-    index2 = IndexBuffer[baseIndex + 2u];
-}
-
-float3 LoadPosition(ClusterDagResolveSceneData sceneData, uint vertexIndex)
-{
-    StructuredBuffer<float3> PositionBuffer = ResourceDescriptorHeap[sceneData.VertexBufferBindlessIndices.x];
-    StructuredBuffer<ClusterDagPackedPosition> PackedPositionBuffer = ResourceDescriptorHeap[sceneData.VertexBufferBindlessIndices.x];
-    return sceneData.ClusterDagVertexPackingMode != 0u
-        ? DecodeClusterDagPackedPosition(PackedPositionBuffer[vertexIndex], sceneData)
-        : PositionBuffer[vertexIndex];
-}
-
-float3 LoadNormal(ClusterDagResolveSceneData sceneData, uint vertexIndex)
-{
-    StructuredBuffer<float3> NormalBuffer = ResourceDescriptorHeap[sceneData.VertexBufferBindlessIndices.y];
-    StructuredBuffer<uint> PackedNormalBuffer = ResourceDescriptorHeap[sceneData.VertexBufferBindlessIndices.y];
-    return sceneData.ClusterDagVertexPackingMode != 0u
-        ? DecodeOctahedral16x2(PackedNormalBuffer[vertexIndex])
-        : NormalBuffer[vertexIndex];
-}
-
-float2 LoadUv(ClusterDagResolveSceneData sceneData, uint vertexIndex)
-{
-    if (sceneData.ClusterDagVertexPackingMode != 0u)
-    {
-        if (sceneData.VertexBufferBindlessIndices.z != 0xffffffffu)
-        {
-            StructuredBuffer<uint> PackedTexCoordBuffer = ResourceDescriptorHeap[sceneData.VertexBufferBindlessIndices.z];
-            return DecodeClusterDagPackedUV(PackedTexCoordBuffer[vertexIndex]);
-        }
-
-        return sceneData.ClusterDagPackedConstantUV.xy;
-    }
-
-    StructuredBuffer<float2> TexCoordBuffer = ResourceDescriptorHeap[sceneData.VertexBufferBindlessIndices.z];
-    return TexCoordBuffer[vertexIndex];
-}
-
-float4 LoadTangent(ClusterDagResolveSceneData sceneData, uint vertexIndex, float3 normal)
-{
-    if (sceneData.ClusterDagVertexPackingMode != 0u)
-    {
-        if (sceneData.VertexBufferBindlessIndices.w != 0xffffffffu)
-        {
-            StructuredBuffer<uint> PackedTangentBuffer = ResourceDescriptorHeap[sceneData.VertexBufferBindlessIndices.w];
-            return DecodeClusterDagPackedTangent(PackedTangentBuffer[vertexIndex]);
-        }
-
-        return BuildClusterDagFallbackTangent(normal);
-    }
-
-    StructuredBuffer<float4> TangentBuffer = ResourceDescriptorHeap[sceneData.VertexBufferBindlessIndices.w];
-    return TangentBuffer[vertexIndex];
-}
-
-float4 LoadColor(ClusterDagResolveSceneData sceneData, uint vertexIndex)
-{
-    if (sceneData.ClusterDagVertexPackingMode != 0u)
-    {
-        if (sceneData.ExtraBindlessIndices.x != 0xffffffffu)
-        {
-            StructuredBuffer<uint> PackedColorBuffer = ResourceDescriptorHeap[sceneData.ExtraBindlessIndices.x];
-            return DecodeClusterDagPackedColor(PackedColorBuffer[vertexIndex]);
-        }
-
-        return sceneData.ClusterDagPackedConstantColor;
-    }
-
-    StructuredBuffer<float4> ColorBuffer = ResourceDescriptorHeap[sceneData.ExtraBindlessIndices.x];
-    return ColorBuffer[vertexIndex];
-}
-
 VSOutput ClusterDagResolveVS(uint vertexId : SV_VertexID)
 {
     VSOutput Output;
@@ -276,6 +117,7 @@ PSOutput ClusterDagResolvePS(VSOutput Input)
     StructuredBuffer<ClusterDagVisibleEntry> VisibleEntries = ResourceDescriptorHeap[VisibleEntryBufferIndex];
     StructuredBuffer<ClusterDagDrawData> DrawDatas = ResourceDescriptorHeap[DrawDataBufferIndex];
     StructuredBuffer<ClusterDagResolveSceneData> SceneDatas = ResourceDescriptorHeap[SceneDataBufferIndex];
+    ByteAddressBuffer PageData = ResourceDescriptorHeap[PageDataBufferIndex];
 
     const int2 pixelPosition = int2(Input.Position.xy);
     uint width = 0u;
@@ -292,30 +134,43 @@ PSOutput ClusterDagResolvePS(VSOutput Input)
     const uint visibleEntryIndex = (pixelValue >> 7u) - 1u;
     const uint primitiveId = pixelValue & 0x7fu;
     const ClusterDagVisibleEntry visibleEntry = VisibleEntries[visibleEntryIndex];
+    ClusterDagVisibleEntry geometryEntry = visibleEntry;
     const uint drawDataIndex = visibleEntry.DrawDataIndex;
-    const ClusterDagDrawData drawData = DrawDatas[drawDataIndex];
+    ClusterDagDrawData drawData = DrawDatas[drawDataIndex];
+    ClusterDagDrawData pagedDrawData;
+    if (TryLoadClusterDagVisibleEntryDrawData(visibleEntry, drawDataIndex, PageData, pagedDrawData))
+    {
+        drawData = pagedDrawData;
+    }
+    else
+    {
+        geometryEntry.PageDataBase = 0xffffffffu;
+    }
     const ClusterDagResolveSceneData sceneData = SceneDatas[drawData.ModelIndex];
 
     uint vertexIndex0 = 0u;
     uint vertexIndex1 = 0u;
     uint vertexIndex2 = 0u;
-    LoadTriangleIndices(sceneData, drawData, primitiveId, vertexIndex0, vertexIndex1, vertexIndex2);
+    if (!LoadClusterDagTriangleIndices(sceneData, geometryEntry, drawData, primitiveId, PageData, vertexIndex0, vertexIndex1, vertexIndex2))
+    {
+        clip(-1.0f);
+    }
 
-    const float3 localPosition0 = LoadPosition(sceneData, vertexIndex0);
-    const float3 localPosition1 = LoadPosition(sceneData, vertexIndex1);
-    const float3 localPosition2 = LoadPosition(sceneData, vertexIndex2);
-    const float3 localNormal0 = LoadNormal(sceneData, vertexIndex0);
-    const float3 localNormal1 = LoadNormal(sceneData, vertexIndex1);
-    const float3 localNormal2 = LoadNormal(sceneData, vertexIndex2);
-    const float2 uv0 = LoadUv(sceneData, vertexIndex0);
-    const float2 uv1 = LoadUv(sceneData, vertexIndex1);
-    const float2 uv2 = LoadUv(sceneData, vertexIndex2);
-    const float4 tangent0 = LoadTangent(sceneData, vertexIndex0, localNormal0);
-    const float4 tangent1 = LoadTangent(sceneData, vertexIndex1, localNormal1);
-    const float4 tangent2 = LoadTangent(sceneData, vertexIndex2, localNormal2);
-    const float4 color0 = LoadColor(sceneData, vertexIndex0);
-    const float4 color1 = LoadColor(sceneData, vertexIndex1);
-    const float4 color2 = LoadColor(sceneData, vertexIndex2);
+    const float3 localPosition0 = LoadClusterDagPosition(sceneData, geometryEntry, vertexIndex0, PageData);
+    const float3 localPosition1 = LoadClusterDagPosition(sceneData, geometryEntry, vertexIndex1, PageData);
+    const float3 localPosition2 = LoadClusterDagPosition(sceneData, geometryEntry, vertexIndex2, PageData);
+    const float3 localNormal0 = LoadClusterDagNormal(sceneData, geometryEntry, vertexIndex0, PageData);
+    const float3 localNormal1 = LoadClusterDagNormal(sceneData, geometryEntry, vertexIndex1, PageData);
+    const float3 localNormal2 = LoadClusterDagNormal(sceneData, geometryEntry, vertexIndex2, PageData);
+    const float2 uv0 = LoadClusterDagUv(sceneData, geometryEntry, vertexIndex0, PageData);
+    const float2 uv1 = LoadClusterDagUv(sceneData, geometryEntry, vertexIndex1, PageData);
+    const float2 uv2 = LoadClusterDagUv(sceneData, geometryEntry, vertexIndex2, PageData);
+    const float4 tangent0 = LoadClusterDagTangent(sceneData, geometryEntry, vertexIndex0, localNormal0, PageData);
+    const float4 tangent1 = LoadClusterDagTangent(sceneData, geometryEntry, vertexIndex1, localNormal1, PageData);
+    const float4 tangent2 = LoadClusterDagTangent(sceneData, geometryEntry, vertexIndex2, localNormal2, PageData);
+    const float4 color0 = LoadClusterDagColor(sceneData, geometryEntry, vertexIndex0, PageData);
+    const float4 color1 = LoadClusterDagColor(sceneData, geometryEntry, vertexIndex1, PageData);
+    const float4 color2 = LoadClusterDagColor(sceneData, geometryEntry, vertexIndex2, PageData);
 
     const float4 worldClip0 = mul(mul(float4(localPosition0, 1.0f), sceneData.World), sceneData.View);
     const float4 worldClip1 = mul(mul(float4(localPosition1, 1.0f), sceneData.World), sceneData.View);

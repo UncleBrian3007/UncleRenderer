@@ -29,7 +29,7 @@ void ClusterDagClusterCullCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     RWByteAddressBuffer OutputCommands = ResourceDescriptorHeap[OutputCommandsIndex];
     RWByteAddressBuffer RunCounts = ResourceDescriptorHeap[RunCountsIndex];
     RWByteAddressBuffer QueueState = ResourceDescriptorHeap[QueueStateBufferIndex];
-    StructuredBuffer<uint> CandidateClusterQueue = ResourceDescriptorHeap[CandidateClusterQueueBufferIndex];
+    StructuredBuffer<ClusterDagCandidateClusterEntry> CandidateClusterQueue = ResourceDescriptorHeap[CandidateClusterQueueBufferIndex];
     RWStructuredBuffer<ClusterDagVisibleEntry> VisibleEntries = ResourceDescriptorHeap[VisibleEntriesIndex];
     RWByteAddressBuffer VisibleEntryCounters = ResourceDescriptorHeap[VisibleEntryCountersIndex];
     RWStructuredBuffer<uint> HwVisibleEntryIndices = ResourceDescriptorHeap[HwVisibleEntryIndicesIndex];
@@ -42,7 +42,8 @@ void ClusterDagClusterCullCS(uint3 dispatchThreadId : SV_DispatchThreadID)
         return;
     }
 
-    const uint clusterIndex = CandidateClusterQueue[candidateIndex];
+    const ClusterDagCandidateClusterEntry candidateEntry = CandidateClusterQueue[candidateIndex];
+    const uint clusterIndex = candidateEntry.ClusterIndex;
 #if USE_CLUSTER_DAG_FAST
     if (true)
 #else
@@ -71,6 +72,7 @@ void ClusterDagClusterCullCS(uint3 dispatchThreadId : SV_DispatchThreadID)
             ReserveClusterDagVisibleEntry(
                 clusterIndex,
                 drawDataIndex,
+                0xffffffffu,
                 rasterizeSW,
                 VisibleEntries,
                 VisibleEntryCounters,

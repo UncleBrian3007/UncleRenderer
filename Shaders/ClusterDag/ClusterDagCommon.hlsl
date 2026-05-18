@@ -10,6 +10,7 @@ static const uint kClusterDagGroupPageIndexShift = 16u;
 static const uint kClusterDagGroupPageIndexMask = 0xffffu;
 static const uint kClusterDagPageResidentFlag = 1u;
 static const uint kClusterDagRootPageIndex = 0u;
+#include "ClusterDagShared.h"
 
 struct ClusterDagGroupData
 {
@@ -55,6 +56,14 @@ struct ClusterDagVisibleEntry
 {
     uint ClusterIndex;
     uint DrawDataIndex;
+    uint PageDataBase;
+    uint Reserved;
+};
+
+struct ClusterDagCandidateClusterEntry
+{
+    uint ClusterIndex;
+    uint PageDataBase;
 };
 
 struct ClusterDagStreamingRequest
@@ -72,6 +81,121 @@ struct ClusterDagPageTableEntry
     uint LastUsedFrame;
     uint Reserved;
 };
+
+bool HasClusterDagPageData(ClusterDagVisibleEntry visibleEntry)
+{
+    return visibleEntry.PageDataBase != 0xffffffffu;
+}
+
+bool LoadClusterDagPagedVertexIndex(
+    ClusterDagVisibleEntry visibleEntry,
+    ClusterDagDrawData drawData,
+    uint primitiveId,
+    uint cornerIndex,
+    ByteAddressBuffer PageData,
+    out uint vertexIndex)
+{
+    vertexIndex = 0u;
+    if (!HasClusterDagPageData(visibleEntry))
+    {
+        return false;
+    }
+
+    const uint indexCount = PageData.Load(visibleEntry.PageDataBase + kClusterDagGpuPageHeaderPackedIndexCountOffset);
+    const uint indexOffset = drawData.StartIndex + primitiveId * 3u + cornerIndex;
+    if (indexOffset >= indexCount)
+    {
+        return false;
+    }
+
+    const uint indexBase = PageData.Load(visibleEntry.PageDataBase + kClusterDagGpuPageHeaderPackedIndexByteOffsetOffset);
+    vertexIndex = PageData.Load(visibleEntry.PageDataBase + indexBase + indexOffset * 4u);
+    return true;
+}
+
+bool LoadClusterDagPagedPackedPositionWords(
+    ClusterDagVisibleEntry visibleEntry,
+    uint vertexIndex,
+    ByteAddressBuffer PageData,
+    out uint xy,
+    out uint z)
+{
+    xy = 0u;
+    z = 0u;
+    if (!HasClusterDagPageData(visibleEntry))
+    {
+        return false;
+    }
+
+    const uint positionCount = PageData.Load(visibleEntry.PageDataBase + kClusterDagGpuPageHeaderPackedPositionCountOffset);
+    if (vertexIndex >= positionCount)
+    {
+        return false;
+    }
+
+    const uint positionBase = PageData.Load(visibleEntry.PageDataBase + kClusterDagGpuPageHeaderPackedPositionByteOffsetOffset);
+    const uint2 words = PageData.Load2(visibleEntry.PageDataBase + positionBase + vertexIndex * 8u);
+    xy = words.x;
+    z = words.y;
+    return true;
+}
+
+bool LoadClusterDagPagedPackedScalar(
+    ClusterDagVisibleEntry visibleEntry,
+    uint vertexIndex,
+    uint streamByteOffsetHeaderOffset,
+    uint streamCountHeaderOffset,
+    ByteAddressBuffer PageData,
+    out uint value)
+{
+    value = 0u;
+    if (!HasClusterDagPageData(visibleEntry))
+    {
+        return false;
+    }
+
+    const uint streamCount = PageData.Load(visibleEntry.PageDataBase + streamCountHeaderOffset);
+    if (vertexIndex >= streamCount)
+    {
+        return false;
+    }
+
+    const uint streamBase = PageData.Load(visibleEntry.PageDataBase + streamByteOffsetHeaderOffset);
+    value = PageData.Load(visibleEntry.PageDataBase + streamBase + vertexIndex * 4u);
+    return true;
+}
+
+bool TryLoadClusterDagVisibleEntryDrawData(
+    ClusterDagVisibleEntry visibleEntry,
+    uint drawDataIndex,
+    ByteAddressBuffer PageData,
+    out ClusterDagDrawData drawData)
+{
+    drawData = (ClusterDagDrawData)0;
+    if (!HasClusterDagPageData(visibleEntry))
+    {
+        return false;
+    }
+
+    const uint drawDataRecordBase = PageData.Load(visibleEntry.PageDataBase + kClusterDagGpuPageHeaderDrawDataRecordByteOffsetOffset);
+    const uint drawDataRecordCount = PageData.Load(visibleEntry.PageDataBase + kClusterDagGpuPageHeaderDrawDataRecordCountOffset);
+    [loop]
+    for (uint recordIndex = 0u; recordIndex < drawDataRecordCount; ++recordIndex)
+    {
+        const uint recordBase = visibleEntry.PageDataBase + drawDataRecordBase + recordIndex * kClusterDagGpuPageDrawDataRecordStride;
+        if (PageData.Load(recordBase + kClusterDagGpuPageDrawDataRecordGlobalDrawDataIndexOffset) == drawDataIndex)
+        {
+            drawData.StartIndex = PageData.Load(recordBase + kClusterDagGpuPageDrawDataRecordStartIndexOffset);
+            drawData.IndexCount = PageData.Load(recordBase + kClusterDagGpuPageDrawDataRecordIndexCountOffset);
+            drawData.RangeIndex = PageData.Load(recordBase + kClusterDagGpuPageDrawDataRecordRangeIndexOffset);
+            drawData.RangeCommandStart = PageData.Load(recordBase + kClusterDagGpuPageDrawDataRecordRangeCommandStartOffset);
+            drawData.ModelIndex = PageData.Load(recordBase + kClusterDagGpuPageDrawDataRecordModelIndexOffset);
+            return true;
+        }
+    }
+
+    return false;
+}
 
 void CopyClusterDagCommandTemplate(uint srcIndex, uint dstIndex, ByteAddressBuffer CommandTemplates, RWByteAddressBuffer OutputCommands)
 {

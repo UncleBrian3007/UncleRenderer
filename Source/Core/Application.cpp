@@ -2034,8 +2034,6 @@ void FApplication::RenderUI()
                 SyncDeferredSsrConfig();
             }
 
-            ImGui::SameLine();
-
             if (ImGui::Checkbox("Full Res Depth", &RendererConfig.bEnableSsrHzbFullResDepth))
             {
                 SyncDeferredSsrConfig();
@@ -2262,6 +2260,37 @@ void FApplication::RenderUI()
                             std::to_string(RendererConfig.ClusterDAGStreamingMaxPageInstallsPerFrame));
                     }
 
+                    ImGui::SetNextItemWidth(160.0f);
+                    int MaxIoInFlight = static_cast<int>(RendererConfig.ClusterDAGStreamingMaxIoInFlight);
+                    if (ImGui::InputInt("Cluster DAG Max IO In Flight", &MaxIoInFlight))
+                    {
+                        RendererConfig.ClusterDAGStreamingMaxIoInFlight = static_cast<uint32_t>(std::clamp(MaxIoInFlight, 1, 1024));
+                        SyncDeferredClusterDagConfig();
+                    }
+                    if (ImGui::IsItemDeactivatedAfterEdit())
+                    {
+                        UpsertConfigValue(
+                            GetRendererConfigPath(),
+                            "ClusterDAGStreamingMaxIoInFlight",
+                            std::to_string(RendererConfig.ClusterDAGStreamingMaxIoInFlight));
+                    }
+
+                    ImGui::SetNextItemWidth(160.0f);
+                    int MaxUploadMB = static_cast<int>((RendererConfig.ClusterDAGStreamingMaxPageUploadBytesPerFrame + 1024u * 1024u - 1u) / (1024u * 1024u));
+                    if (ImGui::InputInt("Cluster DAG Max Upload MB/Frame", &MaxUploadMB))
+                    {
+                        MaxUploadMB = std::clamp(MaxUploadMB, 1, 1024);
+                        RendererConfig.ClusterDAGStreamingMaxPageUploadBytesPerFrame = static_cast<uint32_t>(MaxUploadMB) * 1024u * 1024u;
+                        SyncDeferredClusterDagConfig();
+                    }
+                    if (ImGui::IsItemDeactivatedAfterEdit())
+                    {
+                        UpsertConfigValue(
+                            GetRendererConfigPath(),
+                            "ClusterDAGStreamingMaxPageUploadBytesPerFrame",
+                            std::to_string(RendererConfig.ClusterDAGStreamingMaxPageUploadBytesPerFrame));
+                    }
+
                     if (DeferredRenderer && ActiveRenderer == DeferredRenderer.get())
                     {
                         if (const FClusterDagStreamingManager* StreamingManager = DeferredRenderer->GetClusterDagStreamingManager())
@@ -2276,6 +2305,27 @@ void FApplication::RenderUI()
                                 StreamingManager->GetLastFrameRequestCount(),
                                 StreamingManager->GetDroppedRequestCount(),
                                 StreamingManager->GetReplacedRequestCount());
+                            ImGui::Text(
+                                "Stream IO F/Iss/Done/Fail: %u / %u / %u / %u",
+                                StreamingManager->GetIoInFlightCount(),
+                                StreamingManager->GetLastFrameIoIssueCount(),
+                                StreamingManager->GetLastFrameIoCompleteCount(),
+                                StreamingManager->GetLastFrameIoFailCount());
+                            ImGui::Text(
+                                "Stream Upload F/Iss/Done/MB: %u / %u / %u / %u",
+                                StreamingManager->GetUploadInFlightCount(),
+                                StreamingManager->GetLastFrameUploadIssueCount(),
+                                StreamingManager->GetLastFrameUploadCompleteCount(),
+                                (StreamingManager->GetLastFrameUploadBytes() + 1024u * 1024u - 1u) / (1024u * 1024u));
+                            ImGui::Text(
+                                "Stream Slots U/T/F: %u / %u / %u",
+                                StreamingManager->GetUsedPageSlotCount(),
+                                StreamingManager->GetPageSlotCount(),
+                                StreamingManager->GetFreePageSlotCount());
+                            ImGui::Text(
+                                "Stream Slot KB/Full Drops: %u / %u",
+                                (StreamingManager->GetPageSlotBytes() + 1023u) / 1024u,
+                                StreamingManager->GetSlotPoolFullDropCount());
                         }
                     }
                 }

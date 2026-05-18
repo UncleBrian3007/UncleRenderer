@@ -1,21 +1,8 @@
-#include "ClusterDagCommon.hlsl"
-#include "../OctahedralEncoding.hlsli"
-#include "../SceneConstantsFields.hlsli"
+#include "ClusterDagGeometryFetch.hlsl"
 
 #ifndef CLUSTER_DAG_SW_RASTER_HZB_REJECT
 #define CLUSTER_DAG_SW_RASTER_HZB_REJECT 0
 #endif
-
-struct ClusterDagResolveSceneData
-{
-    SCENE_CONSTANTS_FIELDS
-};
-
-struct ClusterDagPackedPosition
-{
-    uint XY;
-    uint Z;
-};
 
 cbuffer ClusterDagSoftwareRasterConstants : register(b0)
 {
@@ -33,44 +20,12 @@ cbuffer ClusterDagSoftwareRasterConstants : register(b0)
     uint HZBWidth;
     uint HZBHeight;
     uint HZBMipCount;
+    uint PageDataBufferIndex;
 };
 
 #if CLUSTER_DAG_SW_RASTER_HZB_REJECT
 groupshared uint GroupClusterOccludedByHZB;
 #endif
-
-float3 DecodeClusterDagPackedPosition(ClusterDagPackedPosition packedPosition, ClusterDagResolveSceneData sceneData)
-{
-    const uint qx = packedPosition.XY & 0xFFFFu;
-    const uint qy = packedPosition.XY >> 16u;
-    const uint qz = packedPosition.Z & 0xFFFFu;
-    return sceneData.ClusterDagPackedPositionOffset.xyz
-        + float3(qx, qy, qz) * sceneData.ClusterDagPackedPositionScale.xyz;
-}
-
-float3 LoadPosition(ClusterDagResolveSceneData sceneData, uint vertexIndex)
-{
-    StructuredBuffer<float3> PositionBuffer = ResourceDescriptorHeap[sceneData.VertexBufferBindlessIndices.x];
-    StructuredBuffer<ClusterDagPackedPosition> PackedPositionBuffer = ResourceDescriptorHeap[sceneData.VertexBufferBindlessIndices.x];
-    return sceneData.ClusterDagVertexPackingMode != 0u
-        ? DecodeClusterDagPackedPosition(PackedPositionBuffer[vertexIndex], sceneData)
-        : PositionBuffer[vertexIndex];
-}
-
-void LoadTriangleIndices(
-    ClusterDagResolveSceneData sceneData,
-    ClusterDagDrawData drawData,
-    uint primitiveId,
-    out uint index0,
-    out uint index1,
-    out uint index2)
-{
-    StructuredBuffer<uint> IndexBuffer = ResourceDescriptorHeap[sceneData.ExtraBindlessIndices.y];
-    const uint baseIndex = drawData.StartIndex + primitiveId * 3u;
-    index0 = IndexBuffer[baseIndex + 0u];
-    index1 = IndexBuffer[baseIndex + 1u];
-    index2 = IndexBuffer[baseIndex + 2u];
-}
 
 float2 ClipToPixel(float4 clipPosition)
 {
@@ -167,18 +122,23 @@ void RasterizeTriangle(
     uint visibleEntryIndex,
     uint localTriIndex,
     ClusterDagResolveSceneData sceneData,
+    ClusterDagVisibleEntry visibleEntry,
     ClusterDagDrawData drawData,
+    ByteAddressBuffer PageData,
     RWTexture2D<uint64_t> Visibility64,
     Texture2D<float> DepthTexture)
 {
     uint vertexIndex0 = 0u;
     uint vertexIndex1 = 0u;
     uint vertexIndex2 = 0u;
-    LoadTriangleIndices(sceneData, drawData, localTriIndex, vertexIndex0, vertexIndex1, vertexIndex2);
+    if (!LoadClusterDagTriangleIndices(sceneData, visibleEntry, drawData, localTriIndex, PageData, vertexIndex0, vertexIndex1, vertexIndex2))
+    {
+        return;
+    }
 
-    const float3 localPosition0 = LoadPosition(sceneData, vertexIndex0);
-    const float3 localPosition1 = LoadPosition(sceneData, vertexIndex1);
-    const float3 localPosition2 = LoadPosition(sceneData, vertexIndex2);
+    const float3 localPosition0 = LoadClusterDagPosition(sceneData, visibleEntry, vertexIndex0, PageData);
+    const float3 localPosition1 = LoadClusterDagPosition(sceneData, visibleEntry, vertexIndex1, PageData);
+    const float3 localPosition2 = LoadClusterDagPosition(sceneData, visibleEntry, vertexIndex2, PageData);
     const float4 view0 = mul(mul(float4(localPosition0, 1.0f), sceneData.World), sceneData.View);
     const float4 view1 = mul(mul(float4(localPosition1, 1.0f), sceneData.World), sceneData.View);
     const float4 view2 = mul(mul(float4(localPosition2, 1.0f), sceneData.World), sceneData.View);
@@ -272,11 +232,22 @@ void RasterizeClusterSWCS(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_G
     StructuredBuffer<ClusterDagDrawData> DrawDatas = ResourceDescriptorHeap[DrawDataBufferIndex];
     StructuredBuffer<ClusterDagResolveSceneData> SceneDatas = ResourceDescriptorHeap[SceneDataBufferIndex];
     Texture2D<float> DepthTexture = ResourceDescriptorHeap[DepthTextureIndex];
+    ByteAddressBuffer PageData = ResourceDescriptorHeap[PageDataBufferIndex];
 
     const uint visibleEntryIndex = SwVisibleEntryIndices[swListIndex];
     const ClusterDagVisibleEntry visibleEntry = VisibleEntries[visibleEntryIndex];
+    ClusterDagVisibleEntry geometryEntry = visibleEntry;
     const ClusterDagClusterData cluster = Clusters[visibleEntry.ClusterIndex];
-    const ClusterDagDrawData drawData = DrawDatas[visibleEntry.DrawDataIndex];
+    ClusterDagDrawData drawData = DrawDatas[visibleEntry.DrawDataIndex];
+    ClusterDagDrawData pagedDrawData;
+    if (TryLoadClusterDagVisibleEntryDrawData(visibleEntry, visibleEntry.DrawDataIndex, PageData, pagedDrawData))
+    {
+        drawData = pagedDrawData;
+    }
+    else
+    {
+        geometryEntry.PageDataBase = 0xffffffffu;
+    }
     const ClusterDagResolveSceneData sceneData = SceneDatas[drawData.ModelIndex];
     const uint triangleCount = min(cluster.TriangleCount, 128u);
 
@@ -296,6 +267,6 @@ void RasterizeClusterSWCS(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_G
     [loop]
     for (uint localTriIndex = laneIndex; localTriIndex < triangleCount; localTriIndex += 64u)
     {
-        RasterizeTriangle(visibleEntryIndex, localTriIndex, sceneData, drawData, Visibility64, DepthTexture);
+        RasterizeTriangle(visibleEntryIndex, localTriIndex, sceneData, geometryEntry, drawData, PageData, Visibility64, DepthTexture);
     }
 }

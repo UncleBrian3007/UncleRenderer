@@ -514,7 +514,12 @@ bool FDeferredRenderer::InitializeSceneResources(FDX12Device* Device, DXGI_FORMA
         else if (bClusterDagRuntimeReady && ClusterDagRuntime->HasResources())
         {
             const uint32_t PageCount = ClusterDagRuntime->GetStreamingPageCount();
-            if (!ClusterDagStreamingManager->InitializeResources(*this, Device, PageCount, GetFramesInFlight()))
+            if (!ClusterDagStreamingManager->InitializeResources(
+                *this,
+                Device,
+                PageCount,
+                GetFramesInFlight(),
+                ClusterDagRuntime->GetStreamingPageSources()))
             {
                 LogWarning("Deferred renderer ClusterDag streaming resource creation failed; streaming feedback will stay disabled.");
             }

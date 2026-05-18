@@ -808,6 +808,10 @@ bool SceneModelResourceLoader::LoadModelsFromJson(
                 {
                     ModelResource.ClusterDagMeshIndex = static_cast<uint32_t>(MeshIndex);
                     ModelResource.ClusterDagPrimitiveIndex = static_cast<uint32_t>(SectionIndex);
+                    ModelResource.ClusterDagSourceFilePath = MeshPath.wstring();
+                    std::filesystem::path ClusterDagCachePath = MeshPath;
+                    ClusterDagCachePath.replace_extension(L".vmesh");
+                    ModelResource.ClusterDagCacheFilePath = ClusterDagCachePath.wstring();
                     ModelResource.bUseClusterDagRuntime =
                         ClusterDAG->HasRuntimeHierarchy()
                         && LoadedNode.SkinIndex < 0
@@ -864,6 +868,7 @@ bool SceneModelResourceLoader::LoadModelsFromJson(
                         if (bCreatedClusterDagGeometry)
                         {
                             ModelResource.ClusterDagVertexPackingMode = GClusterDagVertexPackingModeBasic;
+                            ModelResource.ClusterDagPackedVertexData = ClusterDagPackedVertexData;
                             ModelResource.ClusterDagPackedPositionOffset = ClusterDagPackedVertexData.PositionOffset;
                             ModelResource.ClusterDagPackedPositionScale = ClusterDagPackedVertexData.PositionScale;
                             ModelResource.ClusterDagPackedConstantUV = DirectX::XMFLOAT4(

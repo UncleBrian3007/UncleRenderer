@@ -16,6 +16,7 @@ cbuffer ClusterDagLevelSplitClusterCullBindlessConstants : register(b1)
     uint HwVisibleEntryIndicesIndex;
     uint SwVisibleEntryIndicesIndex;
     uint DrawDataVisibleEntryIndicesIndex;
+    uint PageDataBufferIndex;
 };
 
 [numthreads(64, 1, 1)]
@@ -29,12 +30,13 @@ void ClusterDagLevelSplitClusterCullCS(uint3 dispatchThreadId : SV_DispatchThrea
     RWByteAddressBuffer OutputCommands = ResourceDescriptorHeap[OutputCommandsIndex];
     RWByteAddressBuffer RunCounts = ResourceDescriptorHeap[RunCountsIndex];
     RWByteAddressBuffer QueueState = ResourceDescriptorHeap[QueueStateBufferIndex];
-    StructuredBuffer<uint> CandidateClusterQueue = ResourceDescriptorHeap[CandidateClusterQueueBufferIndex];
+    StructuredBuffer<ClusterDagCandidateClusterEntry> CandidateClusterQueue = ResourceDescriptorHeap[CandidateClusterQueueBufferIndex];
     RWStructuredBuffer<ClusterDagVisibleEntry> VisibleEntries = ResourceDescriptorHeap[VisibleEntriesIndex];
     RWByteAddressBuffer VisibleEntryCounters = ResourceDescriptorHeap[VisibleEntryCountersIndex];
     RWStructuredBuffer<uint> HwVisibleEntryIndices = ResourceDescriptorHeap[HwVisibleEntryIndicesIndex];
     RWStructuredBuffer<uint> SwVisibleEntryIndices = ResourceDescriptorHeap[SwVisibleEntryIndicesIndex];
     RWStructuredBuffer<uint> DrawDataVisibleEntryIndices = ResourceDescriptorHeap[DrawDataVisibleEntryIndicesIndex];
+    ByteAddressBuffer PageData = ResourceDescriptorHeap[PageDataBufferIndex];
 
     const uint candidateCount = QueueState.Load(kLevelSplitQueueStateCandidateWriteOffset);
     if (candidateIndex >= candidateCount)
@@ -42,14 +44,16 @@ void ClusterDagLevelSplitClusterCullCS(uint3 dispatchThreadId : SV_DispatchThrea
         return;
     }
 
-    const uint clusterIndex = CandidateClusterQueue[candidateIndex];
+    const ClusterDagCandidateClusterEntry candidateEntry = CandidateClusterQueue[candidateIndex];
+    const uint clusterIndex = candidateEntry.ClusterIndex;
+    const bool usePagedCandidate = candidateEntry.PageDataBase != 0xffffffffu;
 #if USE_CLUSTER_DAG_FAST
     if (true)
 #else
     if (clusterIndex < ClusterCount)
 #endif
     {
-        const ClusterDagClusterData cluster = Clusters[clusterIndex];
+        const ClusterDagClusterData cluster = LoadClusterDagCluster(clusterIndex, usePagedCandidate, candidateEntry.PageDataBase, Clusters, PageData);
         const bool isLeaf = cluster.GeneratingGroupIndex == 0xffffffffu;
         const bool rasterizeSW = ShouldRasterizeClusterSW(cluster);
         TrackLevelSplitVisibleClusterDagCandidate(QueueState);
@@ -67,10 +71,11 @@ void ClusterDagLevelSplitClusterCullCS(uint3 dispatchThreadId : SV_DispatchThrea
             }
 #endif
 
-            const ClusterDagDrawData drawData = DrawDatas[drawDataIndex];
+            const ClusterDagDrawData drawData = LoadClusterDagDrawData(drawDataIndex, usePagedCandidate, candidateEntry.PageDataBase, DrawDatas, PageData);
             ReserveClusterDagVisibleEntry(
                 clusterIndex,
                 drawDataIndex,
+                usePagedCandidate ? candidateEntry.PageDataBase : 0xffffffffu,
                 rasterizeSW,
                 VisibleEntries,
                 VisibleEntryCounters,
