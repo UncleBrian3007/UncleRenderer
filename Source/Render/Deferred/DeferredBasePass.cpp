@@ -41,6 +41,40 @@ namespace
     {
         return (bUseSkinning ? 1u : 0u) | (bUseClusterDagDebugView ? 2u : 0u);
     }
+
+    void SetBasePassMaterialBindlessIndices(ID3D12GraphicsCommandList* CommandList, const FSceneModelResource& Model)
+    {
+        static_assert(kBasePassBindlessDwordCount == RendererUtils::GMaterialBindlessIndexCount);
+        const RendererUtils::FMaterialBindlessIndices BindlessIndices = RendererUtils::BuildMaterialBindlessIndices(Model);
+        CommandList->SetGraphicsRoot32BitConstants(1, static_cast<UINT>(BindlessIndices.size()), BindlessIndices.data(), 0);
+    }
+
+    void SetBasePassEmptyBindlessIndices(ID3D12GraphicsCommandList* CommandList)
+    {
+        constexpr uint32_t BindlessIndices[kBasePassBindlessDwordCount] = {};
+        CommandList->SetGraphicsRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
+    }
+
+    void BindBasePassPerModelConstants(ID3D12GraphicsCommandList* CommandList, const FDeferredRenderer& Owner, size_t ModelIndex, const FSceneModelResource& Model)
+    {
+        static_assert(kBasePassPerDrawDwordCount >= 1u);
+        CommandList->SetGraphicsRootConstantBufferView(0, Owner.GetSceneConstantBufferAddress() + Owner.GetSceneConstantBufferStride() * ModelIndex);
+        CommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
+    }
+
+    void DrawModelInstanced(ID3D12GraphicsCommandList* CommandList, const FSceneModelResource& Model)
+    {
+        if (AreModelPixEventsEnabled())
+        {
+            const std::wstring Label = Model.Name.empty() ? L"Model" : std::wstring(Model.Name.begin(), Model.Name.end());
+            FScopedPixEvent Event(CommandList, Label.c_str());
+            CommandList->DrawInstanced(Model.DrawIndexCount, 1, 0, 0);
+        }
+        else
+        {
+            CommandList->DrawInstanced(Model.DrawIndexCount, 1, 0, 0);
+        }
+    }
 }
 
 bool FDeferredBasePass::InitializePipelines(FDeferredRenderer& Owner, FDX12Device* InDevice, DXGI_FORMAT LightingBufferFormat)
@@ -663,30 +697,12 @@ void FDeferredBasePass::AddShadowPass(FDeferredPassContext& Context) const
             {
                 continue;
             }
-            const uint64_t ConstantBufferOffset = Owner.SceneConstantBufferStride * ModelIndex;
-
             const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) && Model.BoneMatrixCount > 0;
             SetShadowPipeline(bUseSkinning, Model.bDoubleSided);
-
-            const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = Owner.GetSceneConstantBufferAddress();
-            LocalCommandList->SetGraphicsRootConstantBufferView(0, ConstantBufferAddress + ConstantBufferOffset);
-            const uint32_t BindlessIndices[kBasePassBindlessDwordCount] = { 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u };
-            LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
-            static_assert(1u <= kBasePassPerDrawDwordCount);
-            LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
-
-            if (AreModelPixEventsEnabled())
-            {
-                const std::wstring ModelLabel = Model.Name.empty() ? L"Model" : std::wstring(Model.Name.begin(), Model.Name.end());
-                FScopedPixEvent ModelEvent(LocalCommandList, ModelLabel.c_str());
-                LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, 0, 0);
-            }
-            else
-            {
-                LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, 0, 0);
-            }
+            SetBasePassEmptyBindlessIndices(LocalCommandList);
+            BindBasePassPerModelConstants(LocalCommandList, Owner, ModelIndex, Model);
+            DrawModelInstanced(LocalCommandList, Model);
         }
-
     });
 }
 
@@ -732,49 +748,16 @@ void FDeferredBasePass::AddDepthPrepass(FDeferredPassContext& Context) const
         const D3D12_CPU_DESCRIPTOR_HANDLE& DepthHandle = Owner.GetDSVHandle();
         LocalCommandList->OMSetRenderTargets(0, nullptr, FALSE, &DepthHandle);
 
+        const bool bClusterDagRuntimePathReady = Owner.IsClusterDagRuntimePathReady();
         Owner.EnsureClusterDagSceneConstantsPrepared(*Data.Camera);
         for (size_t ModelIndex = 0; ModelIndex < Owner.SceneModels.size(); ++ModelIndex)
         {
             const FSceneModelResource& Model = Owner.SceneModels[ModelIndex];
             const uint64_t ConstantBufferOffset = Owner.SceneConstantBufferStride * ModelIndex;
-            const bool bUseClusterDagIndexBuffer = Owner.ClusterDagRuntime && Owner.ClusterDagRuntime->UsesRuntimePath(Owner, Model);
+            const bool bUseClusterDagIndexBuffer = bClusterDagRuntimePathReady && Owner.ClusterDagRuntime->UsesRuntimePath(Model);
             if (!bUseClusterDagIndexBuffer)
             {
                 Owner.UpdateSceneConstants(*Data.Camera, Model, ModelIndex, ConstantBufferOffset);
-            }
-        }
-
-        const bool bUseClusterDagVisibilityPath =
-            Owner.ClusterDagVisibilityPass
-            && Owner.ClusterDagVisibilityPass->IsReady();
-        if (!bUseClusterDagVisibilityPath
-            && Owner.ClusterDagRuntime
-            && Owner.IndirectCommandSignature
-            && Owner.ClusterDagRuntime->HasResources())
-        {
-            ID3D12Resource* DagIndirectBuffer = Owner.ClusterDagRuntime->GetIndirectCommandBuffer(Owner);
-            ID3D12Resource* DagRunCountBuffer = Owner.ClusterDagRuntime->GetRunCountBuffer(Owner);
-            const std::vector<FRenderer::FIndirectDrawRange>& DagRanges = Owner.ClusterDagRuntime->GetIndirectDrawRanges();
-            if (DagIndirectBuffer && DagRunCountBuffer && !DagRanges.empty())
-            {
-                ID3D12PipelineState* CurrentDagPipeline = nullptr;
-                const uint32_t ZeroBindlessIndices[kBasePassBindlessDwordCount] = {};
-                for (size_t RangeIndex = 0; RangeIndex < DagRanges.size(); ++RangeIndex)
-                {
-                    const FRenderer::FIndirectDrawRange& Range = DagRanges[RangeIndex];
-                    const bool bDoubleSided = (Range.PipelineKey & RendererUtils::GPipelineKeyDoubleSidedMask) != 0;
-                    ID3D12PipelineState* DesiredPipeline = DepthPrepassPipelines[bDoubleSided ? 1u : 0u].Get();
-                    if (DesiredPipeline != CurrentDagPipeline)
-                    {
-                        CurrentDagPipeline = DesiredPipeline;
-                        LocalCommandList->SetPipelineState(CurrentDagPipeline);
-                    }
-
-                    LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(ZeroBindlessIndices), ZeroBindlessIndices, 0);
-                    const uint64_t Offset = static_cast<uint64_t>(Range.Start) * sizeof(FIndirectDrawCommand);
-                    const uint64_t CountOffset = RangeIndex * sizeof(uint32_t);
-                    LocalCommandList->ExecuteIndirect(Owner.IndirectCommandSignature.Get(), Range.Count, DagIndirectBuffer, Offset, DagRunCountBuffer, CountOffset);
-                }
             }
         }
 
@@ -792,12 +775,10 @@ void FDeferredBasePass::AddDepthPrepass(FDeferredPassContext& Context) const
             {
                 continue;
             }
-            if (Owner.ClusterDagRuntime && Owner.ClusterDagRuntime->UsesRuntimePath(Owner, Model))
+            if (bClusterDagRuntimePathReady && Owner.ClusterDagRuntime->UsesRuntimePath(Model))
             {
                 continue;
             }
-            const uint64_t ConstantBufferOffset = Owner.SceneConstantBufferStride * ModelIndex;
-
             const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) && Model.BoneMatrixCount > 0;
             ID3D12PipelineState* DesiredPipeline = bUseSkinning ? DepthPrepassPipelinesSkinned[Model.bDoubleSided ? 1u : 0u].Get() : DepthPrepassPipelines[Model.bDoubleSided ? 1u : 0u].Get();
             if (DesiredPipeline != CurrentPipeline)
@@ -805,24 +786,9 @@ void FDeferredBasePass::AddDepthPrepass(FDeferredPassContext& Context) const
                 CurrentPipeline = DesiredPipeline;
                 LocalCommandList->SetPipelineState(CurrentPipeline);
             }
-
-            const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = Owner.GetSceneConstantBufferAddress();
-            LocalCommandList->SetGraphicsRootConstantBufferView(0, ConstantBufferAddress + ConstantBufferOffset);
-            const uint32_t BindlessIndices[kBasePassBindlessDwordCount] = { 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u };
-            LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
-            static_assert(1u <= kBasePassPerDrawDwordCount);
-            LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
-
-            if (AreModelPixEventsEnabled())
-            {
-                const std::wstring ModelLabel = Model.Name.empty() ? L"Model" : std::wstring(Model.Name.begin(), Model.Name.end());
-                FScopedPixEvent ModelEvent(LocalCommandList, ModelLabel.c_str());
-                LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, 0, 0);
-            }
-            else
-            {
-                LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, 0, 0);
-            }
+            SetBasePassEmptyBindlessIndices(LocalCommandList);
+            BindBasePassPerModelConstants(LocalCommandList, Owner, ModelIndex, Model);
+            DrawModelInstanced(LocalCommandList, Model);
         }
     });
 }
@@ -900,58 +866,16 @@ void FDeferredBasePass::AddBasePass(FDeferredPassContext& Context, bool bClearTa
         const D3D12_CPU_DESCRIPTOR_HANDLE& DepthHandle = Owner.GetDSVHandle();
         LocalCommandList->OMSetRenderTargets(_countof(BasePassRTVs), BasePassRTVs, FALSE, &DepthHandle);
 
+        const bool bClusterDagRuntimePathReady = Owner.IsClusterDagRuntimePathReady();
         Owner.EnsureClusterDagSceneConstantsPrepared(*Data.Camera);
         for (size_t ModelIndex = 0; ModelIndex < Owner.SceneModels.size(); ++ModelIndex)
         {
             const FSceneModelResource& Model = Owner.SceneModels[ModelIndex];
             const uint64_t ConstantBufferOffset = Owner.SceneConstantBufferStride * ModelIndex;
-            const bool bUseClusterDagIndexBuffer = Owner.ClusterDagRuntime && Owner.ClusterDagRuntime->UsesRuntimePath(Owner, Model);
+            const bool bUseClusterDagIndexBuffer = bClusterDagRuntimePathReady && Owner.ClusterDagRuntime->UsesRuntimePath(Model);
             if (!bUseClusterDagIndexBuffer)
             {
                 Owner.UpdateSceneConstants(*Data.Camera, Model, ModelIndex, ConstantBufferOffset);
-            }
-        }
-
-        const bool bUseClusterDagVisibilityPath =
-            Owner.ClusterDagVisibilityPass
-            && Owner.ClusterDagVisibilityPass->IsReady();
-        if (!bUseClusterDagVisibilityPath
-            && Owner.ClusterDagRuntime
-            && Owner.IndirectCommandSignature
-            && Owner.ClusterDagRuntime->HasResources())
-        {
-            ID3D12Resource* DagIndirectBuffer = Owner.ClusterDagRuntime->GetIndirectCommandBuffer(Owner);
-            ID3D12Resource* DagRunCountBuffer = Owner.ClusterDagRuntime->GetRunCountBuffer(Owner);
-            const std::vector<FRenderer::FIndirectDrawRange>& DagRanges = Owner.ClusterDagRuntime->GetIndirectDrawRanges();
-            if (DagIndirectBuffer && DagRunCountBuffer && !DagRanges.empty())
-            {
-                auto SelectPipelineByKey = [&](uint32_t Key) -> ID3D12PipelineState*
-                {
-                    const bool bUseSkinning = (Key & (1u << 8)) != 0;
-                    const uint32_t MaterialKey = BuildDeferredBasePassPipelineKey(Key, Owner.GetDeferredLightingVisualizationMode());
-                    if (!EnsureBasePassPipelineOrFail(MaterialKey, bUseSkinning, "DeferredBasePass/ClusterDagIndirect"))
-                    {
-                        return nullptr;
-                    }
-                    return bUseSkinning ? BasePassPipelinesSkinned[MaterialKey].Get() : BasePassPipelines[MaterialKey].Get();
-                };
-
-                for (size_t RangeIndex = 0; RangeIndex < DagRanges.size(); ++RangeIndex)
-                {
-                    const FRenderer::FIndirectDrawRange& Range = DagRanges[RangeIndex];
-                    ID3D12PipelineState* Pipeline = SelectPipelineByKey(Range.PipelineKey);
-                    if (!Pipeline)
-                    {
-                        return;
-                    }
-                    LocalCommandList->SetPipelineState(Pipeline);
-                    assert(Range.MaterialBindlessIndices.size() <= kBasePassBindlessDwordCount);
-                    LocalCommandList->SetGraphicsRoot32BitConstants(1, static_cast<UINT>(Range.MaterialBindlessIndices.size()), Range.MaterialBindlessIndices.data(), 0);
-
-                    const uint64_t Offset = static_cast<uint64_t>(Range.Start) * sizeof(FIndirectDrawCommand);
-                    const uint64_t CountOffset = RangeIndex * sizeof(uint32_t);
-                    LocalCommandList->ExecuteIndirect(Owner.IndirectCommandSignature.Get(), Range.Count, DagIndirectBuffer, Offset, DagRunCountBuffer, CountOffset);
-                }
             }
         }
 
@@ -961,8 +885,8 @@ void FDeferredBasePass::AddBasePass(FDeferredPassContext& Context, bool bClearTa
         {
             auto SelectPipelineByKey = [&](uint32_t Key) -> ID3D12PipelineState*
             {
-                const bool bUseSkinning = (Key & (1u << 8)) != 0;
-                const uint32_t MaterialKey = (Key & 0xFFu) | (((Key >> 9) & 1u) << 8);
+                const bool bUseSkinning = (Key & (1u << RendererUtils::GPipelineKeySkinningBit)) != 0;
+                const uint32_t MaterialKey = (Key & 0xFFu) | (((Key >> RendererUtils::GPipelineKeyDoubleSidedBit) & 1u) << 8);
                 if (!EnsureBasePassPipelineOrFail(MaterialKey, bUseSkinning, "DeferredBasePass/Indirect"))
                 {
                     return nullptr;
@@ -973,7 +897,7 @@ void FDeferredBasePass::AddBasePass(FDeferredPassContext& Context, bool bClearTa
             for (size_t RangeIndex = 0; RangeIndex < Owner.IndirectDrawRanges.size(); ++RangeIndex)
             {
                 const FRenderer::FIndirectDrawRange& Range = Owner.IndirectDrawRanges[RangeIndex];
-                const bool bRangeSkinning = (Range.PipelineKey & (1u << 8)) != 0;
+                const bool bRangeSkinning = (Range.PipelineKey & (1u << RendererUtils::GPipelineKeySkinningBit)) != 0;
                 if (bRangeSkinning && !Owner.bEnableSkinningIndirectDraw)
                 {
                     continue;
@@ -1015,7 +939,7 @@ void FDeferredBasePass::AddBasePass(FDeferredPassContext& Context, bool bClearTa
                     {
                         continue;
                     }
-                    if (Owner.ClusterDagRuntime && Owner.ClusterDagRuntime->UsesRuntimePath(Owner, Model))
+                    if (bClusterDagRuntimePathReady && Owner.ClusterDagRuntime->UsesRuntimePath(Model))
                     {
                         continue;
                     }
@@ -1026,44 +950,16 @@ void FDeferredBasePass::AddBasePass(FDeferredPassContext& Context, bool bClearTa
                         continue;
                     }
 
-                    const uint64_t ConstantBufferOffset = Owner.SceneConstantBufferStride * ModelIndex;
-
-                    const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = Owner.GetSceneConstantBufferAddress();
-                    LocalCommandList->SetGraphicsRootConstantBufferView(0, ConstantBufferAddress + ConstantBufferOffset);
-                    const uint32_t BindlessIndices[kBasePassBindlessDwordCount] =
-                    {
-                        Model.BaseColor.SrvBindlessIndex,
-                        Model.MetallicRoughness.SrvBindlessIndex,
-                        Model.Normal.SrvBindlessIndex,
-                        Model.Emissive.SrvBindlessIndex,
-                        Model.SheenColor.SrvBindlessIndex,
-                        Model.SheenRoughness.SrvBindlessIndex,
-                        Model.Clearcoat.SrvBindlessIndex,
-                        Model.ClearcoatRoughness.SrvBindlessIndex,
-                        Model.ClearcoatNormal.SrvBindlessIndex,
-                        Model.Anisotropy.SrvBindlessIndex
-                    };
-                    LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
-                    static_assert(1u <= kBasePassPerDrawDwordCount);
-                    LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
-
                     const uint32_t PipelineKey = BuildDeferredBasePassPipelineKey(Model.PipelineKey, Owner.GetDeferredLightingVisualizationMode());
                     if (!EnsureBasePassPipelineOrFail(PipelineKey, true, "DeferredBasePass/SkinningFallback"))
                     {
                         return;
                     }
+                    
+                    SetBasePassMaterialBindlessIndices(LocalCommandList, Model);
+                    BindBasePassPerModelConstants(LocalCommandList, Owner, ModelIndex, Model);
                     LocalCommandList->SetPipelineState(BasePassPipelinesSkinned[PipelineKey].Get());
-
-                    if (AreModelPixEventsEnabled())
-                    {
-                        const std::wstring ModelLabel = Model.Name.empty() ? L"Model" : std::wstring(Model.Name.begin(), Model.Name.end());
-                        FScopedPixEvent ModelEvent(LocalCommandList, ModelLabel.c_str());
-                        LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, 0, 0);
-                    }
-                    else
-                    {
-                        LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, 0, 0);
-                    }
+                    DrawModelInstanced(LocalCommandList, Model);
                 }
             }
         }
@@ -1081,49 +977,22 @@ void FDeferredBasePass::AddBasePass(FDeferredPassContext& Context, bool bClearTa
                 {
                     continue;
                 }
-                if (Owner.ClusterDagRuntime && Owner.ClusterDagRuntime->UsesRuntimePath(Owner, Model))
+                if (bClusterDagRuntimePathReady && Owner.ClusterDagRuntime->UsesRuntimePath(Model))
                 {
                     continue;
                 }
-                const uint64_t ConstantBufferOffset = Owner.SceneConstantBufferStride * ModelIndex;
 
-                const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = Owner.GetSceneConstantBufferAddress();
-                LocalCommandList->SetGraphicsRootConstantBufferView(0, ConstantBufferAddress + ConstantBufferOffset);
-                const uint32_t BindlessIndices[kBasePassBindlessDwordCount] =
-                {
-                    Model.BaseColor.SrvBindlessIndex,
-                    Model.MetallicRoughness.SrvBindlessIndex,
-                    Model.Normal.SrvBindlessIndex,
-                    Model.Emissive.SrvBindlessIndex,
-                    Model.SheenColor.SrvBindlessIndex,
-                    Model.SheenRoughness.SrvBindlessIndex,
-                    Model.Clearcoat.SrvBindlessIndex,
-                    Model.ClearcoatRoughness.SrvBindlessIndex,
-                    Model.ClearcoatNormal.SrvBindlessIndex,
-                    Model.Anisotropy.SrvBindlessIndex
-                };
-                LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
-                static_assert(1u <= kBasePassPerDrawDwordCount);
-                LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
+                const bool bUseSkinning = (Model.PipelineKey & (1u << RendererUtils::GPipelineKeySkinningBit)) != 0;
+				const uint32_t PipelineKey = BuildDeferredBasePassPipelineKey(Model.PipelineKey, Owner.GetDeferredLightingVisualizationMode());
+				if (!EnsureBasePassPipelineOrFail(PipelineKey, bUseSkinning, "DeferredBasePass/Direct"))
+				{
+					return;
+				}
 
-                const bool bUseSkinning = (Model.PipelineKey & (1u << 8)) != 0;
-                const uint32_t PipelineKey = BuildDeferredBasePassPipelineKey(Model.PipelineKey, Owner.GetDeferredLightingVisualizationMode());
-                if (!EnsureBasePassPipelineOrFail(PipelineKey, bUseSkinning, "DeferredBasePass/Direct"))
-                {
-                    return;
-                }
+                SetBasePassMaterialBindlessIndices(LocalCommandList, Model);
+                BindBasePassPerModelConstants(LocalCommandList, Owner, ModelIndex, Model);
                 LocalCommandList->SetPipelineState(bUseSkinning ? BasePassPipelinesSkinned[PipelineKey].Get() : BasePassPipelines[PipelineKey].Get());
-
-                if (AreModelPixEventsEnabled())
-                {
-                    const std::wstring ModelLabel = Model.Name.empty() ? L"Model" : std::wstring(Model.Name.begin(), Model.Name.end());
-                    FScopedPixEvent ModelEvent(LocalCommandList, ModelLabel.c_str());
-                    LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, 0, 0);
-                }
-                else
-                {
-                    LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, 0, 0);
-                }
+                DrawModelInstanced(LocalCommandList, Model);
             }
         }
 
@@ -1234,28 +1103,10 @@ void FDeferredBasePass::AddVelocityPass(FDeferredPassContext& Context) const
             const uint32_t PipelineIndex = (bUseAlphaMask ? 1u : 0u) | (Model.bDoubleSided ? 2u : 0u);
             ID3D12PipelineState* Pipeline = bUseSkinning ? VelocityPipelinesSkinned[PipelineIndex].Get() : VelocityPipelines[PipelineIndex].Get();
 
-            const uint64_t ConstantBufferOffset = Owner.SceneConstantBufferStride * ModelIndex;
-            const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = Owner.GetSceneConstantBufferAddress();
             LocalCommandList->SetPipelineState(Pipeline);
-            LocalCommandList->SetGraphicsRootConstantBufferView(0, ConstantBufferAddress + ConstantBufferOffset);
-
-            const uint32_t BindlessIndices[kBasePassBindlessDwordCount] =
-            {
-                Model.BaseColor.SrvBindlessIndex,
-                Model.MetallicRoughness.SrvBindlessIndex,
-                Model.Normal.SrvBindlessIndex,
-                Model.Emissive.SrvBindlessIndex,
-                Model.SheenColor.SrvBindlessIndex,
-                Model.SheenRoughness.SrvBindlessIndex,
-                Model.Clearcoat.SrvBindlessIndex,
-                Model.ClearcoatRoughness.SrvBindlessIndex,
-                Model.ClearcoatNormal.SrvBindlessIndex,
-                Model.Anisotropy.SrvBindlessIndex
-            };
-            LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
-            static_assert(1u <= kBasePassPerDrawDwordCount);
-            LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
-            LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, 0, 0);
+            SetBasePassMaterialBindlessIndices(LocalCommandList, Model);
+            BindBasePassPerModelConstants(LocalCommandList, Owner, ModelIndex, Model);
+            DrawModelInstanced(LocalCommandList, Model);
         }
     });
 }

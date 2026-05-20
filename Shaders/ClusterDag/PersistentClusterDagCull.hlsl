@@ -1,8 +1,3 @@
-#include "ClusterDagTraversalCommon.hlsl"
-#include "../CullMeshletCommon.hlsl"
-
-static const uint kPersistentClusterDagInlineCandidateDrawDataCount = 1u;
-
 cbuffer ClusterDagPersistentBindlessConstants : register(b1)
 {
     uint GroupBufferIndex;
@@ -14,7 +9,7 @@ cbuffer ClusterDagPersistentBindlessConstants : register(b1)
     uint RunCountsIndex;
     uint QueueStateBufferIndex;
     uint GroupQueueBufferIndex;
-    uint CandidateClusterQueueBufferIndex;
+    uint CandidateClusterEntryBufferIndex;
     uint VisitedGroupEpochBufferIndex;
     uint GroupCount;
     uint ClusterCount;
@@ -33,7 +28,17 @@ cbuffer ClusterDagPersistentBindlessConstants : register(b1)
     uint StreamingRequestCapacity;
     uint StreamingResourceId;
     uint PageSlotBytes;
+    float ClusterDAGTargetErrorPixels;
+    float ViewportHeightPixels;
+    uint ClusterDAGForceMipEnabled;
+    uint ClusterDAGForceMipLevel;
+    uint ClusterDAGForceSoftwareRaster;
+    float ClusterDAGSwRasterThresholdPixels;
 };
+
+#include "ClusterDagTraversalCommon.hlsl"
+
+static const uint kPersistentClusterDagInlineCandidateDrawDataCount = 1u;
 
 void EmitVisibleClusterDagCandidate(
     uint clusterIndex,
@@ -98,7 +103,7 @@ QueueState
 */
 // QueueState: Storage for read/write offsets and pending counters
 // GroupQueue: Array containing actual group indices
-// CandidateClusterQueue: Array containing actual cluster indices
+// CandidateClusterEntry: Array containing actual cluster indices
 // queueSlot: The specific index/slot allocated within the queue array
 // TryReserveClusterDagQueueSlot: A function that reserves a slot index without writing the actual data
 
@@ -137,7 +142,7 @@ void PersistentClusterDagCullCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     RWByteAddressBuffer RunCounts = ResourceDescriptorHeap[RunCountsIndex];
     RWByteAddressBuffer QueueState = ResourceDescriptorHeap[QueueStateBufferIndex];
     RWStructuredBuffer<uint> GroupQueue = ResourceDescriptorHeap[GroupQueueBufferIndex];
-    RWStructuredBuffer<ClusterDagCandidateClusterEntry> CandidateClusterQueue = ResourceDescriptorHeap[CandidateClusterQueueBufferIndex];
+    RWStructuredBuffer<ClusterDagCandidateClusterEntry> CandidateClusterEntry = ResourceDescriptorHeap[CandidateClusterEntryBufferIndex];
     RWStructuredBuffer<uint> VisitedGroupEpochs = ResourceDescriptorHeap[VisitedGroupEpochBufferIndex];
     RWStructuredBuffer<ClusterDagVisibleEntry> VisibleEntries = ResourceDescriptorHeap[VisibleEntriesIndex];
     RWByteAddressBuffer VisibleEntryCounters = ResourceDescriptorHeap[VisibleEntryCountersIndex];
@@ -215,8 +220,7 @@ void PersistentClusterDagCullCS(uint3 dispatchThreadId : SV_DispatchThreadID)
                         const bool isLeaf = cluster.GeneratingGroupIndex == 0xffffffffu;
                         const float3 lodCenter = cluster.LodBounds.xyz;
                         const float lodRadius = cluster.LodBounds.w;
-                        const bool skipFrustumCull = ClusterDAGForceMipEnabled != 0u && ClusterDAGForceMipSkipFrustumCull != 0u;
-                        if (!skipFrustumCull && !IsSphereVisible(lodCenter, lodRadius))
+                        if (!IsSphereVisible(lodCenter, lodRadius))
                         {
                             RecordFrustumCulled(DebugPrintStatsIndex, isLeaf);
 #if USE_CLUSTER_DAG_DEBUG
@@ -317,7 +321,7 @@ void PersistentClusterDagCullCS(uint3 dispatchThreadId : SV_DispatchThreadID)
                                 ClusterDagCandidateClusterEntry candidateEntry;
                                 candidateEntry.ClusterIndex = childRef.ClusterIndex;
                                 candidateEntry.PageDataBase = usePagedChildRefs ? pagedPageBase : 0xffffffffu;
-                                CandidateClusterQueue[candidateSlot] = candidateEntry;
+                                CandidateClusterEntry[candidateSlot] = candidateEntry;
                                 IncrementClusterDagPending(QueueState);
                                 DeviceMemoryBarrier();
                                 CommitClusterDagQueueSlot(
@@ -344,7 +348,7 @@ void PersistentClusterDagCullCS(uint3 dispatchThreadId : SV_DispatchThreadID)
 
         if (TryPopClusterDagQueue(QueueState, kQueueStatePass0CandidateReadOffset, kQueueStatePass0CandidateCommittedWriteOffset, workIndex))
         {
-            const ClusterDagCandidateClusterEntry candidateEntry = CandidateClusterQueue[workIndex];
+            const ClusterDagCandidateClusterEntry candidateEntry = CandidateClusterEntry[workIndex];
             const uint clusterIndex = candidateEntry.ClusterIndex;
             const bool usePagedCandidate = candidateEntry.PageDataBase != 0xffffffffu;
 

@@ -1,4 +1,3 @@
-#include "../CullingConstants.hlsl"
 #include "ClusterDagCommon.hlsl"
 #include "../GpuDebug/GpuDebugPrintCommon.hlsl"
 
@@ -14,9 +13,11 @@ cbuffer ClusterDagLevelSplitInitBindlessConstants : register(b1)
     uint NodeCandidateBuffer1Index;
     uint NodeArgsBuffer0Index;
     uint NodeArgsBuffer1Index;
-    uint CandidateClusterQueueBufferIndex;
+    uint CandidateClusterEntryBufferIndex;
     uint VisitedGroupEpochBufferIndex;
     uint RunCountBufferIndex;
+    uint RunCountCapacity;
+    uint DrawDataVisibleEntryCount;
     uint RootGroupCount;
     uint GroupCount;
     uint CandidateQueueCapacity;
@@ -47,7 +48,7 @@ void InitClusterDagLevelSplitQueuesCS(uint3 dispatchThreadId : SV_DispatchThread
     RWStructuredBuffer<uint> NodeCandidates1 = ResourceDescriptorHeap[NodeCandidateBuffer1Index];
     RWByteAddressBuffer NodeArgs0 = ResourceDescriptorHeap[NodeArgsBuffer0Index];
     RWByteAddressBuffer NodeArgs1 = ResourceDescriptorHeap[NodeArgsBuffer1Index];
-    RWStructuredBuffer<ClusterDagCandidateClusterEntry> CandidateClusterQueue = ResourceDescriptorHeap[CandidateClusterQueueBufferIndex];
+    RWStructuredBuffer<ClusterDagCandidateClusterEntry> CandidateClusterEntry = ResourceDescriptorHeap[CandidateClusterEntryBufferIndex];
     RWStructuredBuffer<uint> VisitedGroupEpochs = ResourceDescriptorHeap[VisitedGroupEpochBufferIndex];
     RWByteAddressBuffer RunCounts = ResourceDescriptorHeap[RunCountBufferIndex];
     RWByteAddressBuffer VisibleEntryCounters = ResourceDescriptorHeap[VisibleEntryCountersIndex];
@@ -72,12 +73,12 @@ void InitClusterDagLevelSplitQueuesCS(uint3 dispatchThreadId : SV_DispatchThread
         NodeArgs0.Store(kLevelSplitNodeArgsNodeWriteOffset, RootGroupCount);
     }
 
-    if (threadIndex < RangeCount)
+    if (threadIndex < RunCountCapacity)
     {
         RunCounts.Store(threadIndex * 4u, 0u);
     }
 
-    if (threadIndex < IndirectCommandCount)
+    if (threadIndex < DrawDataVisibleEntryCount)
     {
         DrawDataVisibleEntryIndices[threadIndex] = 0xffffffffu;
     }
@@ -87,7 +88,7 @@ void InitClusterDagLevelSplitQueuesCS(uint3 dispatchThreadId : SV_DispatchThread
         ClusterDagCandidateClusterEntry emptyEntry;
         emptyEntry.ClusterIndex = 0xffffffffu;
         emptyEntry.PageDataBase = 0xffffffffu;
-        CandidateClusterQueue[threadIndex] = emptyEntry;
+        CandidateClusterEntry[threadIndex] = emptyEntry;
     }
 
     if (threadIndex < GroupCount)

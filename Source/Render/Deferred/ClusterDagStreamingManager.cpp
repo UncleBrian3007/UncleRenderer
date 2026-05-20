@@ -134,8 +134,8 @@ namespace
         uint32_t IndexCount = 0u;
         uint32_t RangeIndex = 0u;
         uint32_t RangeCommandStart = 0u;
+        uint32_t RangeCommandCount = 0u;
         uint32_t ModelIndex = 0u;
-        uint32_t Reserved0 = 0u;
         uint32_t Reserved1 = 0u;
     };
     static_assert(sizeof(FClusterDagGpuPageDrawDataRecord) == kClusterDagGpuPageDrawDataRecordStride);
@@ -144,6 +144,7 @@ namespace
     static_assert(offsetof(FClusterDagGpuPageDrawDataRecord, IndexCount) == kClusterDagGpuPageDrawDataRecordIndexCountOffset);
     static_assert(offsetof(FClusterDagGpuPageDrawDataRecord, RangeIndex) == kClusterDagGpuPageDrawDataRecordRangeIndexOffset);
     static_assert(offsetof(FClusterDagGpuPageDrawDataRecord, RangeCommandStart) == kClusterDagGpuPageDrawDataRecordRangeCommandStartOffset);
+    static_assert(offsetof(FClusterDagGpuPageDrawDataRecord, RangeCommandCount) == kClusterDagGpuPageDrawDataRecordRangeCommandCountOffset);
     static_assert(offsetof(FClusterDagGpuPageDrawDataRecord, ModelIndex) == kClusterDagGpuPageDrawDataRecordModelIndexOffset);
 
     uint32_t ClampConfigUint(uint32_t Value, uint32_t MinValue, uint32_t MaxValue)
@@ -218,6 +219,7 @@ bool FClusterDagStreamingManager::BuildGpuPagePayload(
         DrawDataRecord.IndexCount = SourceDrawData.IndexCount;
         DrawDataRecord.RangeIndex = SourceDrawData.RangeIndex;
         DrawDataRecord.RangeCommandStart = SourceDrawData.RangeCommandStart;
+        DrawDataRecord.RangeCommandCount = SourceDrawData.RangeCommandCount;
         DrawDataRecord.ModelIndex = SourceDrawData.ModelIndex;
         DrawDataRecords.push_back(DrawDataRecord);
     }

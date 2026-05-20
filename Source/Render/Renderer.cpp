@@ -474,7 +474,6 @@ void FRenderer::RefreshGpuDrivenPersistentValidation()
 void FRenderer::DispatchGpuCulling(
     FDX12CommandContext& CmdContext,
     const FCamera& Camera,
-    const char* PassName,
     ECullingMode Mode,
     uint32_t VisibilityInputIndex,
     uint32_t VisibilityInputFrameIndex,
@@ -500,13 +499,6 @@ void FRenderer::DispatchGpuCulling(
     DispatchConfig.RangeCount = static_cast<uint32_t>(IndirectDrawRanges.size());
     DispatchConfig.Mode = static_cast<uint32_t>(Mode);
     DispatchConfig.bGpuDebugPrintEnabled = GpuDebugState.IsPrintEnabled();
-    DispatchConfig.ClusterDagTargetErrorPixels = GetClusterDagTargetErrorPixels();
-    DispatchConfig.ClusterDagSwRasterThresholdPixels = GetClusterDagSwRasterThresholdPixels();
-    DispatchConfig.ViewportHeightPixels = Viewport.Height;
-    DispatchConfig.ClusterDagVisibleRootCount = GetClusterDagVisibleRootCount();
-    DispatchConfig.bClusterDagForceMipEnabled = IsClusterDagForceMipEnabled();
-    DispatchConfig.ClusterDagForceMipLevel = GetClusterDagForceMipLevel();
-    DispatchConfig.bClusterDagForceMipSkipFrustumCull = IsClusterDagForceMipSkipFrustumCull();
 
     FGpuDrivenCulling::FGpuCullingDispatchFrameData DispatchFrameData = GpuDrivenCullingState.GetDispatchFrameData(CurrentFrameIndex);
 
@@ -525,7 +517,6 @@ void FRenderer::DispatchGpuCulling(
         DispatchIndices,
         CmdContext,
         *CullingCamera,
-        PassName,
         CurrentFrameIndex,
         bUseLateVisibility,
         VisibilityInputFrameIndex);
@@ -725,20 +716,8 @@ bool FRenderer::PrepareGpuDrivenDrawData(FGpuDrivenPreparedData& OutData)
         {
             return KeyA < KeyB;
         }
-        const std::array<uint32_t, 4> IndicesA =
-        {
-            SceneModels[A].BaseColor.SrvBindlessIndex,
-            SceneModels[A].MetallicRoughness.SrvBindlessIndex,
-            SceneModels[A].Normal.SrvBindlessIndex,
-            SceneModels[A].Emissive.SrvBindlessIndex
-        };
-        const std::array<uint32_t, 4> IndicesB =
-        {
-            SceneModels[B].BaseColor.SrvBindlessIndex,
-            SceneModels[B].MetallicRoughness.SrvBindlessIndex,
-            SceneModels[B].Normal.SrvBindlessIndex,
-            SceneModels[B].Emissive.SrvBindlessIndex
-        };
+        const RendererUtils::FMaterialBindlessIndices IndicesA = RendererUtils::BuildMaterialBindlessIndices(SceneModels[A]);
+        const RendererUtils::FMaterialBindlessIndices IndicesB = RendererUtils::BuildMaterialBindlessIndices(SceneModels[B]);
         return IndicesA < IndicesB;
     });
 
@@ -750,7 +729,7 @@ bool FRenderer::PrepareGpuDrivenDrawData(FGpuDrivenPreparedData& OutData)
             continue;
         }
 
-        if (IsClusterDagEnabled() && Model.bUseClusterDagRuntime)
+        if (ShouldUseClusterDagRuntimePath(Model))
         {
             continue;
         }
@@ -777,7 +756,7 @@ bool FRenderer::PrepareGpuDrivenDrawData(FGpuDrivenPreparedData& OutData)
             continue;
         }
 
-        if (IsClusterDagEnabled() && Model.bUseClusterDagRuntime)
+        if (ShouldUseClusterDagRuntimePath(Model))
         {
             continue;
         }
@@ -787,19 +766,7 @@ bool FRenderer::PrepareGpuDrivenDrawData(FGpuDrivenPreparedData& OutData)
             continue;
         }
 
-        const std::array<uint32_t, 10> MaterialIndices =
-        {
-            Model.BaseColor.SrvBindlessIndex,
-            Model.MetallicRoughness.SrvBindlessIndex,
-            Model.Normal.SrvBindlessIndex,
-            Model.Emissive.SrvBindlessIndex,
-            Model.SheenColor.SrvBindlessIndex,
-            Model.SheenRoughness.SrvBindlessIndex,
-            Model.Clearcoat.SrvBindlessIndex,
-            Model.ClearcoatRoughness.SrvBindlessIndex,
-            Model.ClearcoatNormal.SrvBindlessIndex,
-            Model.Anisotropy.SrvBindlessIndex
-        };
+        const RendererUtils::FMaterialBindlessIndices MaterialIndices = RendererUtils::BuildMaterialBindlessIndices(Model);
         if (IndirectDrawRanges.empty()
             || IndirectDrawRanges.back().PipelineKey != PipelineKey
             || IndirectDrawRanges.back().MaterialBindlessIndices != MaterialIndices)
@@ -1018,7 +985,7 @@ bool FRenderer::CreateCullingPipelines(FDX12Device* Device)
 {
     bGpuDrivenCullingPersistentInputsValid = false;
 
-    if (!GpuDrivenCullingState.CreateCullingPipelines(Device))
+    if (!GpuDrivenCullingState.HasCullingPipelines() && !GpuDrivenCullingState.CreateCullingPipelines(Device))
     {
         return false;
     }

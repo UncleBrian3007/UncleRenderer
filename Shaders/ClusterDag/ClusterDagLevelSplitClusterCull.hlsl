@@ -1,5 +1,3 @@
-#include "ClusterDagTraversalCommon.hlsl"
-
 cbuffer ClusterDagLevelSplitClusterCullBindlessConstants : register(b1)
 {
     uint ClusterBufferIndex;
@@ -8,7 +6,7 @@ cbuffer ClusterDagLevelSplitClusterCullBindlessConstants : register(b1)
     uint OutputCommandsIndex;
     uint RunCountsIndex;
     uint QueueStateBufferIndex;
-    uint CandidateClusterQueueBufferIndex;
+    uint CandidateClusterEntryBufferIndex;
     uint ClusterCount;
     uint DebugPrintStatsIndex;
     uint VisibleEntriesIndex;
@@ -17,7 +15,16 @@ cbuffer ClusterDagLevelSplitClusterCullBindlessConstants : register(b1)
     uint SwVisibleEntryIndicesIndex;
     uint DrawDataVisibleEntryIndicesIndex;
     uint PageDataBufferIndex;
+    uint DrawDataCount;
+    float ClusterDAGTargetErrorPixels;
+    float ViewportHeightPixels;
+    uint ClusterDAGForceMipEnabled;
+    uint ClusterDAGForceMipLevel;
+    uint ClusterDAGForceSoftwareRaster;
+    float ClusterDAGSwRasterThresholdPixels;
 };
+
+#include "ClusterDagTraversalCommon.hlsl"
 
 [numthreads(64, 1, 1)]
 void ClusterDagLevelSplitClusterCullCS(uint3 dispatchThreadId : SV_DispatchThreadID)
@@ -30,7 +37,7 @@ void ClusterDagLevelSplitClusterCullCS(uint3 dispatchThreadId : SV_DispatchThrea
     RWByteAddressBuffer OutputCommands = ResourceDescriptorHeap[OutputCommandsIndex];
     RWByteAddressBuffer RunCounts = ResourceDescriptorHeap[RunCountsIndex];
     RWByteAddressBuffer QueueState = ResourceDescriptorHeap[QueueStateBufferIndex];
-    StructuredBuffer<ClusterDagCandidateClusterEntry> CandidateClusterQueue = ResourceDescriptorHeap[CandidateClusterQueueBufferIndex];
+    StructuredBuffer<ClusterDagCandidateClusterEntry> CandidateClusterEntry = ResourceDescriptorHeap[CandidateClusterEntryBufferIndex];
     RWStructuredBuffer<ClusterDagVisibleEntry> VisibleEntries = ResourceDescriptorHeap[VisibleEntriesIndex];
     RWByteAddressBuffer VisibleEntryCounters = ResourceDescriptorHeap[VisibleEntryCountersIndex];
     RWStructuredBuffer<uint> HwVisibleEntryIndices = ResourceDescriptorHeap[HwVisibleEntryIndicesIndex];
@@ -44,7 +51,7 @@ void ClusterDagLevelSplitClusterCullCS(uint3 dispatchThreadId : SV_DispatchThrea
         return;
     }
 
-    const ClusterDagCandidateClusterEntry candidateEntry = CandidateClusterQueue[candidateIndex];
+    const ClusterDagCandidateClusterEntry candidateEntry = CandidateClusterEntry[candidateIndex];
     const uint clusterIndex = candidateEntry.ClusterIndex;
     const bool usePagedCandidate = candidateEntry.PageDataBase != 0xffffffffu;
 #if USE_CLUSTER_DAG_FAST
@@ -65,7 +72,7 @@ void ClusterDagLevelSplitClusterCullCS(uint3 dispatchThreadId : SV_DispatchThrea
         {
             const uint drawDataIndex = cluster.DrawDataStart + packetOffset;
 #if !USE_CLUSTER_DAG_FAST
-            if (drawDataIndex >= IndirectCommandCount)
+            if (drawDataIndex >= DrawDataCount)
             {
                 continue;
             }

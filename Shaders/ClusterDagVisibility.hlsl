@@ -44,6 +44,7 @@ VSOutput ClusterDagVisibilityVS(VSInput Input)
         drawData.IndexCount = 0u;
         drawData.RangeIndex = 0u;
         drawData.RangeCommandStart = 0u;
+        drawData.RangeCommandCount = 0u;
         drawData.ModelIndex = 0u;
         uint pageVertexIndex = 0u;
         if (usePageData)

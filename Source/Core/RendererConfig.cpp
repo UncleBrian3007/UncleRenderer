@@ -363,6 +363,11 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
         OutConfig.bEnableHZB = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
 
+	if (LowerKey == "hzbtwopass" || LowerKey == "enablehzbtwopass")
+	{
+		OutConfig.bEnableHzbTwoPass = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+	}
+
     if (LowerKey == "gtao" || LowerKey == "enablegtao")
     {
         OutConfig.bEnableGtao = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
@@ -814,14 +819,6 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
         OutConfig.bEnableClusterDAGFastShader = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
 
-    if (LowerKey == "clusterdagvisibilitybuffer"
-        || LowerKey == "enableclusterdagvisibilitybuffer"
-        || LowerKey == "clusterdagvisibility"
-        || LowerKey == "enableclusterdagvisibility")
-    {
-        OutConfig.bEnableClusterDAGVisibilityBuffer = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
     if (LowerKey == "forcerebuildclusterdagcache"
         || LowerKey == "forceclusterdagcachebuild"
         || LowerKey == "ignoreclusterdagcache"
@@ -979,14 +976,6 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
         {
             LogWarning("Invalid Cluster DAG force mip level in renderer config: " + Value);
         }
-    }
-
-    if (LowerKey == "clusterdagforcemipskipfrustumcull"
-        || LowerKey == "enableclusterdagforcemipskipfrustumcull"
-        || LowerKey == "clusterdagforcemipdisablefrustumcull"
-        || LowerKey == "enableclusterdagforcemipdisablefrustumcull")
-    {
-        OutConfig.bEnableClusterDAGForceMipSkipFrustumCull = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
 
     if (LowerKey == "clusterdagforcesoftwareraster"

@@ -159,6 +159,8 @@ namespace RendererUtils
     constexpr uint32_t GPipelineKeySkinningBit = RENDER_PIPELINE_KEY_SKINNING_BIT;
     constexpr uint32_t GPipelineKeyDoubleSidedBit = RENDER_PIPELINE_KEY_DOUBLE_SIDED_BIT;
     constexpr uint32_t GPipelineKeyDoubleSidedMask = RENDER_PIPELINE_KEY_DOUBLE_SIDED_MASK;
+    constexpr uint32_t GMaterialBindlessIndexCount = 10;
+    using FMaterialBindlessIndices = std::array<uint32_t, GMaterialBindlessIndexCount>;
 
     struct FUpdateSceneConstantsParams
     {
@@ -244,6 +246,7 @@ namespace RendererUtils
         std::vector<bool>& OutVisibility,
         bool bAllowMeshletCulling);
     void UpdateSceneConstants(const FUpdateSceneConstantsParams& Params);
+    FMaterialBindlessIndices BuildMaterialBindlessIndices(const FSceneModelResource& Model);
     bool UpdateGltfSceneAnimation(
         std::vector<FSceneModelResource>& Models,
         std::vector<FGltfScene>& Scenes,

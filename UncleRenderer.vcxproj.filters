@@ -788,16 +788,7 @@
     <None Include="Shaders\ClusterDag\PrepareClusterDagSwRasterArgs.hlsl">
       <Filter>Shaders\ClusterDag</Filter>
     </None>
-    <None Include="Shaders\ClusterDag\BuildClusterDagRunsAppend.hlsl">
-      <Filter>Shaders\ClusterDag</Filter>
-    </None>
-    <None Include="Shaders\ClusterDag\ClusterDagClusterCull.hlsl">
-      <Filter>Shaders\ClusterDag</Filter>
-    </None>
     <None Include="Shaders\ClusterDag\ClusterDagCommon.hlsl">
-      <Filter>Shaders\ClusterDag</Filter>
-    </None>
-    <None Include="Shaders\ClusterDag\ClusterDagNodeCull.hlsl">
       <Filter>Shaders\ClusterDag</Filter>
     </None>
     <None Include="Shaders\ClusterDag\ClusterDagTraversalCommon.hlsl">

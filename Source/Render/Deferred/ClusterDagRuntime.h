@@ -29,7 +29,7 @@ public:
     void AddPasses(FDeferredPassContext& Context) const;
 
     bool HasResources() const;
-    bool UsesRuntimePath(const FDeferredRenderer& Owner, const FSceneModelResource& Model) const;
+    bool UsesRuntimePath(const FSceneModelResource& Model) const;
 
     ID3D12Resource* GetIndirectCommandBuffer(const FDeferredRenderer& Owner) const;
     D3D12_RESOURCE_STATES& GetIndirectCommandState(FDeferredRenderer& Owner);
@@ -45,13 +45,6 @@ public:
     bool IsFastShaderEnabled() const { return bFastShaderEnabled; }
     bool IsDebugEnabled() const { return bDebugEnabled; }
     EClusterDAGTraversalMode GetTraversalMode() const { return ActiveTraversalMode; }
-    float GetTargetErrorPixels() const { return TargetErrorPixels; }
-    bool IsForceMipEnabled() const { return bForceMipEnabled; }
-    uint32_t GetForceMipLevel() const { return ForceMipLevel; }
-    bool IsForceMipSkipFrustumCull() const { return bForceMipSkipFrustumCull; }
-    float GetSwRasterThresholdPixels() const { return SwRasterThresholdPixels; }
-    uint32_t GetVisibleRootCount() const { return VisibleRootCount; }
-    uint32_t GetClusterCount() const { return ClusterCount; }
     uint32_t GetStreamingPageCount() const { return StreamingPageCount; }
     const std::vector<FClusterDagStreamingPageSource>& GetStreamingPageSources() const { return StreamingPageSources; }
 
@@ -91,13 +84,15 @@ private:
         uint32_t IndexCount = 0;        // Number of indices (= triangles * 3) to draw for this cluster
         uint32_t RangeIndex = 0;        // Which IndirectDrawRange (material/pipeline group) this packet belongs to; used as RunCounts array index
         uint32_t RangeCommandStart = 0; // IndirectDrawRanges[RangeIndex].Start; base slot in the output command buffer for this range, combined with the per-range atomic counter to produce the final output slot
+        uint32_t RangeCommandCount = 0; // IndirectDrawRanges[RangeIndex].Count; capacity guard for GPU command appends
         uint32_t ModelIndex = 0;        // Scene-model index used by the visibility resolve path to recover per-model shading data
 
-        static FClusterDrawData Make(uint32_t InStartIndex, uint32_t InIndexCount, uint32_t InRangeIndex, uint32_t InRangeCommandStart, uint32_t InModelIndex)
+        static FClusterDrawData Make(uint32_t InStartIndex, uint32_t InIndexCount, uint32_t InRangeIndex, uint32_t InRangeCommandStart, uint32_t InRangeCommandCount, uint32_t InModelIndex)
         {
-            return { InStartIndex, InIndexCount, InRangeIndex, InRangeCommandStart, InModelIndex };
+            return { InStartIndex, InIndexCount, InRangeIndex, InRangeCommandStart, InRangeCommandCount, InModelIndex };
         }
     };
+    static_assert(sizeof(FClusterDrawData) == 24, "FClusterDrawData must match cluster DAG runtime shader layout");
 
     struct FVisibleEntry
     {
@@ -167,7 +162,7 @@ private:
 
     std::vector<FBindlessBuffer> QueueStateBuffers;
     std::vector<FBindlessBuffer> GroupQueueBuffers;
-    std::vector<FBindlessBuffer> CandidateClusterQueueBuffers;
+    std::vector<FBindlessBuffer> CandidateClusterEntryBuffers;
     std::vector<FBindlessBuffer> VisitedGroupEpochBuffers;
     std::array<std::vector<FBindlessBuffer>, 2> LevelSplitNodeCandidateBuffers;
     std::array<std::vector<FBindlessBuffer>, 2> LevelSplitNodeArgsBuffers;
@@ -189,7 +184,6 @@ private:
     float SwRasterThresholdPixels = 16.0f;
     bool bForceMipEnabled = false;
     uint32_t ForceMipLevel = 0;
-    bool bForceMipSkipFrustumCull = false;
     bool bForceSoftwareRaster = false;
     EClusterDAGTraversalMode ActiveTraversalMode = EClusterDAGTraversalMode::LevelSplitQueue;
     uint32_t VisibleRootCount = 0;

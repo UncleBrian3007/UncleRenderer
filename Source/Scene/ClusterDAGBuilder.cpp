@@ -33,7 +33,7 @@
 namespace
 {
     constexpr uint32_t GVmeshVersion = 16;
-    constexpr uint32_t GClusterDAGBuildSemanticVersion = 3;
+    constexpr uint32_t GClusterDAGBuildSemanticVersion = 4;
     constexpr size_t GAttributeFloatCount = 5;
     constexpr uint32_t GClusterDAGMinGroupSize = 8;
     constexpr uint32_t GClusterDAGMaxGroupSize = 32;
@@ -950,14 +950,13 @@ namespace
         uint32_t ChildClusterCount,
         const std::string& FailureReason)
     {
+        (void)FailureReason;
         const bool bMeaningfulTriangleReduction = OutputTriangleCount < SourceTriangleCount;
         const bool bMeaningfulParentReduction = PredictedParentCount > 0u && PredictedParentCount < ChildClusterCount;
-        const bool bParentBudgetPendingActualSplit =
-            !bValidOutput && FailureReason == "predicted_parent_count_exceeded";
         return bReduced
             && bMeaningfulTriangleReduction
             && bMeaningfulParentReduction
-            && (bValidOutput || bParentBudgetPendingActualSplit);
+            && bValidOutput;
     }
 
     std::vector<FClusterRef> MakeClusterRefs(const std::vector<uint32_t>& ClusterIndices)
@@ -1509,19 +1508,6 @@ namespace
 
         auto TryReduce = [&](bool bRelaxLocks) -> bool
         {
-            FBuilderVertexStreams PendingStreams;
-            std::vector<uint32_t> PendingIndices;
-            float PendingResultError = 0.0f;
-            uint32_t PendingPredictedParentCount = 0;
-            uint32_t PendingPositionNodeCount = 0;
-            uint32_t PendingPositionTriangleCount = 0;
-            uint32_t PendingOutputPositions = 0;
-            uint32_t PendingOutputTriangles = 0;
-            uint32_t PendingSimplifiedTriangles = 0;
-            uint32_t PendingLockedPositionCount = 0;
-            uint32_t PendingTargetClusterTriangles = 0;
-            bool bHasPendingActualParentCheck = false;
-
             uint32_t TargetClusterTriangles = InitialTargetClusterTriangles;
             while (TargetClusterTriangles > 0u)
             {
@@ -1556,27 +1542,11 @@ namespace
                     ChildClusterCount,
                     LastFailureReason))
                 {
-                    if (Result.bValidOutput)
-                    {
-                        OutStreams = std::move(Result.Streams);
-                        OutIndices = std::move(Result.Indices);
-                        OutPredictedParentCount = Result.PredictedParentCount;
-                        CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " MeshoptScratchReducer" << ", backend=MeshoptScratch" << ", srcPositions=" << SourcePositionCount << ", srcTriangles=" << SourceTriangleCount << ", positionNodes=" << Result.PositionNodeCount << ", positionTriangles=" << Result.PositionTriangleCount << ", outputPositions=" << LastOutputPositions << ", outputTriangles=" << LastOutputTriangles << ", desiredParents=" << DesiredParentCount << ", maxAllowedParents=" << MaxAllowedParentCount << ", predictedParents=" << OutPredictedParentCount << ", targetClusterTriangles=" << FinalTargetClusterTriangles << ", meshoptSimplifiedTriangles=" << LastSimplifiedTriangles << ", lockedPositions=" << Result.LockedPositionCount << ", attempts=" << AttemptCount << ", relaxedAttempts=" << RelaxedAttemptCount << ", relaxedLocks=" << (bRelaxLocks ? "true" : "false") << ", resultError=" << FormatFloat(OutResultError) << ", validOutput=true");
-                        return true;
-                    }
-
-                    PendingStreams = std::move(Result.Streams);
-                    PendingIndices = std::move(Result.Indices);
-                    PendingResultError = OutResultError;
-                    PendingPredictedParentCount = Result.PredictedParentCount;
-                    PendingPositionNodeCount = Result.PositionNodeCount;
-                    PendingPositionTriangleCount = Result.PositionTriangleCount;
-                    PendingOutputPositions = LastOutputPositions;
-                    PendingOutputTriangles = LastOutputTriangles;
-                    PendingSimplifiedTriangles = LastSimplifiedTriangles;
-                    PendingLockedPositionCount = Result.LockedPositionCount;
-                    PendingTargetClusterTriangles = FinalTargetClusterTriangles;
-                    bHasPendingActualParentCheck = true;
+                    OutStreams = std::move(Result.Streams);
+                    OutIndices = std::move(Result.Indices);
+                    OutPredictedParentCount = Result.PredictedParentCount;
+                    CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " MeshoptScratchReducer" << ", backend=MeshoptScratch" << ", srcPositions=" << SourcePositionCount << ", srcTriangles=" << SourceTriangleCount << ", positionNodes=" << Result.PositionNodeCount << ", positionTriangles=" << Result.PositionTriangleCount << ", outputPositions=" << LastOutputPositions << ", outputTriangles=" << LastOutputTriangles << ", desiredParents=" << DesiredParentCount << ", maxAllowedParents=" << MaxAllowedParentCount << ", predictedParents=" << OutPredictedParentCount << ", targetClusterTriangles=" << FinalTargetClusterTriangles << ", meshoptSimplifiedTriangles=" << LastSimplifiedTriangles << ", lockedPositions=" << Result.LockedPositionCount << ", attempts=" << AttemptCount << ", relaxedAttempts=" << RelaxedAttemptCount << ", relaxedLocks=" << (bRelaxLocks ? "true" : "false") << ", resultError=" << FormatFloat(OutResultError) << ", validOutput=true");
+                    return true;
                 }
 
                 if (TargetClusterTriangles <= MinimumTargetClusterTriangles)
@@ -1587,16 +1557,6 @@ namespace
                 TargetClusterTriangles -= 2u;
             }
 
-            if (bHasPendingActualParentCheck)
-            {
-                OutStreams = std::move(PendingStreams);
-                OutIndices = std::move(PendingIndices);
-                OutResultError = PendingResultError;
-                OutPredictedParentCount = PendingPredictedParentCount;
-                CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " MeshoptScratchReducer" << ", backend=MeshoptScratch" << ", srcPositions=" << SourcePositionCount << ", srcTriangles=" << SourceTriangleCount << ", positionNodes=" << PendingPositionNodeCount << ", positionTriangles=" << PendingPositionTriangleCount << ", outputPositions=" << PendingOutputPositions << ", outputTriangles=" << PendingOutputTriangles << ", desiredParents=" << DesiredParentCount << ", maxAllowedParents=" << MaxAllowedParentCount << ", predictedParents=" << OutPredictedParentCount << ", targetClusterTriangles=" << PendingTargetClusterTriangles << ", meshoptSimplifiedTriangles=" << PendingSimplifiedTriangles << ", lockedPositions=" << PendingLockedPositionCount << ", attempts=" << AttemptCount << ", relaxedAttempts=" << RelaxedAttemptCount << ", relaxedLocks=" << (bRelaxLocks ? "true" : "false") << ", resultError=" << FormatFloat(OutResultError) << ", validOutput=pending_actual_parent_count");
-                return true;
-            }
-
             return false;
         };
 
@@ -1605,13 +1565,17 @@ namespace
             return true;
         }
 
-        if (bAllowExternalPenaltyCollapses && TryReduce(true))
+        const bool bRetryWithSoftBoundaryPenalty =
+            bAllowExternalPenaltyCollapses ||
+            LastFailureReason == "zero_progress" ||
+            LastFailureReason == "predicted_parent_count_exceeded";
+        if (bRetryWithSoftBoundaryPenalty && TryReduce(true))
         {
             return true;
         }
 
         OutPredictedParentCount = LastPredictedParentCount;
-        CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " MeshoptScratchReducer failed" << ", fallback=MeshoptScratch" << ", positionNodes=" << SourcePositionCount << ", positionTriangles=" << LastPositionTriangles << ", sourceTriangles=" << SourceTriangleCount << ", desiredParents=" << DesiredParentCount << ", maxAllowedParents=" << MaxAllowedParentCount << ", targetClusterTriangles=" << FinalTargetClusterTriangles << ", lockedPositions=" << Scratch.LockedPositionCount << ", meshoptSimplifiedTriangles=" << LastSimplifiedTriangles << ", outputPositions=" << LastOutputPositions << ", outputTriangles=" << LastOutputTriangles << ", predictedParents=" << LastPredictedParentCount << ", attempts=" << AttemptCount << ", relaxedAttempts=" << RelaxedAttemptCount << ", relaxedRetry=" << (bAllowExternalPenaltyCollapses ? "true" : "false") << ", resultError=" << FormatFloat(OutResultError) << ", reason=" << LastFailureReason);
+        CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " MeshoptScratchReducer failed" << ", fallback=MeshoptScratch" << ", positionNodes=" << SourcePositionCount << ", positionTriangles=" << LastPositionTriangles << ", sourceTriangles=" << SourceTriangleCount << ", desiredParents=" << DesiredParentCount << ", maxAllowedParents=" << MaxAllowedParentCount << ", targetClusterTriangles=" << FinalTargetClusterTriangles << ", lockedPositions=" << Scratch.LockedPositionCount << ", meshoptSimplifiedTriangles=" << LastSimplifiedTriangles << ", outputPositions=" << LastOutputPositions << ", outputTriangles=" << LastOutputTriangles << ", predictedParents=" << LastPredictedParentCount << ", attempts=" << AttemptCount << ", relaxedAttempts=" << RelaxedAttemptCount << ", relaxedRetry=" << (bRetryWithSoftBoundaryPenalty ? "true" : "false") << ", resultError=" << FormatFloat(OutResultError) << ", reason=" << LastFailureReason);
         return false;
     }
 
@@ -2070,9 +2034,14 @@ namespace
                 const uint32_t SourceTriangleCount = Scratch.ActiveTriangleCount;
                 const uint32_t DesiredParentCount = ComputeDesiredParentCount(SourceTriangleCount, Params);
                 const uint32_t MaxAllowedParentCount = ComputeMaxAllowedParentCount(DesiredParentCount, static_cast<uint32_t>(ChildClusters.size()));
+                const uint32_t SourcePositionCount = static_cast<uint32_t>(Scratch.PositionNodes.size());
+                const bool bHighBoundaryLockPressure =
+                    SourcePositionCount > 0u &&
+                    Scratch.LockedPositionCount * 4u >= SourcePositionCount * 3u;
                 const bool bAllowExternalPenaltyCollapses =
-                    ClusterGroups.size() == 1u &&
-                    ChildClusters.size() == CurrentClusters.size();
+                    bHighBoundaryLockPressure ||
+                    (ClusterGroups.size() == 1u &&
+                        ChildClusters.size() == CurrentClusters.size());
                 FBuilderVertexStreams ReducedGroupStreams;
                 std::vector<uint32_t> ReducedGroupIndices;
                 float SimplifyError = 0.0f;
@@ -2165,7 +2134,8 @@ namespace
 
                 if (!bWithinParentBudget)
                 {
-                    CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " accepted over-budget parent reduction" << ", childClusters=" << ChildClusters.size() << ", desiredParents=" << DesiredParentCount << ", maxAllowedParents=" << ParentBudgetForValidation << ", predictedParents=" << PredictedParentCount << ", actualParents=" << ParentClusters.size() << ", outputTriangles=" << (GroupIndices.size() / 3));
+                    CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " rejected over-budget parent reduction" << ", childClusters=" << ChildClusters.size() << ", desiredParents=" << DesiredParentCount << ", maxAllowedParents=" << ParentBudgetForValidation << ", predictedParents=" << PredictedParentCount << ", actualParents=" << ParentClusters.size() << ", outputTriangles=" << (GroupIndices.size() / 3));
+                    return false;
                 }
 
                 State.Dag.Groups[GroupIndex].ParentRefs = MakeClusterRefs(ParentClusters);

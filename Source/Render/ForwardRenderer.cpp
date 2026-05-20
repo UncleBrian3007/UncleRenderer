@@ -25,6 +25,69 @@
 constexpr uint32_t kForwardBindlessDwordCount = 9;
 constexpr uint32_t kForwardPerDrawDwordCount  = 2;
 
+namespace
+{
+    struct FForwardBindlessFrameIndices
+    {
+        uint32_t ShadowMapIndex = UINT32_MAX;
+        uint32_t ShadowMaskIndex = UINT32_MAX;
+        uint32_t ShadowMaskEnabled = 0u;
+        uint32_t EnvironmentCubeIndex = UINT32_MAX;
+        uint32_t BrdfLutIndex = UINT32_MAX;
+    };
+
+    FForwardBindlessFrameIndices BuildForwardBindlessFrameIndices(
+        uint32_t ShadowMapIndex,
+        uint32_t ShadowMaskIndex,
+        bool bRayTracedShadowsEnabled,
+        uint32_t EnvironmentCubeIndex,
+        uint32_t BrdfLutIndex)
+    {
+        const uint32_t ShadowMaskEnabled = (bRayTracedShadowsEnabled && IsValidBindlessIndex(ShadowMaskIndex)) ? 1u : 0u;
+        return
+        {
+            ShadowMapIndex,
+            ShadowMaskEnabled ? ShadowMaskIndex : ShadowMapIndex,
+            ShadowMaskEnabled,
+            EnvironmentCubeIndex,
+            BrdfLutIndex
+        };
+    }
+
+    void SetForwardBindlessIndices(
+        ID3D12GraphicsCommandList* CommandList,
+        const RendererUtils::FMaterialBindlessIndices& MaterialIndices,
+        const FForwardBindlessFrameIndices& FrameIndices)
+    {
+        static_assert(kForwardBindlessDwordCount == 9);
+        static_assert(RendererUtils::GMaterialBindlessIndexCount >= 4);
+        const uint32_t ForwardBindlessIndices[kForwardBindlessDwordCount] =
+        {
+            MaterialIndices[0],
+            MaterialIndices[1],
+            MaterialIndices[2],
+            MaterialIndices[3],
+            FrameIndices.ShadowMapIndex,
+            FrameIndices.ShadowMaskIndex,
+            FrameIndices.ShadowMaskEnabled,
+            FrameIndices.EnvironmentCubeIndex,
+            FrameIndices.BrdfLutIndex
+        };
+        CommandList->SetGraphicsRoot32BitConstants(1, _countof(ForwardBindlessIndices), ForwardBindlessIndices, 0);
+    }
+
+    void SetForwardBindlessIndices(
+        ID3D12GraphicsCommandList* CommandList,
+        const FSceneModelResource& Model,
+        const FForwardBindlessFrameIndices& FrameIndices)
+    {
+        SetForwardBindlessIndices(
+            CommandList,
+            RendererUtils::BuildMaterialBindlessIndices(Model),
+            FrameIndices);
+    }
+}
+
 FForwardRenderer::FForwardRenderer()
     : SkyAtmosphere(std::make_unique<FSkyAtmosphere>())
 {
@@ -438,8 +501,7 @@ void FForwardRenderer::AddGpuCullingPass(FRenderGraph& Graph, const FCamera& Cam
         const FCamera* Camera = nullptr;
     };
 
-    const char* PassName = "GPU Culling";
-    Graph.AddPass<FGpuCullingPassData>(PassName, [this, &Camera, DepthHandle](FGpuCullingPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FGpuCullingPassData>("GPU Culling", [this, &Camera, DepthHandle](FGpuCullingPassData& Data, FRGPassBuilder& Builder)
     {
         Data.bEnabled = CanDispatchGpuCulling();
         Data.Camera = &Camera;
@@ -447,14 +509,14 @@ void FForwardRenderer::AddGpuCullingPass(FRenderGraph& Graph, const FCamera& Cam
         {
             Builder.KeepAlive();
         }
-    }, [this, PassName](const FGpuCullingPassData& Data, FDX12CommandContext& Cmd)
+    }, [this](const FGpuCullingPassData& Data, FDX12CommandContext& Cmd)
     {
         if (!Data.bEnabled)
         {
             return;
         }
 
-        DispatchGpuCulling(Cmd, *Data.Camera, PassName, ECullingMode::All, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, false);
+        DispatchGpuCulling(Cmd, *Data.Camera, ECullingMode::All, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, false);
     });
 }
 
@@ -616,6 +678,13 @@ void FForwardRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Camer
         LocalCommandList->OMSetRenderTargets(0, nullptr, FALSE, &DepthHandle);
 
         ID3D12PipelineState* CurrentPipeline = nullptr;
+        const FForwardBindlessFrameIndices BindlessFrameIndices = BuildForwardBindlessFrameIndices(
+            ShadowMap.SrvBindlessIndex,
+            ShadowMaskBindlessIndex,
+            bRayTracedShadowsEnabled,
+            GetEnvironmentCubeSrvIndex(),
+            GetBrdfLutSrvIndex());
+
         for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
         {
             if (!SceneModelVisibility.empty() && !SceneModelVisibility[ModelIndex])
@@ -645,22 +714,8 @@ void FForwardRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Camer
             LocalCommandList->SetGraphicsRootConstantBufferView(
                 0,
                 ConstantBufferAddress + ConstantBufferOffset);
-            const uint32_t ShadowMaskEnabled = (bRayTracedShadowsEnabled && IsValidBindlessIndex(ShadowMaskBindlessIndex)) ? 1u : 0u;
-            const uint32_t ResolvedShadowMaskIndex = ShadowMaskEnabled ? ShadowMaskBindlessIndex : ShadowMap.SrvBindlessIndex;
-            const uint32_t ForwardBindlessIndices[kForwardBindlessDwordCount] =
-            {
-                Model.BaseColor.SrvBindlessIndex,
-                Model.MetallicRoughness.SrvBindlessIndex,
-                Model.Normal.SrvBindlessIndex,
-                Model.Emissive.SrvBindlessIndex,
-                ShadowMap.SrvBindlessIndex,
-                ResolvedShadowMaskIndex,
-                ShadowMaskEnabled,
-                GetEnvironmentCubeSrvIndex(),
-                GetBrdfLutSrvIndex()
-            };
             static_assert(1u <= kForwardPerDrawDwordCount);
-            LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(ForwardBindlessIndices), ForwardBindlessIndices, 0);
+            SetForwardBindlessIndices(LocalCommandList, Model, BindlessFrameIndices);
             LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
 
             if (AreModelPixEventsEnabled())
@@ -769,6 +824,13 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
         LocalCommandList->RSSetScissorRects(1, &ScissorRect);
 		LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
+        const FForwardBindlessFrameIndices BindlessFrameIndices = BuildForwardBindlessFrameIndices(
+            ShadowMap.SrvBindlessIndex,
+            ShadowMaskBindlessIndex,
+            bRayTracedShadowsEnabled,
+            GetEnvironmentCubeSrvIndex(),
+            GetBrdfLutSrvIndex());
+
         for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
         {
             const FSceneModelResource& Model = SceneModels[ModelIndex];
@@ -809,21 +871,7 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                     return;
                 }
                 LocalCommandList->SetPipelineState(Pipeline);
-                const uint32_t ShadowMaskEnabled = (bRayTracedShadowsEnabled && IsValidBindlessIndex(ShadowMaskBindlessIndex)) ? 1u : 0u;
-                const uint32_t ResolvedShadowMaskIndex = ShadowMaskEnabled ? ShadowMaskBindlessIndex : ShadowMap.SrvBindlessIndex;
-                const uint32_t ForwardBindlessIndices[kForwardBindlessDwordCount] =
-                {
-                    Range.MaterialBindlessIndices[0],
-                    Range.MaterialBindlessIndices[1],
-                    Range.MaterialBindlessIndices[2],
-                    Range.MaterialBindlessIndices[3],
-                    ShadowMap.SrvBindlessIndex,
-                    ResolvedShadowMaskIndex,
-                    ShadowMaskEnabled,
-                    GetEnvironmentCubeSrvIndex(),
-                    GetBrdfLutSrvIndex()
-                };
-                    LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(ForwardBindlessIndices), ForwardBindlessIndices, 0);
+                SetForwardBindlessIndices(LocalCommandList, Range.MaterialBindlessIndices, BindlessFrameIndices);
 
                 const uint64_t Offset = static_cast<uint64_t>(Range.Start) * sizeof(FIndirectDrawCommand);
                 const uint64_t CountOffset = RangeIndex * sizeof(uint32_t);
@@ -872,22 +920,8 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                     LocalCommandList->SetGraphicsRootConstantBufferView(
                         0,
                         ConstantBufferAddress + ConstantBufferOffset);
-                    const uint32_t ShadowMaskEnabled = (bRayTracedShadowsEnabled && IsValidBindlessIndex(ShadowMaskBindlessIndex)) ? 1u : 0u;
-                    const uint32_t ResolvedShadowMaskIndex = ShadowMaskEnabled ? ShadowMaskBindlessIndex : ShadowMap.SrvBindlessIndex;
-                    const uint32_t ForwardBindlessIndices[kForwardBindlessDwordCount] =
-                    {
-                        Model.BaseColor.SrvBindlessIndex,
-                        Model.MetallicRoughness.SrvBindlessIndex,
-                        Model.Normal.SrvBindlessIndex,
-                        Model.Emissive.SrvBindlessIndex,
-                        ShadowMap.SrvBindlessIndex,
-                        ResolvedShadowMaskIndex,
-                        ShadowMaskEnabled,
-                        GetEnvironmentCubeSrvIndex(),
-                        GetBrdfLutSrvIndex()
-                    };
-                            static_assert(1u <= kForwardPerDrawDwordCount);
-                    LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(ForwardBindlessIndices), ForwardBindlessIndices, 0);
+                    static_assert(1u <= kForwardPerDrawDwordCount);
+                    SetForwardBindlessIndices(LocalCommandList, Model, BindlessFrameIndices);
                     LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
 
                     if (AreModelPixEventsEnabled())
@@ -933,22 +967,8 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                 LocalCommandList->SetGraphicsRootConstantBufferView(
                     0,
                     ConstantBufferAddress + ConstantBufferOffset);
-                const uint32_t ShadowMaskEnabled = (bRayTracedShadowsEnabled && IsValidBindlessIndex(ShadowMaskBindlessIndex)) ? 1u : 0u;
-                const uint32_t ResolvedShadowMaskIndex = ShadowMaskEnabled ? ShadowMaskBindlessIndex : ShadowMap.SrvBindlessIndex;
-                const uint32_t ForwardBindlessIndices[kForwardBindlessDwordCount] =
-                {
-                    Model.BaseColor.SrvBindlessIndex,
-                    Model.MetallicRoughness.SrvBindlessIndex,
-                    Model.Normal.SrvBindlessIndex,
-                    Model.Emissive.SrvBindlessIndex,
-                    ShadowMap.SrvBindlessIndex,
-                    ResolvedShadowMaskIndex,
-                    ShadowMaskEnabled,
-                    GetEnvironmentCubeSrvIndex(),
-                    GetBrdfLutSrvIndex()
-                };
-                    static_assert(1u <= kForwardPerDrawDwordCount);
-                LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(ForwardBindlessIndices), ForwardBindlessIndices, 0);
+                static_assert(1u <= kForwardPerDrawDwordCount);
+                SetForwardBindlessIndices(LocalCommandList, Model, BindlessFrameIndices);
                 LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
 
                 if (AreModelPixEventsEnabled())

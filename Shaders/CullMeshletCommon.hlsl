@@ -1,21 +1,6 @@
 #ifndef CULL_MESHLET_COMMON_HLSL
 #define CULL_MESHLET_COMMON_HLSL
 
-bool IsSphereVisible(float3 center, float radius)
-{
-    [unroll]
-    for (uint i = 0; i < 6; ++i)
-    {
-        float4 plane = FrustumPlanes[i];
-        float distance = dot(plane.xyz, center) + plane.w;
-        if (distance < -radius)
-        {
-            return false;
-        }
-    }
-    return true;
-}
-
 bool IsConeVisible_SphereExpanded(
     float3 center,
     float radius,

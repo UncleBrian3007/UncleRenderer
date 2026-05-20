@@ -5,6 +5,7 @@
 #include "../ShaderCompiler.h"
 #include "ClusterDagRuntime.h"
 #include "DeferredPassContext.h"
+#include "../../Core/GpuDebugMarkers.h"
 #include "../../Core/Logger.h"
 #include "../../RHI/DX12CommandContext.h"
 #include "../../RHI/DX12Device.h"
@@ -75,7 +76,6 @@ void FClusterDagVisibilityPass::AddPasses(FDeferredPassContext& Context) const
     AddDepthExportPass(Context);
     AddResolvePass(Context);
 }
-
 
 void FClusterDagVisibilityPass::AddVisibilityPass(FDeferredPassContext& Context) const
 {
@@ -182,7 +182,16 @@ void FClusterDagVisibilityPass::AddVisibilityPass(FDeferredPassContext& Context)
             CommandList->SetPipelineState(Pipeline);
             const uint64_t Offset = static_cast<uint64_t>(Range.Start) * sizeof(FIndirectDrawCommand);
             const uint64_t CountOffset = RangeIndex * sizeof(uint32_t);
-            CommandList->ExecuteIndirect(CommandSignature.Get(), Range.Count, Data.DagIndirectBuffer, Offset, Data.DagRunCountBuffer, CountOffset);
+            if (AreModelPixEventsEnabled())
+            {
+                const wchar_t* Label = Range.Name.empty() ? L"ClusterDagVisibilityRange" : Range.Name.c_str();
+                FScopedPixEvent RangeEvent(CommandList, Label);
+                CommandList->ExecuteIndirect(CommandSignature.Get(), Range.Count, Data.DagIndirectBuffer, Offset, Data.DagRunCountBuffer, CountOffset);
+            }
+            else
+            {
+                CommandList->ExecuteIndirect(CommandSignature.Get(), Range.Count, Data.DagIndirectBuffer, Offset, Data.DagRunCountBuffer, CountOffset);
+            }
         }
     });
 }
@@ -467,8 +476,7 @@ void FClusterDagVisibilityPass::AddResolvePass(FDeferredPassContext& Context) co
 
 bool FClusterDagVisibilityPass::IsReady() const
 {
-    return bEnabled
-        && bPipelinesReady
+    return bPipelinesReady
         && bResourcesReady
         && Owner != nullptr
         && Device != nullptr

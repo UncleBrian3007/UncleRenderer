@@ -212,6 +212,16 @@ void FGpuDrivenCulling::RefreshCullingPersistentValidation(uint32_t FramesInFlig
         MeshletConeApexBuffer.HasSrv();
 }
 
+bool FGpuDrivenCulling::HasCullingPipelines() const
+{
+    return CullingRootSignature
+        && CullingPipeline
+        && CullingListPipeline
+        && MeshletRunRootSignature
+        && MeshletRunClearPipeline
+        && MeshletRunAppendPipeline;
+}
+
 void FGpuDrivenCulling::FillDispatchSharedIndices(FGpuCullingDispatchIndices& Indices) const
 {
     Indices.MeshletDrawDataIndex = MeshletDrawDataBuffer.SrvBindlessIndex;
@@ -929,10 +939,11 @@ void FGpuDrivenCulling::DispatchBuildVisibilityLists(
         uint32_t InvisibleListIndex;
         uint32_t VisibleCountIndex;
         uint32_t InvisibleCountIndex;
+        uint32_t IndirectCommandCount;
     };
 
     static_assert(sizeof(FBuildListsConstants) / sizeof(uint32_t) <= kVisibilityListBindlessDwordCount);
-    const FBuildListsConstants BuildConstants = { VisibilityIndex, VisibleListIndex, InvisibleListIndex, VisibleCountIndex, InvisibleCountIndex };
+    const FBuildListsConstants BuildConstants = { VisibilityIndex, VisibleListIndex, InvisibleListIndex, VisibleCountIndex, InvisibleCountIndex, IndirectCommandCount };
     CommandList->SetPipelineState(BuildVisibilityListsPipeline.Get());
     CommandList->SetComputeRoot32BitConstants(1, sizeof(BuildConstants) / sizeof(uint32_t), &BuildConstants, 0);
     const uint32_t DispatchCount = (IndirectCommandCount + 63) / 64;
@@ -983,10 +994,11 @@ void FGpuDrivenCulling::DispatchBuildEarlyRejectList(
         uint32_t VisibilityIndex;
         uint32_t RejectListIndex;
         uint32_t RejectCountIndex;
+        uint32_t IndirectCommandCount;
     };
 
     static_assert(sizeof(FEarlyRejectConstants) / sizeof(uint32_t) <= kVisibilityListBindlessDwordCount);
-    const FEarlyRejectConstants RejectConstants = { VisibilityIndex, RejectListIndex, RejectCountIndex };
+    const FEarlyRejectConstants RejectConstants = { VisibilityIndex, RejectListIndex, RejectCountIndex, IndirectCommandCount };
     CommandList->SetPipelineState(BuildEarlyRejectListPipeline.Get());
     CommandList->SetComputeRoot32BitConstants(1, sizeof(RejectConstants) / sizeof(uint32_t), &RejectConstants, 0);
     const uint32_t DispatchCount = (IndirectCommandCount + 63) / 64;
@@ -1036,10 +1048,11 @@ void FGpuDrivenCulling::DispatchMergeVisibilityLists(
     struct FClearFlagsConstants
     {
         uint32_t FlagsIndex;
+        uint32_t IndirectCommandCount;
     };
 
     static_assert(sizeof(FClearFlagsConstants) / sizeof(uint32_t) <= kVisibilityListBindlessDwordCount);
-    const FClearFlagsConstants ClearFlagsConstants = { FlagsIndex };
+    const FClearFlagsConstants ClearFlagsConstants = { FlagsIndex, IndirectCommandCount };
     CommandList->SetPipelineState(ClearVisibilityFlagsPipeline.Get());
     CommandList->SetComputeRoot32BitConstants(1, sizeof(ClearFlagsConstants) / sizeof(uint32_t), &ClearFlagsConstants, 0);
     const uint32_t FlagDispatchCount = (IndirectCommandCount + 63) / 64;
@@ -1082,7 +1095,6 @@ void FGpuDrivenCulling::DispatchGpuCulling(
     FGpuCullingDispatchIndices Indices,
     FDX12CommandContext& CmdContext,
     const FCamera& Camera,
-    const char* PassName,
     uint32_t FrameIndex,
     bool bLatePass,
     uint32_t VisibilityInputFrameIndex)
@@ -1135,30 +1147,13 @@ void FGpuDrivenCulling::DispatchGpuCulling(
     const DirectX::XMMATRIX ViewProjection = Camera.GetViewMatrix() * Camera.GetProjectionMatrix();
     DirectX::XMFLOAT4X4 ViewProjectionMatrix = {};
     DirectX::XMStoreFloat4x4(&ViewProjectionMatrix, ViewProjection);
-    std::memcpy(Constants.ViewProjection, &ViewProjectionMatrix, sizeof(DirectX::XMFLOAT4X4));
 
-    Constants.IndirectCommandCount              = Config.IndirectCommandCount;
-    Constants.HZBEnabled                        = bHZBOcclusionEnabled ? 1u : 0u;
-    Constants.HZBMipCount                       = HZBCullingMipCount;
-    Constants.HZBWidth                          = HZBCullingWidth;
-    Constants.HZBHeight                         = HZBCullingHeight;
     Constants.DebugPrintEnabled                 = Config.bGpuDebugPrintEnabled ? 1u : 0u;
-    Constants.RangeCount                        = Config.RangeCount;
-    Constants.CullingMode                       = ResolvedMode;
     const DirectX::XMFLOAT3 CameraPosition = Camera.GetPosition();
     std::memcpy(Constants.CameraPosition, &CameraPosition, sizeof(DirectX::XMFLOAT3));
-    Constants.ClusterDagTargetErrorPixels       = Config.ClusterDagTargetErrorPixels;
-    Constants.ViewportHeightPixels              = Config.ViewportHeightPixels;
-    Constants.ClusterDagVisibleRootCount        = Config.ClusterDagVisibleRootCount;
-    Constants.ClusterDagForceMipEnabled         = Config.bClusterDagForceMipEnabled ? 1u : 0u;
-    Constants.ClusterDagForceMipLevel           = Config.ClusterDagForceMipLevel;
-    Constants.ClusterDagForceMipSkipFrustumCull = Config.bClusterDagForceMipSkipFrustumCull ? 1u : 0u;
-    Constants.ClusterDagSwRasterThresholdPixels = Config.ClusterDagSwRasterThresholdPixels;
 
     ID3D12GraphicsCommandList* CommandList = CmdContext.GetCommandList();
-    const char* EventName = (PassName && PassName[0] != '\0') ? PassName : "GpuCulling";
-    const std::wstring EventLabel(EventName, EventName + std::strlen(EventName));
-    FScopedPixEvent CullingEvent(CommandList, EventLabel.c_str());
+    FScopedPixEvent CullingEvent(CommandList, L"GpuCulling");
 
     D3D12_RESOURCE_STATES& IndirectState = *FrameData.IndirectState;
     if (IndirectState != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
@@ -1211,6 +1206,8 @@ void FGpuDrivenCulling::DispatchGpuCulling(
         uint32_t CommandTemplatesIndex;
         uint32_t OutputCommandsIndex;
         uint32_t RunCountsIndex;
+        uint32_t IndirectCommandCount;
+        uint32_t RangeCount;
     };
 
     static_assert(sizeof(FMeshletRunBindlessConstants) / sizeof(uint32_t) <= kMeshletRunBindlessDwordCount);
@@ -1221,7 +1218,9 @@ void FGpuDrivenCulling::DispatchGpuCulling(
         Indices.RangeOffsetsIndex,
         FrameData.TemplateSrvBindlessIndex,
         FrameData.IndirectUavBindlessIndex,
-        FrameData.RunCountUavBindlessIndex
+        FrameData.RunCountUavBindlessIndex,
+        Config.IndirectCommandCount,
+        Config.RangeCount
     };
 
     CommandList->SetPipelineState(MeshletRunClearPipeline.Get());
@@ -1235,6 +1234,7 @@ void FGpuDrivenCulling::DispatchGpuCulling(
 
     struct FGpuCullingBindlessConstants
     {
+        DirectX::XMFLOAT4X4 ViewProjection;
         uint32_t ModelBoundsIndex;
         uint32_t HZBTextureIndex;
         uint32_t MeshletConeAxisIndex;
@@ -1245,6 +1245,12 @@ void FGpuDrivenCulling::DispatchGpuCulling(
         uint32_t CullingListCountIndex;
         uint32_t DebugPrintBufferIndex;
         uint32_t DebugPrintStatsIndex;
+        uint32_t IndirectCommandCount;
+        uint32_t HZBEnabled;
+        uint32_t HZBMipCount;
+        uint32_t HZBWidth;
+        uint32_t HZBHeight;
+        uint32_t CullingMode;
     };
 
     const uint32_t ResolvedVisibilityInputIndex = bUseVisibilityInput
@@ -1256,6 +1262,7 @@ void FGpuDrivenCulling::DispatchGpuCulling(
     static_assert(sizeof(FGpuCullingBindlessConstants) / sizeof(uint32_t) <= kGpuCullingBindlessDwordCount);
     const FGpuCullingBindlessConstants CullingBindlessConstants =
     {
+        ViewProjectionMatrix,
         Indices.ModelBoundsIndex,
         HZBCullingBindlessIndex,
         Indices.MeshletConeAxisIndex,
@@ -1265,7 +1272,13 @@ void FGpuDrivenCulling::DispatchGpuCulling(
         ResolvedListIndex,
         ResolvedListCountIndex,
         Indices.DebugPrintBufferIndex,
-        Indices.DebugPrintStatsIndex
+        Indices.DebugPrintStatsIndex,
+        Config.IndirectCommandCount,
+        bHZBOcclusionEnabled ? 1u : 0u,
+        HZBCullingMipCount,
+        HZBCullingWidth,
+        HZBCullingHeight,
+        ResolvedMode
     };
 
     ID3D12PipelineState* SelectedPipeline = Indices.bUseCullingList ? CullingListPipeline.Get() : CullingPipeline.Get();
@@ -1315,14 +1328,7 @@ FRenderer::FGpuDrivenCullingProvider FRenderer::GetGpuDrivenCullingProvider(bool
     Provider.bClusterDagDebugEnabled = IsClusterDagDebugEnabled();
     Provider.bClusterDagFastShaderEnabled = IsClusterDagFastShaderEnabled();
     Provider.bClusterDagGpuDebugEnabled = IsClusterDagDebugEnabled() && GpuDebugState.IsPrintEnabled();
-    Provider.ClusterDagTargetErrorPixels = GetClusterDagTargetErrorPixels();
-    Provider.ClusterDagSwRasterThresholdPixels = GetClusterDagSwRasterThresholdPixels();
     Provider.ViewportHeightPixels = Viewport.Height;
-    Provider.ClusterDagVisibleRootCount = GetClusterDagVisibleRootCount();
-    Provider.ClusterDagClusterCount = GetClusterDagClusterCount();
-    Provider.bClusterDagForceMipEnabled = IsClusterDagForceMipEnabled();
-    Provider.ClusterDagForceMipLevel = GetClusterDagForceMipLevel();
-    Provider.bClusterDagForceMipSkipFrustumCull = IsClusterDagForceMipSkipFrustumCull();
     Provider.GpuDebugPrintStatsUavBindlessIndex = Provider.bClusterDagGpuDebugEnabled ? GpuDebugState.GetPrintStatsUavBindlessIndex() : UINT32_MAX;
     Provider.GpuDebugLineBufferUavBindlessIndex = Provider.bClusterDagGpuDebugEnabled ? GpuDebugState.GetLineBufferUavBindlessIndex() : UINT32_MAX;
     return Provider;
@@ -1440,7 +1446,7 @@ void FGpuDrivenCulling::AddGpuCullingPass(
             }
             Builder.KeepAlive();
         }
-    }, [&Owner, PassName](const FGpuCullingPassData& Data, FDX12CommandContext& Cmd)
+    }, [&Owner](const FGpuCullingPassData& Data, FDX12CommandContext& Cmd)
     {
         if (!Data.bEnabled)
         {
@@ -1450,7 +1456,6 @@ void FGpuDrivenCulling::AddGpuCullingPass(
         Owner.DispatchGpuCulling(
             Cmd,
             *Data.Camera,
-            PassName,
             Data.Mode,
             Data.VisibilityInputIndex,
             Data.VisibilityInputFrameIndex,

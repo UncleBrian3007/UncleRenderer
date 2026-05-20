@@ -1,23 +1,21 @@
 cbuffer CullingConstants : register(b0)
 {
     float4 FrustumPlanes[6];
-    row_major float4x4 ViewProjection;
-    uint IndirectCommandCount;
-    uint HZBEnabled;
-    uint HZBMipCount;
-    uint HZBWidth;
-    uint HZBHeight;
     uint DebugPrintEnabled;
-    uint RangeCount;
-    uint CullingMode;
     float3 CameraPosition;
-    float Padding1;
-    float ClusterDAGTargetErrorPixels;
-    float ViewportHeightPixels;
-    uint ClusterDagRootCount;
-    uint ClusterDAGForceMipEnabled;
-    uint ClusterDAGForceMipLevel;
-    uint ClusterDAGForceMipSkipFrustumCull;
-    uint ClusterDAGForceSoftwareRaster;
-    float ClusterDAGSwRasterThresholdPixels;
 };
+
+bool IsSphereVisible(float3 center, float radius)
+{
+    [unroll]
+    for (uint i = 0; i < 6; ++i)
+    {
+        float4 plane = FrustumPlanes[i];
+        float distance = dot(plane.xyz, center) + plane.w;
+        if (distance < -radius)
+        {
+            return false;
+        }
+    }
+    return true;
+}

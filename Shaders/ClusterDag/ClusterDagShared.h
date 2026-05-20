@@ -6,7 +6,7 @@
 
 // GPU page payload identity
 #define kClusterDagGpuPagePayloadMagic                              0x47504443u
-#define kClusterDagGpuPagePayloadVersion                            3u
+#define kClusterDagGpuPagePayloadVersion                            4u
 
 // Payload header field byte offsets
 #define kClusterDagGpuPageHeaderMagicOffset                         0u
@@ -66,4 +66,5 @@
 #define kClusterDagGpuPageDrawDataRecordIndexCountOffset            8u
 #define kClusterDagGpuPageDrawDataRecordRangeIndexOffset            12u
 #define kClusterDagGpuPageDrawDataRecordRangeCommandStartOffset     16u
-#define kClusterDagGpuPageDrawDataRecordModelIndexOffset            20u
+#define kClusterDagGpuPageDrawDataRecordRangeCommandCountOffset     20u
+#define kClusterDagGpuPageDrawDataRecordModelIndexOffset            24u

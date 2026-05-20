@@ -1,8 +1,8 @@
 #include "../CullingConstants.hlsl"
-#include "../CullMeshletCommon.hlsl"
 
 cbuffer CullingBindlessConstants : register(b1)
 {
+    row_major float4x4 ViewProjection;
     uint ModelBoundsIndex;
     uint HZBTextureIndex;
     uint MeshletConeAxisIndex;
@@ -13,8 +13,15 @@ cbuffer CullingBindlessConstants : register(b1)
     uint CullingListCountIndex;
     uint DebugPrintBufferIndex;
     uint DebugPrintStatsIndex;
+    uint IndirectCommandCount;
+    uint HZBEnabled;
+    uint HZBMipCount;
+    uint HZBWidth;
+    uint HZBHeight;
+    uint CullingMode;
 };
 
+#include "../CullMeshletCommon.hlsl"
 
 [numthreads(64, 1, 1)]
 void CullMeshletVisibilityListCS(uint3 dispatchThreadId : SV_DispatchThreadID)

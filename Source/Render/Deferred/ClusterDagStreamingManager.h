@@ -62,6 +62,7 @@ struct FClusterDagStreamingPageSource
         uint32_t IndexCount = 0u;
         uint32_t RangeIndex = 0u;
         uint32_t RangeCommandStart = 0u;
+        uint32_t RangeCommandCount = 0u;
         uint32_t ModelIndex = 0u;
     };
 

@@ -1,5 +1,3 @@
-#include "../CullingConstants.hlsl"
-
 cbuffer MeshletRunBindlessConstants : register(b1)
 {
     uint VisibleMeshletsIndex;
@@ -8,6 +6,8 @@ cbuffer MeshletRunBindlessConstants : register(b1)
     uint CommandTemplatesIndex;
     uint OutputCommandsIndex;
     uint RunCountsIndex;
+    uint IndirectCommandCount;
+    uint RangeCount;
 };
 
 [numthreads(64, 1, 1)]

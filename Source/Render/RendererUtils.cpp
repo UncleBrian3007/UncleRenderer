@@ -698,6 +698,23 @@ void RendererUtils::UpdateSceneConstants(const FUpdateSceneConstantsParams& Para
     memcpy(Params.ConstantBufferMapped + Params.ConstantBufferOffset, &Constants, sizeof(Constants));
 }
 
+RendererUtils::FMaterialBindlessIndices RendererUtils::BuildMaterialBindlessIndices(const FSceneModelResource& Model)
+{
+    return
+    {
+        Model.BaseColor.SrvBindlessIndex,
+        Model.MetallicRoughness.SrvBindlessIndex,
+        Model.Normal.SrvBindlessIndex,
+        Model.Emissive.SrvBindlessIndex,
+        Model.SheenColor.SrvBindlessIndex,
+        Model.SheenRoughness.SrvBindlessIndex,
+        Model.Clearcoat.SrvBindlessIndex,
+        Model.ClearcoatRoughness.SrvBindlessIndex,
+        Model.ClearcoatNormal.SrvBindlessIndex,
+        Model.Anisotropy.SrvBindlessIndex
+    };
+}
+
 DirectX::XMMATRIX RendererUtils::BuildDirectionalLightViewProjection(
     const DirectX::XMFLOAT3& SceneCenter,
     float SceneRadius,

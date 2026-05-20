@@ -1,4 +1,3 @@
-#include "../CullingConstants.hlsl"
 #include "ClusterDagCommon.hlsl"
 #include "../GpuDebug/GpuDebugPrintCommon.hlsl"
 
@@ -15,9 +14,11 @@ cbuffer ClusterDagInitBindlessConstants : register(b1)
     uint RootGroupBufferIndex;
     uint QueueStateBufferIndex;
     uint GroupQueueBufferIndex;
-    uint CandidateClusterQueueBufferIndex;
+    uint CandidateClusterEntryBufferIndex;
     uint VisitedGroupEpochBufferIndex;
     uint RunCountBufferIndex;
+    uint RunCountCapacity;
+    uint DrawDataVisibleEntryCount;
     uint RootGroupCount;
     uint GroupQueueCapacity;
     uint CandidateQueueCapacity;
@@ -36,7 +37,7 @@ void InitClusterDagQueuesCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     StructuredBuffer<uint> RootGroups = ResourceDescriptorHeap[RootGroupBufferIndex];
     RWByteAddressBuffer QueueState = ResourceDescriptorHeap[QueueStateBufferIndex];
     RWStructuredBuffer<uint> GroupQueue = ResourceDescriptorHeap[GroupQueueBufferIndex];
-    RWStructuredBuffer<ClusterDagCandidateClusterEntry> CandidateClusterQueue = ResourceDescriptorHeap[CandidateClusterQueueBufferIndex];
+    RWStructuredBuffer<ClusterDagCandidateClusterEntry> CandidateClusterEntry = ResourceDescriptorHeap[CandidateClusterEntryBufferIndex];
     RWStructuredBuffer<uint> VisitedGroupEpochs = ResourceDescriptorHeap[VisitedGroupEpochBufferIndex];
     RWByteAddressBuffer RunCounts = ResourceDescriptorHeap[RunCountBufferIndex];
     RWByteAddressBuffer VisibleEntryCounters = ResourceDescriptorHeap[VisibleEntryCountersIndex];
@@ -69,21 +70,16 @@ void InitClusterDagQueuesCS(uint3 dispatchThreadId : SV_DispatchThreadID)
         QueueState.Store(kQueueStatePass0CandidateCommittedWriteOffset, 0u);
 #if !USE_CLUSTER_DAG_FAST
         QueueState.Store(kQueueStatePass0GroupCountOffset, RootGroupCount);
-        QueueState.Store(kQueueStatePass1CandidateReadOffset, 0u);
-        QueueState.Store(kQueueStatePass1CandidateWriteOffset, 0u);
-        QueueState.Store(kQueueStatePass1GroupReadOffset, 0u);
-        QueueState.Store(kQueueStatePass1GroupWriteOffset, 0u);
-        QueueState.Store(kQueueStatePass1GroupCountOffset, 0u);
 
 #endif
     }
 
-    if (threadIndex < RangeCount)
+    if (threadIndex < RunCountCapacity)
     {
         RunCounts.Store(threadIndex * 4u, 0u);
     }
 
-    if (threadIndex < IndirectCommandCount)
+    if (threadIndex < DrawDataVisibleEntryCount)
     {
         DrawDataVisibleEntryIndices[threadIndex] = 0xffffffffu;
     }
@@ -99,7 +95,7 @@ void InitClusterDagQueuesCS(uint3 dispatchThreadId : SV_DispatchThreadID)
         ClusterDagCandidateClusterEntry emptyEntry;
         emptyEntry.ClusterIndex = 0xffffffffu;
         emptyEntry.PageDataBase = 0xffffffffu;
-        CandidateClusterQueue[threadIndex] = emptyEntry;
+        CandidateClusterEntry[threadIndex] = emptyEntry;
     }
 #endif
 

@@ -14,13 +14,6 @@
 - For persistent renderer inputs created during initialization or persistent descriptor creation, cache validation state at creation/refresh time instead of recomputing the full validation every frame.
 - Per-frame validation should be limited to transient RenderGraph resources, frame-indexed bindless indices, resize/recreated resources, or inputs with a concrete invalidation path.
 
-### Codex Chat
-- When referencing files in chat responses, always use this exact link style:
-  `[FileName.ext#L123](/absolute/path/to/FileName.ext#L123)`
-- Use an absolute Windows path in the link target, e.g. `/d:/...` (match the file’s actual drive letter).
-- Include a line number when possible.
-- Do not use `file://`, `vscode://`, or web URLs for file links.
-
 ### Copilot Chat
 - Use workspace-root-relative markdown links: path/to/File.ext#L123
 - In multi-root workspaces, the path must be relative to the owning workspace root.

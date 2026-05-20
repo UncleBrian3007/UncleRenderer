@@ -1,5 +1,3 @@
-#include "../CullingConstants.hlsl"
-
 cbuffer VisibilityListConstants : register(b1)
 {
     uint VisibilityIndex;
@@ -7,7 +5,7 @@ cbuffer VisibilityListConstants : register(b1)
     uint InvisibleListIndex;
     uint VisibleCountIndex;
     uint InvisibleCountIndex;
-    uint ListPadding0;
+    uint IndirectCommandCount;
 };
 
 [numthreads(64, 1, 1)]

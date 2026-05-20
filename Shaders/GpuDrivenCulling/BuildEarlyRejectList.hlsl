@@ -1,13 +1,9 @@
-#include "../CullingConstants.hlsl"
-
 cbuffer EarlyRejectConstants : register(b1)
 {
     uint VisibilityIndex;
     uint RejectListIndex;
     uint RejectCountIndex;
-    uint RejectPadding0;
-    uint RejectPadding1;
-    uint RejectPadding2;
+    uint IndirectCommandCount;
 };
 
 [numthreads(64, 1, 1)]

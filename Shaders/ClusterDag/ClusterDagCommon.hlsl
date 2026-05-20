@@ -49,6 +49,7 @@ struct ClusterDagDrawData
     uint IndexCount;
     uint RangeIndex;
     uint RangeCommandStart;
+    uint RangeCommandCount;
     uint ModelIndex;
 };
 
@@ -189,6 +190,7 @@ bool TryLoadClusterDagVisibleEntryDrawData(
             drawData.IndexCount = PageData.Load(recordBase + kClusterDagGpuPageDrawDataRecordIndexCountOffset);
             drawData.RangeIndex = PageData.Load(recordBase + kClusterDagGpuPageDrawDataRecordRangeIndexOffset);
             drawData.RangeCommandStart = PageData.Load(recordBase + kClusterDagGpuPageDrawDataRecordRangeCommandStartOffset);
+            drawData.RangeCommandCount = PageData.Load(recordBase + kClusterDagGpuPageDrawDataRecordRangeCommandCountOffset);
             drawData.ModelIndex = PageData.Load(recordBase + kClusterDagGpuPageDrawDataRecordModelIndexOffset);
             return true;
         }
@@ -229,11 +231,6 @@ static const uint kQueueStatePass0CandidateWriteOffset = 28u;
 static const uint kQueueStatePass0GroupReadOffset = 32u;
 static const uint kQueueStatePass0GroupWriteOffset = 36u;
 static const uint kQueueStatePass0GroupCountOffset = 40u;
-static const uint kQueueStatePass1CandidateReadOffset = 44u;
-static const uint kQueueStatePass1CandidateWriteOffset = 48u;
-static const uint kQueueStatePass1GroupReadOffset = 52u;
-static const uint kQueueStatePass1GroupWriteOffset = 56u;
-static const uint kQueueStatePass1GroupCountOffset = 60u;
 
 static const uint kLevelSplitQueueStateTotalVisibleClustersOffset = 0u;
 static const uint kLevelSplitQueueStatePeakGroupQueueDepthOffset = 4u;
@@ -241,8 +238,6 @@ static const uint kLevelSplitQueueStatePeakCandidateQueueDepthOffset = 8u;
 static const uint kLevelSplitQueueStateGroupDedupCountOffset = 12u;
 static const uint kLevelSplitQueueStateQueueOverflowCountOffset = 16u;
 static const uint kLevelSplitQueueStateCandidateWriteOffset = 20u;
-static const uint kLevelSplitQueueStateUintCount = 6u;
-static const uint kLevelSplitQueueStateByteSize = kLevelSplitQueueStateUintCount * 4u;
 
 static const uint kClusterDagLevelSplitNodeThreadGroupSize = 64u;
 static const uint kClusterDagLevelSplitMaxChildRefsPerGroup = 256u;
@@ -253,8 +248,6 @@ static const uint kLevelSplitNodeArgsDispatchZOffset = 8u;
 static const uint kLevelSplitNodeArgsNodeCountOffset = 12u;
 static const uint kLevelSplitNodeArgsLevelStartOffset = 16u;
 static const uint kLevelSplitNodeArgsNodeWriteOffset = 20u;
-static const uint kLevelSplitNodeArgsUintCount = 6u;
-static const uint kLevelSplitNodeArgsByteSize = kLevelSplitNodeArgsUintCount * 4u;
 
 // Commit-counter offsets for the persistent queue (Group and Candidate).
 // These are separate from the claimed-write offsets (kQueueStatePass0GroupWriteOffset /

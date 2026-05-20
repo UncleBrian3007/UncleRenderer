@@ -2169,17 +2169,6 @@ void FApplication::RenderUI()
             if (bClusterDagRuntimeEnabled)
             {
 				ImGui::Separator();
-				bool bClusterDagVisibilityBuffer = RendererConfig.bEnableClusterDAGVisibilityBuffer;
-				if (ImGui::Checkbox("Cluster DAG Visibility Buffer", &bClusterDagVisibilityBuffer))
-				{
-					RendererConfig.bEnableClusterDAGVisibilityBuffer = bClusterDagVisibilityBuffer;
-                    UpsertConfigValue(
-                        GetRendererConfigPath(),
-                        "EnableClusterDAGVisibilityBuffer",
-                        RendererConfig.bEnableClusterDAGVisibilityBuffer ? "true" : "false");
-					SyncDeferredClusterDagConfig();
-				}
-
                 bool bClusterDagForceSoftwareRaster = RendererConfig.bEnableClusterDAGForceSoftwareRaster;
                 if (ImGui::Checkbox("Cluster DAG Force SW Raster", &bClusterDagForceSoftwareRaster))
                 {

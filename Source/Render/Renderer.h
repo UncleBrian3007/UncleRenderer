@@ -64,11 +64,11 @@ public:
         uint32_t Start = 0;
         uint32_t Count = 0;
         uint32_t PipelineKey = 0;
-        std::array<uint32_t, 10> MaterialBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX } };
+        RendererUtils::FMaterialBindlessIndices MaterialBindlessIndices{ { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX } };
         std::wstring Name;
 
         static FIndirectDrawRange Make(uint32_t InStart, uint32_t InPipelineKey,
-                                       const std::array<uint32_t, 10>& InMaterialIndices,
+                                       const RendererUtils::FMaterialBindlessIndices& InMaterialIndices,
                                        const std::string& InName = {})
         {
             FIndirectDrawRange Range;
@@ -92,14 +92,7 @@ public:
         bool bClusterDagDebugEnabled = false;
         bool bClusterDagFastShaderEnabled = false;
         bool bClusterDagGpuDebugEnabled = false;
-        float ClusterDagTargetErrorPixels = 0.0f;
-        float ClusterDagSwRasterThresholdPixels = 16.0f;
         float ViewportHeightPixels = 0.0f;
-        uint32_t ClusterDagVisibleRootCount = 0;
-        uint32_t ClusterDagClusterCount = 0;
-        bool bClusterDagForceMipEnabled = false;
-        uint32_t ClusterDagForceMipLevel = 0;
-        bool bClusterDagForceMipSkipFrustumCull = false;
         uint32_t GpuDebugPrintStatsUavBindlessIndex = UINT32_MAX;
         uint32_t GpuDebugLineBufferUavBindlessIndex = UINT32_MAX;
 
@@ -197,13 +190,7 @@ public:
     virtual bool IsClusterDagFastShaderEnabled() const { return false; }
     virtual bool IsClusterDagDebugEnabled() const { return false; }
     virtual EClusterDAGTraversalMode GetClusterDagTraversalMode() const { return EClusterDAGTraversalMode::LevelSplitQueue; }
-    virtual float GetClusterDagTargetErrorPixels() const { return 1.0f; }
-    virtual float GetClusterDagSwRasterThresholdPixels() const { return 16.0f; }
-    virtual bool IsClusterDagForceMipEnabled() const { return false; }
-    virtual uint32_t GetClusterDagForceMipLevel() const { return 0; }
-    virtual bool IsClusterDagForceMipSkipFrustumCull() const { return false; }
-    virtual uint32_t GetClusterDagVisibleRootCount() const { return 0; }
-    virtual uint32_t GetClusterDagClusterCount() const { return 0; }
+    virtual bool ShouldUseClusterDagRuntimePath(const FSceneModelResource& Model) const { return false; }
 
     // Path Tracing
     virtual bool IsPathTracingPreferred() const { return false; }
@@ -279,7 +266,6 @@ protected:
     void DispatchGpuCulling(
         FDX12CommandContext& CmdContext,
         const FCamera& Camera,
-        const char* PassName,
         ECullingMode Mode,
         uint32_t VisibilityInputIndex,
         uint32_t VisibilityInputFrameIndex,

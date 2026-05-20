@@ -173,6 +173,7 @@ ClusterDagDrawData LoadClusterDagDrawDataFromPageRecord(uint recordBase, ByteAdd
     drawData.IndexCount = PageData.Load(recordBase + kClusterDagGpuPageDrawDataRecordIndexCountOffset);
     drawData.RangeIndex = PageData.Load(recordBase + kClusterDagGpuPageDrawDataRecordRangeIndexOffset);
     drawData.RangeCommandStart = PageData.Load(recordBase + kClusterDagGpuPageDrawDataRecordRangeCommandStartOffset);
+    drawData.RangeCommandCount = PageData.Load(recordBase + kClusterDagGpuPageDrawDataRecordRangeCommandCountOffset);
     drawData.ModelIndex = PageData.Load(recordBase + kClusterDagGpuPageDrawDataRecordModelIndexOffset);
     return drawData;
 }
@@ -372,6 +373,11 @@ void EmitClusterDagHWCommand(
 {
     uint runOffset = 0u;
     RunCounts.InterlockedAdd(drawData.RangeIndex * 4u, 1u, runOffset);
+    if (runOffset >= drawData.RangeCommandCount)
+    {
+        return;
+    }
+
     const uint outputIndex = drawData.RangeCommandStart + runOffset;
     CopyClusterDagCommandTemplate(drawDataIndex, outputIndex, CommandTemplates, OutputCommands);
     const uint outputBase = outputIndex * kClusterDagCommandStride;

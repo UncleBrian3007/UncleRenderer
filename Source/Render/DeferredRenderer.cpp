@@ -100,33 +100,20 @@ EClusterDAGTraversalMode FDeferredRenderer::GetClusterDagTraversalMode() const
 {
     return ClusterDagRuntime->GetTraversalMode();
 }
-float FDeferredRenderer::GetClusterDagTargetErrorPixels() const
+bool FDeferredRenderer::ShouldUseClusterDagRuntimePath(const FSceneModelResource& Model) const
 {
-    return ClusterDagRuntime->GetTargetErrorPixels();
+    return IsClusterDagRuntimePathReady() && ClusterDagRuntime->UsesRuntimePath(Model);
 }
-float FDeferredRenderer::GetClusterDagSwRasterThresholdPixels() const
+bool FDeferredRenderer::IsClusterDagRuntimePathReady() const
 {
-    return ClusterDagRuntime->GetSwRasterThresholdPixels();
+    return ClusterDagRuntime
+        && IsClusterDagEnabled()
+        && ClusterDagRuntime->HasResources()
+        && IsClusterDagVisibilityPathReady();
 }
-bool FDeferredRenderer::IsClusterDagForceMipEnabled() const
+bool FDeferredRenderer::IsClusterDagVisibilityPathReady() const
 {
-    return ClusterDagRuntime->IsForceMipEnabled();
-}
-uint32_t FDeferredRenderer::GetClusterDagForceMipLevel() const
-{
-    return ClusterDagRuntime->GetForceMipLevel();
-}
-bool FDeferredRenderer::IsClusterDagForceMipSkipFrustumCull() const
-{
-    return ClusterDagRuntime->IsForceMipSkipFrustumCull();
-}
-uint32_t FDeferredRenderer::GetClusterDagVisibleRootCount() const
-{
-    return ClusterDagRuntime->GetVisibleRootCount();
-}
-uint32_t FDeferredRenderer::GetClusterDagClusterCount() const
-{
-    return ClusterDagRuntime->GetClusterCount();
+    return ClusterDagVisibilityPass && ClusterDagVisibilityPass->IsReady();
 }
 bool FDeferredRenderer::IsPathTracingPreferred() const
 {
@@ -237,7 +224,6 @@ void FDeferredRenderer::ApplyClusterDAGConfig(const FRendererConfig& Config)
 {
     ClusterDagRuntime->ApplyConfig(Config);
     ClusterDagStreamingManager->ApplyConfig(Config);
-    ClusterDagVisibilityPass->SetEnabled(Config.bEnableClusterDAGVisibilityBuffer);
     ClusterDagVisibilityPass->SetSoftwareRasterHzbRejectEnabled(Config.bEnableClusterDAGSwRasterHzbReject);
 }
 
@@ -490,15 +476,20 @@ bool FDeferredRenderer::InitializeSceneResources(FDX12Device* Device, DXGI_FORMA
         return false;
     }
 
-    if (!CreateGpuDrivenResources(Device))
+    const bool bGpuDrivenCullingPipelinesReady = CreateCullingPipelines(Device);
+    if (!bGpuDrivenCullingPipelinesReady)
     {
-        LogWarning("Deferred renderer GPU-driven resources creation failed; fallback to CPU-driven draws.");
+        LogWarning("Deferred renderer GPU-driven culling pipeline creation failed before ClusterDag runtime initialization; fallback paths may be incomplete.");
     }
 
     if (ClusterDagRuntime->IsEnabled())
     {
         bool bClusterDagRuntimeReady = false;
-        if (!ClusterDagRuntime->InitializePipelines(*this, Device))
+        if (!bGpuDrivenCullingPipelinesReady)
+        {
+            LogWarning("Deferred renderer ClusterDag runtime pipeline creation skipped because GPU-driven culling pipelines are unavailable; falling back to legacy path.");
+        }
+        else if (!ClusterDagRuntime->InitializePipelines(*this, Device))
         {
             LogWarning("Deferred renderer ClusterDag runtime pipeline creation failed; falling back to legacy path.");
         }
@@ -524,6 +515,11 @@ bool FDeferredRenderer::InitializeSceneResources(FDX12Device* Device, DXGI_FORMA
                 LogWarning("Deferred renderer ClusterDag streaming resource creation failed; streaming feedback will stay disabled.");
             }
         }
+    }
+
+    if (!CreateGpuDrivenResources(Device))
+    {
+        LogWarning("Deferred renderer GPU-driven resources creation failed; fallback to CPU-driven draws.");
     }
 
     FSkyPipelineConfig SkyPipelineConfig;
@@ -1160,7 +1156,7 @@ void FDeferredRenderer::EnsureClusterDagSceneConstantsPrepared(const FCamera& Ca
         return;
     }
 
-    if (ClusterDagRuntime == nullptr
+    if (!IsClusterDagRuntimePathReady()
         || GetClusterDagSceneConstantBufferMapped() == nullptr)
     {
         return;
@@ -1169,7 +1165,7 @@ void FDeferredRenderer::EnsureClusterDagSceneConstantsPrepared(const FCamera& Ca
     for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
     {
         const FSceneModelResource& Model = SceneModels[ModelIndex];
-        if (!ClusterDagRuntime->UsesRuntimePath(*this, Model))
+        if (!ClusterDagRuntime->UsesRuntimePath(Model))
         {
             continue;
         }

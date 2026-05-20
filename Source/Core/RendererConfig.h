@@ -116,7 +116,6 @@ struct FRendererConfig
     bool bForceRebuildClusterDAGCache = false;
     bool bEnableSkinningIndirectDraw = false;
     bool bEnableClusterDAGFastShader = false;
-    bool bEnableClusterDAGVisibilityBuffer = true;
     EClusterDAGTraversalMode ClusterDAGTraversalMode = EClusterDAGTraversalMode::LevelSplitQueue;
     float ClusterDAGTargetErrorPixels = 1.0f;
     float ClusterDAGSwRasterThresholdPixels = 16.0f;
@@ -131,7 +130,6 @@ struct FRendererConfig
     uint32_t ClusterDAGStreamingMaxPageUploadBytesPerFrame = 8388608;
     bool bEnableClusterDAGForceMip = false;
     uint32_t ClusterDAGForceMipLevel = 0;
-    bool bEnableClusterDAGForceMipSkipFrustumCull = false;
     bool bEnableClusterDAGForceSoftwareRaster = false;
     bool bEnableClusterDAGDebug = false;
     bool bEnablePbrResearch = false;

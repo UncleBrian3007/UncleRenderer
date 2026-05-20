@@ -1,6 +1,3 @@
-#include "ClusterDagTraversalCommon.hlsl"
-#include "../CullMeshletCommon.hlsl"
-
 cbuffer ClusterDagLevelSplitNodeCullBindlessConstants : register(b1)
 {
     uint GroupBufferIndex;
@@ -10,7 +7,7 @@ cbuffer ClusterDagLevelSplitNodeCullBindlessConstants : register(b1)
     uint CurrentNodeCandidateBufferIndex;
     uint NextNodeCandidateBufferIndex;
     uint NextNodeArgsBufferIndex;
-    uint CandidateClusterQueueBufferIndex;
+    uint CandidateClusterEntryBufferIndex;
     uint VisitedGroupEpochBufferIndex;
     uint GroupCount;
     uint ClusterCount;
@@ -24,7 +21,15 @@ cbuffer ClusterDagLevelSplitNodeCullBindlessConstants : register(b1)
     uint StreamingRequestCapacity;
     uint StreamingResourceId;
     uint PageSlotBytes;
+    float ClusterDAGTargetErrorPixels;
+    float ViewportHeightPixels;
+    uint ClusterDAGForceMipEnabled;
+    uint ClusterDAGForceMipLevel;
+    uint ClusterDAGForceSoftwareRaster;
+    float ClusterDAGSwRasterThresholdPixels;
 };
+
+#include "ClusterDagTraversalCommon.hlsl"
 
 groupshared uint SharedNextGroups[kClusterDagLevelSplitMaxChildRefsPerGroup];
 groupshared uint SharedCandidateClusters[kClusterDagLevelSplitMaxChildRefsPerGroup];
@@ -98,7 +103,7 @@ void ClusterDagLevelSplitNodeCullCS(uint3 groupId : SV_GroupID, uint groupThread
     StructuredBuffer<uint> CurrentNodeCandidates = ResourceDescriptorHeap[CurrentNodeCandidateBufferIndex];
     RWStructuredBuffer<uint> NextNodeCandidates = ResourceDescriptorHeap[NextNodeCandidateBufferIndex];
     RWByteAddressBuffer NextNodeArgs = ResourceDescriptorHeap[NextNodeArgsBufferIndex];
-    RWStructuredBuffer<ClusterDagCandidateClusterEntry> CandidateClusterQueue = ResourceDescriptorHeap[CandidateClusterQueueBufferIndex];
+    RWStructuredBuffer<ClusterDagCandidateClusterEntry> CandidateClusterEntry = ResourceDescriptorHeap[CandidateClusterEntryBufferIndex];
     RWStructuredBuffer<uint> VisitedGroupEpochs = ResourceDescriptorHeap[VisitedGroupEpochBufferIndex];
     const bool streamingEnabled = PageTableBufferIndex != 0xffffffffu && StreamingRequestBufferIndex != 0xffffffffu && StreamingRequestCapacity > 0u;
     const bool pagedFetchEnabled = streamingEnabled && PageDataBufferIndex != 0xffffffffu && PageSlotBytes > 0u;
@@ -169,8 +174,7 @@ void ClusterDagLevelSplitNodeCullCS(uint3 groupId : SV_GroupID, uint groupThread
                 const bool isLeaf = cluster.GeneratingGroupIndex == 0xffffffffu;
                 const float3 lodCenter = cluster.LodBounds.xyz;
                 const float lodRadius = cluster.LodBounds.w;
-                const bool skipFrustumCull = ClusterDAGForceMipEnabled != 0u && ClusterDAGForceMipSkipFrustumCull != 0u;
-                if (!skipFrustumCull && !IsSphereVisible(lodCenter, lodRadius))
+                if (!IsSphereVisible(lodCenter, lodRadius))
                 {
                     RecordFrustumCulled(DebugPrintStatsIndex, isLeaf);
 #if USE_CLUSTER_DAG_DEBUG
@@ -289,6 +293,6 @@ void ClusterDagLevelSplitNodeCullCS(uint3 groupId : SV_GroupID, uint groupThread
         ClusterDagCandidateClusterEntry candidateEntry;
         candidateEntry.ClusterIndex = SharedCandidateClusters[writeIndex];
         candidateEntry.PageDataBase = SharedCandidatePageBases[writeIndex];
-        CandidateClusterQueue[SharedCandidateOffset + writeIndex] = candidateEntry;
+        CandidateClusterEntry[SharedCandidateOffset + writeIndex] = candidateEntry;
     }
 }

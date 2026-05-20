@@ -45,7 +45,7 @@ void FDeferredFrameOrchestrator::BuildFrameGraph(FDeferredPassContext& Context) 
 
     if (FrameState.bUseHzbTwoPass)
     {
-        if (Owner.IsClusterDagEnabled())
+        if (Owner.IsClusterDagRuntimePathReady())
         {
             Owner.ClusterDagRuntime->AddPasses(Context);
         }
@@ -68,7 +68,7 @@ void FDeferredFrameOrchestrator::BuildFrameGraph(FDeferredPassContext& Context) 
     }
     else
     {
-        if (Owner.IsClusterDagEnabled())
+        if (Owner.IsClusterDagRuntimePathReady())
         {
             Owner.ClusterDagRuntime->AddPasses(Context);
         }
@@ -100,7 +100,7 @@ void FDeferredFrameOrchestrator::BuildFrameGraph(FDeferredPassContext& Context) 
             !FrameState.bDoDepthPrepass,
             "GBuffer",
             true);
-        if (Owner.IsClusterDagEnabled())
+        if (Owner.IsClusterDagRuntimePathReady())
         {
             Owner.ClusterDagVisibilityPass->AddPasses(Context);
         }
@@ -127,7 +127,7 @@ void FDeferredFrameOrchestrator::BuildFrameGraph(FDeferredPassContext& Context) 
             false,
             "GBuffer (Late)",
             false);
-        if (Owner.IsClusterDagEnabled())
+        if (Owner.IsClusterDagRuntimePathReady())
         {
             Owner.ClusterDagVisibilityPass->AddPasses(Context);
         }

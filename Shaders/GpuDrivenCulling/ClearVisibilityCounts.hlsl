@@ -1,5 +1,3 @@
-#include "../CullingConstants.hlsl"
-
 cbuffer ClearCountsConstants : register(b1)
 {
     uint Count0Index;

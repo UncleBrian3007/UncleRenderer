@@ -381,9 +381,6 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <None Include="Shaders\GpuDrivenCulling\BuildMeshletRunsAppend.hlsl">
       <FileType>Document</FileType>
     </None>
-    <None Include="Shaders\ClusterDag\BuildClusterDagRunsAppend.hlsl">
-      <FileType>Document</FileType>
-    </None>
     <None Include="Shaders\GpuDrivenCulling\ClearMeshletRunCounts.hlsl">
       <FileType>Document</FileType>
     </None>
@@ -509,9 +506,6 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     </None>
   </ItemGroup>
   <ItemGroup>
-    <None Include="Shaders\ClusterDag\ClusterDagClusterCull.hlsl">
-      <FileType>Document</FileType>
-    </None>
     <None Include="Shaders\ClusterDag\ClusterDagCommon.hlsl">
       <FileType>Document</FileType>
     </None>
@@ -519,9 +513,6 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
       <FileType>Document</FileType>
     </None>
     <None Include="Shaders\ClusterDag\ClusterDagLevelSplitNodeCull.hlsl">
-      <FileType>Document</FileType>
-    </None>
-    <None Include="Shaders\ClusterDag\ClusterDagNodeCull.hlsl">
       <FileType>Document</FileType>
     </None>
     <None Include="Shaders\ClusterDag\ClusterDagTraversalCommon.hlsl">

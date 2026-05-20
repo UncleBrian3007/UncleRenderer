@@ -13,30 +13,13 @@ class FDX12CommandContext;
 class FCamera;
 struct FDeferredPassContext;
 
-static constexpr uint32_t kCullingConstantDwords = 60;
+static constexpr uint32_t kCullingConstantDwords = 28;
 
 struct FGpuCullingConstants
 {
     float    FrustumPlanes[6][4];
-    float    ViewProjection[4][4];
-    uint32_t IndirectCommandCount;
-    uint32_t HZBEnabled;
-    uint32_t HZBMipCount;
-    uint32_t HZBWidth;
-    uint32_t HZBHeight;
     uint32_t DebugPrintEnabled;
-    uint32_t RangeCount;
-    uint32_t CullingMode;
     float    CameraPosition[3];
-    uint32_t Padding1;
-    float    ClusterDagTargetErrorPixels;
-    float    ViewportHeightPixels;
-    uint32_t ClusterDagVisibleRootCount;
-    uint32_t ClusterDagForceMipEnabled;
-    uint32_t ClusterDagForceMipLevel;
-    uint32_t ClusterDagForceMipSkipFrustumCull;
-    uint32_t ClusterDagForceSoftwareRaster;
-    float    ClusterDagSwRasterThresholdPixels;
 };
 static_assert(sizeof(FGpuCullingConstants) == sizeof(uint32_t) * kCullingConstantDwords);
 
@@ -129,13 +112,6 @@ public:
         uint32_t RangeCount = 0;
         uint32_t Mode = 0;
         bool bGpuDebugPrintEnabled = false;
-        float ClusterDagTargetErrorPixels = 0.0f;
-        float ClusterDagSwRasterThresholdPixels = 16.0f;
-        float ViewportHeightPixels = 0.0f;
-        uint32_t ClusterDagVisibleRootCount = 0;
-        bool bClusterDagForceMipEnabled = false;
-        uint32_t ClusterDagForceMipLevel = 0;
-        bool bClusterDagForceMipSkipFrustumCull = false;
     };
 
     struct FGpuCullingDispatchFrameData
@@ -195,6 +171,7 @@ public:
     bool HasVisibilityListBuildPipeline() const { return bVisibilityListPersistentInputsValid; }
     bool HasEarlyRejectListPipeline() const { return bVisibilityListPersistentInputsValid; }
     bool HasLateMergeVisibilityPipeline() const { return bVisibilityListPersistentInputsValid; }
+    bool HasCullingPipelines() const;
 
     ID3D12RootSignature* GetCullingRootSignature() const { return CullingRootSignature.Get(); }
     ID3D12RootSignature* GetMeshletRunRootSignature() const { return MeshletRunRootSignature.Get(); }
@@ -287,7 +264,6 @@ public:
         FGpuCullingDispatchIndices Indices,
         FDX12CommandContext& CmdContext,
         const FCamera& Camera,
-        const char* PassName,
         uint32_t FrameIndex,
         bool bLatePass,
         uint32_t VisibilityInputFrameIndex);

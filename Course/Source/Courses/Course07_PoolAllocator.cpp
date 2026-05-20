@@ -35,10 +35,30 @@ namespace
             auto& nd = T.nodes[i];
             int l = nd.LeftIndex, r = nd.RightIndex, m = (l + r) / 2;
             nd.Pivot = input[m];
-            if (m - l > 1) { int c = nc++; nd.LeftIndex = c; T.nodes[c] = {l,m,i,0}; stk.push(c); }
-            else            { nd.LeftIndex = ~l; T.leaves[l] = {input[l], i}; }
-            if (r - m > 1) { int c = nc++; nd.RightIndex = c; T.nodes[c] = {m,r,i,0}; stk.push(c); }
-            else            { nd.RightIndex = ~m; T.leaves[m] = {input[m], i}; }
+            if (m - l > 1)
+            {
+                int c = nc++;
+                nd.LeftIndex = c;
+                T.nodes[c] = { l, m, i, 0 };
+                stk.push(c);
+            }
+            else
+            {
+                nd.LeftIndex = ~l;
+                T.leaves[l] = { input[l], i };
+            }
+            if (r - m > 1)
+            {
+                int c = nc++;
+                nd.RightIndex = c;
+                T.nodes[c] = { m, r, i, 0 };
+                stk.push(c);
+            }
+            else
+            {
+                nd.RightIndex = ~m;
+                T.leaves[m] = { input[m], i };
+            }
         }
         return T;
     }

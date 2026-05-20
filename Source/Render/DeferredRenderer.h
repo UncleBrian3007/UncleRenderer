@@ -91,13 +91,9 @@ public:
     bool IsClusterDagFastShaderEnabled() const override;
     bool IsClusterDagDebugEnabled() const override;
     EClusterDAGTraversalMode GetClusterDagTraversalMode() const override;
-    float GetClusterDagTargetErrorPixels() const override;
-    float GetClusterDagSwRasterThresholdPixels() const override;
-    bool IsClusterDagForceMipEnabled() const override;
-    uint32_t GetClusterDagForceMipLevel() const override;
-    bool IsClusterDagForceMipSkipFrustumCull() const override;
-    uint32_t GetClusterDagVisibleRootCount() const override;
-    uint32_t GetClusterDagClusterCount() const override;
+    bool ShouldUseClusterDagRuntimePath(const FSceneModelResource& Model) const override;
+    bool IsClusterDagRuntimePathReady() const;
+    bool IsClusterDagVisibilityPathReady() const;
     FClusterDagStreamingManager* GetClusterDagStreamingManager() const { return ClusterDagStreamingManager.get(); }
     D3D12_GPU_VIRTUAL_ADDRESS GetClusterDagSceneConstantBufferAddress() const;
     D3D12_GPU_VIRTUAL_ADDRESS GetClusterDagSceneConstantBufferAddress(uint32_t FrameIndex) const;

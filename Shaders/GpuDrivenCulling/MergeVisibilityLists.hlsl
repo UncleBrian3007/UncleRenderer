@@ -1,5 +1,3 @@
-#include "../CullingConstants.hlsl"
-
 cbuffer MergeListConstants : register(b1)
 {
     uint ListAIndex;

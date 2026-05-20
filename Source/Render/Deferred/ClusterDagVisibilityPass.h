@@ -24,7 +24,6 @@ public:
     bool InitializeResources(FDeferredRenderer& Owner, FDX12Device* Device, uint32_t Width, uint32_t Height);
     void ImportPersistentResources(FDeferredPassContext& Context);
     void AddPasses(FDeferredPassContext& Context) const;
-    void SetEnabled(bool bInEnabled) { bEnabled = bInEnabled; }
     void SetSoftwareRasterHzbRejectEnabled(bool bInEnabled) { bSoftwareRasterHzbRejectEnabled = bInEnabled; }
 
     bool IsReady() const;
@@ -59,7 +58,6 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthExportPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ResolvePipeline;
     FBindlessTexture VisibilityTexture64;
-    bool bEnabled = true;
     bool bSoftwareRasterHzbRejectEnabled = true;
     bool bPipelinesReady = false;
     bool bResourcesReady = false;
