@@ -9,6 +9,8 @@
 #define PATH_TRACING_USE_VNDF 1
 #endif
 
+#include "PathTracingShared.h"
+
 RaytracingAccelerationStructure Scene : register(t0);
 cbuffer RayTracingBindlessConstants : register(b1)
 {
@@ -24,7 +26,7 @@ cbuffer RayTracingBindlessConstants : register(b1)
     uint MaxBounces;
     uint LinearClampSamplerIndex;
     uint EnvironmentCubeBindlessIndex;
-    int DebugMode; // 0=Normal PT, 1=GBuffer Albedo, 2=First Hit Albedo, 3=Texture Index Hash, 4=Direct Light, 5=Diffuse Probability, 6=Hit/Miss Mask, 7=Throughput Over Pdf, 8=Firefly Metric, 9=First Hit Distance, 10=Sky Miss Contribution, 11=First Hit NdotV, 12=Bounce1 NdotV
+    int DebugMode;
 };
 
 #include "../RayTracingCommon.hlsl"
@@ -113,9 +115,8 @@ void PathTracingCS(uint3 DispatchThreadId : SV_DispatchThreadID)
     const uint2 DispatchDim = uint2(DispatchWidth, DispatchHeight);
     
 #if PATH_TRACING_DEBUG
-    // Debug Mode 1: Visualize GBuffer albedo (rasterized result)
-    // This is placed BEFORE depth check to show albedo for all pixels including sky
-    if (DebugMode == 1)
+    // Visualize GBuffer albedo before depth check so sky pixels also show rasterized albedo.
+    if (DebugMode == PATH_TRACING_DEBUG_GBUFFER_ALBEDO)
     {
         float3 dbgAlbedo = GBufferC.Load(int3(DispatchIndex, 0)).rgb;
         PathOutput[DispatchIndex] = float4(dbgAlbedo, 1);
@@ -157,7 +158,7 @@ void PathTracingCS(uint3 DispatchThreadId : SV_DispatchThreadID)
     }
 
 #if PATH_TRACING_DEBUG
-    if (DebugMode == 11)
+    if (DebugMode == PATH_TRACING_DEBUG_FIRST_HIT_NDOTV)
     {
         float ndv = dot(N, wo);
         float3 c = (ndv < 0.0f) ? float3(1.0f, 0.0f, 0.0f) : float3(0.0f, 1.0f, 0.0f);
@@ -169,6 +170,88 @@ void PathTracingCS(uint3 DispatchThreadId : SV_DispatchThreadID)
     float3 diffuse = albedo * (1.0f - currentMetallic);
     float3 specular = lerp(float3(0.04f, 0.04f, 0.04f), albedo, currentMetallic);
     float roughness = currentRoughness;
+
+#if PATH_TRACING_DEBUG
+    if (DebugMode == PATH_TRACING_DEBUG_INDIRECT_IRRADIANCE)
+    {
+        const float2 randIrradiance = float2(
+            Random01(DispatchIndex, FrameIndex * 13u + 1u),
+            Random01(DispatchIndex, FrameIndex * 13u + 2u));
+        const float3 wi = SampleHemisphereCosine(randIrradiance, N);
+
+        RayDesc IndirectRay;
+        IndirectRay.Origin = position + N * 0.01f + wi * 0.01f;
+        IndirectRay.Direction = wi;
+        IndirectRay.TMin = 0.001f;
+        IndirectRay.TMax = MaxRayDistance;
+
+        RayQuery<PathRayFlags> IndirectQuery;
+        IndirectQuery.TraceRayInline(Scene, PathRayFlags, 0xFF, IndirectRay);
+        while (IndirectQuery.Proceed())
+        {
+            uint instanceID = IndirectQuery.CandidateInstanceID();
+            uint primitiveIndex = IndirectQuery.CandidatePrimitiveIndex();
+            float2 barycentrics = IndirectQuery.CandidateTriangleBarycentrics();
+            if (AlphaTest(instanceID, primitiveIndex, barycentrics))
+            {
+                IndirectQuery.CommitNonOpaqueTriangleHit();
+            }
+        }
+
+        float3 incomingRadiance = 0.0f.xxx;
+        if (IndirectQuery.CommittedStatus() == COMMITTED_NOTHING)
+        {
+            incomingRadiance = EvaluateSky(wi);
+        }
+        else
+        {
+            const uint instanceID = IndirectQuery.CommittedInstanceID();
+            const uint primitiveIndex = IndirectQuery.CommittedPrimitiveIndex();
+            const float2 barycentrics = IndirectQuery.CommittedTriangleBarycentrics();
+            const bool frontFace = IndirectQuery.CommittedTriangleFrontFace();
+            const FInstanceData instData = GetInstanceData(instanceID);
+
+            float3 hitPosition = IndirectQuery.WorldRayOrigin() + IndirectQuery.WorldRayDirection() * IndirectQuery.CommittedRayT();
+            float3 hitNormal = GetInterpolatedNormal(instanceID, primitiveIndex, barycentrics);
+            if (IsDoubleSided(instData) && !frontFace)
+            {
+                hitNormal = -hitNormal;
+            }
+
+            const float3 hitWo = -wi;
+            if (dot(hitNormal, hitWo) < 0.0f)
+            {
+                hitNormal = -hitNormal;
+            }
+
+            const float2 hitUv = GetInterpolatedUV(instanceID, primitiveIndex, barycentrics);
+            const float3 hitAlbedo = SampleAlbedo(instanceID, hitUv);
+            const float2 hitMetallicRoughness = SampleMetallicRoughness(instanceID, hitUv);
+            const float hitMetallic = hitMetallicRoughness.x;
+            const float hitRoughness = max(hitMetallicRoughness.y, 0.03f);
+            const float3 hitDiffuse = hitAlbedo * (1.0f - hitMetallic);
+            const float3 hitSpecular = lerp(float3(0.04f, 0.04f, 0.04f), hitAlbedo, hitMetallic);
+
+            const float2 randLight = float2(
+                Random01(DispatchIndex, FrameIndex * 13u + 3u),
+                Random01(DispatchIndex, FrameIndex * 13u + 4u));
+            const float3 lightDirSample = SampleConeUniform(randLight, LightRadius, LightDirection);
+
+            RayDesc ShadowRay;
+            ShadowRay.Origin = hitPosition + hitNormal * 0.01f + lightDirSample * 0.01f;
+            ShadowRay.Direction = lightDirSample;
+            ShadowRay.TMin = 1e-3f;
+            ShadowRay.TMax = MaxRayDistance;
+
+            const float visibility = TraceVisibilityRay(ShadowRay) ? 1.0f : 0.0f;
+            const float hitNdotL = saturate(dot(hitNormal, lightDirSample));
+            incomingRadiance = BRDF(lightDirSample, hitWo, hitNormal, hitDiffuse, hitSpecular, hitRoughness) * visibility * LightColor * LightIntensity * hitNdotL;
+        }
+
+        PathOutput[DispatchIndex] = float4(max(incomingRadiance * PI, 0.0f.xxx), 1.0f);
+        return;
+    }
+#endif
 
     float3 radiance = float3(0.0f, 0.0f, 0.0f);
     float3 throughput = float3(1.0f, 1.0f, 1.0f);
@@ -193,7 +276,7 @@ void PathTracingCS(uint3 DispatchThreadId : SV_DispatchThreadID)
         float3 directLight = BRDF(wi, wo, N, diffuse, specular, roughness) * visibility * LightColor * LightIntensity * NdotL;
 
 #if PATH_TRACING_DEBUG
-        if (DebugMode == 4 && bounce == 0)
+        if (DebugMode == PATH_TRACING_DEBUG_DIRECT_LIGHT && bounce == 0)
         {
             PathOutput[DispatchIndex] = float4(directLight, 1.0f);
             return;
@@ -215,7 +298,7 @@ void PathTracingCS(uint3 DispatchThreadId : SV_DispatchThreadID)
         );
 
 #if PATH_TRACING_DEBUG
-        if (DebugMode == 5 && bounce == 0)
+        if (DebugMode == PATH_TRACING_DEBUG_DIFFUSE_PROBABILITY && bounce == 0)
         {
             PathOutput[DispatchIndex] = float4(probDiffuse, probDiffuse, probDiffuse, 1.0f);
             return;
@@ -270,13 +353,13 @@ void PathTracingCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
         float throughputOverPdf = max(throughput.x, max(throughput.y, throughput.z)) / max(pdf, 0.0001f);
 #if PATH_TRACING_DEBUG
-        if (DebugMode == 7 && bounce == 0)
+        if (DebugMode == PATH_TRACING_DEBUG_THROUGHPUT_OVER_PDF && bounce == 0)
         {
             PathOutput[DispatchIndex] = float4(throughputOverPdf, throughputOverPdf, throughputOverPdf, 1.0f);
             return;
         }
 
-        if (DebugMode == 8 && bounce == 0)
+        if (DebugMode == PATH_TRACING_DEBUG_FIREFLY_METRIC && bounce == 0)
         {
             float fireflyMetric = throughputOverPdf / FireflyThreshold;
             PathOutput[DispatchIndex] = float4(fireflyMetric, fireflyMetric, fireflyMetric, 1.0f);
@@ -309,7 +392,7 @@ void PathTracingCS(uint3 DispatchThreadId : SV_DispatchThreadID)
         }
 
 #if PATH_TRACING_DEBUG
-        if (DebugMode == 6 && bounce == 0)
+        if (DebugMode == PATH_TRACING_DEBUG_HIT_MISS_MASK && bounce == 0)
         {
             if (RayQuery.CommittedStatus() == COMMITTED_NOTHING)
                 PathOutput[DispatchIndex] = float4(0, 0, 0, 1);
@@ -323,14 +406,14 @@ void PathTracingCS(uint3 DispatchThreadId : SV_DispatchThreadID)
         {
 			invPdf = rcp(max(pdf, 1e-6f));
 #if PATH_TRACING_DEBUG
-            if (DebugMode == 10 && bounce == 0)
+            if (DebugMode == PATH_TRACING_DEBUG_SKY_MISS_CONTRIBUTION && bounce == 0)
             {
                 float3 skyContribution = EvaluateSky(wi) * throughput * invPdf;
                 PathOutput[DispatchIndex] = float4(skyContribution, 1.0f);
                 return;
             }
 
-            if (DebugMode == 12 && bounce == 0)
+            if (DebugMode == PATH_TRACING_DEBUG_BOUNCE1_NDOTV && bounce == 0)
             {
                 PathOutput[DispatchIndex] = float4(0.0f, 0.0f, 1.0f, 1.0f);
                 return;
@@ -349,7 +432,7 @@ void PathTracingCS(uint3 DispatchThreadId : SV_DispatchThreadID)
         FInstanceData instData = GetInstanceData(instanceID);
 
 #if PATH_TRACING_DEBUG
-        if (DebugMode == 9 && bounce == 0)
+        if (DebugMode == PATH_TRACING_DEBUG_FIRST_HIT_DISTANCE && bounce == 0)
         {
             float hitDistance = saturate(hitT / MaxRayDistance);
             PathOutput[DispatchIndex] = float4(hitDistance, hitDistance, hitDistance, 1.0f);
@@ -369,14 +452,14 @@ void PathTracingCS(uint3 DispatchThreadId : SV_DispatchThreadID)
         float nextRoughness = nextMetallicRoughness.y;
 
 #if PATH_TRACING_DEBUG
-        if (DebugMode == 3 && bounce == 0)
+        if (DebugMode == PATH_TRACING_DEBUG_TEXTURE_INDEX_HASH && bounce == 0)
         {
             float3 hashColor = HashToColor(instData.BaseColorTextureIndex);
             PathOutput[DispatchIndex] = float4(hashColor, 1);
             return;
         }
 
-        if (DebugMode == 2 && bounce == 0)
+        if (DebugMode == PATH_TRACING_DEBUG_FIRST_HIT_ALBEDO && bounce == 0)
         {
             PathOutput[DispatchIndex] = float4(nextAlbedo, 1);
             return;
@@ -395,7 +478,7 @@ void PathTracingCS(uint3 DispatchThreadId : SV_DispatchThreadID)
         }
 
 #if PATH_TRACING_DEBUG
-        if (DebugMode == 12 && bounce == 0)
+        if (DebugMode == PATH_TRACING_DEBUG_BOUNCE1_NDOTV && bounce == 0)
         {
             float ndv = dot(N, wo);
             float3 c = (ndv < 0.0f) ? float3(1.0f, 0.0f, 0.0f) : float3(0.0f, 1.0f, 0.0f);

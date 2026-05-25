@@ -82,14 +82,7 @@ void PrintUInt(uint2 position, uint value, uint color)
 
 void PrintMipBucketLabel(uint2 position, uint color, uint bucket)
 {
-    if (bucket < kClusterDagVisibleMipHistogramOverflowBucket)
-    {
-        PrintLabel(position, color, 'M', 'I', 'P', 48u + bucket, ' ', ' ', ' ', ' ');
-    }
-    else
-    {
-        PrintLabel(position, color, 'M', 'I', 'P', '5', '+', ' ', ' ', ' ');
-    }
+    PrintLabel(position, color, 'M', 'I', 'P', 48u + bucket, ' ', ' ', ' ', ' ');
 }
 
 [numthreads(1, 1, 1)]
@@ -99,13 +92,11 @@ void GpuDebugPrintStatsCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     uint frustum = StatsBuffer.Load(0);
     uint occlusion = StatsBuffer.Load(4);
     uint cone = StatsBuffer.Load(8);
-    uint merged = StatsBuffer.Load(4 * kDebugPrintStatsMergedIndex);
     uint lateVisible = StatsBuffer.Load(4 * kDebugPrintStatsLateVisibleIndex);
     uint clusterDagVisible = StatsBuffer.Load(4 * kDebugPrintStatsClusterDagVisibleIndex);
-    uint clusterDagLeafVisible = StatsBuffer.Load(4 * kDebugPrintStatsClusterDagLeafVisibleIndex);
     uint clusterDagHwRaster = StatsBuffer.Load(4 * kDebugPrintStatsClusterDagHwRasterIndex);
     uint clusterDagSwRaster = StatsBuffer.Load(4 * kDebugPrintStatsClusterDagSwRasterIndex);
-    uint clusterDagLeafFrustumCulled = StatsBuffer.Load(4 * kDebugPrintStatsClusterDagLeafFrustumCulledIndex);
+    uint clusterDagCulled = StatsBuffer.Load(4 * kDebugPrintStatsClusterDagCulledIndex);
     uint clusterDagStackOverflow = StatsBuffer.Load(4 * kDebugPrintStatsClusterDagStackOverflowIndex);
     uint clusterDagExpandedOverflow = StatsBuffer.Load(4 * kDebugPrintStatsClusterDagExpandedOverflowIndex);
     uint clusterDagIterationOverflow = StatsBuffer.Load(4 * kDebugPrintStatsClusterDagIterationOverflowIndex);
@@ -113,10 +104,6 @@ void GpuDebugPrintStatsCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     uint clusterDagStreamingRequest = StatsBuffer.Load(4 * kClusterDagStreamingRequestStatIndex);
     uint clusterDagStreamingFallback = StatsBuffer.Load(4 * kClusterDagStreamingFallbackStatIndex);
     uint clusterDagStreamingRequestOverflow = StatsBuffer.Load(4 * kClusterDagStreamingRequestOverflowStatIndex);
-    uint clusterDagPersistentGroupCommitSpin = StatsBuffer.Load(4 * kDebugPrintStatsClusterDagPersistentGroupCommitSpinIndex);
-    uint clusterDagPersistentCandidateCommitSpin = StatsBuffer.Load(4 * kDebugPrintStatsClusterDagPersistentCandidateCommitSpinIndex);
-    uint clusterDagNonLeafVisible = StatsBuffer.Load(4 * kClusterDagNonLeafVisibleStatIndex);
-    uint clusterDagNonLeafFrustumCulled = StatsBuffer.Load(4 * kClusterDagNonLeafFrustumCulledStatIndex);
     uint clusterDagVisibleMipHistogram[kClusterDagVisibleMipHistogramBucketCount];
     [unroll]
     for (uint loadBucket = 0u; loadBucket < kClusterDagVisibleMipHistogramBucketCount; ++loadBucket)
@@ -138,78 +125,54 @@ void GpuDebugPrintStatsCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     PrintUInt(uint2(8 + 8 * 8, 52), cone, textColor);
 
     pos = uint2(8, 68);
-    PrintLabel(pos, textColor, 'M', 'E', 'R', 'G', 'E', 'D', ' ', ' ');
-    PrintUInt(uint2(8 + 8 * 8, 68), merged, textColor);
+    PrintLabel(pos, textColor, 'L', 'A', 'T', 'E', 'V', 'I', 'S', ' ');
+    PrintUInt(uint2(8 + 8 * 8, 68), lateVisible, textColor);
 
     pos = uint2(8, 84);
-    PrintLabel(pos, textColor, 'L', 'A', 'T', 'E', 'V', 'I', 'S', ' ');
-    PrintUInt(uint2(8 + 8 * 8, 84), lateVisible, textColor);
+    PrintLabel(pos, textColor, 'C', 'L', 'U', 'S', 'V', 'I', 'S', ' ');
+    PrintUInt(uint2(8 + 8 * 8, 84), clusterDagVisible, textColor);
 
     pos = uint2(8, 100);
-    PrintLabel(pos, textColor, 'C', 'L', 'U', 'S', 'T', 'E', 'R', ' ');
-    PrintUInt(uint2(8 + 8 * 8, 100), clusterDagVisible, textColor);
-
-    pos = uint2(144, 100);
-    PrintLabel(pos, textColor, 'H', 'W', 'R', 'A', 'S', 'T', ' ', ' ');
-    PrintUInt(uint2(144 + 8 * 8, 100), clusterDagHwRaster, textColor);
-
-    pos = uint2(144, 116);
-    PrintLabel(pos, textColor, 'S', 'W', 'R', 'A', 'S', 'T', ' ', ' ');
-    PrintUInt(uint2(144 + 8 * 8, 116), clusterDagSwRaster, textColor);
+    PrintLabel(pos, textColor, 'C', 'L', 'U', 'S', 'C', 'U', 'L', ' ');
+    PrintUInt(uint2(8 + 8 * 8, 100), clusterDagCulled, textColor);
 
     pos = uint2(8, 116);
-    PrintLabel(pos, textColor, 'L', 'E', 'A', 'F', ' ', ' ', ' ', ' ');
-    PrintUInt(uint2(8 + 8 * 8, 116), clusterDagLeafVisible, textColor);
+    PrintLabel(pos, textColor, 'S', 'T', 'K', 'D', 'R', 'O', 'P', ' ');
+    PrintUInt(uint2(8 + 8 * 8, 116), clusterDagStackOverflow, textColor);
 
     pos = uint2(8, 132);
-    PrintLabel(pos, textColor, 'N', 'L', 'V', 'I', 'S', ' ', ' ', ' ');
-    PrintUInt(uint2(8 + 8 * 8, 132), clusterDagNonLeafVisible, textColor);
+    PrintLabel(pos, textColor, 'G', 'R', 'P', 'D', 'R', 'O', 'P', ' ');
+    PrintUInt(uint2(8 + 8 * 8, 132), clusterDagExpandedOverflow, textColor);
 
     pos = uint2(8, 148);
-    PrintLabel(pos, textColor, 'L', 'E', 'A', 'F', 'C', 'U', 'L', ' ');
-    PrintUInt(uint2(8 + 8 * 8, 148), clusterDagLeafFrustumCulled, textColor);
+    PrintLabel(pos, textColor, 'I', 'T', 'E', 'R', 'O', 'V', 'F', ' ');
+    PrintUInt(uint2(8 + 8 * 8, 148), clusterDagIterationOverflow, textColor);
 
     pos = uint2(8, 164);
-    PrintLabel(pos, textColor, 'N', 'L', 'C', 'U', 'L', ' ', ' ', ' ');
-    PrintUInt(uint2(8 + 8 * 8, 164), clusterDagNonLeafFrustumCulled, textColor);
-
-    pos = uint2(8, 180);
-    PrintLabel(pos, textColor, 'S', 'T', 'K', 'D', 'R', 'O', 'P', ' ');
-    PrintUInt(uint2(8 + 8 * 8, 180), clusterDagStackOverflow, textColor);
-
-    pos = uint2(8, 196);
-    PrintLabel(pos, textColor, 'G', 'R', 'P', 'D', 'R', 'O', 'P', ' ');
-    PrintUInt(uint2(8 + 8 * 8, 196), clusterDagExpandedOverflow, textColor);
-
-    pos = uint2(8, 212);
-    PrintLabel(pos, textColor, 'I', 'T', 'E', 'R', 'O', 'V', 'F', ' ');
-    PrintUInt(uint2(8 + 8 * 8, 212), clusterDagIterationOverflow, textColor);
-
-    pos = uint2(8, 228);
     PrintLabel(pos, textColor, 'Q', 'O', 'V', 'E', 'R', 'F', ' ', ' ');
-    PrintUInt(uint2(8 + 8 * 8, 228), clusterDagPersistentOverflow, textColor);
+    PrintUInt(uint2(8 + 8 * 8, 164), clusterDagPersistentOverflow, textColor);
 
-    pos = uint2(8, 244);
-    PrintLabel(pos, textColor, 'Q', 'G', 'S', 'P', 'I', 'N', ' ', ' ');
-    PrintUInt(uint2(8 + 8 * 8, 244), clusterDagPersistentGroupCommitSpin, textColor);
+    pos = uint2(144, 84);
+    PrintLabel(pos, textColor, 'H', 'W', 'R', 'A', 'S', 'T', ' ', ' ');
+    PrintUInt(uint2(144 + 8 * 8, 84), clusterDagHwRaster, textColor);
 
-    pos = uint2(8, 260);
-    PrintLabel(pos, textColor, 'Q', 'C', 'S', 'P', 'I', 'N', ' ', ' ');
-    PrintUInt(uint2(8 + 8 * 8, 260), clusterDagPersistentCandidateCommitSpin, textColor);
+    pos = uint2(144, 100);
+    PrintLabel(pos, textColor, 'S', 'W', 'R', 'A', 'S', 'T', ' ', ' ');
+    PrintUInt(uint2(144 + 8 * 8, 100), clusterDagSwRaster, textColor);
+
+    pos = uint2(144, 116);
+    PrintLabel(pos, textColor, 'S', 'T', 'R', 'E', 'Q', ' ', ' ', ' ');
+    PrintUInt(uint2(144 + 8 * 8, 116), clusterDagStreamingRequest, textColor);
 
     pos = uint2(144, 132);
-    PrintLabel(pos, textColor, 'S', 'T', 'R', 'E', 'Q', ' ', ' ', ' ');
-    PrintUInt(uint2(144 + 8 * 8, 132), clusterDagStreamingRequest, textColor);
+    PrintLabel(pos, textColor, 'S', 'T', 'F', 'A', 'L', 'L', ' ', ' ');
+    PrintUInt(uint2(144 + 8 * 8, 132), clusterDagStreamingFallback, textColor);
 
     pos = uint2(144, 148);
-    PrintLabel(pos, textColor, 'S', 'T', 'F', 'A', 'L', 'L', ' ', ' ');
-    PrintUInt(uint2(144 + 8 * 8, 148), clusterDagStreamingFallback, textColor);
-
-    pos = uint2(144, 164);
     PrintLabel(pos, textColor, 'S', 'T', 'D', 'R', 'O', 'P', ' ', ' ');
-    PrintUInt(uint2(144 + 8 * 8, 164), clusterDagStreamingRequestOverflow, textColor);
+    PrintUInt(uint2(144 + 8 * 8, 148), clusterDagStreamingRequestOverflow, textColor);
 
-    uint histogramStartY = 276u;
+    uint histogramStartY = 180u;
 
     if (DebugLineBufferIndex != 0xffffffffu)
     {
@@ -217,15 +180,15 @@ void GpuDebugPrintStatsCS(uint3 dispatchThreadId : SV_DispatchThreadID)
         const uint lineCount = DebugLineBuffer.Load(kDebugLineHeaderLineCountOffset);
         const uint droppedCount = DebugLineBuffer.Load(kDebugLineHeaderDroppedCountOffset);
 
-        pos = uint2(8, 276);
+        pos = uint2(8, 180);
         PrintLabel(pos, textColor, 'L', 'I', 'N', 'E', 'S', ' ', ' ', ' ');
-        PrintUInt(uint2(8 + 8 * 8, 276), lineCount, textColor);
+        PrintUInt(uint2(8 + 8 * 8, 180), lineCount, textColor);
 
-        pos = uint2(8, 292);
+        pos = uint2(8, 196);
         PrintLabel(pos, textColor, 'D', 'R', 'O', 'P', 'P', 'E', 'D', ' ');
-        PrintUInt(uint2(8 + 8 * 8, 292), droppedCount, textColor);
+        PrintUInt(uint2(8 + 8 * 8, 196), droppedCount, textColor);
 
-        histogramStartY = 308u;
+        histogramStartY = 212u;
     }
 
     [unroll]

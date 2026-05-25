@@ -7,6 +7,7 @@
 #include "../../Core/GpuDebugMarkers.h"
 #include "../../RHI/DX12Device.h"
 #include "../ShaderCompiler.h"
+#include "../../../Shaders/PathTracing/PathTracingShared.h"
 #include <d3dx12.h>
 #include <algorithm>
 #include <cassert>
@@ -16,6 +17,14 @@ using Microsoft::WRL::ComPtr;
 
 constexpr uint32_t kPathTracingConstantsDwordCount = 4;
 constexpr uint32_t kPathTracingBindlessDwordCount  = 4;
+
+namespace
+{
+    bool IsPathTracingDebugMode(int Mode)
+    {
+        return Mode >= PATH_TRACING_DEBUG_FIRST && Mode <= PATH_TRACING_DEBUG_MAX;
+    }
+}
 
 bool FPathTracing::InitializePipelines(FDeferredRenderer& Owner, FDX12Device* Device)
 {
@@ -130,7 +139,7 @@ void FPathTracing::ApplyConfig(const FRendererConfig& Config)
 void FPathTracing::SetAccumulationEnabled(bool bEnabled)
 {
     bPathTracingAccumulationEnabled = bEnabled;
-    if (PathTracingDebugMode == 0)
+    if (PathTracingDebugMode == PATH_TRACING_DEBUG_NORMAL)
     {
         bPathTracingAccumulationUserPreference = bEnabled;
     }
@@ -150,12 +159,13 @@ void FPathTracing::SetMaxBounces(uint32_t MaxBounces)
 
 void FPathTracing::SetDebugMode(int Mode)
 {
+    Mode = std::clamp(Mode, PATH_TRACING_DEBUG_NORMAL, PATH_TRACING_DEBUG_MAX);
     if (PathTracingDebugMode == Mode)
     {
         return;
     }
 
-    if (PathTracingDebugMode == 0 && Mode >= 1 && Mode <= 12)
+    if (PathTracingDebugMode == PATH_TRACING_DEBUG_NORMAL && IsPathTracingDebugMode(Mode))
     {
         bPathTracingAccumulationUserPreference = bPathTracingAccumulationEnabled;
     }
@@ -163,11 +173,11 @@ void FPathTracing::SetDebugMode(int Mode)
     PathTracingDebugMode = Mode;
     ResetAccumulation();
 
-    if (Mode >= 1 && Mode <= 12)
+    if (IsPathTracingDebugMode(Mode))
     {
         bPathTracingAccumulationEnabled = false;
     }
-    else if (Mode == 0)
+    else if (Mode == PATH_TRACING_DEBUG_NORMAL)
     {
         bPathTracingAccumulationEnabled = bPathTracingAccumulationUserPreference;
     }
@@ -356,7 +366,7 @@ void FPathTracing::AddPathTracingPass(FDeferredPassContext& Context)
         const uint32_t GroupCountY = (DispatchHeight + RayQueryThreadGroupSize - 1u) / RayQueryThreadGroupSize;
 
         ID3D12PipelineState* PathTracingPipelineState = nullptr;
-        if (PathTracingDebugMode > 0)
+        if (IsPathTracingDebugMode(PathTracingDebugMode))
         {
             PathTracingPipelineState = bUseVndf ? Owner.GetRayTracingRuntime().RayQueryPathDebugVndfPipeline.Get() : Owner.GetRayTracingRuntime().RayQueryPathDebugPipeline.Get();
         }

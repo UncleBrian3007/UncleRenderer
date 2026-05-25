@@ -211,11 +211,8 @@ void CopyClusterDagCommandTemplate(uint srcIndex, uint dstIndex, ByteAddressBuff
     }
 }
 
-static const uint kClusterDagNonLeafVisibleStatIndex = 11u;
-static const uint kClusterDagNonLeafFrustumCulledStatIndex = 13u;
 static const uint kClusterDagVisibleMipHistogramBaseStatIndex = 14u;
-static const uint kClusterDagVisibleMipHistogramBucketCount = 6u;
-static const uint kClusterDagVisibleMipHistogramOverflowBucket = kClusterDagVisibleMipHistogramBucketCount - 1u;
+static const uint kClusterDagVisibleMipHistogramBucketCount = 5u;
 static const uint kClusterDagStreamingRequestStatIndex = 26u;
 static const uint kClusterDagStreamingFallbackStatIndex = 27u;
 static const uint kClusterDagStreamingRequestOverflowStatIndex = 28u;

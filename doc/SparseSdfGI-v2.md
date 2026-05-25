@@ -45,12 +45,12 @@ V2.2  Transient seeds + brick-scale brick-local Eikonal
 V2.3  Brick-aware distance / step-count debug views
 V2.4  Use cascade brick-map indirection in sampling and traversal
 V2.5  Static SDF cache / rebuild skip
-V2.6  Occupied-brick Eikonal dispatch skip
-Later Trace brick AABB metadata and empty-brick / empty-space skip
+V2.6  Trace brick metadata / AABB skip
+V2.7  Occupied-brick Eikonal dispatch skip
 Optional  GlobalSDF-style inter-brick propagation or packed JFA debug path
 ```
 
-V2 stays a dense single-cascade prototype. V2.4 is the first hard prerequisite for going Brixelizer-shaped: sampling must route through the brick map instead of the flat world->atlas mapping. V2.5 prioritizes measured cost: static scenes reuse the persistent SDF atlas instead of rebuilding it every frame. V2.6 should reduce rebuild frames by dispatching Eikonal only for occupied bricks.
+V2 stays a dense single-cascade prototype. V2.4 is the first hard prerequisite for going Brixelizer-shaped: sampling must route through the brick map instead of the flat world->atlas mapping. V2.5 prioritizes measured cost: static scenes reuse the persistent SDF atlas instead of rebuilding it every frame. After V2.5, steady-state static scenes are dominated by trace cost, so V2.6 targets traversal before rebuild-frame-only Eikonal dispatch reduction.
 
 The sparse allocator and the rest of the Brixelizer build pipeline are grouped into V3 because they are mutually dependent and only pay off together.
 
@@ -94,13 +94,17 @@ The cache signature includes the actual cascade bounds, build-affecting config, 
 
 A `Force Rebuild SDF` ImGui button invalidates the cache without writing config. Runtime validation should confirm that Sponza shows build passes on the first frame or after forced invalidation, then only `SparseSdfGI Trace` on steady-state frames.
 
-### V2.6 Occupied-Brick Eikonal Dispatch
+### V2.6 Trace Brick Metadata / AABB Skip
 
-The next measured target is rebuild-frame cost. Seeded or occupied brick metadata should be used to dispatch Eikonal only for bricks touched by voxelization. This attacks the current largest per-frame cost when a rebuild is required.
+V2.6 adds a persistent `BrickMetadata` buffer with one `uint4` per dense cascade brick. Metadata is rebuilt after brick-local Eikonal on cache-miss frames and reused with the static SDF cache on cache-hit frames. `x` stores a packed local surface AABB, `y` stores flags, and bit 0 means the brick contains surface-distance voxels using the same `0.75 * voxelSize` threshold as tracing.
 
-### Later Brick AABB Trace Skip
+Trace keeps the existing single sphere-march loop. At each iteration it checks the current brick metadata. Invalid bricks, empty bricks, or occupied bricks whose expanded surface AABB does not intersect the ray are skipped by jumping to the current brick exit plus a small epsilon. The AABB is expanded by one voxel to cover cross-brick manual-trilinear bleed. If metadata is ambiguous, trace falls back to the normal SDF sample step.
 
-After rebuild-frame cost is reduced, add brick metadata for ray traversal so trace can skip invalid, empty, or conservatively bounded bricks. This remains useful, but current measurements show trace is much cheaper than full SDF rebuild.
+`Step Count` remains the validation view for this phase. DebugMode 4 silhouettes should match V2.5; if holes appear at brick boundaries, the conservative AABB margin should be increased before optimizing further.
+
+### V2.7 Occupied-Brick Eikonal Dispatch (realized in V3.2)
+
+This planned optimization — dispatch the brick solve only for bricks touched by voxelization, instead of the full dense grid — was implemented as part of the V3 reference-binning pipeline rather than on top of the V2 voxelizer. See V3.2 occupied-brick indirect solve in `doc/SparseSdfGI-v3.md`.
 
 ### Optional GlobalSDF-Style Propagation
 
@@ -108,17 +112,7 @@ Packed Jump Flooding or another inter-brick propagation path remains useful if t
 
 ## V3 - Sparse / Multi-Cascade Generation
 
-V3 turns the dense prototype into a Brixelizer-shaped sparse renderer. These items are mutually dependent: the sparse allocator is fed by the reference pipeline and only pays off across multiple cascades, so they ship as one generation rather than separate milestones.
-
-```text
-V3.x  Sparse brick allocation, free list, and dirty-brick updates
-V3.x  Reference-binning voxelizer (replaces the per-triangle bbox loop)
-V3.x  Multi-cascade clipmap with scrolling / wrap
-V3.x  Static/dynamic instance handling and merge bricks/cascades
-V3.x  Incremental rebuild of dirty bricks only
-```
-
-The reference-binning voxelizer is the structural fix for the `MaxTriangleVoxelSpan` guard: Brixelizer never drops large triangles, it clamps their voxel AABB to the cascade and bounds total work with a global reference budget. Adopting it removes the span guard entirely, but it is coupled to sparse allocation and multi-cascade, so it belongs in V3 rather than V2.
+V3 turns the dense prototype into a Brixelizer-shaped sparse build pipeline: reference-binning voxelizer (replacing the `MaxTriangleVoxelSpan` drop path), occupied/dirty-brick dispatch, sparse brick allocation, and multi-cascade. It is tracked in its own document to keep a single source of truth — see `doc/SparseSdfGI-v3.md` for the full backbone, per-milestone detail, and current status.
 
 ## Deferred Work
 

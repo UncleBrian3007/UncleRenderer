@@ -19,6 +19,7 @@
 #include "../Render/RendererUtils.h"
 #include "../Scene/Camera.h"
 #include "../Scene/SceneJsonLoader.h"
+#include "../../Shaders/PathTracing/PathTracingShared.h"
 #include "RendererConfig.h"
 #include <dxgi1_6.h>
 #include <commdlg.h>
@@ -86,6 +87,8 @@ namespace
             return "ClusterDagClusters";
         case EDeferredLightingVisualizationMode::ClusterDagMip:
             return "ClusterDagMip";
+        case EDeferredLightingVisualizationMode::IndirectIrradiance:
+            return "IndirectIrradiance";
         case EDeferredLightingVisualizationMode::Off:
         default:
             return "Off";
@@ -1903,14 +1906,15 @@ void FApplication::RenderUI()
             "DirectLighting",
             "SpecularIndirect",
             "ClusterDagClusters",
-            "ClusterDagMip"
+            "ClusterDagMip",
+            "IndirectIrradiance"
         };
         int LightingDebugViewIndex = static_cast<int>(RendererConfig.DeferredLightingVisualizationMode);
         ImGui::SetNextItemWidth(180.0f);
         if (ImGui::Combo("Lighting Debug View", &LightingDebugViewIndex, LightingDebugViewItems, IM_ARRAYSIZE(LightingDebugViewItems)))
         {
             RendererConfig.DeferredLightingVisualizationMode = static_cast<EDeferredLightingVisualizationMode>(
-                std::clamp(LightingDebugViewIndex, 0, static_cast<int>(EDeferredLightingVisualizationMode::ClusterDagMip)));
+                std::clamp(LightingDebugViewIndex, 0, static_cast<int>(EDeferredLightingVisualizationMode::IndirectIrradiance)));
             UpsertConfigValue(GetRendererConfigPath(), "DeferredLightingVisualizationMode", DeferredLightingVisualizationModeToConfigString(RendererConfig.DeferredLightingVisualizationMode));
             SyncDeferredLightingPassConfig();
         }
@@ -2049,13 +2053,29 @@ void FApplication::RenderUI()
                 SyncDeferredSparseSdfGIConfig();
             }
 
-            // Per-triangle voxel-span guard; capped at 128 since voxelize is O(span^3).
-            int SparseSdfGIMaxTriangleVoxelSpan = static_cast<int>(std::clamp(RendererConfig.SparseSdfGIMaxTriangleVoxelSpan, 1u, 128u));
+            int SparseSdfGIMaxBrickRefsM = static_cast<int>(std::clamp(
+                RendererConfig.SparseSdfGIMaxBrickTriangleReferences / (1024u * 1024u),
+                1u,
+                32u));
             ImGui::SetNextItemWidth(160.0f);
-            if (ImGui::SliderInt("Max Triangle Voxel Span", &SparseSdfGIMaxTriangleVoxelSpan, 1, 128))
+            if (ImGui::SliderInt("Max Brick Triangle Refs (M)", &SparseSdfGIMaxBrickRefsM, 1, 32))
             {
-                RendererConfig.SparseSdfGIMaxTriangleVoxelSpan = static_cast<uint32_t>(std::clamp(SparseSdfGIMaxTriangleVoxelSpan, 1, 128));
-                UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIMaxTriangleVoxelSpan", std::to_string(RendererConfig.SparseSdfGIMaxTriangleVoxelSpan));
+                RendererConfig.SparseSdfGIMaxBrickTriangleReferences = static_cast<uint32_t>(std::clamp(SparseSdfGIMaxBrickRefsM, 1, 32)) * 1024u * 1024u;
+                UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIMaxBrickTriangleReferences", std::to_string(RendererConfig.SparseSdfGIMaxBrickTriangleReferences));
+                SyncDeferredSparseSdfGIConfig();
+            }
+
+            ImGui::SetNextItemWidth(160.0f);
+            if (ImGui::SliderFloat("SDF GI Bounce Strength", &RendererConfig.SparseSdfGIBounceStrength, 0.0f, 4.0f, "%.2f"))
+            {
+                RendererConfig.SparseSdfGIBounceStrength = (std::max)(RendererConfig.SparseSdfGIBounceStrength, 0.0f);
+                UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIBounceStrength", std::to_string(RendererConfig.SparseSdfGIBounceStrength));
+                SyncDeferredSparseSdfGIConfig();
+            }
+
+            if (ImGui::Checkbox("SDF GI Hit Light Visibility", &RendererConfig.bSparseSdfGIUseHitLightingVisibility))
+            {
+                UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIUseHitLightingVisibility", RendererConfig.bSparseSdfGIUseHitLightingVisibility ? "true" : "false");
                 SyncDeferredSparseSdfGIConfig();
             }
 
@@ -2506,8 +2526,10 @@ void FApplication::RenderUI()
                 "First Hit Distance",
                 "Sky Miss Contribution",
                 "First Hit NdotV",
-                "Bounce1 NdotV"
+                "Bounce1 NdotV",
+                "Indirect Irradiance"
             };
+            static_assert(IM_ARRAYSIZE(DebugModeNames) == PATH_TRACING_DEBUG_MAX + 1);
             int CurrentDebugMode = 0;
             if (DeferredRenderer)
             {

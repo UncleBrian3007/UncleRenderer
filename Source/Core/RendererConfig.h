@@ -33,7 +33,8 @@ enum class EDeferredLightingVisualizationMode : uint32_t
     DirectLighting = LIGHTING_VISUALIZATION_DIRECT_LIGHTING,
     SpecularIndirect = LIGHTING_VISUALIZATION_SPECULAR_INDIRECT,
     ClusterDagClusters = LIGHTING_VISUALIZATION_CLUSTER_DAG_CLUSTERS,
-    ClusterDagMip = LIGHTING_VISUALIZATION_CLUSTER_DAG_MIP
+    ClusterDagMip = LIGHTING_VISUALIZATION_CLUSTER_DAG_MIP,
+    IndirectIrradiance = LIGHTING_VISUALIZATION_INDIRECT_IRRADIANCE
 };
 
 enum class EClusterDAGTraversalMode : uint32_t
@@ -114,11 +115,13 @@ struct FRendererConfig
     bool bEnableSparseSdfGI = false;
     uint32_t SparseSdfGIDebugMode = 1;
     uint32_t SparseSdfGICascadeCount = 1;
-    uint32_t SparseSdfGIMaxTriangleVoxelSpan = 32;
+    uint32_t SparseSdfGIMaxBrickTriangleReferences = 8u * 1024u * 1024u;
     float SparseSdfGIBaseVoxelSize = 0.0f;
     float SparseSdfGICascadeScale = 2.0f;
     bool bSparseSdfGITraceHalfResolution = false;
     float SparseSdfGIIntensity = 1.0f;
+    float SparseSdfGIBounceStrength = 1.0f;
+    bool bSparseSdfGIUseHitLightingVisibility = false;
     bool bEnableIndirectDraw = true;
     bool bEnableClusterDAGRuntime = false;
     bool bForceRebuildClusterDAGCache = false;

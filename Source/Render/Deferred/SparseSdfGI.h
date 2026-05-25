@@ -27,8 +27,14 @@ enum class ESparseSdfGIDebugMode : uint32_t
 struct FSparseSdfGIFrameResources
 {
     FRGResourceHandle SdfAtlasHandle{};
-    FRGResourceHandle SdfSeedDistanceHandle{};
     FRGBufferHandle CascadeBrickMapHandle{};
+    FRGBufferHandle BrickMetadataHandle{};
+    FRGBufferHandle TrianglePoolHandle{};
+    FRGBufferHandle BrickReferenceHeadsHandle{};
+    FRGBufferHandle BrickReferencesHandle{};
+    FRGBufferHandle ReferenceCountersHandle{};
+    FRGBufferHandle OccupiedBrickListHandle{};
+    FRGBufferHandle SolveIndirectArgsHandle{};
     FRGResourceHandle DiffuseGIHandle{};
 };
 
@@ -65,10 +71,12 @@ private:
     uint64_t ComputeBuildSettingsSignature(const FCascadeBounds& Bounds) const;
     uint64_t ComputeStaticSceneSignature(const FDeferredRenderer& Owner, uint32_t& OutStaticCandidateCount) const;
     void InvalidateCache() const;
-    void AddSeedAtlasInitPass(FDeferredPassContext& Context) const;
-    void AddModelVoxelizePass(FDeferredPassContext& Context, FSceneModelResource& Model, uint32_t ModelIndex) const;
-    void AddEikonalPass(FDeferredPassContext& Context) const;
+    void AddReferenceBuildInitPass(FDeferredPassContext& Context) const;
+    void AddModelReferenceEmitPass(FDeferredPassContext& Context, FSceneModelResource& Model, uint32_t ModelIndex) const;
+    void AddPrepareSolveBrickReferencesArgsPass(FDeferredPassContext& Context) const;
+    void AddSolveBrickReferencesPass(FDeferredPassContext& Context) const;
     void DispatchOutputPass(FDeferredPassContext& Context, FDX12CommandContext& Cmd, ID3D12PipelineState* PipelineState, bool bPassEnabled) const;
+    bool CreateDispatchCommandSignature(FDX12Device* Device);
 
 private:
     bool bEnabled = false;
@@ -78,7 +86,9 @@ private:
     float CascadeScale = 2.0f;
     bool bTraceHalfResolution = false;
     float Intensity = 1.0f;
-    uint32_t MaxTriangleVoxelSpan = 32;
+    float BounceStrength = 1.0f;
+    bool bUseHitLightingVisibility = false;
+    uint32_t MaxBrickTriangleReferences = 8u * 1024u * 1024u;
     bool bPersistentInputsValid = false;
     mutable bool bSdfCacheValid = false;
     mutable uint64_t CachedSceneSignature = 0;
@@ -87,13 +97,16 @@ private:
     mutable uint32_t CachedStaticCandidateCount = 0;
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSignature;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> SeedAtlasInitPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> VoxelizePipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> EikonalPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> ReferenceBuildInitPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> ReferenceEmitPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> PrepareSolveArgsPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> SolveBrickReferencesPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> DebugTracePipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> DiffuseTracePipeline;
+    Microsoft::WRL::ComPtr<ID3D12CommandSignature> DispatchCommandSignature;
 
     FBindlessTexture SdfAtlas;
     FBindlessBuffer CascadeBrickMap;
+    FBindlessBuffer BrickMetadata;
     FBindlessTexture DiffuseGI;
 };

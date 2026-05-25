@@ -191,19 +191,21 @@ float4 DeferredCompositeLightPS(VSOutput Input) : SV_Target
 
     float ao = (GtaoIntensity <= 0.0f) ? 1.0f : GtaoTexture.Sample(GBufferSampler, Input.UV).r;
     float3 indirectDiffuse = 0.0f.xxx;
+    float3 indirectIrradiance = 0.0f.xxx;
 #if COMPOSITE_DIFFUSE_SOURCE_ENV
     {
-        const float3 irradiance = EnvironmentMap.SampleLevel(IblSampler, worldNormal, maxMip).rgb;
-        indirectDiffuse = irradiance * albedo * (1.0f - metallic);
+        indirectIrradiance = EnvironmentMap.SampleLevel(IblSampler, worldNormal, maxMip).rgb;
+        indirectDiffuse = indirectIrradiance * albedo * (1.0f - metallic);
     }
 #elif COMPOSITE_DIFFUSE_SOURCE_RESTIR
     {
-        const float3 restirIrradiance = RestirGITexture.Sample(GBufferSampler, Input.UV).rgb;
-        indirectDiffuse = restirIrradiance * albedo * (1.0f - metallic);
+        indirectIrradiance = RestirGITexture.Sample(GBufferSampler, Input.UV).rgb;
+        indirectDiffuse = indirectIrradiance * albedo * (1.0f - metallic);
     }
 #elif COMPOSITE_DIFFUSE_SOURCE_SPARSE_SDF
     {
-        indirectDiffuse = SparseSdfGITexture.Sample(GBufferSampler, Input.UV).rgb * (1.0f - metallic);
+        indirectIrradiance = SparseSdfGITexture.Sample(GBufferSampler, Input.UV).rgb;
+        indirectDiffuse = indirectIrradiance * albedo * (1.0f - metallic);
     }
 #endif
 
@@ -237,6 +239,11 @@ float4 DeferredCompositeLightPS(VSOutput Input) : SV_Target
     if (DeferredLightingVisualizationModeOverride == LIGHTING_VISUALIZATION_DIFFUSE_INDIRECT)
     {
         return float4(indirectDiffuse, 1.0f);
+    }
+
+    if (DeferredLightingVisualizationModeOverride == LIGHTING_VISUALIZATION_INDIRECT_IRRADIANCE)
+    {
+        return float4(indirectIrradiance, 1.0f);
     }
 
     if (DeferredLightingVisualizationModeOverride == LIGHTING_VISUALIZATION_AO)

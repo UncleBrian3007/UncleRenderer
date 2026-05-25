@@ -58,10 +58,9 @@ void EmitVisibleClusterDagCandidate(
     ByteAddressBuffer PageData,
     uint DebugPrintStatsIndex)
 {
-    const bool isLeaf = cluster.GeneratingGroupIndex == 0xffffffffu;
     const bool rasterizeSW = ShouldRasterizeClusterSW(cluster);
     TrackVisibleClusterDagCandidate(QueueState);
-    RecordVisibleCluster(DebugPrintStatsIndex, isLeaf, cluster.MipLevel);
+    RecordVisibleCluster(DebugPrintStatsIndex, cluster.MipLevel);
     RecordRasterPath(DebugPrintStatsIndex, rasterizeSW);
 
     [loop]
@@ -222,7 +221,7 @@ void PersistentClusterDagCullCS(uint3 dispatchThreadId : SV_DispatchThreadID)
                         const float lodRadius = cluster.LodBounds.w;
                         if (!IsSphereVisible(lodCenter, lodRadius))
                         {
-                            RecordFrustumCulled(DebugPrintStatsIndex, isLeaf);
+                            RecordFrustumCulled(DebugPrintStatsIndex);
 #if USE_CLUSTER_DAG_DEBUG
                             if (ClusterDAGForceMipEnabled != 0u && DebugPrintEnabled != 0u && DebugLineBufferIndex != 0xffffffffu && isLeaf)
                             {
@@ -292,9 +291,7 @@ void PersistentClusterDagCullCS(uint3 dispatchThreadId : SV_DispatchThreadID)
                                             CommitClusterDagQueueSlot(
                                                 QueueState,
                                                 kQueueStatePass0GroupCommittedWriteOffset,
-                                                queueSlot,
-                                                DebugPrintStatsIndex,
-                                                kDebugPrintStatsClusterDagPersistentGroupCommitSpinIndex);
+                                                queueSlot);
                                             TrackQueuedClusterDagGroup(QueueState, queueSlot);
                                         }
                                         else
@@ -327,9 +324,7 @@ void PersistentClusterDagCullCS(uint3 dispatchThreadId : SV_DispatchThreadID)
                                 CommitClusterDagQueueSlot(
                                     QueueState,
                                     kQueueStatePass0CandidateCommittedWriteOffset,
-                                    candidateSlot,
-                                    DebugPrintStatsIndex,
-                                    kDebugPrintStatsClusterDagPersistentCandidateCommitSpinIndex);
+                                    candidateSlot);
                                 TrackQueuedClusterDagCandidate(QueueState, candidateSlot);
                             }
                             else

@@ -285,15 +285,15 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
         }
     }
 
-    if (LowerKey == "sparsesdfgimaxtrianglevoxelspan")
+    if (LowerKey == "sparsesdfgimaxbricktrianglereferences")
     {
         try
         {
-            OutConfig.SparseSdfGIMaxTriangleVoxelSpan = static_cast<uint32_t>(std::clamp(std::stoi(Value), 1, 128));
+            OutConfig.SparseSdfGIMaxBrickTriangleReferences = static_cast<uint32_t>(std::clamp(std::stoull(Value), 1024ull * 1024ull, 32ull * 1024ull * 1024ull));
         }
         catch (...)
         {
-            LogWarning("Invalid SparseSdfGI max triangle voxel span value in renderer config: " + Value);
+            LogWarning("Invalid SparseSdfGI max brick triangle references value in renderer config: " + Value);
         }
     }
 
@@ -336,6 +336,23 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
         {
             LogWarning("Invalid SparseSdfGI intensity value in renderer config: " + Value);
         }
+    }
+
+    if (LowerKey == "sparsesdfgibouncestrength")
+    {
+        try
+        {
+            OutConfig.SparseSdfGIBounceStrength = (std::max)(std::stof(Value), 0.0f);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid SparseSdfGI bounce strength value in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "sparsesdfgiusehitlightingvisibility")
+    {
+        OutConfig.bSparseSdfGIUseHitLightingVisibility = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
 
     if (LowerKey == "autoexposurekey")
@@ -513,6 +530,10 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
         else if (LowerValue == "clusterdagmip" || LowerValue == "clusterdagmips" || LowerValue == "clustermip")
         {
             OutConfig.DeferredLightingVisualizationMode = EDeferredLightingVisualizationMode::ClusterDagMip;
+        }
+        else if (LowerValue == "indirectirradiance")
+        {
+            OutConfig.DeferredLightingVisualizationMode = EDeferredLightingVisualizationMode::IndirectIrradiance;
         }
     }
     if (LowerKey == "restirgi" || LowerKey == "enablerestirgi")

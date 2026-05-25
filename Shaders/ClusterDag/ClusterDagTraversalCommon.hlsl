@@ -394,13 +394,12 @@ void DebugDrawClusterBoundsCross(uint debugLineBufferIndex, float3 center, float
     DebugDrawLine(debugLineBufferIndex, center + float3(0.0f, 0.0f, -extent), center + float3(0.0f, 0.0f, extent), packedColor);
 }
 
-void RecordFrustumCulled(uint debugPrintStatsIndex, bool isLeaf)
+void RecordFrustumCulled(uint debugPrintStatsIndex)
 {
     if (DebugPrintEnabled != 0u && debugPrintStatsIndex != 0xffffffffu)
     {
         RWByteAddressBuffer DebugPrintStats = ResourceDescriptorHeap[debugPrintStatsIndex];
-        const uint statIndex = isLeaf ? kDebugPrintStatsClusterDagLeafFrustumCulledIndex : kClusterDagNonLeafFrustumCulledStatIndex;
-        DebugPrintStats.InterlockedAdd(4u * statIndex, 1u);
+        DebugPrintStats.InterlockedAdd(4u * kDebugPrintStatsClusterDagCulledIndex, 1u);
     }
 }
 
@@ -431,20 +430,12 @@ void RecordIterationOverflow(uint debugPrintStatsIndex)
     }
 }
 
-void RecordVisibleCluster(uint debugPrintStatsIndex, bool isLeaf, uint mipLevel)
+void RecordVisibleCluster(uint debugPrintStatsIndex, uint mipLevel)
 {
     if (DebugPrintEnabled != 0u && debugPrintStatsIndex != 0xffffffffu)
     {
         RWByteAddressBuffer DebugPrintStats = ResourceDescriptorHeap[debugPrintStatsIndex];
         DebugPrintStats.InterlockedAdd(4u * kDebugPrintStatsClusterDagVisibleIndex, 1u);
-        if (isLeaf)
-        {
-            DebugPrintStats.InterlockedAdd(4u * kDebugPrintStatsClusterDagLeafVisibleIndex, 1u);
-        }
-        else
-        {
-            DebugPrintStats.InterlockedAdd(4u * kClusterDagNonLeafVisibleStatIndex, 1u);
-        }
 
         const uint mipBucket = min(mipLevel, kClusterDagVisibleMipHistogramBucketCount - 1u);
         DebugPrintStats.InterlockedAdd(4u * (kClusterDagVisibleMipHistogramBaseStatIndex + mipBucket), 1u);
@@ -469,24 +460,14 @@ void RecordQueueOverflow(uint debugPrintStatsIndex)
         DebugPrintStats.InterlockedAdd(4u * kDebugPrintStatsClusterDagPersistentOverflowIndex, 1u);
     }
 }
-
-void RecordCommitSpinIterations(uint debugPrintStatsIndex, uint statIndex, uint spinIterations)
-{
-    if (spinIterations != 0u && DebugPrintEnabled != 0u && debugPrintStatsIndex != 0xffffffffu)
-    {
-        RWByteAddressBuffer DebugPrintStats = ResourceDescriptorHeap[debugPrintStatsIndex];
-        DebugPrintStats.InterlockedAdd(4u * statIndex, spinIterations);
-    }
-}
 #else
-void RecordFrustumCulled(uint debugPrintStatsIndex, bool isLeaf) {}
+void RecordFrustumCulled(uint debugPrintStatsIndex) {}
 void RecordStackOverflow(uint debugPrintStatsIndex) {}
 void RecordExpandedOverflow(uint debugPrintStatsIndex) {}
 void RecordIterationOverflow(uint debugPrintStatsIndex) {}
-void RecordVisibleCluster(uint debugPrintStatsIndex, bool isLeaf, uint mipLevel) {}
+void RecordVisibleCluster(uint debugPrintStatsIndex, uint mipLevel) {}
 void RecordRasterPath(uint debugPrintStatsIndex, bool rasterizeSW) {}
 void RecordQueueOverflow(uint debugPrintStatsIndex) {}
-void RecordCommitSpinIterations(uint debugPrintStatsIndex, uint statIndex, uint spinIterations) {}
 #endif
 
 #if USE_CLUSTER_DAG_FAST
@@ -619,9 +600,8 @@ void MarkClusterDagVisitedCurrentEpoch(RWStructuredBuffer<uint> VisitedGroupEpoc
     alreadyVisited = previousEpoch == currentEpoch;
 }
 
-void CommitClusterDagQueueSlot(RWByteAddressBuffer QueueState, uint committedWriteOffset, uint claimedIndex, uint debugPrintStatsIndex, uint commitSpinStatIndex)
+void CommitClusterDagQueueSlot(RWByteAddressBuffer QueueState, uint committedWriteOffset, uint claimedIndex)
 {
-    uint spinIterations = 0u;
     [loop]
     while (true)
     {
@@ -631,11 +611,8 @@ void CommitClusterDagQueueSlot(RWByteAddressBuffer QueueState, uint committedWri
         {
             break;
         }
-        spinIterations += 1u;
         DeviceMemoryBarrier();
     }
-
-    RecordCommitSpinIterations(debugPrintStatsIndex, commitSpinStatIndex, spinIterations);
 }
 
 #endif // CLUSTER_DAG_TRAVERSAL_COMMON_HLSL

@@ -176,7 +176,7 @@ void ClusterDagLevelSplitNodeCullCS(uint3 groupId : SV_GroupID, uint groupThread
                 const float lodRadius = cluster.LodBounds.w;
                 if (!IsSphereVisible(lodCenter, lodRadius))
                 {
-                    RecordFrustumCulled(DebugPrintStatsIndex, isLeaf);
+                    RecordFrustumCulled(DebugPrintStatsIndex);
 #if USE_CLUSTER_DAG_DEBUG
                     if (ClusterDAGForceMipEnabled != 0u && DebugPrintEnabled != 0u && DebugLineBufferIndex != 0xffffffffu && isLeaf)
                     {

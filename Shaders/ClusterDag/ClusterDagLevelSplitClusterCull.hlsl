@@ -61,10 +61,9 @@ void ClusterDagLevelSplitClusterCullCS(uint3 dispatchThreadId : SV_DispatchThrea
 #endif
     {
         const ClusterDagClusterData cluster = LoadClusterDagCluster(clusterIndex, usePagedCandidate, candidateEntry.PageDataBase, Clusters, PageData);
-        const bool isLeaf = cluster.GeneratingGroupIndex == 0xffffffffu;
         const bool rasterizeSW = ShouldRasterizeClusterSW(cluster);
         TrackLevelSplitVisibleClusterDagCandidate(QueueState);
-        RecordVisibleCluster(DebugPrintStatsIndex, isLeaf, cluster.MipLevel);
+        RecordVisibleCluster(DebugPrintStatsIndex, cluster.MipLevel);
         RecordRasterPath(DebugPrintStatsIndex, rasterizeSW);
 
         [loop]
