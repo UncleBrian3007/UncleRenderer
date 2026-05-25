@@ -869,6 +869,16 @@ void FApplication::SyncDeferredRestirGIConfig()
     SyncDeferredRestirGITransientState();
 }
 
+void FApplication::SyncDeferredSparseSdfGIConfig()
+{
+    if (!DeferredRenderer || ActiveRenderer != DeferredRenderer.get())
+    {
+        return;
+    }
+
+    DeferredRenderer->ApplySparseSdfGIConfig(RendererConfig);
+}
+
 void FApplication::SyncDeferredRestirGITransientState()
 {
     if (!DeferredRenderer || ActiveRenderer != DeferredRenderer.get())
@@ -2007,6 +2017,54 @@ void FApplication::RenderUI()
             if (ImGui::SliderFloat("Spatial Add Scale", &RendererConfig.RestirGISpatialAdditionalScale, 0.0f, 1.0f, "%.2f"))
             {
                 ApplyRestirGIConfig();
+            }
+        }
+
+        ImGui::Separator();
+        if (ImGui::Checkbox("Sparse SDF GI", &RendererConfig.bEnableSparseSdfGI))
+        {
+            UpsertConfigValue(GetRendererConfigPath(), "EnableSparseSdfGI", RendererConfig.bEnableSparseSdfGI ? "true" : "false");
+            SyncDeferredSparseSdfGIConfig();
+        }
+
+        if (RendererConfig.bEnableSparseSdfGI)
+        {
+            static const char* SparseSdfGIDebugModeItems[] = { "Off", "Ray Trace", "Cascade Slice", "Voxel Projection", "Brick SDF Surface", "Step Count" };
+            int SparseSdfGIDebugModeIndex = static_cast<int>(std::clamp(RendererConfig.SparseSdfGIDebugMode, 0u, 5u));
+            ImGui::SetNextItemWidth(160.0f);
+            if (ImGui::Combo("SDF GI Debug Mode", &SparseSdfGIDebugModeIndex, SparseSdfGIDebugModeItems, IM_ARRAYSIZE(SparseSdfGIDebugModeItems)))
+            {
+                RendererConfig.SparseSdfGIDebugMode = static_cast<uint32_t>(SparseSdfGIDebugModeIndex);
+                UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIDebugMode", std::to_string(RendererConfig.SparseSdfGIDebugMode));
+                SyncDeferredSparseSdfGIConfig();
+            }
+
+            // SparseSdfGIBaseVoxelSize <= 0 auto-fits from scene radius; a positive value is a manual override.
+            float SparseSdfGIBaseVoxelSize = RendererConfig.SparseSdfGIBaseVoxelSize;
+            ImGui::SetNextItemWidth(160.0f);
+            if (ImGui::DragFloat("Base Voxel Size (0=Auto)", &SparseSdfGIBaseVoxelSize, 0.005f, 0.0f, 4.0f, "%.3f"))
+            {
+                RendererConfig.SparseSdfGIBaseVoxelSize = (std::max)(SparseSdfGIBaseVoxelSize, 0.0f);
+                UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIBaseVoxelSize", std::to_string(RendererConfig.SparseSdfGIBaseVoxelSize));
+                SyncDeferredSparseSdfGIConfig();
+            }
+
+            // Per-triangle voxel-span guard; capped at 128 since voxelize is O(span^3).
+            int SparseSdfGIMaxTriangleVoxelSpan = static_cast<int>(std::clamp(RendererConfig.SparseSdfGIMaxTriangleVoxelSpan, 1u, 128u));
+            ImGui::SetNextItemWidth(160.0f);
+            if (ImGui::SliderInt("Max Triangle Voxel Span", &SparseSdfGIMaxTriangleVoxelSpan, 1, 128))
+            {
+                RendererConfig.SparseSdfGIMaxTriangleVoxelSpan = static_cast<uint32_t>(std::clamp(SparseSdfGIMaxTriangleVoxelSpan, 1, 128));
+                UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIMaxTriangleVoxelSpan", std::to_string(RendererConfig.SparseSdfGIMaxTriangleVoxelSpan));
+                SyncDeferredSparseSdfGIConfig();
+            }
+
+            if (ImGui::Button("Force Rebuild SDF"))
+            {
+                if (DeferredRenderer && DeferredRenderer->GetSparseSdfGI())
+                {
+                    DeferredRenderer->GetSparseSdfGI()->ForceInvalidateCache();
+                }
             }
         }
 

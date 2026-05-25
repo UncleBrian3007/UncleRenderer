@@ -256,6 +256,88 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
         OutConfig.bEnableAutoExposure = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
     }
 
+    if (LowerKey == "enablesparsesdfgi" || LowerKey == "sparsesdfgi")
+    {
+        OutConfig.bEnableSparseSdfGI = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+
+    if (LowerKey == "sparsesdfgidebugmode")
+    {
+        try
+        {
+            OutConfig.SparseSdfGIDebugMode = static_cast<uint32_t>(std::clamp(std::stoi(Value), 0, 5));
+        }
+        catch (...)
+        {
+            LogWarning("Invalid SparseSdfGI debug mode value in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "sparsesdfgicascadecount")
+    {
+        try
+        {
+            OutConfig.SparseSdfGICascadeCount = static_cast<uint32_t>(std::clamp(std::stoi(Value), 1, 1));
+        }
+        catch (...)
+        {
+            LogWarning("Invalid SparseSdfGI cascade count value in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "sparsesdfgimaxtrianglevoxelspan")
+    {
+        try
+        {
+            OutConfig.SparseSdfGIMaxTriangleVoxelSpan = static_cast<uint32_t>(std::clamp(std::stoi(Value), 1, 128));
+        }
+        catch (...)
+        {
+            LogWarning("Invalid SparseSdfGI max triangle voxel span value in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "sparsesdfgibasevoxelsize")
+    {
+        try
+        {
+            OutConfig.SparseSdfGIBaseVoxelSize = std::stof(Value);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid SparseSdfGI base voxel size value in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "sparsesdfgicascadescale")
+    {
+        try
+        {
+            OutConfig.SparseSdfGICascadeScale = (std::max)(std::stof(Value), 1.01f);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid SparseSdfGI cascade scale value in renderer config: " + Value);
+        }
+    }
+
+    if (LowerKey == "sparsesdfgitracehalfresolution")
+    {
+        OutConfig.bSparseSdfGITraceHalfResolution = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+    }
+
+    if (LowerKey == "sparsesdfgiintensity")
+    {
+        try
+        {
+            OutConfig.SparseSdfGIIntensity = (std::max)(std::stof(Value), 0.0f);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid SparseSdfGI intensity value in renderer config: " + Value);
+        }
+    }
+
     if (LowerKey == "autoexposurekey")
     {
         try

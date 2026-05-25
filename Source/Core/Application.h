@@ -88,6 +88,7 @@ private:
     void SyncDeferredSsrConfig();
     void SyncDeferredRestirGIConfig();
     void SyncDeferredRestirGITransientState();
+    void SyncDeferredSparseSdfGIConfig();
 #if WITH_BINDLESS_DESCRIPTOR_STATS
     void UpdateBindlessDescriptorStatsSnapshot();
 #endif

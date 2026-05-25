@@ -151,6 +151,7 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <ClCompile Include="Source\Render\Deferred\Taa.cpp" />
     <ClCompile Include="Source\Render\Deferred\Ssr.cpp" />
     <ClCompile Include="Source\Render\Deferred\RestirGI.cpp" />
+    <ClCompile Include="Source\Render\Deferred\SparseSdfGI.cpp" />
     <ClCompile Include="Source\Render\Deferred\RayTracingShadow.cpp" />
     <ClCompile Include="Source\Render\Deferred\PathTracing.cpp" />
     <ClCompile Include="Source\Render\Deferred\RestirGIDenoiser.cpp" />
@@ -257,6 +258,7 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <ClInclude Include="Source\Render\Deferred\RayTracingShadow.h" />
     <ClInclude Include="Source\Render\Deferred\Ssr.h" />
     <ClInclude Include="Source\Render\Deferred\RestirGI.h" />
+    <ClInclude Include="Source\Render\Deferred\SparseSdfGI.h" />
     <ClInclude Include="Source\Render\Deferred\RestirGIDenoiser.h" />
     <ClInclude Include="Source\Render\Deferred\PathTracing.h" />
     <ClInclude Include="Source\Render\Deferred\Tonemap.h" />
@@ -459,6 +461,9 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\RestirGI\RestirGI.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\SparseSdfGI\SparseSdfGI.hlsl">
       <FileType>Document</FileType>
     </None>
     <None Include="Shaders\GpuDebug\GpuDebugLine.hlsl">

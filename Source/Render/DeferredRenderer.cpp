@@ -16,6 +16,7 @@
 #include "Deferred/RayTracingShadow.h"
 #include "Deferred/Ssr.h"
 #include "Deferred/RestirGI.h"
+#include "Deferred/SparseSdfGI.h"
 #include "Deferred/AutoExposure.h"
 #include "Deferred/Cas.h"
 #include "Deferred/Taa.h"
@@ -55,8 +56,9 @@ FDeferredRenderer::FDeferredRenderer()
     , Ssr(std::make_unique<FSsr>())
     , SkyAtmosphere(std::make_unique<FSkyAtmosphere>())
     , ClusterDagRuntime(std::make_unique<FClusterDagRuntime>())
-        , RestirGI(std::make_unique<FRestirGI>())
+    , RestirGI(std::make_unique<FRestirGI>())
     , RestirGIDenoiser(std::make_unique<FRestirGIDenoiser>())
+    , SparseSdfGI(std::make_unique<FSparseSdfGI>())
     , PathTracing(std::make_unique<FPathTracing>())
     , AutoExposure(std::make_unique<FAutoExposure>())
     , Cas(std::make_unique<FCas>())
@@ -262,6 +264,11 @@ void FDeferredRenderer::ApplyRestirGIConfig(const FRendererConfig& Config)
     }
 }
 
+void FDeferredRenderer::ApplySparseSdfGIConfig(const FRendererConfig& Config)
+{
+    SparseSdfGI->ApplyConfig(Config);
+}
+
 void FDeferredRenderer::ApplyRestirGITransientState(const FRestirGITransientState& State)
 {
     RestirGI->SetDebugRayEnabled(State.bDebugRayEnabled);
@@ -280,6 +287,7 @@ void FDeferredRenderer::ApplyRendererConfig(const FRendererConfig& Config)
     ApplyPathTracingConfig(Config);
     ApplySsrConfig(Config);
     ApplyRestirGIConfig(Config);
+    ApplySparseSdfGIConfig(Config);
 }
 
 bool FDeferredRenderer::InitializePipelineDomains(FDX12Device* Device, DXGI_FORMAT BackBufferFormat)
@@ -342,6 +350,12 @@ bool FDeferredRenderer::InitializePipelineDomains(FDX12Device* Device, DXGI_FORM
     if (!RestirGIDenoiser->InitializePipelines(*this, Device))
     {
         LogError("Deferred renderer initialization failed: ReSTIR GI denoiser pipeline creation failed");
+        return false;
+    }
+
+    if (!SparseSdfGI->InitializePipelines(*this, Device))
+    {
+        LogError("Deferred renderer initialization failed: SparseSdfGI pipeline creation failed");
         return false;
     }
 
@@ -440,6 +454,12 @@ bool FDeferredRenderer::InitializeFrameResources(FDX12Device* Device, uint32_t W
     if (!RestirGIDenoiser->InitializeResources(*this, Device, Width, Height))
     {
         LogError("Deferred renderer initialization failed: ReSTIR GI denoiser resource creation failed");
+        return false;
+    }
+
+    if (!SparseSdfGI->InitializeResources(*this, Device, Width, Height))
+    {
+        LogError("Deferred renderer initialization failed: SparseSdfGI resource creation failed");
         return false;
     }
 
@@ -633,6 +653,12 @@ bool FDeferredRenderer::InitializeEnvironmentAndDescriptorResources(FDX12Device*
     if (!RestirGI->CreatePersistentDescriptors(*this, Device))
     {
         LogError("Deferred renderer initialization failed: ReSTIR GI descriptor creation failed");
+        return false;
+    }
+
+    if (!SparseSdfGI->CreatePersistentDescriptors(*this, Device))
+    {
+        LogError("Deferred renderer initialization failed: SparseSdfGI descriptor creation failed");
         return false;
     }
 

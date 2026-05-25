@@ -11,6 +11,10 @@
 #define COMPOSITE_DIFFUSE_SOURCE_RESTIR 0
 #endif
 
+#ifndef COMPOSITE_DIFFUSE_SOURCE_SPARSE_SDF
+#define COMPOSITE_DIFFUSE_SOURCE_SPARSE_SDF 0
+#endif
+
 #ifndef COMPOSITE_VISUALIZATION_OFF
 #define COMPOSITE_VISUALIZATION_OFF 0
 #endif
@@ -41,6 +45,7 @@ cbuffer LightingBindlessConstants : register(b1)
     uint SsrTextureIndex;
     uint SsrFallbackTextureIndex;
     uint DirectLightingIndex;
+    uint SparseSdfGITextureIndex;
 };
 
 cbuffer DeferredLightingConstants : register(b2)
@@ -116,6 +121,8 @@ float4 DeferredCompositeLightPS(VSOutput Input) : SV_Target
     Texture2D GtaoTexture = ResourceDescriptorHeap[GtaoTextureIndex];
 #if COMPOSITE_DIFFUSE_SOURCE_RESTIR
     Texture2D RestirGITexture = ResourceDescriptorHeap[RestirGITextureIndex];
+#elif COMPOSITE_DIFFUSE_SOURCE_SPARSE_SDF
+    Texture2D SparseSdfGITexture = ResourceDescriptorHeap[SparseSdfGITextureIndex];
 #endif
     Texture2D SsrTexture = ResourceDescriptorHeap[SsrTextureIndex];
     Texture2D SsrFallbackTexture = ResourceDescriptorHeap[SsrFallbackTextureIndex];
@@ -193,6 +200,10 @@ float4 DeferredCompositeLightPS(VSOutput Input) : SV_Target
     {
         const float3 restirIrradiance = RestirGITexture.Sample(GBufferSampler, Input.UV).rgb;
         indirectDiffuse = restirIrradiance * albedo * (1.0f - metallic);
+    }
+#elif COMPOSITE_DIFFUSE_SOURCE_SPARSE_SDF
+    {
+        indirectDiffuse = SparseSdfGITexture.Sample(GBufferSampler, Input.UV).rgb * (1.0f - metallic);
     }
 #endif
 

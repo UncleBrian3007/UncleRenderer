@@ -3,6 +3,7 @@
 #include "../RendererUtils.h"
 #include "../ShaderCompiler.h"
 #include "../Deferred/RestirGI.h"
+#include "../Deferred/SparseSdfGI.h"
 #include "../../Core/GpuDebugMarkers.h"
 #include "../../Core/Logger.h"
 #include "../../Core/RendererConfig.h"
@@ -16,7 +17,7 @@
 
 namespace
 {
-    constexpr uint32_t kLightingPassBindlessDwordCount          = 14;
+    constexpr uint32_t kLightingPassBindlessDwordCount          = 15;
     constexpr uint32_t kLightingPassConstantsDwordCount         = 7;
     constexpr uint32_t kLinearDepthBindlessDwordCount           = 1;
     constexpr uint32_t kExtractHalfDepthConstantsDwordCount     = 4;
@@ -24,7 +25,8 @@ namespace
     enum class ECompositeDiffuseSource : uint32_t
     {
         Environment = 0,
-        RestirGI = 1
+        RestirGI = 1,
+        SparseSdfGI = 2
     };
 
     enum class ECompositeVisualizationPermutation : uint32_t
@@ -33,7 +35,7 @@ namespace
         On = 1
     };
 
-    constexpr uint32_t CompositeDiffuseSourceCount = 2u;
+    constexpr uint32_t CompositeDiffuseSourceCount = 3u;
     constexpr uint32_t CompositeVisualizationPermutationCount = 2u;
     constexpr uint32_t CompositeLightingPipelineCount = CompositeDiffuseSourceCount * CompositeVisualizationPermutationCount;
 
@@ -47,6 +49,11 @@ namespace
         if (Owner.GetRestirGI()->IsEnabled() && Owner.GetRestirGI()->GetIntensity() > 0.0f)
         {
             return ECompositeDiffuseSource::RestirGI;
+        }
+        const FSparseSdfGI* SparseSdfGI = Owner.GetSparseSdfGI();
+        if (SparseSdfGI && SparseSdfGI->IsEnabled() && SparseSdfGI->IsReady() && SparseSdfGI->GetIntensity() > 0.0f)
+        {
+            return ECompositeDiffuseSource::SparseSdfGI;
         }
 
         return ECompositeDiffuseSource::Environment;
@@ -70,6 +77,9 @@ namespace
             break;
         case ECompositeDiffuseSource::RestirGI:
             Defines.push_back(L"COMPOSITE_DIFFUSE_SOURCE_RESTIR=1");
+            break;
+        case ECompositeDiffuseSource::SparseSdfGI:
+            Defines.push_back(L"COMPOSITE_DIFFUSE_SOURCE_SPARSE_SDF=1");
             break;
         }
 
@@ -646,6 +656,7 @@ void FDeferredLightingPass::AddDirectLightingPass(FDeferredPassContext& Context,
             UINT32_MAX,
             UINT32_MAX,
             UINT32_MAX,
+            UINT32_MAX,
             UINT32_MAX
         };
         LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(LightingBindlessIndices), LightingBindlessIndices, 0);
@@ -688,14 +699,16 @@ void FDeferredLightingPass::AddCompositeLightPass(FDeferredPassContext& Context,
     const FDeferredGBufferHandles& GBufferHandles = Context.Resources.GBufferHandles;
     const FRGResourceHandle DepthHandle = Context.Resources.DepthHandle;
     const FRGResourceHandle GtaoHandle = Context.Resources.Gtao.GtaoHandle;
-        const FRGResourceHandle RestirGIInputHandle = Owner.RestirGIDenoiser->IsEnabled() ? Context.Resources.RestirGIDenoiser.HistoryIrradianceHandle : Context.Resources.RestirGI.RestirGIHandle;
+    const FRGResourceHandle RestirGIInputHandle = Owner.RestirGIDenoiser->IsEnabled() ? Context.Resources.RestirGIDenoiser.HistoryIrradianceHandle : Context.Resources.RestirGI.RestirGIHandle;
+    const FRGResourceHandle SparseSdfGIInputHandle = Context.Resources.SparseSdfGI.DiffuseGIHandle;
     const FRGResourceHandle SsrHandle = (Owner.Ssr != nullptr) ? Context.Resources.Ssr.GetLightingHandle(Owner.Ssr->GetMode(), Owner.Ssr->IsDenoiseEnabled()) : FRGResourceHandle{};
     const FRGResourceHandle SsrFallbackHandle = Context.Resources.Ssr.SsrFallbackHandle;
     const FRGResourceHandle LightingHandle = Context.Resources.LightingHandle;
     const EDeferredLightingVisualizationMode VisualizationMode = DeferredLightingVisualizationMode;
     const ECompositeDiffuseSource CompositeDiffuseSource = ResolveCompositeDiffuseSource(Owner);
     const ECompositeVisualizationPermutation VisualizationPermutation = ResolveCompositeVisualizationPermutation(VisualizationMode);
-        const bool bUsesRestirDiffuse = CompositeDiffuseSource == ECompositeDiffuseSource::RestirGI;
+    const bool bUsesRestirDiffuse = CompositeDiffuseSource == ECompositeDiffuseSource::RestirGI;
+    const bool bUsesSparseSdfDiffuse = CompositeDiffuseSource == ECompositeDiffuseSource::SparseSdfGI;
 
     struct FCompositeLightPassData
     {
@@ -712,9 +725,13 @@ void FDeferredLightingPass::AddCompositeLightPass(FDeferredPassContext& Context,
         Builder.ReadTexture(GBufferHandles[3], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(DepthHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(GtaoHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-            if (bUsesRestirDiffuse)
+        if (bUsesRestirDiffuse)
         {
             Builder.ReadTexture(RestirGIInputHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        }
+        if (bUsesSparseSdfDiffuse)
+        {
+            Builder.ReadTexture(SparseSdfGIInputHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         }
         Builder.ReadTexture(SsrHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(SsrFallbackHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -745,14 +762,16 @@ void FDeferredLightingPass::AddCompositeLightPass(FDeferredPassContext& Context,
         const ECompositeDiffuseSource CompositeDiffuseSource = ResolveCompositeDiffuseSource(Owner);
         const ECompositeVisualizationPermutation VisualizationPermutation = ResolveCompositeVisualizationPermutation(VisualizationMode);
         const uint32_t CompositePipelineIndex = GetCompositeLightingPipelineIndex(CompositeDiffuseSource, VisualizationPermutation);
-            const bool bUsesRestirDiffuse = CompositeDiffuseSource == ECompositeDiffuseSource::RestirGI;
+        const bool bUsesRestirDiffuse = CompositeDiffuseSource == ECompositeDiffuseSource::RestirGI;
+        const bool bUsesSparseSdfDiffuse = CompositeDiffuseSource == ECompositeDiffuseSource::SparseSdfGI;
         const uint32_t SsrLightingBindlessIndex = (Owner.Ssr != nullptr) ? Owner.Ssr->GetLightingSrvBindlessIndex() : UINT32_MAX;
         const uint32_t SsrFallbackIndex = (Owner.Ssr != nullptr) ? Owner.Ssr->GetFallbackSrvBindlessIndex() : UINT32_MAX;
-            const uint32_t RestirGILightingBindlessIndex = Owner.RestirGIDenoiser->IsEnabled()
+        const uint32_t RestirGILightingBindlessIndex = Owner.RestirGIDenoiser->IsEnabled()
             ? ((Owner.RestirGIDenoiser != nullptr) ? Owner.RestirGIDenoiser->GetCurrentOutputSrvBindlessIndex() : UINT32_MAX)
             : ((Owner.RestirGI != nullptr) ? Owner.RestirGI->GetCurrentOutputSrvBindlessIndex() : UINT32_MAX);
+        const uint32_t SparseSdfGILightingBindlessIndex = Owner.GetSparseSdfGI() ? Owner.GetSparseSdfGI()->GetCurrentOutputSrvBindlessIndex() : UINT32_MAX;
         const uint32_t GtaoBindlessIndex = (Owner.Gtao != nullptr) ? Owner.Gtao->GetSrvBindlessIndex() : UINT32_MAX;
-            if (!AreAllBindlessIndicesValid(
+        if (!AreAllBindlessIndicesValid(
             DepthBindlessIndex,
             GtaoBindlessIndex,
             SsrLightingBindlessIndex,
@@ -768,6 +787,10 @@ void FDeferredLightingPass::AddCompositeLightPass(FDeferredPassContext& Context,
             return;
         }
         if (bUsesRestirDiffuse && !IsValidBindlessIndex(RestirGILightingBindlessIndex))
+        {
+            return;
+        }
+        if (bUsesSparseSdfDiffuse && !IsValidBindlessIndex(SparseSdfGILightingBindlessIndex))
         {
             return;
         }
@@ -799,7 +822,8 @@ void FDeferredLightingPass::AddCompositeLightPass(FDeferredPassContext& Context,
             RestirGILightingBindlessIndex,
             SsrLightingBindlessIndex,
             SsrFallbackIndex,
-            Owner.DirectLightingBindlessIndex
+            Owner.DirectLightingBindlessIndex,
+            SparseSdfGILightingBindlessIndex
         };
         LocalCommandList->SetGraphicsRoot32BitConstants(1, _countof(LightingBindlessIndices), LightingBindlessIndices, 0);
 

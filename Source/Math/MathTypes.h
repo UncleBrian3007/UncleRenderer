@@ -1,6 +1,7 @@
 #pragma once
 
 #include <DirectXMath.h>
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -20,6 +21,11 @@ struct FUInt4
     uint32_t z = 0;
     uint32_t w = 0;
 };
+
+inline uint32_t AlignDispatch(uint32_t Value, uint32_t GroupSize)
+{
+    return (Value + GroupSize - 1u) / GroupSize;
+}
 
 namespace VectorMath
 {
@@ -167,6 +173,14 @@ namespace MatrixMath
     {
         const FMatrix4 MirrorZ = MakeMirrorZ();
         return Multiply(MirrorZ, Multiply(Matrix, MirrorZ));
+    }
+
+    inline float ComputeMaxScale(const DirectX::XMFLOAT4X4& Matrix)
+    {
+        const float ScaleX = std::sqrt(Matrix._11 * Matrix._11 + Matrix._21 * Matrix._21 + Matrix._31 * Matrix._31);
+        const float ScaleY = std::sqrt(Matrix._12 * Matrix._12 + Matrix._22 * Matrix._22 + Matrix._32 * Matrix._32);
+        const float ScaleZ = std::sqrt(Matrix._13 * Matrix._13 + Matrix._23 * Matrix._23 + Matrix._33 * Matrix._33);
+        return (std::max)(ScaleX, (std::max)(ScaleY, ScaleZ));
     }
 
     inline DirectX::XMFLOAT4X4 ToFloat4x4(const FMatrix4& Matrix)

@@ -20,6 +20,7 @@
 #include "SkyAtmosphere.h"
 #include "Deferred/RestirGI.h"
 #include "Deferred/RestirGIDenoiser.h"
+#include "Deferred/SparseSdfGI.h"
 #include "Deferred/PathTracing.h"
 #include "Deferred/AutoExposure.h"
 #include "Deferred/Cas.h"
@@ -73,6 +74,7 @@ public:
     void ApplyClusterDAGConfig(const FRendererConfig& Config);
     void ApplySsrConfig(const FRendererConfig& Config);
     void ApplyRestirGIConfig(const FRendererConfig& Config);
+    void ApplySparseSdfGIConfig(const FRendererConfig& Config);
     void ApplyRestirGITransientState(const FRestirGITransientState& State);
         void ApplyGtaoConfig(const FRendererConfig& Config) override;
     void ApplyPathTracingConfig(const FRendererConfig& Config) override;
@@ -105,6 +107,7 @@ public:
 
     // Submodule accessors
     FRestirGI* GetRestirGI() const { return RestirGI.get(); }
+    FSparseSdfGI* GetSparseSdfGI() const { return SparseSdfGI.get(); }
     FPathTracing* GetPathTracing() const { return PathTracing.get(); }
 
 public:
@@ -143,7 +146,8 @@ public:
         FClusterDagVisibilityFrameResources ClusterDagVisibility;
         FRGResourceHandle LinearDepthHandle{};
         FGtaoFrameResources Gtao;
-            FRestirGIFrameResources RestirGI;
+        FSparseSdfGIFrameResources SparseSdfGI;
+        FRestirGIFrameResources RestirGI;
         FRestirGIDenoiserFrameResources RestirGIDenoiser;
         FSsrFrameResources Ssr;
         FRGResourceHandle LightingHandle{};
@@ -199,8 +203,9 @@ private:
     friend class FRayTracingShadow;
     friend class FSsr;
     friend class FSkyAtmosphere;
-        friend class FRestirGI;
+    friend class FRestirGI;
     friend class FRestirGIDenoiser;
+    friend class FSparseSdfGI;
     friend class FPathTracing;
     friend class FAutoExposure;
     friend class FCas;
@@ -218,8 +223,9 @@ private:
     std::unique_ptr<FSsr>                       Ssr;
     std::unique_ptr<FSkyAtmosphere>             SkyAtmosphere;
     std::unique_ptr<FClusterDagRuntime>         ClusterDagRuntime;
-        std::unique_ptr<FRestirGI>                  RestirGI;
+    std::unique_ptr<FRestirGI>                  RestirGI;
     std::unique_ptr<FRestirGIDenoiser>          RestirGIDenoiser;
+    std::unique_ptr<FSparseSdfGI>               SparseSdfGI;
     std::unique_ptr<FPathTracing>               PathTracing;
     std::unique_ptr<FHzb>                       Hzb;
     std::unique_ptr<FAutoExposure>              AutoExposure;
@@ -235,7 +241,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature>                  ExtractHalfDepthNormalRootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState>                  ExtractHalfDepthNormalPipeline;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4>   DirectLightingPipelines;
-    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4>   CompositeLightingPipelines;
+    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 6>   CompositeLightingPipelines;
 
     // Scene textures and bindless resources
     FBindlessTexture SceneTexture;

@@ -1084,6 +1084,8 @@ bool FRenderGraph::AcquireTransientTexture(FRGTextureResource& Texture, D3D12_RE
             Candidate.Desc.Height == Texture.Desc.Height &&
             Candidate.Desc.Format == Texture.Desc.Format &&
             Candidate.Desc.MipLevels == Texture.Desc.MipLevels &&
+            Candidate.Desc.DepthOrArraySize == Texture.Desc.DepthOrArraySize &&
+            Candidate.Desc.Dimension == Texture.Desc.Dimension &&
             Candidate.Flags == Texture.Flags;
     };
 
@@ -1325,13 +1327,17 @@ uint32 FRenderGraph::GetTextureViewBindlessIndex(FRGTextureResource& Texture, bo
     {
         if (bUav)
         {
-            Device->WriteBindlessUav(BindlessIndex, Texture.Resource, nullptr,
-                CD3DX12_UNORDERED_ACCESS_VIEW_DESC::Tex2D(Texture.Resource->GetDesc().Format));
+            const D3D12_UNORDERED_ACCESS_VIEW_DESC UavDesc = Texture.Desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D
+                ? CreateTexture3DUavDesc(Texture.Desc)
+                : CreateTexture2DUavDesc(Texture.Desc);
+            Device->WriteBindlessUav(BindlessIndex, Texture.Resource, nullptr, UavDesc);
         }
         else
         {
-            Device->WriteBindlessSrv(BindlessIndex, Texture.Resource,
-                CD3DX12_SHADER_RESOURCE_VIEW_DESC::Tex2D(Texture.Resource->GetDesc().Format, Texture.Desc.MipLevels));
+            const D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc = Texture.Desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D
+                ? CreateTexture3DSrvDesc(Texture.Desc)
+                : CreateTexture2DSrvDesc(Texture.Desc);
+            Device->WriteBindlessSrv(BindlessIndex, Texture.Resource, SrvDesc);
         }
 
         ViewResource = Texture.Resource;
@@ -1382,13 +1388,18 @@ uint32 FRenderGraph::GetTextureMipViewBindlessIndex(FRGTextureResource& Texture,
     {
         if (bUav)
         {
-            Device->WriteBindlessUav(BindlessIndex, Texture.Resource, nullptr,
-                CD3DX12_UNORDERED_ACCESS_VIEW_DESC::Tex2D(Texture.Resource->GetDesc().Format, MipIndex));
+            const uint32 Texture3DMipDepth = (std::max)(1u, static_cast<uint32>(Texture.Desc.DepthOrArraySize) >> MipIndex);
+            const D3D12_UNORDERED_ACCESS_VIEW_DESC UavDesc = Texture.Desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D
+                ? CreateTexture3DUavDesc(Texture.Desc, MipIndex, 0, Texture3DMipDepth)
+                : CreateTexture2DUavDesc(Texture.Desc, MipIndex);
+            Device->WriteBindlessUav(BindlessIndex, Texture.Resource, nullptr, UavDesc);
         }
         else
         {
-            Device->WriteBindlessSrv(BindlessIndex, Texture.Resource,
-                CD3DX12_SHADER_RESOURCE_VIEW_DESC::Tex2D(Texture.Resource->GetDesc().Format, 1, MipIndex));
+            const D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc = Texture.Desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D
+                ? CreateTexture3DSrvDesc(Texture.Desc, MipIndex, 1)
+                : CreateTexture2DSrvDesc(Texture.Desc, MipIndex, 1);
+            Device->WriteBindlessSrv(BindlessIndex, Texture.Resource, SrvDesc);
         }
 
         ViewResource = Texture.Resource;

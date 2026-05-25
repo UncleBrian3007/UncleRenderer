@@ -341,15 +341,6 @@ namespace
         OutMax.z = std::max(OutMax.z, ModelCenter.z + ModelRadius);
     }
 
-    float ComputeMaxScale(const DirectX::XMFLOAT4X4& Matrix)
-    {
-        const float ScaleX = std::sqrt(Matrix._11 * Matrix._11 + Matrix._21 * Matrix._21 + Matrix._31 * Matrix._31);
-        const float ScaleY = std::sqrt(Matrix._12 * Matrix._12 + Matrix._22 * Matrix._22 + Matrix._32 * Matrix._32);
-        const float ScaleZ = std::sqrt(Matrix._13 * Matrix._13 + Matrix._23 * Matrix._23 + Matrix._33 * Matrix._33);
-
-        return (std::max)((std::max)(ScaleX, ScaleY), ScaleZ);
-    }
-
     bool CreateIndexBufferFromIndices(
         FDX12Device* Device,
         const std::vector<uint32_t>& Indices,
@@ -611,7 +602,7 @@ bool SceneModelResourceLoader::LoadModelsFromJson(
                 MaxScale = (std::max)(MaxScale, std::fabs(ScaleValue));
             }
 
-            const float NodeScale = ComputeMaxScale(LoadedNode.WorldMatrix);
+            const float NodeScale = MatrixMath::ComputeMaxScale(LoadedNode.WorldMatrix);
 
             MeshRadius *= MaxScale;
 

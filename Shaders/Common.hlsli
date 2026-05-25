@@ -147,6 +147,14 @@ float Random01(uint2 pixel, uint salt)
     return (seed & 0x00ffffffu) / 16777216.0f;
 }
 
+float2 Random2(uint2 pixel, uint frameIndex)
+{
+    const uint seed = pixel.x * 1973u + pixel.y * 9277u + frameIndex * 26699u + 0x68bc21ebu;
+    return float2(
+        (Hash32(seed) & 0x00ffffffu) / 16777216.0f,
+        (Hash32(seed ^ 0x9e3779b9u) & 0x00ffffffu) / 16777216.0f);
+}
+
 void BuildOrthonormalBasis(float3 normal, out float3 tangent, out float3 bitangent)
 {
     bitangent = normalize(GetPerpendicularVector(normal));
@@ -185,6 +193,37 @@ float3 SampleHemisphereUniform(float2 Xi, float3 normal)
         + bitangent * (sin(phi) * sinTheta)
         + normal * cosTheta;
     return normalize(sample);
+}
+
+// Uniform sampling over a cone of half-angle `radius` around `direction`.
+// A hemisphere is the special case radius = PI/2.
+float3 SampleConeUniform(float2 Xi, float radius, float3 direction)
+{
+    const float cosTheta = cos(radius);
+    const float r0 = cosTheta + Xi.x * (1.0f - cosTheta);
+    const float r = sqrt(max(0.0f, 1.0f - r0 * r0));
+    const float phi = 6.28318530718f * Xi.y;
+
+    float sinPhi;
+    float cosPhi;
+    sincos(phi, sinPhi, cosPhi);
+
+    const float3 v = float3(r * cosPhi, r * sinPhi, r0);
+    return TangentToWorld(v, direction);
+}
+
+float Luminance(float3 color)
+{
+    return dot(max(color, 0.0f), float3(0.2126f, 0.7152f, 0.0722f));
+}
+
+float3 HashToColor(uint value)
+{
+    const uint h = Hash32(value);
+    const float r = ((h >> 0) & 0xff) / 255.0f;
+    const float g = ((h >> 8) & 0xff) / 255.0f;
+    const float b = ((h >> 16) & 0xff) / 255.0f;
+    return float3(r, g, b);
 }
 
 #endif

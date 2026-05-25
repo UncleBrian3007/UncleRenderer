@@ -8,6 +8,7 @@
 #include "RayTracingShadow.h"
 #include "Ssr.h"
 #include "RestirGI.h"
+#include "SparseSdfGI.h"
 #include "PathTracing.h"
 #include "AutoExposure.h"
 #include "Cas.h"
@@ -87,6 +88,8 @@ void FDeferredFrameOrchestrator::BuildFrameGraph(FDeferredPassContext& Context) 
         Owner.BasePass->AddShadowPass(Context);
     }
 
+    Owner.SparseSdfGI->AddSdfUpdatePasses(Context);
+
     if (FrameState.bDoDepthPrepass)
     {
         Owner.BasePass->AddDepthPrepass(Context);
@@ -145,6 +148,7 @@ void FDeferredFrameOrchestrator::BuildFrameGraph(FDeferredPassContext& Context) 
         Owner.LightingPass->AddLinearDepthPass(Context);
         Owner.LightingPass->AddExtractHalfDepthNormalPass(Context);
         Owner.Gtao->AddPass(Context);
+        Owner.SparseSdfGI->AddDiffuseGITracePasses(Context);
         Owner.RestirGI->AddPasses(Context);
         Owner.RestirGIDenoiser->AddPasses(Context);
         Owner.Ssr->AddPasses(Context);

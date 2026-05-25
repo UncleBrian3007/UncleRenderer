@@ -28,7 +28,6 @@ cbuffer RayTracingBindlessConstants : register(b1)
 };
 
 #include "../RayTracingCommon.hlsl"
-#include "PathTracingCommon.hlsl"
 
 // Constants for ray tracing
 static const uint RayQueryThreadGroupSize = 8;
@@ -225,7 +224,7 @@ void PathTracingCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
         if (randSelect < probDiffuse)
         {
-            wi = SampleCosHemisphere(randSample, N);
+            wi = SampleHemisphereCosine(randSample, N);
 
             float3 diffuseBrdf = DiffuseBRDF(diffuse);
             float NdotL = saturate(dot(N, wi));

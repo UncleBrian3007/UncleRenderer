@@ -111,6 +111,14 @@ struct FRendererConfig
     bool bRestirGIUseBrdf = true;
     bool bRestirGIUseHistoryIndirect = true;
     ERestirGIRandomMode RestirGIRandomMode = ERestirGIRandomMode::BlueNoiseSobol;
+    bool bEnableSparseSdfGI = false;
+    uint32_t SparseSdfGIDebugMode = 1;
+    uint32_t SparseSdfGICascadeCount = 1;
+    uint32_t SparseSdfGIMaxTriangleVoxelSpan = 32;
+    float SparseSdfGIBaseVoxelSize = 0.0f;
+    float SparseSdfGICascadeScale = 2.0f;
+    bool bSparseSdfGITraceHalfResolution = false;
+    float SparseSdfGIIntensity = 1.0f;
     bool bEnableIndirectDraw = true;
     bool bEnableClusterDAGRuntime = false;
     bool bForceRebuildClusterDAGCache = false;

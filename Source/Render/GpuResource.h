@@ -517,6 +517,29 @@ inline D3D12_UNORDERED_ACCESS_VIEW_DESC CreateTexture2DUavDesc(const FRGTextureD
     return UavDesc;
 }
 
+inline D3D12_SHADER_RESOURCE_VIEW_DESC CreateTexture3DSrvDesc(const FRGTextureDesc& Desc, uint32_t MostDetailedMip = 0, uint32_t MipLevels = UINT32_MAX)
+{
+    D3D12_SHADER_RESOURCE_VIEW_DESC SrvDesc = {};
+    SrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+    SrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    SrvDesc.Format = Desc.Format;
+    SrvDesc.Texture3D.MostDetailedMip = MostDetailedMip;
+    SrvDesc.Texture3D.MipLevels = MipLevels == UINT32_MAX ? Desc.MipLevels : static_cast<UINT>(MipLevels);
+    SrvDesc.Texture3D.ResourceMinLODClamp = 0.0f;
+    return SrvDesc;
+}
+
+inline D3D12_UNORDERED_ACCESS_VIEW_DESC CreateTexture3DUavDesc(const FRGTextureDesc& Desc, uint32_t MipSlice = 0, uint32_t FirstWSlice = 0, uint32_t WSize = UINT32_MAX)
+{
+    D3D12_UNORDERED_ACCESS_VIEW_DESC UavDesc = {};
+    UavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D;
+    UavDesc.Format = Desc.Format;
+    UavDesc.Texture3D.MipSlice = MipSlice;
+    UavDesc.Texture3D.FirstWSlice = FirstWSlice;
+    UavDesc.Texture3D.WSize = WSize == UINT32_MAX ? Desc.DepthOrArraySize : WSize;
+    return UavDesc;
+}
+
 inline void CreateBindlessTextureSrv(FDX12Device* Device, FBindlessTexture& Texture, uint32_t MostDetailedMip = 0, uint32_t MipLevels = UINT32_MAX)
 {
     Texture.SrvBindlessIndex = Device->CreateBindlessSrv(Texture.Get(), CreateTexture2DSrvDesc(Texture.Desc, MostDetailedMip, MipLevels));
@@ -525,6 +548,16 @@ inline void CreateBindlessTextureSrv(FDX12Device* Device, FBindlessTexture& Text
 inline void CreateBindlessTextureUav(FDX12Device* Device, FBindlessTexture& Texture, uint32_t MipSlice = 0, uint32_t PlaneSlice = 0)
 {
     Texture.UavBindlessIndex = Device->CreateBindlessUav(Texture.Get(), nullptr, CreateTexture2DUavDesc(Texture.Desc, MipSlice, PlaneSlice));
+}
+
+inline void CreateBindlessTexture3DSrv(FDX12Device* Device, FBindlessTexture& Texture, uint32_t MostDetailedMip = 0, uint32_t MipLevels = UINT32_MAX)
+{
+    Texture.SrvBindlessIndex = Device->CreateBindlessSrv(Texture.Get(), CreateTexture3DSrvDesc(Texture.Desc, MostDetailedMip, MipLevels));
+}
+
+inline void CreateBindlessTexture3DUav(FDX12Device* Device, FBindlessTexture& Texture, uint32_t MipSlice = 0, uint32_t FirstWSlice = 0, uint32_t WSize = UINT32_MAX)
+{
+    Texture.UavBindlessIndex = Device->CreateBindlessUav(Texture.Get(), nullptr, CreateTexture3DUavDesc(Texture.Desc, MipSlice, FirstWSlice, WSize));
 }
 
 inline void CreateBindlessTextureViews(FDX12Device* Device, FBindlessTexture& Texture, bool bCreateSrv, bool bCreateUav)
@@ -650,6 +683,44 @@ inline void CreateBindlessTexture(
 
     InitializeBindlessTexture(OutTexture, Desc, InitialState);
     CreateBindlessTextureViews(Device, OutTexture, bCreateSrv, bCreateUav);
+}
+
+inline void CreateBindlessTexture3D(
+    FDX12Device* Device,
+    const std::wstring& Name,
+    const FRGTextureDesc& Desc,
+    D3D12_RESOURCE_FLAGS Flags,
+    D3D12_RESOURCE_STATES InitialState,
+    FBindlessTexture& OutTexture,
+    bool bCreateSrv,
+    bool bCreateUav,
+    const D3D12_CLEAR_VALUE* OptimizedClearValue = nullptr)
+{
+    const D3D12_HEAP_PROPERTIES DefaultHeap = CreateHeapProperties(D3D12_HEAP_TYPE_DEFAULT);
+    D3D12_RESOURCE_DESC ResourceDesc = CreateTextureResourceDesc(Desc, Flags);
+    ResourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
+    HR_CHECK(Device->GetDevice()->CreateCommittedResource(
+        &DefaultHeap,
+        D3D12_HEAP_FLAG_NONE,
+        &ResourceDesc,
+        InitialState,
+        OptimizedClearValue,
+        IID_PPV_ARGS(OutTexture.ReleaseAndGetAddressOf())));
+
+    if (OutTexture && !Name.empty())
+    {
+        OutTexture->SetName(Name.c_str());
+    }
+
+    InitializeBindlessTexture(OutTexture, Desc, InitialState);
+    if (bCreateSrv)
+    {
+        CreateBindlessTexture3DSrv(Device, OutTexture);
+    }
+    if (bCreateUav)
+    {
+        CreateBindlessTexture3DUav(Device, OutTexture);
+    }
 }
 
 inline void CreateTexture2DRtv(

@@ -5,6 +5,7 @@
 #include "Hzb.h"
 #include "Ssr.h"
 #include "RestirGI.h"
+#include "SparseSdfGI.h"
 #include "AutoExposure.h"
 #include "Cas.h"
 #include "Taa.h"
@@ -50,6 +51,7 @@ void FDeferredResourceImporter::ImportFrameResources(FDeferredPassContext& Conte
     OutResources.LinearDepthHandle = ImportBindlessTexture(Graph, "LinearDepth", Owner.LinearDepthTexture);
 
     Owner.Gtao->ImportPersistentResources(Context);
+    Owner.SparseSdfGI->ImportPersistentResources(Context);
     Owner.RestirGI->ImportPersistentResources(Context);
     Owner.RestirGIDenoiser->ImportPersistentResources(Context);
     Owner.Ssr->ImportPersistentResources(Context);

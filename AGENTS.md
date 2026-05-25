@@ -71,6 +71,7 @@ Before adding a new variable to `Renderer.h` or `FRenderer`, check whether it be
 
 ### Clean code
 - Before adding a local lambda or member function, verify whether a similar function already exists in the common headers. (GpuResource.h, MathTypes.h ..)
+- Before writing new shader utility code, check `Shaders/Common.hlsli` and `Shaders/PBRCommon.hlsl` for an existing implementation of the same functionality. Do not duplicate helpers that are already provided there.
 - Keep code dry
 
 ## Documentation

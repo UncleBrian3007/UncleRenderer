@@ -54,6 +54,9 @@
     <Filter Include="Shaders\Ssr">
       <UniqueIdentifier>{D1B9A37A-D6A2-42D1-9F56-96CDDC4A22AD}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Shaders\SparseSdfGI">
+      <UniqueIdentifier>{3C1B62AA-D680-4D93-B9F1-9A72C7F2D9F9}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Shaders\GpuDrivenCulling">
       <UniqueIdentifier>{C07BC67A-948A-4600-9A78-6DC2DB71DE61}</UniqueIdentifier>
     </Filter>
@@ -153,6 +156,9 @@
       <Filter>Source Files\Render</Filter>
     </ClCompile>
     <ClCompile Include="Source\Render\Deferred\RestirGI.cpp">
+      <Filter>Source Files\Render</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\Render\Deferred\SparseSdfGI.cpp">
       <Filter>Source Files\Render</Filter>
     </ClCompile>
     <ClCompile Include="Source\Render\Deferred\RayTracingShadow.cpp">
@@ -431,6 +437,9 @@
       <Filter>Header Files\Render</Filter>
     </ClInclude>
     <ClInclude Include="Source\Render\Deferred\RestirGI.h">
+      <Filter>Header Files\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\Render\Deferred\SparseSdfGI.h">
       <Filter>Header Files\Render</Filter>
     </ClInclude>
     <ClInclude Include="Source\Render\Deferred\RestirGIDenoiser.h">
@@ -733,6 +742,9 @@
     </None>
     <None Include="Shaders\RestirGI\RestirGI.hlsl">
       <Filter>Shaders\RestirGI</Filter>
+    </None>
+    <None Include="Shaders\SparseSdfGI\SparseSdfGI.hlsl">
+      <Filter>Shaders\SparseSdfGI</Filter>
     </None>
     <None Include="Shaders\GpuDebug\GpuDebugLine.hlsl">
       <Filter>Shaders\GpuDebug</Filter>

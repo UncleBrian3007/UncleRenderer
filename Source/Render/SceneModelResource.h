@@ -150,6 +150,16 @@ struct FSceneModelResource
     Microsoft::WRL::ComPtr<ID3D12Resource> BlasResultBuffer;
     D3D12_RAYTRACING_GEOMETRY_DESC BlasGeometryDesc{};
     bool bHasRayTracingBlas = false;
+
+    bool IsStaticRegularMeshCandidate() const
+    {
+        return !bUseSkinning
+            && Geometry.VertexBuffers[0].HasSrv()
+            && Geometry.IndexBuffer.HasSrv()
+            && Geometry.IndexCount >= 3u
+            && DrawIndexCount >= 3u
+            && AlphaMode == 0u;
+    }
 };
 
 inline bool ComputeSceneModelStats(

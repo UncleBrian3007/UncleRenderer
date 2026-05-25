@@ -108,15 +108,6 @@ namespace
             : EClusterDagSelectPermutation::Default;
     }
 
-    float ComputeMaxScale(const DirectX::XMFLOAT4X4& Matrix)
-    {
-        const float ScaleX = std::sqrt(Matrix._11 * Matrix._11 + Matrix._21 * Matrix._21 + Matrix._31 * Matrix._31);
-        const float ScaleY = std::sqrt(Matrix._12 * Matrix._12 + Matrix._22 * Matrix._22 + Matrix._32 * Matrix._32);
-        const float ScaleZ = std::sqrt(Matrix._13 * Matrix._13 + Matrix._23 * Matrix._23 + Matrix._33 * Matrix._33);
-
-        return (std::max)((std::max)(ScaleX, ScaleY), ScaleZ);
-    }
-
     DirectX::XMFLOAT4 TransformBoundingSphere(const DirectX::XMFLOAT4& Sphere, const DirectX::XMMATRIX& World, float MaxScale)
     {
         const DirectX::XMVECTOR LocalCenter = DirectX::XMVectorSet(Sphere.x, Sphere.y, Sphere.z, 1.0f);
@@ -739,7 +730,7 @@ bool FClusterDagRuntime::PrepareRuntimeData(FDeferredRenderer& Owner, FPreparedD
         const uint32_t BaseChildRefIndex = static_cast<uint32_t>(OutData.ChildRefs.size());
         const uint32_t BaseDrawDataIndex = static_cast<uint32_t>(OutData.DrawDatas.size());
         const DirectX::XMMATRIX World = DirectX::XMLoadFloat4x4(&Model.WorldMatrix);
-        const float ModelScale = ComputeMaxScale(Model.WorldMatrix);
+        const float ModelScale = MatrixMath::ComputeMaxScale(Model.WorldMatrix);
 
         Model.ClusterDagRuntimeClusterOffset = BaseClusterIndex;
         Model.ClusterDagRuntimeClusterCount = static_cast<uint32_t>(RuntimeHierarchy.Clusters.size());
