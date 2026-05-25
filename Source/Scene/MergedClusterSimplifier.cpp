@@ -4,7 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
-#include <limits>
+#include <iomanip>
 #include <sstream>
 #include <unordered_map>
 #include <utility>
@@ -31,6 +31,13 @@ void LogPrimitiveInfo(size_t PrimitiveIndex, const std::string& Message)
 void LogPrimitiveWarning(size_t PrimitiveIndex, const std::string& Message)
 {
     LogWarning(BuildPrimitiveLogPrefix(PrimitiveIndex) + ": " + Message);
+}
+
+static std::string FormatFloat(float Value)
+{
+    std::ostringstream Stream;
+    Stream << std::fixed << std::setprecision(4) << Value;
+    return Stream.str();
 }
 
 namespace
@@ -131,55 +138,6 @@ namespace
         Stream.resize(VertexCount);
     }
 
-    bool PredictMeshletCount(
-        const FBuilderVertexStreams& Streams,
-        const std::vector<uint32_t>& Indices,
-        uint32_t MaxClusterVertices,
-        uint32_t MaxClusterTriangles,
-        float ConeWeight,
-        uint32_t& OutMeshletCount)
-    {
-        OutMeshletCount = 0;
-        if (Streams.Positions.empty() || Indices.size() < 3)
-        {
-            return false;
-        }
-
-        const size_t MaxMeshlets = meshopt_buildMeshletsBound(Indices.size(), MaxClusterVertices, MaxClusterTriangles);
-        std::vector<meshopt_Meshlet> Meshlets(MaxMeshlets);
-        std::vector<unsigned int> MeshletVertices(MaxMeshlets * MaxClusterVertices);
-        std::vector<unsigned char> MeshletTriangles(MaxMeshlets * MaxClusterTriangles * 3);
-
-        const size_t MeshletCount = meshopt_buildMeshlets(
-            Meshlets.data(),
-            MeshletVertices.data(),
-            MeshletTriangles.data(),
-            Indices.data(),
-            Indices.size(),
-            &Streams.Positions[0].x,
-            Streams.Positions.size(),
-            sizeof(FFloat3),
-            MaxClusterVertices,
-            MaxClusterTriangles,
-            ConeWeight);
-
-        if (MeshletCount == 0)
-        {
-            return false;
-        }
-
-        OutMeshletCount = static_cast<uint32_t>(MeshletCount);
-        return true;
-    }
-
-    bool PredictMeshletCount(
-        const FBuilderVertexStreams& Streams,
-        const std::vector<uint32_t>& Indices,
-        const FMeshoptScratchReducerInput& Input,
-        uint32_t& OutMeshletCount)
-    {
-        return PredictMeshletCount(Streams, Indices, Input.MaxClusterVertices, Input.MaxClusterTriangles, Input.ConeWeight, OutMeshletCount);
-    }
 #endif
 
     void BuildOutputVertexKey(
@@ -332,6 +290,7 @@ bool BuildMergedClusterScratch(
     size_t GroupOrdinal,
     const FClusterDAG& Dag,
     const std::vector<uint32_t>& ChildClusters,
+    const FClusterEdgeOwnerMap& LevelEdgeOwners,
     FMergedClusterScratch& OutScratch)
 {
     OutScratch = {};
@@ -429,6 +388,21 @@ bool BuildMergedClusterScratch(
     }
 
     OutScratch.Edges.reserve(EdgeCounts.size());
+    uint32_t OpenBoundaryEdgeCount = 0;
+    uint32_t LockedBoundaryEdgeCount = 0;
+    uint32_t MissingBoundaryEdgeCount = 0;
+    auto LockEdgeEndpoints = [&OutScratch](const FScratchEdge& Edge)
+    {
+        if (Edge.PositionNodeA < OutScratch.PositionNodes.size())
+        {
+            OutScratch.PositionNodes[Edge.PositionNodeA].bLocked = true;
+        }
+        if (Edge.PositionNodeB < OutScratch.PositionNodes.size())
+        {
+            OutScratch.PositionNodes[Edge.PositionNodeB].bLocked = true;
+        }
+    };
+
     for (const auto& Pair : EdgeCounts)
     {
         FScratchEdge Edge;
@@ -446,13 +420,31 @@ bool BuildMergedClusterScratch(
         if (Edge.bExternal)
         {
             ++OutScratch.ExternalEdgeCount;
-            if (Edge.PositionNodeA < OutScratch.PositionNodes.size())
+            if (Edge.PositionNodeA >= OutScratch.PositionNodes.size()
+                || Edge.PositionNodeB >= OutScratch.PositionNodes.size())
             {
-                OutScratch.PositionNodes[Edge.PositionNodeA].bLocked = true;
+                ++MissingBoundaryEdgeCount;
+                LockEdgeEndpoints(Edge);
+                continue;
             }
-            if (Edge.PositionNodeB < OutScratch.PositionNodes.size())
+
+            const FPositionEdgeKey PositionEdgeKey = MakeUndirectedPositionEdgeKey(
+                OutScratch.PositionNodes[Edge.PositionNodeA].Position,
+                OutScratch.PositionNodes[Edge.PositionNodeB].Position);
+            const auto OwnerIt = LevelEdgeOwners.find(PositionEdgeKey);
+            if (OwnerIt == LevelEdgeOwners.end())
             {
-                OutScratch.PositionNodes[Edge.PositionNodeB].bLocked = true;
+                ++MissingBoundaryEdgeCount;
+                LockEdgeEndpoints(Edge);
+            }
+            else if (OwnerIt->second.DistinctOwnerCount >= 2u)
+            {
+                ++LockedBoundaryEdgeCount;
+                LockEdgeEndpoints(Edge);
+            }
+            else
+            {
+                ++OpenBoundaryEdgeCount;
             }
         }
     }
@@ -464,19 +456,22 @@ bool BuildMergedClusterScratch(
             ++OutScratch.LockedPositionCount;
         }
     }
+    const float LockedPositionRatio = !OutScratch.PositionNodes.empty()
+        ? static_cast<float>(OutScratch.LockedPositionCount) / static_cast<float>(OutScratch.PositionNodes.size())
+        : 0.0f;
 
     const bool bValidScratch = OutScratch.IsValid();
     if (!bValidScratch)
     {
-        CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " BuildMergedClusterScratch failed" << ", reason=invalid_output" << ", childClusters=" << ChildClusters.size() << ", invalidChildClusters=" << InvalidChildClusterCount << ", inputTriangles=" << InputTriangleCount << ", corners=" << OutScratch.Corners.size() << ", positions=" << OutScratch.PositionNodes.size() << ", triangles=" << OutScratch.Triangles.size() << ", activeTriangles=" << OutScratch.ActiveTriangleCount << ", edges=" << OutScratch.Edges.size() << ", externalEdges=" << OutScratch.ExternalEdgeCount << ", nonManifoldEdges=" << OutScratch.NonManifoldEdgeCount << ", lockedPositions=" << OutScratch.LockedPositionCount);
+        CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " BuildMergedClusterScratch failed" << ", reason=invalid_output" << ", childClusters=" << ChildClusters.size() << ", invalidChildClusters=" << InvalidChildClusterCount << ", inputTriangles=" << InputTriangleCount << ", corners=" << OutScratch.Corners.size() << ", positions=" << OutScratch.PositionNodes.size() << ", triangles=" << OutScratch.Triangles.size() << ", activeTriangles=" << OutScratch.ActiveTriangleCount << ", edges=" << OutScratch.Edges.size() << ", externalEdges=" << OutScratch.ExternalEdgeCount << ", openBoundaryEdges=" << OpenBoundaryEdgeCount << ", lockedBoundaryEdges=" << LockedBoundaryEdgeCount << ", missingBoundaryEdges=" << MissingBoundaryEdgeCount << ", nonManifoldEdges=" << OutScratch.NonManifoldEdgeCount << ", lockedPositions=" << OutScratch.LockedPositionCount << ", lockedPositionRatio=" << FormatFloat(LockedPositionRatio));
         return false;
     }
 
-    CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " BuildMergedClusterScratch" << ", childClusters=" << ChildClusters.size() << ", invalidChildClusters=" << InvalidChildClusterCount << ", inputTriangles=" << InputTriangleCount << ", corners=" << OutScratch.Corners.size() << ", positions=" << OutScratch.PositionNodes.size() << ", triangles=" << OutScratch.Triangles.size() << ", activeTriangles=" << OutScratch.ActiveTriangleCount << ", edges=" << OutScratch.Edges.size() << ", externalEdges=" << OutScratch.ExternalEdgeCount << ", nonManifoldEdges=" << OutScratch.NonManifoldEdgeCount << ", lockedPositions=" << OutScratch.LockedPositionCount);
+    CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " BuildMergedClusterScratch" << ", childClusters=" << ChildClusters.size() << ", invalidChildClusters=" << InvalidChildClusterCount << ", inputTriangles=" << InputTriangleCount << ", corners=" << OutScratch.Corners.size() << ", positions=" << OutScratch.PositionNodes.size() << ", triangles=" << OutScratch.Triangles.size() << ", activeTriangles=" << OutScratch.ActiveTriangleCount << ", edges=" << OutScratch.Edges.size() << ", externalEdges=" << OutScratch.ExternalEdgeCount << ", openBoundaryEdges=" << OpenBoundaryEdgeCount << ", lockedBoundaryEdges=" << LockedBoundaryEdgeCount << ", missingBoundaryEdges=" << MissingBoundaryEdgeCount << ", nonManifoldEdges=" << OutScratch.NonManifoldEdgeCount << ", lockedPositions=" << OutScratch.LockedPositionCount << ", lockedPositionRatio=" << FormatFloat(LockedPositionRatio));
     return true;
 }
 
-bool EmitMergedClusterGeometry(
+bool BuildMergedClusterGeometry(
     const FClusterDAG& Dag,
     const FMergedClusterScratch& Scratch,
     FBuilderVertexStreams& OutStreams,
@@ -593,393 +588,4 @@ bool EmitMergedClusterGeometry(
     }
 
     return CompactAndOptimizeBuilderGeometry(OutStreams, OutIndices, OutVertexLocks);
-}
-
-namespace
-{
-    bool IsValidScratchPositionTriangle(
-        const std::vector<FScratchPositionNode>& PositionNodes,
-        uint32_t NodeA,
-        uint32_t NodeB,
-        uint32_t NodeC)
-    {
-        if (NodeA == NodeB || NodeB == NodeC || NodeC == NodeA)
-        {
-            return false;
-        }
-
-        if (NodeA >= PositionNodes.size()
-            || NodeB >= PositionNodes.size()
-            || NodeC >= PositionNodes.size())
-        {
-            return false;
-        }
-
-        const FFloat3& P0 = PositionNodes[NodeA].Position;
-        const FFloat3& P1 = PositionNodes[NodeB].Position;
-        const FFloat3& P2 = PositionNodes[NodeC].Position;
-        const FFloat3 Edge01 = VectorMath::Sub3(P1, P0);
-        const FFloat3 Edge02 = VectorMath::Sub3(P2, P0);
-        return VectorMath::LengthSquared3(VectorMath::Cross3(Edge01, Edge02)) > GDegenerateAreaEpsilon;
-    }
-
-    bool BuildPositionIndexStream(
-        const FMergedClusterScratch& Scratch,
-        std::vector<uint32_t>& OutPositionIndices)
-    {
-        OutPositionIndices.clear();
-        OutPositionIndices.reserve(Scratch.ActiveTriangleCount * 3);
-
-        for (const FScratchTriangle& Triangle : Scratch.Triangles)
-        {
-            const uint32_t N0 = Triangle.PositionNodeIndices[0];
-            const uint32_t N1 = Triangle.PositionNodeIndices[1];
-            const uint32_t N2 = Triangle.PositionNodeIndices[2];
-            if (!IsValidScratchPositionTriangle(Scratch.PositionNodes, N0, N1, N2))
-            {
-                continue;
-            }
-
-            OutPositionIndices.push_back(N0);
-            OutPositionIndices.push_back(N1);
-            OutPositionIndices.push_back(N2);
-        }
-
-        return OutPositionIndices.size() >= 3;
-    }
-
-    void RebuildScratchEdgesAndLocks(FMergedClusterScratch& Scratch)
-    {
-        Scratch.Edges.clear();
-        Scratch.ExternalEdgeCount = 0;
-        Scratch.NonManifoldEdgeCount = 0;
-        Scratch.LockedPositionCount = 0;
-        Scratch.ActiveTriangleCount = 0;
-
-        std::unordered_map<FNodeEdgeKey, uint32_t, FNodeEdgeKeyHasher> EdgeCounts;
-        EdgeCounts.reserve(Scratch.Triangles.size() * 3);
-
-        for (const FScratchTriangle& Triangle : Scratch.Triangles)
-        {
-            const uint32_t N0 = Triangle.PositionNodeIndices[0];
-            const uint32_t N1 = Triangle.PositionNodeIndices[1];
-            const uint32_t N2 = Triangle.PositionNodeIndices[2];
-            if (!IsValidScratchPositionTriangle(Scratch.PositionNodes, N0, N1, N2))
-            {
-                continue;
-            }
-
-            ++Scratch.ActiveTriangleCount;
-            ++EdgeCounts[MakeNodeEdgeKey(N0, N1)];
-            ++EdgeCounts[MakeNodeEdgeKey(N1, N2)];
-            ++EdgeCounts[MakeNodeEdgeKey(N2, N0)];
-        }
-
-        Scratch.Edges.reserve(EdgeCounts.size());
-        for (const auto& Pair : EdgeCounts)
-        {
-            FScratchEdge Edge;
-            Edge.PositionNodeA = Pair.first.A;
-            Edge.PositionNodeB = Pair.first.B;
-            Edge.IncidentTriangleCount = Pair.second;
-            Edge.bExternal = IsExternalScratchEdge(Pair.second);
-            Scratch.Edges.push_back(Edge);
-
-            if (IsNonManifoldScratchEdge(Pair.second))
-            {
-                ++Scratch.NonManifoldEdgeCount;
-            }
-
-            if (Edge.bExternal)
-            {
-                ++Scratch.ExternalEdgeCount;
-                if (Edge.PositionNodeA < Scratch.PositionNodes.size())
-                {
-                    Scratch.PositionNodes[Edge.PositionNodeA].bLocked = true;
-                }
-                if (Edge.PositionNodeB < Scratch.PositionNodes.size())
-                {
-                    Scratch.PositionNodes[Edge.PositionNodeB].bLocked = true;
-                }
-            }
-        }
-
-        for (const FScratchPositionNode& PositionNode : Scratch.PositionNodes)
-        {
-            if (PositionNode.bLocked)
-            {
-                ++Scratch.LockedPositionCount;
-            }
-        }
-    }
-
-    bool BuildReducedScratchFromPositionIndices(
-        const FClusterDAG& Dag,
-        const FMergedClusterScratch& SourceScratch,
-        const std::vector<uint32_t>& PositionIndices,
-        FMergedClusterScratch& OutScratch)
-    {
-        OutScratch = {};
-        if (!SourceScratch.IsValid() || PositionIndices.size() < 3 || PositionIndices.size() % 3 != 0)
-        {
-            return false;
-        }
-
-        std::vector<uint32_t> FirstCornerForNode(SourceScratch.PositionNodes.size(), GClusterDAGInvalidIndex);
-        for (const FScratchTriangle& Triangle : SourceScratch.Triangles)
-        {
-            for (uint32_t CornerOrdinal = 0; CornerOrdinal < 3; ++CornerOrdinal)
-            {
-                const uint32_t PositionNodeIndex = Triangle.PositionNodeIndices[CornerOrdinal];
-                const uint32_t CornerIndex = Triangle.CornerIndices[CornerOrdinal];
-                if (PositionNodeIndex >= SourceScratch.PositionNodes.size()
-                    || CornerIndex >= SourceScratch.Corners.size()
-                    || FirstCornerForNode[PositionNodeIndex] != GClusterDAGInvalidIndex)
-                {
-                    continue;
-                }
-
-                const FScratchCorner& Corner = SourceScratch.Corners[CornerIndex];
-                if (Corner.SourceVertexIndex < Dag.Positions.size())
-                {
-                    FirstCornerForNode[PositionNodeIndex] = CornerIndex;
-                }
-            }
-        }
-
-        std::vector<uint32_t> PositionNodeRemap(SourceScratch.PositionNodes.size(), GClusterDAGInvalidIndex);
-        auto GetOrAddPositionNode = [&](uint32_t SourceNodeIndex) -> uint32_t
-        {
-            if (SourceNodeIndex >= SourceScratch.PositionNodes.size())
-            {
-                return GClusterDAGInvalidIndex;
-            }
-
-            uint32_t& RemappedIndex = PositionNodeRemap[SourceNodeIndex];
-            if (RemappedIndex == GClusterDAGInvalidIndex)
-            {
-                RemappedIndex = static_cast<uint32_t>(OutScratch.PositionNodes.size());
-                OutScratch.PositionNodes.push_back(SourceScratch.PositionNodes[SourceNodeIndex]);
-            }
-
-            return RemappedIndex;
-        };
-
-        OutScratch.Corners.reserve(PositionIndices.size());
-        OutScratch.Triangles.reserve(PositionIndices.size() / 3);
-
-        for (size_t Index = 0; Index + 2 < PositionIndices.size(); Index += 3)
-        {
-            const uint32_t SourceNodes[3] =
-            {
-                PositionIndices[Index + 0],
-                PositionIndices[Index + 1],
-                PositionIndices[Index + 2]
-            };
-
-            if (!IsValidScratchPositionTriangle(SourceScratch.PositionNodes, SourceNodes[0], SourceNodes[1], SourceNodes[2]))
-            {
-                continue;
-            }
-
-            uint32_t SourceCorners[3] =
-            {
-                FirstCornerForNode[SourceNodes[0]],
-                FirstCornerForNode[SourceNodes[1]],
-                FirstCornerForNode[SourceNodes[2]]
-            };
-
-            if (SourceCorners[0] == GClusterDAGInvalidIndex
-                || SourceCorners[1] == GClusterDAGInvalidIndex
-                || SourceCorners[2] == GClusterDAGInvalidIndex)
-            {
-                continue;
-            }
-
-            uint32_t NewNodes[3] =
-            {
-                GetOrAddPositionNode(SourceNodes[0]),
-                GetOrAddPositionNode(SourceNodes[1]),
-                GetOrAddPositionNode(SourceNodes[2])
-            };
-
-            if (NewNodes[0] == GClusterDAGInvalidIndex
-                || NewNodes[1] == GClusterDAGInvalidIndex
-                || NewNodes[2] == GClusterDAGInvalidIndex
-                || !IsValidScratchPositionTriangle(OutScratch.PositionNodes, NewNodes[0], NewNodes[1], NewNodes[2]))
-            {
-                continue;
-            }
-
-            FScratchTriangle Triangle;
-            Triangle.PositionNodeIndices = { NewNodes[0], NewNodes[1], NewNodes[2] };
-
-            for (uint32_t CornerOrdinal = 0; CornerOrdinal < 3; ++CornerOrdinal)
-            {
-                FScratchCorner Corner = SourceScratch.Corners[SourceCorners[CornerOrdinal]];
-                Corner.PositionNodeIndex = NewNodes[CornerOrdinal];
-                Triangle.CornerIndices[CornerOrdinal] = static_cast<uint32_t>(OutScratch.Corners.size());
-                OutScratch.Corners.push_back(Corner);
-            }
-
-            OutScratch.Triangles.push_back(Triangle);
-        }
-
-        RebuildScratchEdgesAndLocks(OutScratch);
-        return OutScratch.IsValid();
-    }
-}
-
-bool ReduceMergedClusterWithMeshopt(
-    const FClusterDAG& Dag,
-    const FMergedClusterScratch& Scratch,
-    const FMeshoptScratchReducerInput& Input,
-    FMeshoptScratchReducerResult& OutResult)
-{
-    OutResult = {};
-    if (!Scratch.IsValid())
-    {
-        OutResult.FailureReason = "invalid_scratch";
-        return false;
-    }
-
-    const uint32_t MaxAllowedParentCount = Input.MaxAllowedParentCount > 0 ? Input.MaxAllowedParentCount : Input.DesiredParentCount;
-    if (Input.DesiredParentCount == 0 || MaxAllowedParentCount == 0 || Input.TargetClusterTriangles == 0)
-    {
-        OutResult.FailureReason = "invalid_budget";
-        return false;
-    }
-
-    const uint32_t SourceTriangleCount = Scratch.ActiveTriangleCount;
-    const uint32_t TargetTriangleCount = (std::max)(1u, Input.DesiredParentCount * Input.TargetClusterTriangles);
-    if (TargetTriangleCount >= SourceTriangleCount)
-    {
-        OutResult.FailureReason = "non_reducing_target";
-        return false;
-    }
-
-    OutResult.PositionNodeCount = static_cast<uint32_t>(Scratch.PositionNodes.size());
-    OutResult.LockedPositionCount = Scratch.LockedPositionCount;
-
-#if WITH_MESHOPTIMIZER
-    std::vector<uint32_t> PositionIndices;
-    if (!BuildPositionIndexStream(Scratch, PositionIndices))
-    {
-        OutResult.FailureReason = "position_index_build_failed";
-        return false;
-    }
-
-    OutResult.PositionTriangleCount = static_cast<uint32_t>(PositionIndices.size() / 3);
-    if (OutResult.PositionTriangleCount >= SourceTriangleCount)
-    {
-        OutResult.PositionTriangleCount = SourceTriangleCount;
-    }
-
-    std::vector<FFloat3> Positions;
-    Positions.reserve(Scratch.PositionNodes.size());
-    std::vector<unsigned char> VertexLocks;
-    VertexLocks.reserve(Scratch.PositionNodes.size());
-    for (const FScratchPositionNode& Node : Scratch.PositionNodes)
-    {
-        Positions.push_back(Node.Position);
-        VertexLocks.push_back(!Input.bRelaxLocks && Node.bLocked ? static_cast<unsigned char>(meshopt_SimplifyVertex_Lock) : static_cast<unsigned char>(0));
-    }
-
-    const size_t SourceIndexCount = PositionIndices.size();
-    size_t TargetIndexCount = static_cast<size_t>(TargetTriangleCount) * 3ull;
-    TargetIndexCount = (TargetIndexCount / 3) * 3;
-    TargetIndexCount = (std::max)(TargetIndexCount, size_t(3));
-    if (TargetIndexCount >= SourceIndexCount)
-    {
-        TargetIndexCount = SourceIndexCount > 3 ? SourceIndexCount - 3 : 0;
-    }
-
-    if (TargetIndexCount < 3)
-    {
-        OutResult.FailureReason = "invalid_target_index_count";
-        return false;
-    }
-
-    std::vector<uint32_t> SimplifiedIndices(SourceIndexCount);
-    const size_t SimplifiedIndexCount = meshopt_simplifyWithAttributes(
-        SimplifiedIndices.data(),
-        PositionIndices.data(),
-        PositionIndices.size(),
-        &Positions[0].x,
-        Positions.size(),
-        sizeof(FFloat3),
-        nullptr,
-        0,
-        nullptr,
-        0,
-        VertexLocks.data(),
-        TargetIndexCount,
-        std::numeric_limits<float>::max(),
-        Input.bRelaxLocks ? meshopt_SimplifyErrorAbsolute : (meshopt_SimplifyLockBorder | meshopt_SimplifyErrorAbsolute),
-        &OutResult.ResultError);
-
-    OutResult.SimplifiedTriangleCount = static_cast<uint32_t>(SimplifiedIndexCount / 3);
-    if (SimplifiedIndexCount < 3)
-    {
-        OutResult.FailureReason = "empty_simplified_output";
-        return false;
-    }
-
-    if (SimplifiedIndexCount >= SourceIndexCount)
-    {
-        OutResult.FailureReason = "zero_progress";
-        return false;
-    }
-
-    SimplifiedIndices.resize(SimplifiedIndexCount);
-
-    FMergedClusterScratch ReducedScratch;
-    if (!BuildReducedScratchFromPositionIndices(Dag, Scratch, SimplifiedIndices, ReducedScratch))
-    {
-        OutResult.FailureReason = "reduced_scratch_rebuild_failed";
-        return false;
-    }
-
-    if (!EmitMergedClusterGeometry(Dag, ReducedScratch, OutResult.Streams, OutResult.Indices))
-    {
-        OutResult.FailureReason = "emit_failed";
-        return false;
-    }
-
-    OutResult.OutputPositionCount = static_cast<uint32_t>(OutResult.Streams.Positions.size());
-    OutResult.OutputTriangleCount = static_cast<uint32_t>(OutResult.Indices.size() / 3);
-
-    if (!PredictMeshletCount(OutResult.Streams, OutResult.Indices, Input, OutResult.PredictedParentCount))
-    {
-        OutResult.FailureReason = "meshlet_prediction_failed";
-        return false;
-    }
-
-    OutResult.bValidOutput =
-        OutResult.OutputTriangleCount < SourceTriangleCount &&
-        OutResult.PredictedParentCount > 0 &&
-        OutResult.PredictedParentCount <= MaxAllowedParentCount;
-
-    if (!OutResult.bValidOutput)
-    {
-        if (OutResult.OutputTriangleCount >= SourceTriangleCount)
-        {
-            OutResult.FailureReason = "target_triangle_budget_unmet";
-        }
-        else if (OutResult.PredictedParentCount == 0)
-        {
-            OutResult.FailureReason = "predicted_parents_zero";
-        }
-        else if (OutResult.PredictedParentCount > MaxAllowedParentCount)
-        {
-            OutResult.FailureReason = "predicted_parent_count_exceeded";
-        }
-    }
-
-    return true;
-#else
-    (void)Dag;
-    OutResult.FailureReason = "meshoptimizer_unavailable";
-    return false;
-#endif
 }

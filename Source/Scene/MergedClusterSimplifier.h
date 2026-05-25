@@ -7,6 +7,8 @@
 #include <cstring>
 #include <sstream>
 #include <string>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 struct FPositionKey
@@ -48,6 +50,51 @@ inline FPositionKey MakePositionKey(const FFloat3& Position)
     std::memcpy(&Key.Z, &Position.z, sizeof(uint32_t));
     return Key;
 }
+
+struct FPositionEdgeKey
+{
+    FPositionKey A;
+    FPositionKey B;
+
+    bool operator==(const FPositionEdgeKey& Other) const
+    {
+        return A == Other.A && B == Other.B;
+    }
+};
+
+struct FPositionEdgeKeyHasher
+{
+    size_t operator()(const FPositionEdgeKey& Key) const
+    {
+        const size_t HashA = FPositionKeyHasher{}(Key.A);
+        const size_t HashB = FPositionKeyHasher{}(Key.B);
+        size_t Hash = HashA;
+        Hash ^= HashB + 0x9e3779b9u + (Hash << 6) + (Hash >> 2);
+        return Hash;
+    }
+};
+
+inline FPositionEdgeKey MakeUndirectedPositionEdgeKey(const FFloat3& A, const FFloat3& B)
+{
+    FPositionKey KeyA = MakePositionKey(A);
+    FPositionKey KeyB = MakePositionKey(B);
+    if (KeyB < KeyA)
+    {
+        std::swap(KeyA, KeyB);
+    }
+
+    FPositionEdgeKey EdgeKey;
+    EdgeKey.A = KeyA;
+    EdgeKey.B = KeyB;
+    return EdgeKey;
+}
+
+struct FClusterEdgeOwnerInfo
+{
+    uint32_t DistinctOwnerCount = 0;
+};
+
+using FClusterEdgeOwnerMap = std::unordered_map<FPositionEdgeKey, FClusterEdgeOwnerInfo, FPositionEdgeKeyHasher>;
 
 struct FBuilderVertexStreams
 {
@@ -114,33 +161,6 @@ struct FMergedClusterScratch
     }
 };
 
-struct FMeshoptScratchReducerInput
-{
-    uint32_t DesiredParentCount = 0;
-    uint32_t MaxAllowedParentCount = 0;
-    uint32_t TargetClusterTriangles = 0;
-    uint32_t MaxClusterVertices = 128;
-    uint32_t MaxClusterTriangles = 128;
-    float ConeWeight = 0.5f;
-    bool bRelaxLocks = false;
-};
-
-struct FMeshoptScratchReducerResult
-{
-    FBuilderVertexStreams Streams;
-    std::vector<uint32_t> Indices;
-    float ResultError = 0.0f;
-    uint32_t PredictedParentCount = 0;
-    uint32_t PositionNodeCount = 0;
-    uint32_t PositionTriangleCount = 0;
-    uint32_t LockedPositionCount = 0;
-    uint32_t SimplifiedTriangleCount = 0;
-    uint32_t OutputPositionCount = 0;
-    uint32_t OutputTriangleCount = 0;
-    bool bValidOutput = false;
-    std::string FailureReason;
-};
-
 std::string BuildPrimitiveLogPrefix(size_t PrimitiveIndex);
 void LogPrimitiveInfo(size_t PrimitiveIndex, const std::string& Message);
 void LogPrimitiveWarning(size_t PrimitiveIndex, const std::string& Message);
@@ -168,17 +188,12 @@ bool BuildMergedClusterScratch(
     size_t GroupOrdinal,
     const FClusterDAG& Dag,
     const std::vector<uint32_t>& ChildClusters,
+    const FClusterEdgeOwnerMap& LevelEdgeOwners,
     FMergedClusterScratch& OutScratch);
 
-bool EmitMergedClusterGeometry(
+bool BuildMergedClusterGeometry(
     const FClusterDAG& Dag,
     const FMergedClusterScratch& Scratch,
     FBuilderVertexStreams& OutStreams,
     std::vector<uint32_t>& OutIndices,
     std::vector<unsigned char>* OutVertexLocks = nullptr);
-
-bool ReduceMergedClusterWithMeshopt(
-    const FClusterDAG& Dag,
-    const FMergedClusterScratch& Scratch,
-    const FMeshoptScratchReducerInput& Input,
-    FMeshoptScratchReducerResult& OutResult);

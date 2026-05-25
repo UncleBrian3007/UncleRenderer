@@ -28,6 +28,20 @@ struct PSOutput
     float4 SceneColor : SV_Target4;
 };
 
+struct TextureUvGradients
+{
+    float2 UV;
+    float2 Ddx;
+    float2 Ddy;
+};
+
+struct TriangleBarycentrics
+{
+    float2 Value;
+    float2 OffsetX;
+    float2 OffsetY;
+};
+
 float4 DecodeDebugColor(uint packedColor)
 {
     const float inv255 = 1.0f / 255.0f;
@@ -53,40 +67,6 @@ float4 InterpolateFloat4(float4 v0, float4 v1, float4 v2, float2 barycentrics)
     return v0 * (1.0f - barycentrics.x - barycentrics.y) + v1 * barycentrics.x + v2 * barycentrics.y;
 }
 
-float2 ClipToPixel(float4 clipPosition, float2 viewportSize)
-{
-    const float2 ndc = clipPosition.xy / max(abs(clipPosition.w), 1e-6f);
-    return float2(
-        (ndc.x * 0.5f + 0.5f) * viewportSize.x,
-        (0.5f - ndc.y * 0.5f) * viewportSize.y);
-}
-
-float EdgeFunction(float2 a, float2 b, float2 c)
-{
-    return (c.x - a.x) * (b.y - a.y) - (c.y - a.y) * (b.x - a.x);
-}
-
-float2 ComputePerspectiveBarycentrics(float2 pixelCenter, float4 clip0, float4 clip1, float4 clip2, float2 viewportSize)
-{
-    const float2 p0 = ClipToPixel(clip0, viewportSize);
-    const float2 p1 = ClipToPixel(clip1, viewportSize);
-    const float2 p2 = ClipToPixel(clip2, viewportSize);
-    const float area = EdgeFunction(p0, p1, p2);
-    if (abs(area) < 1e-6f)
-    {
-        return float2(0.0f, 0.0f);
-    }
-
-    const float b0 = EdgeFunction(p1, p2, pixelCenter) / area;
-    const float b1 = EdgeFunction(p2, p0, pixelCenter) / area;
-    const float b2 = EdgeFunction(p0, p1, pixelCenter) / area;
-    const float w0 = b0 / max(abs(clip0.w), 1e-6f);
-    const float w1 = b1 / max(abs(clip1.w), 1e-6f);
-    const float w2 = b2 / max(abs(clip2.w), 1e-6f);
-    const float invSum = rcp(max(w0 + w1 + w2, 1e-6f));
-    return float2(w1 * invSum, w2 * invSum);
-}
-
 bool IsFeatureEnabled(uint pipelineKey, uint bitIndex)
 {
     return ((pipelineKey >> bitIndex) & 1u) != 0u;
@@ -94,13 +74,101 @@ bool IsFeatureEnabled(uint pipelineKey, uint bitIndex)
 
 bool ComputeFrontFace(float4 clip0, float4 clip1, float4 clip2)
 {
-    const float2 ndc0 = clip0.xy / max(abs(clip0.w), 1e-6f);
-    const float2 ndc1 = clip1.xy / max(abs(clip1.w), 1e-6f);
-    const float2 ndc2 = clip2.xy / max(abs(clip2.w), 1e-6f);
+    const float2 ndc0 = clip0.xy * rcp(clip0.w);
+    const float2 ndc1 = clip1.xy * rcp(clip1.w);
+    const float2 ndc2 = clip2.xy * rcp(clip2.w);
     const float signedArea =
         (ndc1.x - ndc0.x) * (ndc2.y - ndc0.y) -
         (ndc1.y - ndc0.y) * (ndc2.x - ndc0.x);
     return signedArea >= 0.0f;
+}
+
+float Cross2D(float2 a, float2 b)
+{
+    return a.x * b.y - a.y * b.x;
+}
+
+TriangleBarycentrics ComputePerspectiveBarycentrics(float2 pixelCenter, float4 clip0, float4 clip1, float4 clip2, float2 viewportSize)
+{
+    TriangleBarycentrics Result;
+
+    const float2 invViewportSize = rcp(viewportSize);
+    const float2 pixelNdc = pixelCenter * invViewportSize * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f);
+
+    const float3 signedInvW = rcp(float3(clip0.w, clip1.w, clip2.w));
+    const float2 ndc0 = clip0.xy * signedInvW.x;
+    const float2 ndc1 = clip1.xy * signedInvW.y;
+    const float2 ndc2 = clip2.xy * signedInvW.z;
+
+    const float2 edge12 = ndc2 - ndc1;
+    const float2 edge20 = ndc0 - ndc2;
+    const float2 edge01 = ndc1 - ndc0;
+
+    const float3 edgeArea = float3(
+        Cross2D(pixelNdc - ndc1, edge12),
+        Cross2D(pixelNdc - ndc2, edge20),
+        Cross2D(pixelNdc - ndc0, edge01));
+
+    const float3 edgeAreaNdcDx = float3(edge12.y, edge20.y, edge01.y);
+    const float3 edgeAreaNdcDy = -float3(edge12.x, edge20.x, edge01.x);
+
+    const float3 weightedArea = edgeArea * signedInvW;
+    const float weightedAreaSum = dot(edgeArea, signedInvW);
+    const float invWeightedAreaSum = rcp(weightedAreaSum);
+    const float3 barycentric3 = weightedArea * invWeightedAreaSum;
+
+    const float3 weightedAreaNdcDx = edgeAreaNdcDx * signedInvW;
+    const float3 weightedAreaNdcDy = edgeAreaNdcDy * signedInvW;
+    const float weightedAreaSumNdcDx = dot(edgeAreaNdcDx, signedInvW);
+    const float weightedAreaSumNdcDy = dot(edgeAreaNdcDy, signedInvW);
+    const float invWeightedAreaSum2 = invWeightedAreaSum * invWeightedAreaSum;
+
+    const float3 barycentricNdcDx = (weightedAreaNdcDx * weightedAreaSum - weightedArea * weightedAreaSumNdcDx) * invWeightedAreaSum2;
+    const float3 barycentricNdcDy = (weightedAreaNdcDy * weightedAreaSum - weightedArea * weightedAreaSumNdcDy) * invWeightedAreaSum2;
+    const float3 barycentricPixelDx = barycentricNdcDx * (2.0f * invViewportSize.x);
+    const float3 barycentricPixelDy = barycentricNdcDy * (-2.0f * invViewportSize.y);
+
+    Result.Value = barycentric3.yz;
+    Result.OffsetX = barycentric3.yz + barycentricPixelDx.yz;
+    Result.OffsetY = barycentric3.yz + barycentricPixelDy.yz;
+    return Result;
+}
+
+float3 BuildPixelRayDirection(float2 pixelCenter, float2 viewportSize, row_major float4x4 viewProjectionInverse, float3 cameraPosition)
+{
+    const float2 uv = pixelCenter / viewportSize;
+    const float3 nearWorld = ReconstructWorldPosition(uv, 1.0f, viewProjectionInverse);
+    return normalize(nearWorld - cameraPosition);
+}
+
+float2 ComputeRayTriangleBarycentrics(float3 rayOrigin, float3 rayDirection, float3 p0, float3 p1, float3 p2)
+{
+    const float3 edge1 = p1 - p0;
+    const float3 edge2 = p2 - p0;
+    const float3 pvec = cross(rayDirection, edge2);
+    const float det = dot(edge1, pvec);
+    if (abs(det) < 1e-12f)
+    {
+        return float2(0.0f, 0.0f);
+    }
+
+    const float invDet = rcp(det);
+    const float3 tvec = rayOrigin - p0;
+    const float u = dot(tvec, pvec) * invDet;
+    const float3 qvec = cross(tvec, edge1);
+    const float v = dot(rayDirection, qvec) * invDet;
+    return float2(u, v);
+}
+
+TextureUvGradients BuildTextureUvGradients(float2 uvCenter, float2 uvOffsetX, float2 uvOffsetY, float4 offsetScale, float2 rotation)
+{
+    TextureUvGradients Gradients;
+    Gradients.UV = ApplyTextureTransform(uvCenter, offsetScale, rotation);
+    const float2 uvX = ApplyTextureTransform(uvOffsetX, offsetScale, rotation);
+    const float2 uvY = ApplyTextureTransform(uvOffsetY, offsetScale, rotation);
+    Gradients.Ddx = uvX - Gradients.UV;
+    Gradients.Ddy = uvY - Gradients.UV;
+    return Gradients;
 }
 
 VSOutput ClusterDagResolveVS(uint vertexId : SV_VertexID)
@@ -181,20 +249,23 @@ PSOutput ClusterDagResolvePS(VSOutput Input)
     const bool isFrontFace = ComputeFrontFace(clip0, clip1, clip2);
 
     const uint pipelineKey = sceneData.ClusterDagMaterialPipelineKey;
-    const float2 barycentrics = ComputePerspectiveBarycentrics(
-        float2(pixelPosition) + 0.5f,
-        clip0,
-        clip1,
-        clip2,
-        float2(width, height));
+    const float2 viewportSize = float2(width, height);
+    const float2 pixelCenter = float2(pixelPosition) + 0.5f;
+    const TriangleBarycentrics triangleBarycentrics = ComputePerspectiveBarycentrics(pixelCenter, clip0, clip1, clip2, viewportSize);
+    const float2 barycentrics = triangleBarycentrics.Value;
+    const float2 barycentricsDx = triangleBarycentrics.OffsetX;
+    const float2 barycentricsDy = triangleBarycentrics.OffsetY;
     const float3 localPosition = InterpolateFloat3(localPosition0, localPosition1, localPosition2, barycentrics);
     const float3 localNormal = normalize(InterpolateFloat3(localNormal0, localNormal1, localNormal2, barycentrics));
     const float2 uv = InterpolateFloat2(uv0, uv1, uv2, barycentrics);
+    const float2 uvDx = InterpolateFloat2(uv0, uv1, uv2, barycentricsDx);
+    const float2 uvDy = InterpolateFloat2(uv0, uv1, uv2, barycentricsDy);
     const float4 tangent = InterpolateFloat4(tangent0, tangent1, tangent2, barycentrics);
     const float4 color = InterpolateFloat4(color0, color1, color2, barycentrics);
     const float4 worldPosition = mul(float4(localPosition, 1.0f), sceneData.World);
     float3 worldNormal = normalize(mul(localNormal, (float3x3)sceneData.WorldInverseTranspose));
     float4 worldTangent = float4(normalize(mul(tangent.xyz, (float3x3)sceneData.WorldInverseTranspose)), tangent.w);
+
     const bool useNormalMap = IsFeatureEnabled(pipelineKey, 0u);
     const bool useMetallicRoughnessMap = IsFeatureEnabled(pipelineKey, 1u);
     const bool useBaseColorMap = IsFeatureEnabled(pipelineKey, 2u);
@@ -215,28 +286,28 @@ PSOutput ClusterDagResolvePS(VSOutput Input)
     const uint clearcoatNormalTextureIndex = sceneData.MaterialTextureIndices2.x;
     const uint anisotropyTextureIndex = sceneData.MaterialTextureIndices2.y;
 
-    const float2 baseUV = ApplyTextureTransform(uv, sceneData.BaseColorTransformOffsetScale, sceneData.BaseColorTransformRotation);
-    const float2 mrUV = ApplyTextureTransform(uv, sceneData.MetallicRoughnessTransformOffsetScale, sceneData.MetallicRoughnessTransformRotation);
-    const float2 normalUV = ApplyTextureTransform(uv, sceneData.NormalTransformOffsetScale, sceneData.NormalTransformRotation);
-    const float2 emissiveUV = ApplyTextureTransform(uv, sceneData.EmissiveTransformOffsetScale, sceneData.EmissiveTransformRotation);
-    const float2 sheenColorUV = ApplyTextureTransform(uv, sceneData.SheenColorTransformOffsetScale, sceneData.SheenColorTransformRotation);
-    const float2 sheenRoughnessUV = ApplyTextureTransform(uv, sceneData.SheenRoughnessTransformOffsetScale, sceneData.SheenRoughnessTransformRotation);
-    const float2 clearcoatUV = ApplyTextureTransform(uv, sceneData.ClearcoatTransformOffsetScale, sceneData.ClearcoatTransformRotation);
-    const float2 clearcoatRoughnessUV = ApplyTextureTransform(uv, sceneData.ClearcoatRoughnessTransformOffsetScale, sceneData.ClearcoatRoughnessTransformRotation);
-    const float2 clearcoatNormalUV = ApplyTextureTransform(uv, sceneData.ClearcoatNormalTransformOffsetScale, sceneData.ClearcoatNormalTransformRotation);
-    const float2 anisotropyUV = ApplyTextureTransform(uv, sceneData.AnisotropyTransformOffsetScale, sceneData.AnisotropyTransformRotation);
+    const TextureUvGradients baseUvGradients = BuildTextureUvGradients(uv, uvDx, uvDy, sceneData.BaseColorTransformOffsetScale, sceneData.BaseColorTransformRotation);
+    const TextureUvGradients mrUvGradients = BuildTextureUvGradients(uv, uvDx, uvDy, sceneData.MetallicRoughnessTransformOffsetScale, sceneData.MetallicRoughnessTransformRotation);
+    const TextureUvGradients normalUvGradients = BuildTextureUvGradients(uv, uvDx, uvDy, sceneData.NormalTransformOffsetScale, sceneData.NormalTransformRotation);
+    const TextureUvGradients emissiveUvGradients = BuildTextureUvGradients(uv, uvDx, uvDy, sceneData.EmissiveTransformOffsetScale, sceneData.EmissiveTransformRotation);
+    const TextureUvGradients sheenColorUvGradients = BuildTextureUvGradients(uv, uvDx, uvDy, sceneData.SheenColorTransformOffsetScale, sceneData.SheenColorTransformRotation);
+    const TextureUvGradients sheenRoughnessUvGradients = BuildTextureUvGradients(uv, uvDx, uvDy, sceneData.SheenRoughnessTransformOffsetScale, sceneData.SheenRoughnessTransformRotation);
+    const TextureUvGradients clearcoatUvGradients = BuildTextureUvGradients(uv, uvDx, uvDy, sceneData.ClearcoatTransformOffsetScale, sceneData.ClearcoatTransformRotation);
+    const TextureUvGradients clearcoatRoughnessUvGradients = BuildTextureUvGradients(uv, uvDx, uvDy, sceneData.ClearcoatRoughnessTransformOffsetScale, sceneData.ClearcoatRoughnessTransformRotation);
+    const TextureUvGradients clearcoatNormalUvGradients = BuildTextureUvGradients(uv, uvDx, uvDy, sceneData.ClearcoatNormalTransformOffsetScale, sceneData.ClearcoatNormalTransformRotation);
+    const TextureUvGradients anisotropyUvGradients = BuildTextureUvGradients(uv, uvDx, uvDy, sceneData.AnisotropyTransformOffsetScale, sceneData.AnisotropyTransformRotation);
 
     if (useNormalMap && normalTextureIndex != 0xffffffffu)
     {
         Texture2D NormalTexture = ResourceDescriptorHeap[normalTextureIndex];
-        const float2 tangentNormalRG = NormalTexture.Sample(MaterialSampler, normalUV).rg * 2.0f - 1.0f;
+        const float2 tangentNormalRG = NormalTexture.SampleGrad(MaterialSampler, normalUvGradients.UV, normalUvGradients.Ddx, normalUvGradients.Ddy).rg * 2.0f - 1.0f;
         const float3 tangentNormal = DecodeTangentNormalRG(tangentNormalRG);
         worldNormal = ComputeWorldNormal(worldNormal, worldTangent, tangentNormal);
     }
     if (useClearcoat && clearcoatNormalTextureIndex != 0xffffffffu)
     {
         Texture2D ClearcoatNormalTexture = ResourceDescriptorHeap[clearcoatNormalTextureIndex];
-        const float2 clearcoatTangentNormalRG = ClearcoatNormalTexture.Sample(MaterialSampler, clearcoatNormalUV).rg * 2.0f - 1.0f;
+        const float2 clearcoatTangentNormalRG = ClearcoatNormalTexture.SampleGrad(MaterialSampler, clearcoatNormalUvGradients.UV, clearcoatNormalUvGradients.Ddx, clearcoatNormalUvGradients.Ddy).rg * 2.0f - 1.0f;
         const float3 clearcoatTangentNormal = DecodeTangentNormalRG(clearcoatTangentNormalRG);
         worldNormal = ComputeWorldNormal(worldNormal, worldTangent, clearcoatTangentNormal);
     }
@@ -250,7 +321,7 @@ PSOutput ClusterDagResolvePS(VSOutput Input)
     if (useBaseColorMap && albedoTextureIndex != 0xffffffffu)
     {
         Texture2D AlbedoTexture = ResourceDescriptorHeap[albedoTextureIndex];
-        const float4 albedoSample = AlbedoTexture.Sample(MaterialSampler, baseUV);
+        const float4 albedoSample = AlbedoTexture.SampleGrad(MaterialSampler, baseUvGradients.UV, baseUvGradients.Ddx, baseUvGradients.Ddy);
         albedo *= albedoSample.rgb;
         alpha *= albedoSample.a;
     }
@@ -260,7 +331,7 @@ PSOutput ClusterDagResolvePS(VSOutput Input)
     if (useMetallicRoughnessMap && metallicRoughnessTextureIndex != 0xffffffffu)
     {
         Texture2D MetallicRoughnessTexture = ResourceDescriptorHeap[metallicRoughnessTextureIndex];
-        const float2 metallicRoughness = MetallicRoughnessTexture.Sample(MaterialSampler, mrUV).bg;
+        const float2 metallicRoughness = MetallicRoughnessTexture.SampleGrad(MaterialSampler, mrUvGradients.UV, mrUvGradients.Ddx, mrUvGradients.Ddy).bg;
         metallic *= metallicRoughness.x;
         roughness *= metallicRoughness.y;
     }
@@ -284,12 +355,12 @@ PSOutput ClusterDagResolvePS(VSOutput Input)
         if (sheenColorTextureIndex != 0xffffffffu)
         {
             Texture2D SheenColorTexture = ResourceDescriptorHeap[sheenColorTextureIndex];
-            sheenColor *= SheenColorTexture.Sample(MaterialSampler, sheenColorUV).rgb;
+            sheenColor *= SheenColorTexture.SampleGrad(MaterialSampler, sheenColorUvGradients.UV, sheenColorUvGradients.Ddx, sheenColorUvGradients.Ddy).rgb;
         }
         if (sheenRoughnessTextureIndex != 0xffffffffu)
         {
             Texture2D SheenRoughnessTexture = ResourceDescriptorHeap[sheenRoughnessTextureIndex];
-            sheenRoughness *= SheenRoughnessTexture.Sample(MaterialSampler, sheenRoughnessUV).a;
+            sheenRoughness *= SheenRoughnessTexture.SampleGrad(MaterialSampler, sheenRoughnessUvGradients.UV, sheenRoughnessUvGradients.Ddx, sheenRoughnessUvGradients.Ddy).a;
         }
         customData = float4(sheenColor, sheenRoughness);
     }
@@ -300,12 +371,12 @@ PSOutput ClusterDagResolvePS(VSOutput Input)
         if (clearcoatTextureIndex != 0xffffffffu)
         {
             Texture2D ClearcoatTexture = ResourceDescriptorHeap[clearcoatTextureIndex];
-            clearcoat *= ClearcoatTexture.Sample(MaterialSampler, clearcoatUV).r;
+            clearcoat *= ClearcoatTexture.SampleGrad(MaterialSampler, clearcoatUvGradients.UV, clearcoatUvGradients.Ddx, clearcoatUvGradients.Ddy).r;
         }
         if (clearcoatRoughnessTextureIndex != 0xffffffffu)
         {
             Texture2D ClearcoatRoughnessTexture = ResourceDescriptorHeap[clearcoatRoughnessTextureIndex];
-            clearcoatRoughness *= ClearcoatRoughnessTexture.Sample(MaterialSampler, clearcoatRoughnessUV).g;
+            clearcoatRoughness *= ClearcoatRoughnessTexture.SampleGrad(MaterialSampler, clearcoatRoughnessUvGradients.UV, clearcoatRoughnessUvGradients.Ddx, clearcoatRoughnessUvGradients.Ddy).g;
         }
         customData = float4(clearcoat, clearcoatRoughness, 0.0f, 0.0f);
     }
@@ -315,7 +386,7 @@ PSOutput ClusterDagResolvePS(VSOutput Input)
         if (anisotropyTextureIndex != 0xffffffffu)
         {
             Texture2D AnisotropyTexture = ResourceDescriptorHeap[anisotropyTextureIndex];
-            anisotropyValue = AnisotropyTexture.Sample(MaterialSampler, anisotropyUV).r;
+            anisotropyValue = AnisotropyTexture.SampleGrad(MaterialSampler, anisotropyUvGradients.UV, anisotropyUvGradients.Ddx, anisotropyUvGradients.Ddy).r;
         }
         customData = float4(anisotropyValue, sceneData.AnisotropyStrength, 0.0f, 0.0f);
     }
@@ -324,7 +395,7 @@ PSOutput ClusterDagResolvePS(VSOutput Input)
     if (useEmissiveMap && emissiveTextureIndex != 0xffffffffu)
     {
         Texture2D EmissiveTexture = ResourceDescriptorHeap[emissiveTextureIndex];
-        emissive *= EmissiveTexture.Sample(MaterialSampler, emissiveUV).rgb;
+        emissive *= EmissiveTexture.SampleGrad(MaterialSampler, emissiveUvGradients.UV, emissiveUvGradients.Ddx, emissiveUvGradients.Ddy).rgb;
     }
 
     PSOutput Output;
