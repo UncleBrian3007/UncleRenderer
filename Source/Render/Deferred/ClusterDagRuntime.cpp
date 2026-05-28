@@ -3,6 +3,7 @@
 #include "ClusterDagStreamingManager.h"
 #include "DeferredPassContext.h"
 #include "../DeferredRenderer.h"
+#include "../GpuDrivenCulling.h"
 #include "../../Core/RendererConfig.h"
 #include "../RendererUtils.h"
 #include "../ShaderCompiler.h"
@@ -73,6 +74,12 @@ namespace
                 ? L"USE_CLUSTER_DAG_FAST=1"
                 : L"USE_CLUSTER_DAG_FAST=0"
         };
+    }
+
+    bool IsClusterDagRuntimeAlphaModeAllowed(uint32_t AlphaMode)
+    {
+        return AlphaMode == static_cast<uint32_t>(EAlphaMode::Opaque)
+            || AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask);
     }
 
     uint32_t GetClusterDagInitPipelineIndex(bool bClusterDagFastEnabled, bool bPersistentQueue)
@@ -387,9 +394,9 @@ bool FClusterDagRuntime::HasResources() const
 
 bool FClusterDagRuntime::UsesRuntimePath(const FSceneModelResource& Model) const
 {
-    return Model.bUseClusterDagRuntime
+    return (Model.bUseClusterDagRuntime || Model.bCoveredByClusterDagRuntime)
         && Model.BoneMatrixBuffer.SrvBindlessIndex == UINT32_MAX
-        && Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Opaque);
+        && IsClusterDagRuntimeAlphaModeAllowed(Model.AlphaMode);
 }
 
 ID3D12Resource* FClusterDagRuntime::GetIndirectCommandBuffer(const FDeferredRenderer& Owner) const
@@ -633,7 +640,7 @@ bool FClusterDagRuntime::PrepareRuntimeData(FDeferredRenderer& Owner, FPreparedD
     {
         return Model.bUseClusterDagRuntime
             && Model.BoneMatrixBuffer.SrvBindlessIndex == UINT32_MAX
-            && Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Opaque)
+            && IsClusterDagRuntimeAlphaModeAllowed(Model.AlphaMode)
             && Model.ClusterDagRuntimeHierarchy.IsValid()
             && !Model.ClusterDagRuntimeHierarchy.Clusters.empty()
             && !Model.ClusterDagRuntimeHierarchy.DrawDatas.empty();
@@ -711,19 +718,6 @@ bool FClusterDagRuntime::PrepareRuntimeData(FDeferredRenderer& Owner, FPreparedD
             continue;
         }
 
-        const uint32_t PipelineKey = Model.PipelineKey;
-        const RendererUtils::FMaterialBindlessIndices MaterialIndices = RendererUtils::BuildMaterialBindlessIndices(Model);
-
-        if (IndirectDrawRanges.empty()
-            || IndirectDrawRanges.back().PipelineKey != PipelineKey
-            || IndirectDrawRanges.back().MaterialBindlessIndices != MaterialIndices)
-        {
-            IndirectDrawRanges.push_back(FRenderer::FIndirectDrawRange::Make(
-                static_cast<uint32_t>(OutData.CommandTemplates.size()),
-                PipelineKey, MaterialIndices, Model.Name));
-        }
-
-        const uint32_t RangeIndex = static_cast<uint32_t>(IndirectDrawRanges.size() - 1);
         const FRuntimeClusterHierarchy& RuntimeHierarchy = Model.ClusterDagRuntimeHierarchy;
         const uint32_t BaseGroupIndex = static_cast<uint32_t>(OutData.Groups.size());
         const uint32_t BaseClusterIndex = static_cast<uint32_t>(OutData.Clusters.size());
@@ -734,6 +728,57 @@ bool FClusterDagRuntime::PrepareRuntimeData(FDeferredRenderer& Owner, FPreparedD
 
         Model.ClusterDagRuntimeClusterOffset = BaseClusterIndex;
         Model.ClusterDagRuntimeClusterCount = static_cast<uint32_t>(RuntimeHierarchy.Clusters.size());
+
+        auto ResolveDrawDataModelIndex = [&](const FRuntimeClusterDrawData& RuntimeDrawData) -> uint32_t
+        {
+            const uint32_t SectionIndex = RuntimeDrawData.SectionIndex;
+            if (SectionIndex < Model.ClusterDagSectionModelIndices.size())
+            {
+                const uint32_t SectionModelIndex = Model.ClusterDagSectionModelIndices[SectionIndex];
+                if (SectionModelIndex < SceneModels.size())
+                {
+                    return SectionModelIndex;
+                }
+            }
+            return SortedIndex;
+        };
+
+        auto GetOrAddRangeForModel = [&](uint32_t ModelIndex) -> uint32_t
+        {
+            const FSceneModelResource& RangeModel = SceneModels[ModelIndex];
+            const uint32_t PipelineKey = RangeModel.PipelineKey;
+            const RendererUtils::FMaterialBindlessIndices MaterialIndices = RendererUtils::BuildMaterialBindlessIndices(RangeModel);
+            if (IndirectDrawRanges.empty()
+                || IndirectDrawRanges.back().PipelineKey != PipelineKey
+                || IndirectDrawRanges.back().MaterialBindlessIndices != MaterialIndices)
+            {
+                IndirectDrawRanges.push_back(FRenderer::FIndirectDrawRange::Make(
+                    static_cast<uint32_t>(OutData.CommandTemplates.size()),
+                    PipelineKey, MaterialIndices, RangeModel.Name));
+            }
+            return static_cast<uint32_t>(IndirectDrawRanges.size() - 1);
+        };
+
+        std::vector<uint32_t> LocalDrawDataModelIndices(RuntimeHierarchy.DrawDatas.size(), SortedIndex);
+        std::vector<uint32_t> LocalDrawDataRangeIndices(RuntimeHierarchy.DrawDatas.size(), 0u);
+        for (uint32_t LocalDrawDataIndex = 0; LocalDrawDataIndex < static_cast<uint32_t>(RuntimeHierarchy.DrawDatas.size()); ++LocalDrawDataIndex)
+        {
+            const FRuntimeClusterDrawData& RuntimeDrawData = RuntimeHierarchy.DrawDatas[LocalDrawDataIndex];
+            const uint32_t DrawModelIndex = ResolveDrawDataModelIndex(RuntimeDrawData);
+            const uint32_t RangeIndex = GetOrAddRangeForModel(DrawModelIndex);
+            LocalDrawDataModelIndices[LocalDrawDataIndex] = DrawModelIndex;
+            LocalDrawDataRangeIndices[LocalDrawDataIndex] = RangeIndex;
+
+            OutData.DrawDatas.push_back(FClusterDrawData::Make(
+                RuntimeDrawData.IndexStart, RuntimeDrawData.IndexCount,
+                RangeIndex, IndirectDrawRanges[RangeIndex].Start, 0u, DrawModelIndex));
+            const uint32_t DrawDataIndex = static_cast<uint32_t>(OutData.DrawDatas.size() - 1);
+
+            OutData.CommandTemplates.push_back(FIndirectDrawCommand::Make(
+                ConstantBufferBase + SceneConstantBufferStride * DrawModelIndex,
+                RuntimeDrawData.IndexStart, RuntimeDrawData.IndexCount, 0, DrawDataIndex));
+            IndirectDrawRanges[RangeIndex].Count += 1;
+        }
 
         for (uint32_t LocalGroupIndex = 0; LocalGroupIndex < static_cast<uint32_t>(RuntimeHierarchy.Groups.size()); ++LocalGroupIndex)
         {
@@ -867,10 +912,12 @@ bool FClusterDagRuntime::PrepareRuntimeData(FDeferredRenderer& Owner, FPreparedD
                         DrawRecord.GlobalDrawDataIndex = BaseDrawDataIndex + LocalDrawDataIndex;
                         DrawRecord.StartIndex = PageLocalIndexStart;
                         DrawRecord.IndexCount = RuntimeDrawData.IndexCount;
-                        DrawRecord.RangeIndex = RangeIndex;
-                        DrawRecord.RangeCommandStart = IndirectDrawRanges[RangeIndex].Start;
+                        const uint32_t DrawRangeIndex = LocalDrawDataIndex < LocalDrawDataRangeIndices.size() ? LocalDrawDataRangeIndices[LocalDrawDataIndex] : 0u;
+                        const uint32_t DrawModelIndex = LocalDrawDataIndex < LocalDrawDataModelIndices.size() ? LocalDrawDataModelIndices[LocalDrawDataIndex] : SortedIndex;
+                        DrawRecord.RangeIndex = DrawRangeIndex;
+                        DrawRecord.RangeCommandStart = DrawRangeIndex < IndirectDrawRanges.size() ? IndirectDrawRanges[DrawRangeIndex].Start : 0u;
                         DrawRecord.RangeCommandCount = 0u;
-                        DrawRecord.ModelIndex = SortedIndex;
+                        DrawRecord.ModelIndex = DrawModelIndex;
                         PageSource.ScenePageDrawDatas.push_back(DrawRecord);
 
                         if (RuntimeDrawData.IndexStart <= RuntimeHierarchy.PackedIndices.size()
@@ -959,25 +1006,6 @@ bool FClusterDagRuntime::PrepareRuntimeData(FDeferredRenderer& Owner, FPreparedD
             OutData.Clusters.push_back(ClusterData);
         }
 
-        // FIndirectDrawRange.Start is the first command slot index in the flat command buffer for this range (= number of commands accumulated so far)
-        // Range 0: Pipeline A, Material X, CommandTemplates[0 ~ 9]
-        // Range 1: Pipeline B, Material Y, CommandTemplates[10 ~ 17]
-        // Range 2: Pipeline A, Material Z, CommandTemplates[18 ~ 25]
-        // RangeIndex 1 -> RangeCommandStart = 10
-        // Currently Cluster:DrawData:CommandTemplate is 1:1:1; DrawDataCount > 1 per cluster is reserved for multi-material clusters
-        for (const FRuntimeClusterDrawData& RuntimeDrawData : RuntimeHierarchy.DrawDatas)
-        {
-            OutData.DrawDatas.push_back(FClusterDrawData::Make(
-                RuntimeDrawData.IndexStart, RuntimeDrawData.IndexCount,
-                RangeIndex, IndirectDrawRanges[RangeIndex].Start, 0u, SortedIndex));
-            const uint32_t DrawDataIndex = static_cast<uint32_t>(OutData.DrawDatas.size() - 1);
-
-            OutData.CommandTemplates.push_back(FIndirectDrawCommand::Make(
-                ConstantBufferBase + SceneConstantBufferStride * SortedIndex,
-                RuntimeDrawData.IndexStart, RuntimeDrawData.IndexCount, 0, DrawDataIndex));
-            // This is a template, not a directly issued draw call; BuildClusterDagRunsAppend copies it into the output buffer based on GPU LOD selection results
-            IndirectDrawRanges.back().Count += 1;
-        }
     }
 
     OutData.RangeOffsets.reserve(IndirectDrawRanges.size());
@@ -1385,22 +1413,27 @@ void FClusterDagRuntime::PopulateCullingConstants(FDeferredRenderer& Owner, cons
     DirectX::XMVECTOR Planes[6] = {};
     RendererUtils::BuildCameraFrustumPlanes(Camera, Planes);
 
-    std::array<uint32_t, 28> Constants = {};
+    FGpuCullingConstants Constants = {};
     for (uint32_t PlaneIndex = 0; PlaneIndex < 6; ++PlaneIndex)
     {
         DirectX::XMFLOAT4 Plane = {};
         DirectX::XMStoreFloat4(&Plane, Planes[PlaneIndex]);
-        std::memcpy(Constants.data() + PlaneIndex * 4, &Plane, sizeof(DirectX::XMFLOAT4));
+        std::memcpy(Constants.FrustumPlanes[PlaneIndex], &Plane, sizeof(DirectX::XMFLOAT4));
     }
 
-    Constants[24] = GpuDrivenCullingProvider.bClusterDagGpuDebugEnabled ? 1u : 0u;
+    const DirectX::XMMATRIX ViewProjection = Camera.GetViewMatrix() * Camera.GetProjectionMatrix();
+    DirectX::XMFLOAT4X4 ViewProjectionMatrix = {};
+    DirectX::XMStoreFloat4x4(&ViewProjectionMatrix, ViewProjection);
+    std::memcpy(Constants.ViewProjection, &ViewProjectionMatrix, sizeof(DirectX::XMFLOAT4X4));
+
+    Constants.DebugPrintEnabled = GpuDrivenCullingProvider.bClusterDagGpuDebugEnabled ? 1u : 0u;
     const DirectX::XMFLOAT3 CameraPosition = Camera.GetPosition();
-    std::memcpy(Constants.data() + 25, &CameraPosition, sizeof(DirectX::XMFLOAT3));
+    std::memcpy(Constants.CameraPosition, &CameraPosition, sizeof(DirectX::XMFLOAT3));
 
     uint8_t* CullingConstantsMapped = GpuDrivenCullingProvider.CullingConstantBufferMapped;
     if (CullingConstantsMapped)
     {
-        std::memcpy(CullingConstantsMapped, Constants.data(), sizeof(Constants));
+        std::memcpy(CullingConstantsMapped, &Constants, sizeof(Constants));
     }
 }
 
@@ -1514,6 +1547,14 @@ void FClusterDagRuntime::AddPersistentCullPass(FDeferredPassContext& Context, co
                 Builder.ReadBuffer(PageDataHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
                 Builder.WriteBuffer(FeedbackHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
                 Builder.UavBarrier(FeedbackHandle);
+            }
+            const FRenderer::FGpuDrivenCullingProvider GpuDrivenCullingProvider = Owner.GetGpuDrivenCullingProvider();
+            if (Context.FrameState.bUseHZBOcclusion
+                && Context.Resources.Hzb.HzbHandle
+                && GpuDrivenCullingProvider.bHZBOcclusionEnabled
+                && IsValidBindlessIndex(GpuDrivenCullingProvider.HZBBindlessIndex))
+            {
+                Builder.ReadTexture(Context.Resources.Hzb.HzbHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             }
             Builder.KeepAlive();
         }
@@ -1675,6 +1716,14 @@ void FClusterDagRuntime::AddLevelSplitNodeCullPass(FDeferredPassContext& Context
                 Builder.ReadBuffer(PageDataHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
                 Builder.WriteBuffer(FeedbackHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
                 Builder.UavBarrier(FeedbackHandle);
+            }
+            const FRenderer::FGpuDrivenCullingProvider GpuDrivenCullingProvider = Context.Owner.GetGpuDrivenCullingProvider();
+            if (Context.FrameState.bUseHZBOcclusion
+                && Context.Resources.Hzb.HzbHandle
+                && GpuDrivenCullingProvider.bHZBOcclusionEnabled
+                && IsValidBindlessIndex(GpuDrivenCullingProvider.HZBBindlessIndex))
+            {
+                Builder.ReadTexture(Context.Resources.Hzb.HzbHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             }
             Builder.KeepAlive();
         }
@@ -1934,6 +1983,11 @@ void FClusterDagRuntime::DispatchPersistentCull(FDeferredRenderer& Owner, FDX12C
         uint32_t StreamingRequestCapacity;
         uint32_t StreamingResourceId;
         uint32_t PageSlotBytes;
+        uint32_t HZBTextureIndex;
+        uint32_t HZBEnabled;
+        uint32_t HZBMipCount;
+        uint32_t HZBWidth;
+        uint32_t HZBHeight;
         float ClusterDAGTargetErrorPixels;
         float ViewportHeightPixels;
         uint32_t ClusterDAGForceMipEnabled;
@@ -1975,6 +2029,11 @@ void FClusterDagRuntime::DispatchPersistentCull(FDeferredRenderer& Owner, FDX12C
         StreamingBindings.StreamingRequestCapacity,
         StreamingBindings.StreamingResourceId,
         StreamingBindings.PageSlotBytes,
+        GpuDrivenCullingProvider.HZBBindlessIndex,
+        GpuDrivenCullingProvider.bHZBOcclusionEnabled && IsValidBindlessIndex(GpuDrivenCullingProvider.HZBBindlessIndex) ? 1u : 0u,
+        GpuDrivenCullingProvider.HZBMipCount,
+        GpuDrivenCullingProvider.HZBWidth,
+        GpuDrivenCullingProvider.HZBHeight,
         TargetErrorPixels,
         GpuDrivenCullingProvider.ViewportHeightPixels,
         bForceMipEnabled ? 1u : 0u,
@@ -2152,6 +2211,11 @@ void FClusterDagRuntime::DispatchLevelSplitNodeCull(FDeferredRenderer& Owner, FD
         uint32_t StreamingRequestCapacity;
         uint32_t StreamingResourceId;
         uint32_t PageSlotBytes;
+        uint32_t HZBTextureIndex;
+        uint32_t HZBEnabled;
+        uint32_t HZBMipCount;
+        uint32_t HZBWidth;
+        uint32_t HZBHeight;
         float ClusterDAGTargetErrorPixels;
         float ViewportHeightPixels;
         uint32_t ClusterDAGForceMipEnabled;
@@ -2184,6 +2248,11 @@ void FClusterDagRuntime::DispatchLevelSplitNodeCull(FDeferredRenderer& Owner, FD
         StreamingBindings.StreamingRequestCapacity,
         StreamingBindings.StreamingResourceId,
         StreamingBindings.PageSlotBytes,
+        GpuDrivenCullingProvider.HZBBindlessIndex,
+        GpuDrivenCullingProvider.bHZBOcclusionEnabled && IsValidBindlessIndex(GpuDrivenCullingProvider.HZBBindlessIndex) ? 1u : 0u,
+        GpuDrivenCullingProvider.HZBMipCount,
+        GpuDrivenCullingProvider.HZBWidth,
+        GpuDrivenCullingProvider.HZBHeight,
         TargetErrorPixels,
         GpuDrivenCullingProvider.ViewportHeightPixels,
         bForceMipEnabled ? 1u : 0u,

@@ -21,6 +21,11 @@ cbuffer ClusterDagLevelSplitNodeCullBindlessConstants : register(b1)
     uint StreamingRequestCapacity;
     uint StreamingResourceId;
     uint PageSlotBytes;
+    uint HZBTextureIndex;
+    uint HZBEnabled;
+    uint HZBMipCount;
+    uint HZBWidth;
+    uint HZBHeight;
     float ClusterDAGTargetErrorPixels;
     float ViewportHeightPixels;
     uint ClusterDAGForceMipEnabled;
@@ -110,6 +115,7 @@ void ClusterDagLevelSplitNodeCullCS(uint3 groupId : SV_GroupID, uint groupThread
     StructuredBuffer<ClusterDagPageTableEntry> PageTable = ResourceDescriptorHeap[streamingEnabled ? PageTableBufferIndex : GroupBufferIndex];
     ByteAddressBuffer PageData = ResourceDescriptorHeap[pagedFetchEnabled ? PageDataBufferIndex : CurrentNodeCandidateBufferIndex];
     RWStructuredBuffer<ClusterDagStreamingRequest> StreamingRequests = ResourceDescriptorHeap[streamingEnabled ? StreamingRequestBufferIndex : VisitedGroupEpochBufferIndex];
+    Texture2D<float2> HZBTexture = ResourceDescriptorHeap[HZBTextureIndex];
 
     if (groupThreadIndex == 0u)
     {
@@ -183,6 +189,11 @@ void ClusterDagLevelSplitNodeCullCS(uint3 groupId : SV_GroupID, uint groupThread
                         DebugDrawClusterBoundsCross(DebugLineBufferIndex, lodCenter, lodRadius, 0xff3030ffu);
                     }
 #endif
+                    continue;
+                }
+                if (HZBEnabled != 0u && IsSphereOccludedByHZB(lodCenter, lodRadius, CullingViewProjection, HZBTexture, HZBWidth, HZBHeight, HZBMipCount))
+                {
+                    RecordOcclusionCulled(DebugPrintStatsIndex);
                     continue;
                 }
 

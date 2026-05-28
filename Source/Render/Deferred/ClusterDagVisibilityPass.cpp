@@ -21,6 +21,30 @@ constexpr uint32_t kSoftwareRasterBindlessDwordCount = 15;
 constexpr uint32_t kDepthExportBindlessDwordCount = 1;
 constexpr uint32_t kVisibilityResolveBindlessDwordCount = 5;
 
+uint32_t GetVisibilityPipelineIndex(bool bAlphaMask, bool bDoubleSided)
+{
+    return (bAlphaMask ? 2u : 0u) | (bDoubleSided ? 1u : 0u);
+}
+
+CD3DX12_STATIC_SAMPLER_DESC BuildClusterDagMaterialSampler(D3D12_SHADER_VISIBILITY ShaderVisibility)
+{
+    CD3DX12_STATIC_SAMPLER_DESC SamplerDesc;
+    SamplerDesc.Init(
+        0,
+        D3D12_FILTER_ANISOTROPIC,
+        D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+        D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+        D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+        0.0f,
+        4,
+        D3D12_COMPARISON_FUNC_ALWAYS,
+        D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE,
+        0.0f,
+        D3D12_FLOAT32_MAX,
+        ShaderVisibility);
+    return SamplerDesc;
+}
+
 bool FClusterDagVisibilityPass::InitializePipelines(FDeferredRenderer& Owner, FDX12Device* Device)
 {
     this->Owner = &Owner;
@@ -178,7 +202,8 @@ void FClusterDagVisibilityPass::AddVisibilityPass(FDeferredPassContext& Context)
         {
             const FRenderer::FIndirectDrawRange& Range = (*Data.DagRanges)[RangeIndex];
             const bool bDoubleSided = (Range.PipelineKey & RendererUtils::GPipelineKeyDoubleSidedMask) != 0;
-            ID3D12PipelineState* Pipeline = VisibilityPipelines[bDoubleSided ? 1u : 0u].Get();
+            const bool bAlphaMask = (Range.PipelineKey & RendererUtils::GPipelineKeyAlphaMaskMask) != 0;
+            ID3D12PipelineState* Pipeline = VisibilityPipelines[GetVisibilityPipelineIndex(bAlphaMask, bDoubleSided)].Get();
             CommandList->SetPipelineState(Pipeline);
             const uint64_t Offset = static_cast<uint64_t>(Range.Start) * sizeof(FIndirectDrawCommand);
             const uint64_t CountOffset = RangeIndex * sizeof(uint32_t);
@@ -490,13 +515,14 @@ bool FClusterDagVisibilityPass::CreateVisibilityRootSignature(FDX12Device* Devic
     CD3DX12_ROOT_PARAMETER1 RootParams[2] = {};
     RootParams[0].InitAsConstantBufferView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE, D3D12_SHADER_VISIBILITY_ALL);
     RootParams[1].InitAsConstants(kVisibilityPassConstantsDwordCount, 2, 0, D3D12_SHADER_VISIBILITY_ALL);
+    const CD3DX12_STATIC_SAMPLER_DESC MaterialSampler = BuildClusterDagMaterialSampler(D3D12_SHADER_VISIBILITY_PIXEL);
 
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc;
     RootSigDesc.Init_1_1(
         _countof(RootParams),
         RootParams,
-        0,
-        nullptr,
+        1,
+        &MaterialSampler,
         D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
             | D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
 
@@ -515,22 +541,10 @@ bool FClusterDagVisibilityPass::CreateVisibilityRootSignature(FDX12Device* Devic
 bool FClusterDagVisibilityPass::CreateVisibilityPipeline(FDX12Device* Device)
 {
     FShaderCompiler Compiler;
-    std::vector<uint8_t> VsByteCode;
-    std::vector<uint8_t> PsByteCode;
-    if (!RendererUtils::CompileVertexShader(Compiler, Device, L"Shaders/ClusterDagVisibility.hlsl", VsByteCode))
-    {
-        return false;
-    }
-    if (!RendererUtils::CompilePixelShader(Compiler, Device, L"Shaders/ClusterDagVisibility.hlsl", PsByteCode))
-    {
-        return false;
-    }
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC PsoDesc = {};
     PsoDesc.pRootSignature = VisibilityRootSignature.Get();
     PsoDesc.InputLayout = { nullptr, 0 };
-    PsoDesc.VS = { VsByteCode.data(), VsByteCode.size() };
-    PsoDesc.PS = { PsByteCode.data(), PsByteCode.size() };
     PsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     PsoDesc.SampleDesc.Count = 1;
     PsoDesc.SampleMask = UINT_MAX;
@@ -554,10 +568,38 @@ bool FClusterDagVisibilityPass::CreateVisibilityPipeline(FDX12Device* Device)
     PsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
     PsoDesc.DepthStencilState.StencilEnable = FALSE;
 
-    for (uint32_t DoubleSidedVariant = 0; DoubleSidedVariant < 2; ++DoubleSidedVariant)
+    for (uint32_t AlphaMaskVariant = 0; AlphaMaskVariant < 2; ++AlphaMaskVariant)
     {
-        PsoDesc.RasterizerState.CullMode = (DoubleSidedVariant == 0u) ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_NONE;
-        HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(&PsoDesc, IID_PPV_ARGS(VisibilityPipelines[DoubleSidedVariant].ReleaseAndGetAddressOf())));
+        const bool bAlphaMask = AlphaMaskVariant != 0u;
+        const std::vector<std::wstring> Defines =
+        {
+            bAlphaMask
+                ? L"CLUSTER_DAG_VISIBILITY_ALPHA_MASK=1"
+                : L"CLUSTER_DAG_VISIBILITY_ALPHA_MASK=0"
+        };
+
+        std::vector<uint8_t> VsByteCode;
+        std::vector<uint8_t> PsByteCode;
+        if (!RendererUtils::CompileVertexShader(Compiler, Device, L"Shaders/ClusterDagVisibility.hlsl", VsByteCode, Defines))
+        {
+            return false;
+        }
+        if (!RendererUtils::CompilePixelShader(Compiler, Device, L"Shaders/ClusterDagVisibility.hlsl", PsByteCode, Defines))
+        {
+            return false;
+        }
+
+        PsoDesc.VS = { VsByteCode.data(), VsByteCode.size() };
+        PsoDesc.PS = { PsByteCode.data(), PsByteCode.size() };
+
+        for (uint32_t DoubleSidedVariant = 0; DoubleSidedVariant < 2; ++DoubleSidedVariant)
+        {
+            const bool bDoubleSided = DoubleSidedVariant != 0u;
+            PsoDesc.RasterizerState.CullMode = bDoubleSided ? D3D12_CULL_MODE_NONE : D3D12_CULL_MODE_BACK;
+            HR_CHECK(Device->GetDevice()->CreateGraphicsPipelineState(
+                &PsoDesc,
+                IID_PPV_ARGS(VisibilityPipelines[GetVisibilityPipelineIndex(bAlphaMask, bDoubleSided)].ReleaseAndGetAddressOf())));
+        }
     }
 
     return true;
@@ -567,13 +609,14 @@ bool FClusterDagVisibilityPass::CreateSoftwareRasterPipeline(FDX12Device* Device
 {
     CD3DX12_ROOT_PARAMETER1 RootParams[1] = {};
     RootParams[0].InitAsConstants(kSoftwareRasterBindlessDwordCount, 0, 0, D3D12_SHADER_VISIBILITY_ALL);
+    const CD3DX12_STATIC_SAMPLER_DESC MaterialSampler = BuildClusterDagMaterialSampler(D3D12_SHADER_VISIBILITY_ALL);
 
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc;
     RootSigDesc.Init_1_1(
         _countof(RootParams),
         RootParams,
-        0,
-        nullptr,
+        1,
+        &MaterialSampler,
         D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
 
     Microsoft::WRL::ComPtr<ID3DBlob> SerializedSig;

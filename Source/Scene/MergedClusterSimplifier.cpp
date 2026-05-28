@@ -68,9 +68,16 @@ namespace
         }
     };
 
+    struct FNodeEdgeAccum
+    {
+        uint32_t IncidentTriangleCount = 0;
+        uint32_t FirstSectionIndex = GClusterDAGInvalidIndex;
+        bool bMixedSection = false;
+    };
+
     struct FOutputVertexKey
     {
-        uint32_t Bits[16] = {};
+        uint32_t Bits[17] = {};
 
         bool operator==(const FOutputVertexKey& Other) const
         {
@@ -132,6 +139,14 @@ namespace
         }
     }
 
+    void RemapUintStream(std::vector<uint32_t>& Stream, const std::vector<unsigned int>& Remap)
+    {
+        if (!Stream.empty())
+        {
+            meshopt_remapVertexBuffer(Stream.data(), Stream.data(), Stream.size(), sizeof(uint32_t), Remap.data());
+        }
+    }
+
     template <typename T>
     void ResizeBuilderStream(std::vector<T>& Stream, size_t VertexCount)
     {
@@ -146,6 +161,7 @@ namespace
         const FFloat2& UV,
         const FFloat4& Tangent,
         const FFloat4& Color,
+        uint32_t SectionIndex,
         FOutputVertexKey& OutKey)
     {
         std::memcpy(&OutKey.Bits[0], &Position.x, sizeof(uint32_t));
@@ -164,6 +180,7 @@ namespace
         std::memcpy(&OutKey.Bits[13], &Color.y, sizeof(uint32_t));
         std::memcpy(&OutKey.Bits[14], &Color.z, sizeof(uint32_t));
         std::memcpy(&OutKey.Bits[15], &Color.w, sizeof(uint32_t));
+        OutKey.Bits[16] = SectionIndex;
     }
 
     void GetSourceVertexAttributes(
@@ -208,6 +225,7 @@ bool CompactAndOptimizeBuilderGeometry(
     MeshoptStreams.push_back({ Streams.UVs.data(), sizeof(FFloat2), sizeof(FFloat2) });
     MeshoptStreams.push_back({ Streams.Tangents.data(), sizeof(FFloat4), sizeof(FFloat4) });
     MeshoptStreams.push_back({ Streams.Colors.data(), sizeof(FFloat4), sizeof(FFloat4) });
+    MeshoptStreams.push_back({ Streams.SectionIndices.data(), sizeof(uint32_t), sizeof(uint32_t) });
 
     std::vector<unsigned int> Remap(Streams.Positions.size());
     const size_t UniqueVertexCount = meshopt_generateVertexRemapMulti(
@@ -224,6 +242,7 @@ bool CompactAndOptimizeBuilderGeometry(
     RemapBuilderStream(Streams.UVs, Remap);
     RemapBuilderStream(Streams.Tangents, Remap);
     RemapBuilderStream(Streams.Colors, Remap);
+    RemapUintStream(Streams.SectionIndices, Remap);
     if (InOutVertexLocks != nullptr)
     {
         RemapByteStream(*InOutVertexLocks, Remap);
@@ -234,6 +253,7 @@ bool CompactAndOptimizeBuilderGeometry(
     ResizeBuilderStream(Streams.UVs, UniqueVertexCount);
     ResizeBuilderStream(Streams.Tangents, UniqueVertexCount);
     ResizeBuilderStream(Streams.Colors, UniqueVertexCount);
+    ResizeBuilderStream(Streams.SectionIndices, UniqueVertexCount);
 
     std::vector<uint32_t> CacheOptimizedIndices(Indices.size());
     meshopt_optimizeVertexCache(CacheOptimizedIndices.data(), Indices.data(), Indices.size(), Streams.Positions.size());
@@ -252,6 +272,7 @@ bool CompactAndOptimizeBuilderGeometry(
     RemapBuilderStream(Streams.UVs, FetchRemap);
     RemapBuilderStream(Streams.Tangents, FetchRemap);
     RemapBuilderStream(Streams.Colors, FetchRemap);
+    RemapUintStream(Streams.SectionIndices, FetchRemap);
     if (InOutVertexLocks != nullptr)
     {
         RemapByteStream(*InOutVertexLocks, FetchRemap);
@@ -262,6 +283,7 @@ bool CompactAndOptimizeBuilderGeometry(
     ResizeBuilderStream(Streams.UVs, OptimizedVertexCount);
     ResizeBuilderStream(Streams.Tangents, OptimizedVertexCount);
     ResizeBuilderStream(Streams.Colors, OptimizedVertexCount);
+    ResizeBuilderStream(Streams.SectionIndices, OptimizedVertexCount);
 #else
     (void)InOutVertexLocks;
 #endif
@@ -304,8 +326,22 @@ bool BuildMergedClusterScratch(
     uint32_t InvalidChildClusterCount = 0;
     std::unordered_map<FPositionKey, uint32_t, FPositionKeyHasher> PositionNodeLookup;
     PositionNodeLookup.reserve(ChildClusters.size() * 64);
-    std::unordered_map<FNodeEdgeKey, uint32_t, FNodeEdgeKeyHasher> EdgeCounts;
-    EdgeCounts.reserve(ChildClusters.size() * 128);
+    std::unordered_map<FNodeEdgeKey, FNodeEdgeAccum, FNodeEdgeKeyHasher> EdgeAccums;
+    EdgeAccums.reserve(ChildClusters.size() * 128);
+
+    auto AccumulateEdge = [&EdgeAccums](uint32_t NodeA, uint32_t NodeB, uint32_t SectionIndex)
+    {
+        FNodeEdgeAccum& Accum = EdgeAccums[MakeNodeEdgeKey(NodeA, NodeB)];
+        ++Accum.IncidentTriangleCount;
+        if (Accum.FirstSectionIndex == GClusterDAGInvalidIndex)
+        {
+            Accum.FirstSectionIndex = SectionIndex;
+        }
+        else if (Accum.FirstSectionIndex != SectionIndex)
+        {
+            Accum.bMixedSection = true;
+        }
+    };
 
     for (uint32_t ChildClusterIndex : ChildClusters)
     {
@@ -346,6 +382,9 @@ bool BuildMergedClusterScratch(
                 }
 
                 const FPositionKey PositionKey = MakePositionKey(Dag.Positions[SourceVertexIndex]);
+                const uint32_t SectionIndex = SourceVertexIndex < Dag.VertexSectionIndices.size()
+                    ? Dag.VertexSectionIndices[SourceVertexIndex]
+                    : 0u;
                 auto PositionIt = PositionNodeLookup.find(PositionKey);
                 uint32_t PositionNodeIndex = GClusterDAGInvalidIndex;
                 if (PositionIt == PositionNodeLookup.end())
@@ -355,21 +394,36 @@ bool BuildMergedClusterScratch(
 
                     FScratchPositionNode Node;
                     Node.Position = Dag.Positions[SourceVertexIndex];
+                    Node.FirstSectionIndex = SectionIndex;
                     OutScratch.PositionNodes.push_back(Node);
                 }
                 else
                 {
                     PositionNodeIndex = PositionIt->second;
+                    FScratchPositionNode& Node = OutScratch.PositionNodes[PositionNodeIndex];
+                    if (Node.FirstSectionIndex != SectionIndex)
+                    {
+                        Node.bMixedSection = true;
+                        Node.bLocked = true;
+                    }
                 }
 
                 FScratchCorner Corner;
                 Corner.SourceVertexIndex = SourceVertexIndex;
                 Corner.PositionNodeIndex = PositionNodeIndex;
+                Corner.SectionIndex = SectionIndex;
 
                 ScratchTriangle.CornerIndices[CornerOrdinal] = static_cast<uint32_t>(OutScratch.Corners.size());
                 ScratchTriangle.PositionNodeIndices[CornerOrdinal] = PositionNodeIndex;
                 OutScratch.Corners.push_back(Corner);
             }
+
+            const uint32_t Corner0 = ScratchTriangle.CornerIndices[0];
+            if (Corner0 >= OutScratch.Corners.size())
+            {
+                continue;
+            }
+            ScratchTriangle.SectionIndex = OutScratch.Corners[Corner0].SectionIndex;
 
             if (ScratchTriangle.PositionNodeIndices[0] == ScratchTriangle.PositionNodeIndices[1]
                 || ScratchTriangle.PositionNodeIndices[1] == ScratchTriangle.PositionNodeIndices[2]
@@ -381,13 +435,13 @@ bool BuildMergedClusterScratch(
             OutScratch.Triangles.push_back(ScratchTriangle);
             ++OutScratch.ActiveTriangleCount;
 
-            ++EdgeCounts[MakeNodeEdgeKey(ScratchTriangle.PositionNodeIndices[0], ScratchTriangle.PositionNodeIndices[1])];
-            ++EdgeCounts[MakeNodeEdgeKey(ScratchTriangle.PositionNodeIndices[1], ScratchTriangle.PositionNodeIndices[2])];
-            ++EdgeCounts[MakeNodeEdgeKey(ScratchTriangle.PositionNodeIndices[2], ScratchTriangle.PositionNodeIndices[0])];
+            AccumulateEdge(ScratchTriangle.PositionNodeIndices[0], ScratchTriangle.PositionNodeIndices[1], ScratchTriangle.SectionIndex);
+            AccumulateEdge(ScratchTriangle.PositionNodeIndices[1], ScratchTriangle.PositionNodeIndices[2], ScratchTriangle.SectionIndex);
+            AccumulateEdge(ScratchTriangle.PositionNodeIndices[2], ScratchTriangle.PositionNodeIndices[0], ScratchTriangle.SectionIndex);
         }
     }
 
-    OutScratch.Edges.reserve(EdgeCounts.size());
+    OutScratch.Edges.reserve(EdgeAccums.size());
     uint32_t OpenBoundaryEdgeCount = 0;
     uint32_t LockedBoundaryEdgeCount = 0;
     uint32_t MissingBoundaryEdgeCount = 0;
@@ -403,16 +457,22 @@ bool BuildMergedClusterScratch(
         }
     };
 
-    for (const auto& Pair : EdgeCounts)
+    for (const auto& Pair : EdgeAccums)
     {
         FScratchEdge Edge;
         Edge.PositionNodeA = Pair.first.A;
         Edge.PositionNodeB = Pair.first.B;
-        Edge.IncidentTriangleCount = Pair.second;
-        Edge.bExternal = IsExternalScratchEdge(Pair.second);
+        Edge.IncidentTriangleCount = Pair.second.IncidentTriangleCount;
+        Edge.bExternal = IsExternalScratchEdge(Pair.second.IncidentTriangleCount);
         OutScratch.Edges.push_back(Edge);
 
-        if (IsNonManifoldScratchEdge(Pair.second))
+        if (Pair.second.bMixedSection)
+        {
+            ++OutScratch.SectionBoundaryEdgeCount;
+            LockEdgeEndpoints(Edge);
+        }
+
+        if (IsNonManifoldScratchEdge(Pair.second.IncidentTriangleCount))
         {
             ++OutScratch.NonManifoldEdgeCount;
         }
@@ -451,6 +511,10 @@ bool BuildMergedClusterScratch(
 
     for (const FScratchPositionNode& PositionNode : OutScratch.PositionNodes)
     {
+        if (PositionNode.bMixedSection)
+        {
+            ++OutScratch.SectionSeamPositionCount;
+        }
         if (PositionNode.bLocked)
         {
             ++OutScratch.LockedPositionCount;
@@ -463,11 +527,11 @@ bool BuildMergedClusterScratch(
     const bool bValidScratch = OutScratch.IsValid();
     if (!bValidScratch)
     {
-        CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " BuildMergedClusterScratch failed" << ", reason=invalid_output" << ", childClusters=" << ChildClusters.size() << ", invalidChildClusters=" << InvalidChildClusterCount << ", inputTriangles=" << InputTriangleCount << ", corners=" << OutScratch.Corners.size() << ", positions=" << OutScratch.PositionNodes.size() << ", triangles=" << OutScratch.Triangles.size() << ", activeTriangles=" << OutScratch.ActiveTriangleCount << ", edges=" << OutScratch.Edges.size() << ", externalEdges=" << OutScratch.ExternalEdgeCount << ", openBoundaryEdges=" << OpenBoundaryEdgeCount << ", lockedBoundaryEdges=" << LockedBoundaryEdgeCount << ", missingBoundaryEdges=" << MissingBoundaryEdgeCount << ", nonManifoldEdges=" << OutScratch.NonManifoldEdgeCount << ", lockedPositions=" << OutScratch.LockedPositionCount << ", lockedPositionRatio=" << FormatFloat(LockedPositionRatio));
+        CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " BuildMergedClusterScratch failed" << ", reason=invalid_output" << ", childClusters=" << ChildClusters.size() << ", invalidChildClusters=" << InvalidChildClusterCount << ", inputTriangles=" << InputTriangleCount << ", corners=" << OutScratch.Corners.size() << ", positions=" << OutScratch.PositionNodes.size() << ", triangles=" << OutScratch.Triangles.size() << ", activeTriangles=" << OutScratch.ActiveTriangleCount << ", edges=" << OutScratch.Edges.size() << ", externalEdges=" << OutScratch.ExternalEdgeCount << ", openBoundaryEdges=" << OpenBoundaryEdgeCount << ", lockedBoundaryEdges=" << LockedBoundaryEdgeCount << ", missingBoundaryEdges=" << MissingBoundaryEdgeCount << ", sectionBoundaryEdges=" << OutScratch.SectionBoundaryEdgeCount << ", sectionSeamPositions=" << OutScratch.SectionSeamPositionCount << ", nonManifoldEdges=" << OutScratch.NonManifoldEdgeCount << ", lockedPositions=" << OutScratch.LockedPositionCount << ", lockedPositionRatio=" << FormatFloat(LockedPositionRatio));
         return false;
     }
 
-    CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " BuildMergedClusterScratch" << ", childClusters=" << ChildClusters.size() << ", invalidChildClusters=" << InvalidChildClusterCount << ", inputTriangles=" << InputTriangleCount << ", corners=" << OutScratch.Corners.size() << ", positions=" << OutScratch.PositionNodes.size() << ", triangles=" << OutScratch.Triangles.size() << ", activeTriangles=" << OutScratch.ActiveTriangleCount << ", edges=" << OutScratch.Edges.size() << ", externalEdges=" << OutScratch.ExternalEdgeCount << ", openBoundaryEdges=" << OpenBoundaryEdgeCount << ", lockedBoundaryEdges=" << LockedBoundaryEdgeCount << ", missingBoundaryEdges=" << MissingBoundaryEdgeCount << ", nonManifoldEdges=" << OutScratch.NonManifoldEdgeCount << ", lockedPositions=" << OutScratch.LockedPositionCount << ", lockedPositionRatio=" << FormatFloat(LockedPositionRatio));
+    CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " BuildMergedClusterScratch" << ", childClusters=" << ChildClusters.size() << ", invalidChildClusters=" << InvalidChildClusterCount << ", inputTriangles=" << InputTriangleCount << ", corners=" << OutScratch.Corners.size() << ", positions=" << OutScratch.PositionNodes.size() << ", triangles=" << OutScratch.Triangles.size() << ", activeTriangles=" << OutScratch.ActiveTriangleCount << ", edges=" << OutScratch.Edges.size() << ", externalEdges=" << OutScratch.ExternalEdgeCount << ", openBoundaryEdges=" << OpenBoundaryEdgeCount << ", lockedBoundaryEdges=" << LockedBoundaryEdgeCount << ", missingBoundaryEdges=" << MissingBoundaryEdgeCount << ", sectionBoundaryEdges=" << OutScratch.SectionBoundaryEdgeCount << ", sectionSeamPositions=" << OutScratch.SectionSeamPositionCount << ", nonManifoldEdges=" << OutScratch.NonManifoldEdgeCount << ", lockedPositions=" << OutScratch.LockedPositionCount << ", lockedPositionRatio=" << FormatFloat(LockedPositionRatio));
     return true;
 }
 
@@ -542,7 +606,7 @@ bool BuildMergedClusterGeometry(
             GetSourceVertexAttributes(Dag, Corner.SourceVertexIndex, Normal, UV, Tangent, Color);
 
             FOutputVertexKey VertexKey;
-            BuildOutputVertexKey(FinalPosition, Normal, UV, Tangent, Color, VertexKey);
+            BuildOutputVertexKey(FinalPosition, Normal, UV, Tangent, Color, Corner.SectionIndex, VertexKey);
 
             auto VertexIt = VertexLookup.find(VertexKey);
             uint32_t VertexIndex = GClusterDAGInvalidIndex;
@@ -555,6 +619,7 @@ bool BuildMergedClusterGeometry(
                 OutStreams.UVs.push_back(UV);
                 OutStreams.Tangents.push_back(Tangent);
                 OutStreams.Colors.push_back(Color);
+                OutStreams.SectionIndices.push_back(Corner.SectionIndex);
                 if (OutVertexLocks != nullptr)
                 {
                     OutVertexLocks->push_back(Scratch.PositionNodes[PositionNodeIndex].bLocked ? static_cast<unsigned char>(1) : static_cast<unsigned char>(0));

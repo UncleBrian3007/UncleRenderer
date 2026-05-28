@@ -1,6 +1,7 @@
 cbuffer CullingConstants : register(b0)
 {
     float4 FrustumPlanes[6];
+    row_major float4x4 CullingViewProjection;
     uint DebugPrintEnabled;
     float3 CameraPosition;
 };

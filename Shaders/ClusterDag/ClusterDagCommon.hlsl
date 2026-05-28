@@ -237,7 +237,7 @@ static const uint kLevelSplitQueueStateQueueOverflowCountOffset = 16u;
 static const uint kLevelSplitQueueStateCandidateWriteOffset = 20u;
 
 static const uint kClusterDagLevelSplitNodeThreadGroupSize = 64u;
-static const uint kClusterDagLevelSplitMaxChildRefsPerGroup = 256u;
+static const uint kClusterDagLevelSplitMaxChildRefsPerGroup = kClusterDagMaxChildRefsPerGroup;
 
 static const uint kLevelSplitNodeArgsDispatchXOffset = 0u;
 static const uint kLevelSplitNodeArgsDispatchYOffset = 4u;

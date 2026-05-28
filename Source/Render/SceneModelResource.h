@@ -127,7 +127,9 @@ struct FSceneModelResource
     uint32_t ClusterDagRuntimeClusterCount = 0;
     uint32_t ClusterDagIndexCount = 0;
     bool bUseClusterDagRuntime = false;
+    bool bCoveredByClusterDagRuntime = false;
     uint32_t ClusterDagVertexPackingMode = 0;
+    std::vector<uint32_t> ClusterDagSectionModelIndices;
     FRuntimeClusterHierarchy ClusterDagRuntimeHierarchy;
     FClusterDAGPackedVertexData ClusterDagPackedVertexData;
     DirectX::XMFLOAT4 ClusterDagPackedPositionOffset{ 0.0f, 0.0f, 0.0f, 0.0f };

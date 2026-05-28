@@ -1,3 +1,4 @@
+#include "../Common.hlsli"
 #include "ClusterDagGeometryFetch.hlsl"
 
 #ifndef CLUSTER_DAG_SW_RASTER_HZB_REJECT
@@ -22,6 +23,8 @@ cbuffer ClusterDagSoftwareRasterConstants : register(b0)
     uint HZBMipCount;
     uint PageDataBufferIndex;
 };
+
+SamplerState MaterialSampler : register(s0);
 
 #if CLUSTER_DAG_SW_RASTER_HZB_REJECT
 groupshared uint GroupClusterOccludedByHZB;
@@ -118,6 +121,38 @@ bool IsClusterOccludedByHZB(ClusterDagClusterData cluster, ClusterDagResolveScen
 }
 #endif
 
+bool PassesAlphaMask(
+    ClusterDagResolveSceneData sceneData,
+    bool useAlphaMask,
+    float2 uv0,
+    float2 uv1,
+    float2 uv2,
+    float colorAlpha0,
+    float colorAlpha1,
+    float colorAlpha2,
+    float b0,
+    float b1,
+    float b2)
+{
+    if (!useAlphaMask)
+    {
+        return true;
+    }
+
+    const float2 uv = uv0 * b0 + uv1 * b1 + uv2 * b2;
+    const float colorAlpha = colorAlpha0 * b0 + colorAlpha1 * b1 + colorAlpha2 * b2;
+    float alpha = sceneData.BaseColorAlpha * colorAlpha;
+
+    if (sceneData.MaterialTextureIndices0.x != 0xffffffffu)
+    {
+        const float2 baseUV = ApplyTextureTransform(uv, sceneData.BaseColorTransformOffsetScale, sceneData.BaseColorTransformRotation);
+        Texture2D AlbedoTexture = ResourceDescriptorHeap[sceneData.MaterialTextureIndices0.x];
+        alpha *= AlbedoTexture.SampleLevel(MaterialSampler, baseUV, 0.0f).a;
+    }
+
+    return alpha >= sceneData.AlphaCutoff;
+}
+
 void RasterizeTriangle(
     uint visibleEntryIndex,
     uint localTriIndex,
@@ -179,6 +214,22 @@ void RasterizeTriangle(
     const int2 maxPixel = min(int2(ceil(max(max(p0, p1), p2))), int2(int(ViewportWidth) - 1, int(ViewportHeight) - 1));
     const bool positiveArea = area > 0.0f;
     const uint pixelValue = ((visibleEntryIndex + 1u) << 7u) | localTriIndex;
+    const bool useAlphaMask = sceneData.AlphaMode == 1u;
+    float2 alphaUv0 = 0.0f.xx;
+    float2 alphaUv1 = 0.0f.xx;
+    float2 alphaUv2 = 0.0f.xx;
+    float alphaColor0 = 1.0f;
+    float alphaColor1 = 1.0f;
+    float alphaColor2 = 1.0f;
+    if (useAlphaMask)
+    {
+        alphaUv0 = LoadClusterDagUv(sceneData, visibleEntry, vertexIndex0, PageData);
+        alphaUv1 = LoadClusterDagUv(sceneData, visibleEntry, vertexIndex1, PageData);
+        alphaUv2 = LoadClusterDagUv(sceneData, visibleEntry, vertexIndex2, PageData);
+        alphaColor0 = LoadClusterDagColor(sceneData, visibleEntry, vertexIndex0, PageData).a;
+        alphaColor1 = LoadClusterDagColor(sceneData, visibleEntry, vertexIndex1, PageData).a;
+        alphaColor2 = LoadClusterDagColor(sceneData, visibleEntry, vertexIndex2, PageData).a;
+    }
 
     [loop]
     for (int y = minPixel.y; y <= maxPixel.y; ++y)
@@ -210,6 +261,11 @@ void RasterizeTriangle(
             const uint2 pixelCoord = uint2(x, y);
             const uint64_t currentPixel = Visibility64[pixelCoord];
             if (packedPixel <= currentPixel)
+            {
+                continue;
+            }
+
+            if (!PassesAlphaMask(sceneData, useAlphaMask, alphaUv0, alphaUv1, alphaUv2, alphaColor0, alphaColor1, alphaColor2, b0, b1, b2))
             {
                 continue;
             }

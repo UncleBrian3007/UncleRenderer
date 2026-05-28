@@ -32,11 +32,12 @@
 
 namespace
 {
-    constexpr uint32_t GVmeshVersion = 16;
-    constexpr uint32_t GClusterDAGBuildSemanticVersion = 8;
+    constexpr uint32_t GVmeshVersion = 19;
+    constexpr uint32_t GClusterDAGBuildSemanticVersion = 11;
     constexpr size_t GAttributeFloatCount = 5;
     constexpr uint32_t GClusterDAGMinGroupSize = 8;
     constexpr uint32_t GClusterDAGMaxGroupSize = 32;
+    constexpr float GClusterDAGRootCloseRelativeErrorThreshold = 1.5f;
     constexpr uint32_t GVmeshPageAlignment = 4096;
     constexpr uint32_t GVmeshStreamingPageSlotBytes = GClusterDAGVmeshStreamingPageSlotBytes;
     constexpr uint32_t GVmeshPageFlagRoot = GClusterDAGVmeshPageFlagRoot;
@@ -64,6 +65,7 @@ namespace
         uint32_t UVCount = 0;
         uint32_t TangentCount = 0;
         uint32_t ColorCount = 0;
+        uint32_t VertexSectionIndexCount = 0;
         uint32_t TriangleIndexCount = 0;
         uint32_t ExternalEdgeCount = 0;
         uint32_t ClusterVertexCount = 0;
@@ -130,6 +132,23 @@ namespace
     {
         FFloat3 Center{ 0.0f, 0.0f, 0.0f };
         float Radius = 0.0f;
+    };
+
+    struct FPendingClusterGroupReduction
+    {
+        std::vector<uint32_t> ChildClusters;
+        FBuilderVertexStreams GroupStreams;
+        std::vector<uint32_t> GroupIndices;
+        FGroupSphere GroupBoundsSphere;
+        FGroupSphere GroupSphere;
+        uint32_t SourceTriangleCount = 0;
+        uint32_t DesiredParentCount = 0;
+        uint32_t MaxAllowedParentCount = 0;
+        uint32_t PredictedParentCount = 0;
+        float SimplifyError = 0.0f;
+        float RelativeError = 0.0f;
+        float ChildMaxError = 0.0f;
+        size_t GroupOrdinal = 0;
     };
 
     std::string FormatFloat(float Value)
@@ -382,6 +401,7 @@ namespace
         Dag.UVs.insert(Dag.UVs.end(), Streams.UVs.begin(), Streams.UVs.end());
         Dag.Tangents.insert(Dag.Tangents.end(), Streams.Tangents.begin(), Streams.Tangents.end());
         Dag.Colors.insert(Dag.Colors.end(), Streams.Colors.begin(), Streams.Colors.end());
+        Dag.VertexSectionIndices.insert(Dag.VertexSectionIndices.end(), Streams.SectionIndices.begin(), Streams.SectionIndices.end());
         return BaseVertex;
     }
 
@@ -451,6 +471,60 @@ namespace
         }
 
         return Indices;
+    }
+
+    struct FPositionCanonicalIndexMap
+    {
+        std::vector<uint32_t> CanonicalVertexIndices;
+        size_t CanonicalVertexCount = 0;
+    };
+
+    FPositionCanonicalIndexMap BuildPositionCanonicalIndexMap(const std::vector<FFloat3>& Positions)
+    {
+        FPositionCanonicalIndexMap Result;
+        Result.CanonicalVertexIndices.resize(Positions.size());
+
+        std::unordered_map<FPositionKey, uint32_t, FPositionKeyHasher> PositionToCanonical;
+        PositionToCanonical.reserve(Positions.size());
+
+        for (size_t VertexIndex = 0; VertexIndex < Positions.size(); ++VertexIndex)
+        {
+            const FPositionKey PositionKey = MakePositionKey(Positions[VertexIndex]);
+            auto [It, bInserted] = PositionToCanonical.emplace(PositionKey, static_cast<uint32_t>(VertexIndex));
+            if (bInserted)
+            {
+                ++Result.CanonicalVertexCount;
+            }
+
+            Result.CanonicalVertexIndices[VertexIndex] = It->second;
+        }
+
+        return Result;
+    }
+
+    bool AppendCanonicalPartitionIndices(
+        const FClusterDAG& Dag,
+        const FCluster& Cluster,
+        const std::vector<uint32_t>& CanonicalVertexIndices,
+        std::vector<uint32_t>& OutPartitionIndices,
+        size_t& OutCanonicalRemappedIndexCount)
+    {
+        const std::vector<uint32_t> AbsoluteIndices = ExtractAbsoluteClusterIndices(Dag, Cluster);
+        OutPartitionIndices.reserve(OutPartitionIndices.size() + AbsoluteIndices.size());
+
+        for (uint32_t AbsoluteIndex : AbsoluteIndices)
+        {
+            if (AbsoluteIndex >= CanonicalVertexIndices.size())
+            {
+                return false;
+            }
+
+            const uint32_t CanonicalIndex = CanonicalVertexIndices[AbsoluteIndex];
+            OutCanonicalRemappedIndexCount += CanonicalIndex != AbsoluteIndex ? 1u : 0u;
+            OutPartitionIndices.push_back(CanonicalIndex);
+        }
+
+        return true;
     }
 
     float ComputeMaxEdgeLength(const std::vector<FFloat3>& Positions, const std::vector<uint32_t>& AbsoluteIndices)
@@ -714,26 +788,94 @@ namespace
         Runtime.DrawDatas.clear();
         Runtime.PackedIndices.reserve(Dag.TriangleIndices.size());
         Runtime.DrawDatas.reserve(Dag.Clusters.size());
+        uint32_t MixedSectionClusterCount = 0;
+        uint32_t MaxDrawDataPerCluster = 0;
 
         for (uint32_t ClusterIndex = 0; ClusterIndex < Dag.Clusters.size(); ++ClusterIndex)
         {
             const FCluster& Cluster = Dag.Clusters[ClusterIndex];
-            const uint32_t IndexStart = static_cast<uint32_t>(Runtime.PackedIndices.size());
             const std::vector<uint32_t> AbsoluteIndices = ExtractAbsoluteClusterIndices(Dag, Cluster);
-            Runtime.PackedIndices.insert(Runtime.PackedIndices.end(), AbsoluteIndices.begin(), AbsoluteIndices.end());
+            std::unordered_map<uint32_t, size_t> SectionOrderLookup;
+            std::vector<uint32_t> SectionOrder;
+            std::vector<std::vector<uint32_t>> SectionIndices;
 
-            FRuntimeClusterDrawData DrawData;
-            DrawData.IndexStart = IndexStart;
-            DrawData.IndexCount = static_cast<uint32_t>(AbsoluteIndices.size());
-            Runtime.DrawDatas.push_back(DrawData);
+            for (size_t IndexOffset = 0; IndexOffset + 2 < AbsoluteIndices.size(); IndexOffset += 3)
+            {
+                const uint32_t V0 = AbsoluteIndices[IndexOffset + 0];
+                const uint32_t V1 = AbsoluteIndices[IndexOffset + 1];
+                const uint32_t V2 = AbsoluteIndices[IndexOffset + 2];
+                const uint32_t S0 = V0 < Dag.VertexSectionIndices.size() ? Dag.VertexSectionIndices[V0] : 0u;
+                const uint32_t S1 = V1 < Dag.VertexSectionIndices.size() ? Dag.VertexSectionIndices[V1] : S0;
+                const uint32_t S2 = V2 < Dag.VertexSectionIndices.size() ? Dag.VertexSectionIndices[V2] : S0;
+                if (S0 != S1 || S0 != S2)
+                {
+                    Dag.RuntimeHierarchy.PackedIndices.clear();
+                    Dag.RuntimeHierarchy.DrawDatas.clear();
+                    return false;
+                }
+
+                auto SectionIt = SectionOrderLookup.find(S0);
+                size_t SectionOrdinal = 0;
+                if (SectionIt == SectionOrderLookup.end())
+                {
+                    SectionOrdinal = SectionOrder.size();
+                    SectionOrderLookup.emplace(S0, SectionOrdinal);
+                    SectionOrder.push_back(S0);
+                    SectionIndices.emplace_back();
+                }
+                else
+                {
+                    SectionOrdinal = SectionIt->second;
+                }
+
+                std::vector<uint32_t>& Indices = SectionIndices[SectionOrdinal];
+                Indices.push_back(V0);
+                Indices.push_back(V1);
+                Indices.push_back(V2);
+            }
+
+            const uint32_t DrawDataStart = static_cast<uint32_t>(Runtime.DrawDatas.size());
+            if (SectionIndices.size() > 1)
+            {
+                ++MixedSectionClusterCount;
+            }
+
+            for (size_t SectionOrdinal = 0; SectionOrdinal < SectionIndices.size(); ++SectionOrdinal)
+            {
+                const std::vector<uint32_t>& Indices = SectionIndices[SectionOrdinal];
+                if (Indices.empty())
+                {
+                    continue;
+                }
+
+                FRuntimeClusterDrawData DrawData;
+                DrawData.IndexStart = static_cast<uint32_t>(Runtime.PackedIndices.size());
+                DrawData.IndexCount = static_cast<uint32_t>(Indices.size());
+                DrawData.SectionIndex = SectionOrder[SectionOrdinal];
+                Runtime.PackedIndices.insert(Runtime.PackedIndices.end(), Indices.begin(), Indices.end());
+                Runtime.DrawDatas.push_back(DrawData);
+            }
 
             if (ClusterIndex < Runtime.Clusters.size())
             {
                 FRuntimeCluster& RuntimeCluster = Runtime.Clusters[ClusterIndex];
-                RuntimeCluster.DrawDataStart = static_cast<uint32_t>(Runtime.DrawDatas.size() - 1);
-                RuntimeCluster.DrawDataCount = 1;
+                RuntimeCluster.DrawDataStart = DrawDataStart;
+                RuntimeCluster.DrawDataCount = static_cast<uint32_t>(Runtime.DrawDatas.size() - DrawDataStart);
                 RuntimeCluster.TriangleCount = Cluster.TriangleCount;
+                MaxDrawDataPerCluster = (std::max)(MaxDrawDataPerCluster, RuntimeCluster.DrawDataCount);
             }
+        }
+
+        const float AvgDrawDataPerCluster = !Dag.Clusters.empty()
+            ? static_cast<float>(Runtime.DrawDatas.size()) / static_cast<float>(Dag.Clusters.size())
+            : 0.0f;
+        if (MixedSectionClusterCount > 0 || MaxDrawDataPerCluster > 1u)
+        {
+            LogInfo("ClusterDAG runtime draw split: clusters=" + std::to_string(Dag.Clusters.size())
+                + ", drawDatas=" + std::to_string(Runtime.DrawDatas.size())
+                + ", mixedSectionClusters=" + std::to_string(MixedSectionClusterCount)
+                + ", maxDrawDataPerCluster=" + std::to_string(MaxDrawDataPerCluster)
+                + ", avgDrawDataPerCluster=" + FormatFloat(AvgDrawDataPerCluster));
         }
 
         return true;
@@ -1144,6 +1286,7 @@ namespace
                     OutStreams.UVs.push_back(AbsoluteIndex < Dag.UVs.size() ? Dag.UVs[AbsoluteIndex] : FFloat2(0.0f, 0.0f));
                     OutStreams.Tangents.push_back(AbsoluteIndex < Dag.Tangents.size() ? Dag.Tangents[AbsoluteIndex] : FFloat4(0.0f, 0.0f, 0.0f, 1.0f));
                     OutStreams.Colors.push_back(AbsoluteIndex < Dag.Colors.size() ? Dag.Colors[AbsoluteIndex] : FFloat4(1.0f, 1.0f, 1.0f, 1.0f));
+                    OutStreams.SectionIndices.push_back(AbsoluteIndex < Dag.VertexSectionIndices.size() ? Dag.VertexSectionIndices[AbsoluteIndex] : 0u);
                     OutIndices.push_back(LocalIndex);
                 }
                 else
@@ -1243,6 +1386,37 @@ namespace
             OutAttributes[Base + 3] = UV.x;
             OutAttributes[Base + 4] = UV.y;
         }
+    }
+
+    bool AreTrianglesSectionHomogeneous(const FBuilderVertexStreams& Streams, const std::vector<uint32_t>& Indices, uint32_t& OutViolationCount)
+    {
+        OutViolationCount = 0;
+        if (Streams.SectionIndices.size() != Streams.Positions.size())
+        {
+            return false;
+        }
+
+        for (size_t IndexOffset = 0; IndexOffset + 2 < Indices.size(); IndexOffset += 3)
+        {
+            const uint32_t V0 = Indices[IndexOffset + 0];
+            const uint32_t V1 = Indices[IndexOffset + 1];
+            const uint32_t V2 = Indices[IndexOffset + 2];
+            if (V0 >= Streams.SectionIndices.size()
+                || V1 >= Streams.SectionIndices.size()
+                || V2 >= Streams.SectionIndices.size())
+            {
+                ++OutViolationCount;
+                continue;
+            }
+
+            const uint32_t SectionIndex = Streams.SectionIndices[V0];
+            if (Streams.SectionIndices[V1] != SectionIndex || Streams.SectionIndices[V2] != SectionIndex)
+            {
+                ++OutViolationCount;
+            }
+        }
+
+        return OutViolationCount == 0;
     }
 
     bool SimplifyGroupGeometryWithAttributes(
@@ -1382,6 +1556,7 @@ namespace
                 FBuilderVertexStreams CandidateStreams = SourceStreams;
                 std::vector<uint32_t> CandidateIndices = std::move(SimplifiedIndices);
                 CompactAndOptimizeBuilderGeometry(CandidateStreams, CandidateIndices);
+                uint32_t SectionViolationCount = 0;
 
                 if (CandidateIndices.size() < 3)
                 {
@@ -1390,6 +1565,11 @@ namespace
                 else if (CandidateIndices.size() >= SourceIndexCount)
                 {
                     LastFailureReason = "compaction_zero_progress";
+                }
+                else if (!AreTrianglesSectionHomogeneous(CandidateStreams, CandidateIndices, SectionViolationCount))
+                {
+                    LastFailureReason = "section_violation";
+                    CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " SimplifyGroupGeometry rejected output" << ", reason=section_violation" << ", violations=" << SectionViolationCount << ", outputTriangles=" << (CandidateIndices.size() / 3));
                 }
                 else
                 {
@@ -1759,7 +1939,7 @@ namespace
             << ", worstClusterIndex=" << WorstClusterIndex);
     }
 
-    bool BuildClusterDAGForPrimitive(size_t PrimitiveIndex, const FMesh::FPrimitive& Primitive, const FClusterDAGBuildParams& Params, FClusterDAG& OutDag)
+    bool BuildClusterDAGForGeometry(size_t PrimitiveIndex, const FBuilderVertexStreams& InputStreams, const std::vector<uint32_t>& InputIndices, const FClusterDAGBuildParams& Params, FClusterDAG& OutDag)
     {
 
 // 1. Build initial leaf clusters with meshopt_buildMeshlets.
@@ -1771,21 +1951,16 @@ namespace
         OutDag = {};
 
 #if WITH_MESHOPTIMIZER
-        CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "start" << ", vertices=" << Primitive.VertexStreams.Positions.size() << ", indices=" << Primitive.Indices.size() << ", triangles=" << (Primitive.Indices.size() / 3) << ", params{maxVerts=" << Params.MaxClusterVertices << ", maxTris=" << Params.MaxClusterTriangles << ", targetGroupSize=" << Params.TargetGroupSize << ", simplifyRatio=" << FormatFloat(Params.SimplifyRatio) << ", maxLevels=" << Params.MaxLevels << "}");
+        CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "start" << ", vertices=" << InputStreams.Positions.size() << ", indices=" << InputIndices.size() << ", triangles=" << (InputIndices.size() / 3) << ", params{maxVerts=" << Params.MaxClusterVertices << ", maxTris=" << Params.MaxClusterTriangles << ", targetGroupSize=" << Params.TargetGroupSize << ", simplifyRatio=" << FormatFloat(Params.SimplifyRatio) << ", maxLevels=" << Params.MaxLevels << "}");
 
-        if (Primitive.VertexStreams.Positions.empty() || Primitive.Indices.size() < 3 || (Primitive.Indices.size() % 3) != 0)
+        if (InputStreams.Positions.empty() || InputIndices.size() < 3 || (InputIndices.size() % 3) != 0)
         {
             CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "invalid primitive input; positions or triangle index count is not valid.");
             return false;
         }
 
-        FBuilderVertexStreams BaseStreams;
-        BaseStreams.Positions = Primitive.VertexStreams.Positions;
-        BaseStreams.Normals = Primitive.VertexStreams.Normals;
-        BaseStreams.UVs = Primitive.VertexStreams.UVs;
-        BaseStreams.Tangents = Primitive.VertexStreams.Tangents;
-        BaseStreams.Colors = Primitive.VertexStreams.Colors;
-        std::vector<uint32_t> BaseIndices = Primitive.Indices;
+        FBuilderVertexStreams BaseStreams = InputStreams;
+        std::vector<uint32_t> BaseIndices = InputIndices;
         CompactAndOptimizeBuilderGeometry(BaseStreams, BaseIndices);
         CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "CompactAndOptimizeGeometry" << ", vertices=" << BaseStreams.Positions.size() << ", indices=" << BaseIndices.size() << ", triangles=" << (BaseIndices.size() / 3));
 
@@ -1851,6 +2026,81 @@ namespace
         }
 
         size_t CurrentTriangleCount = BaseIndices.size() / 3;
+        auto FinalizeRootDAG = [&](const char* CompletionReason) -> bool
+        {
+            if (CurrentClusters.empty())
+            {
+                CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "no root clusters remained after reduction.");
+                return false;
+            }
+
+            if (CurrentClusters.size() > GClusterDAGMaxRootChildRefs)
+            {
+                CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "failed to close root group" << ", reason=root_child_ref_budget_exceeded" << ", remainingClusters=" << CurrentClusters.size() << ", maxRootChildRefs=" << GClusterDAGMaxRootChildRefs << ", completionReason=" << CompletionReason);
+                return false;
+            }
+
+            if (CurrentClusters.size() != 1)
+            {
+                CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "closing multi-child root" << ", reason=" << CompletionReason << ", rootChildren=" << CurrentClusters.size() << ", maxRootChildRefs=" << GClusterDAGMaxRootChildRefs << ", currentTriangles=" << CurrentTriangleCount);
+            }
+
+            FClusterGroup RootGroup;
+            const FGroupSphere RootBoundsSphere = BuildGroupSphere(State.Dag, CurrentClusters, false);
+            const FGroupSphere RootSphere = BuildGroupSphere(State.Dag, CurrentClusters, true);
+            RootGroup.ChildRefs = MakeClusterRefs(CurrentClusters);
+            RootGroup.BoundsCenter = RootBoundsSphere.Center;
+            RootGroup.BoundsRadius = RootBoundsSphere.Radius;
+            RootGroup.LodBoundsCenter = RootSphere.Center;
+            RootGroup.LodBoundsRadius = RootSphere.Radius;
+            RootGroup.ParentLODError = 1e10f;
+            RootGroup.MipLevel = 0;
+            RootGroup.bRoot = true;
+
+            for (uint32_t ClusterIndex : CurrentClusters)
+            {
+                RootGroup.MipLevel = (std::max)(RootGroup.MipLevel, State.Dag.Clusters[ClusterIndex].MipLevel);
+            }
+
+            const uint32_t RootGroupIndex = static_cast<uint32_t>(State.Dag.Groups.size());
+            State.Dag.Groups.push_back(std::move(RootGroup));
+            for (uint32_t ClusterIndex : CurrentClusters)
+            {
+                State.Dag.Clusters[ClusterIndex].GroupIndex = RootGroupIndex;
+            }
+
+            OutDag = std::move(State.Dag);
+            OutDag.RootGroupIndex = RootGroupIndex;
+
+            if (!ValidateMonotonicErrors(OutDag))
+            {
+                CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "ValidateMonotonicErrors failed; discarding DAG.");
+                OutDag = {};
+                return false;
+            }
+
+            if (!ValidateGroupSphereCoverage(PrimitiveIndex, OutDag))
+            {
+                CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "ValidateGroupSphereCoverage failed; discarding DAG.");
+                OutDag = {};
+                return false;
+            }
+
+            LogLeafLodBoundsDiagnostics(PrimitiveIndex, OutDag);
+
+            EncodeRuntimeClusterHierarchy(OutDag);
+            if (!OutDag.HasRuntimeHierarchy())
+            {
+                CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "EncodeRuntimeClusterHierarchy failed; discarding DAG.");
+                OutDag = {};
+                return false;
+            }
+
+            CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "completed" << ", reason=" << CompletionReason << ", rootGroupIndex=" << OutDag.RootGroupIndex << ", rootChildren=" << OutDag.Groups[OutDag.RootGroupIndex].ChildRefs.size() << ", clusters=" << OutDag.Clusters.size() << ", groups=" << OutDag.Groups.size() << ", runtimeClusters=" << OutDag.RuntimeHierarchy.Clusters.size() << ", runtimeGroups=" << OutDag.RuntimeHierarchy.Groups.size() << ", sharedVertices=" << OutDag.Positions.size() << ", sharedTriangles=" << (OutDag.TriangleIndices.size() / 3));
+
+            return OutDag.IsValid();
+        };
+
         for (uint32_t Level = 1; Level < Params.MaxLevels && CurrentClusters.size() > 1; ++Level)
         {
             CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "Level " << Level << " begin" << ", inputClusters=" << CurrentClusters.size() << ", inputTriangles=" << CurrentTriangleCount);
@@ -1866,12 +2116,24 @@ namespace
                 std::vector<uint32_t> PartitionClusterIndices;
                 std::vector<uint32_t> PartitionClusterIndexCounts;
                 PartitionClusterIndexCounts.reserve(CurrentClusters.size());
+                const FPositionCanonicalIndexMap PositionCanonicalIndexMap = BuildPositionCanonicalIndexMap(State.Dag.Positions);
+                size_t CanonicalRemappedIndexCount = 0;
 
                 for (uint32_t ClusterIndex : CurrentClusters)
                 {
-                    std::vector<uint32_t> ClusterIndices = ExtractAbsoluteClusterIndices(State.Dag, State.Dag.Clusters[ClusterIndex]);
-                    PartitionClusterIndexCounts.push_back(static_cast<uint32_t>(ClusterIndices.size()));
-                    PartitionClusterIndices.insert(PartitionClusterIndices.end(), ClusterIndices.begin(), ClusterIndices.end());
+                    const size_t ClusterIndexOffset = PartitionClusterIndices.size();
+                    if (!AppendCanonicalPartitionIndices(
+                        State.Dag,
+                        State.Dag.Clusters[ClusterIndex],
+                        PositionCanonicalIndexMap.CanonicalVertexIndices,
+                        PartitionClusterIndices,
+                        CanonicalRemappedIndexCount))
+                    {
+                        CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " canonical partition remap failed" << ", clusterIndex=" << ClusterIndex << ", positionCount=" << State.Dag.Positions.size());
+                        return false;
+                    }
+
+                    PartitionClusterIndexCounts.push_back(static_cast<uint32_t>(PartitionClusterIndices.size() - ClusterIndexOffset));
                 }
 
                 std::vector<unsigned int> Partitions(CurrentClusters.size(), 0);
@@ -1893,7 +2155,8 @@ namespace
                     ClusterGroups[PartitionIndex].push_back(CurrentClusters[ClusterIndex]);
                 }
 
-                CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "Level " << Level << " meshopt_partitionClusters" << ", inputClusters=" << CurrentClusters.size() << ", targetGroupSize=" << Params.TargetGroupSize << ", partitionCount=" << PartitionCount << ", " << SummarizeGroupSizes(ClusterGroups));
+                const size_t PositionDuplicateVertexCount = State.Dag.Positions.size() - PositionCanonicalIndexMap.CanonicalVertexCount;
+                CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "Level " << Level << " meshopt_partitionClusters" << ", inputClusters=" << CurrentClusters.size() << ", targetGroupSize=" << Params.TargetGroupSize << ", partitionCount=" << PartitionCount << ", canonicalVertices=" << PositionCanonicalIndexMap.CanonicalVertexCount << ", positionDuplicateVertices=" << PositionDuplicateVertexCount << ", canonicalRemappedIndices=" << CanonicalRemappedIndexCount << ", " << SummarizeGroupSizes(ClusterGroups));
 
                 const uint32_t MinGroupSize = (std::min)(GClusterDAGMinGroupSize, (std::max)(2u, Params.TargetGroupSize));
                 const bool bNeedsMerge = ClusterGroups.size() > 1 &&
@@ -1910,9 +2173,16 @@ namespace
             }
 
             const FClusterEdgeOwnerMap LevelEdgeOwners = BuildClusterExternalEdgeOwners(State.Dag, CurrentClusters);
-            std::vector<uint32_t> NextClusters;
-            size_t NextTriangleCount = 0;
-            bool bReducedAnyGroup = false;
+            std::vector<FPendingClusterGroupReduction> PendingReductions;
+            PendingReductions.reserve(ClusterGroups.size());
+            bool bCloseCurrentLevelAsRoot = false;
+            const char* RootCloseReason = "unknown";
+            size_t RootCloseTriggerGroup = 0;
+            uint32_t RootCloseDesiredParentCount = 0;
+            uint32_t RootClosePredictedParentCount = 0;
+            float RootCloseRelativeError = 0.0f;
+            float RootCloseSimplifyError = 0.0f;
+            uint32_t RootCloseSourceTriangleCount = 0;
 
             size_t GroupOrdinal = 0;
             for (const std::vector<uint32_t>& ChildClusters : ClusterGroups)
@@ -1929,13 +2199,13 @@ namespace
                     return false;
                 }
 
-                const uint32_t SourceTriangleCount = Scratch.ActiveTriangleCount;
-                const uint32_t DesiredParentCount = ComputeDesiredParentCount(SourceTriangleCount, Params);
-                const uint32_t MaxAllowedParentCount = ComputeMaxAllowedParentCount(DesiredParentCount, static_cast<uint32_t>(ChildClusters.size()));
-                FBuilderVertexStreams ReducedGroupStreams;
-                std::vector<uint32_t> ReducedGroupIndices;
-                float SimplifyError = 0.0f;
-                uint32_t PredictedParentCount = 0;
+                FPendingClusterGroupReduction Pending;
+                Pending.ChildClusters = ChildClusters;
+                Pending.SourceTriangleCount = Scratch.ActiveTriangleCount;
+                Pending.DesiredParentCount = ComputeDesiredParentCount(Pending.SourceTriangleCount, Params);
+                Pending.MaxAllowedParentCount = ComputeMaxAllowedParentCount(Pending.DesiredParentCount, static_cast<uint32_t>(ChildClusters.size()));
+                Pending.GroupOrdinal = GroupOrdinal;
+
                 const bool bSimplified = SimplifyMergedClusterGroup(
                     PrimitiveIndex,
                     Level,
@@ -1944,98 +2214,134 @@ namespace
                     ChildClusters,
                     Scratch,
                     Params,
-                    DesiredParentCount,
-                    ReducedGroupStreams,
-                    ReducedGroupIndices,
-                    SimplifyError,
-                    PredictedParentCount);
-                const bool bGroupReduced = bSimplified && (ReducedGroupIndices.size() / 3) < SourceTriangleCount;
-                bReducedAnyGroup = bReducedAnyGroup || bGroupReduced;
-
+                    Pending.DesiredParentCount,
+                    Pending.GroupStreams,
+                    Pending.GroupIndices,
+                    Pending.SimplifyError,
+                    Pending.PredictedParentCount);
+                const bool bGroupReduced = bSimplified && (Pending.GroupIndices.size() / 3) < Pending.SourceTriangleCount;
                 if (!bGroupReduced)
                 {
-                    CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " reduction failed after retries" << ", childClusters=" << ChildClusters.size() << ", sourceTriangles=" << SourceTriangleCount << ", desiredParents=" << DesiredParentCount << ", maxAllowedParents=" << MaxAllowedParentCount << ", predictedParents=" << PredictedParentCount << ", simplifyError=" << FormatFloat(SimplifyError));
+                    bCloseCurrentLevelAsRoot = true;
+                    RootCloseReason = bSimplified ? "insufficient_parent_reduction" : "attribute_simplify_failed";
+                    RootCloseTriggerGroup = GroupOrdinal;
+                    RootCloseDesiredParentCount = Pending.DesiredParentCount;
+                    RootClosePredictedParentCount = Pending.PredictedParentCount;
+                    RootCloseSimplifyError = Pending.SimplifyError;
+                    RootCloseSourceTriangleCount = Pending.SourceTriangleCount;
+                    break;
+                }
+
+                Pending.GroupBoundsSphere = BuildGroupSphere(State.Dag, ChildClusters, false);
+                Pending.GroupSphere = BuildGroupSphere(State.Dag, ChildClusters, true);
+                Pending.RelativeError = ComputeRelativeError(Pending.SimplifyError, Pending.GroupSphere.Radius);
+
+                for (uint32_t ClusterIndex : ChildClusters)
+                {
+                    Pending.ChildMaxError = (std::max)(Pending.ChildMaxError, State.Dag.Clusters[ClusterIndex].LODError);
+                    Pending.ChildMaxError = (std::max)(Pending.ChildMaxError, State.ClusterInheritedErrors[ClusterIndex]);
+                }
+
+                if (Pending.RelativeError > GClusterDAGRootCloseRelativeErrorThreshold)
+                {
+                    bCloseCurrentLevelAsRoot = true;
+                    RootCloseReason = "relative_error_cap";
+                    RootCloseTriggerGroup = GroupOrdinal;
+                    RootCloseDesiredParentCount = Pending.DesiredParentCount;
+                    RootClosePredictedParentCount = Pending.PredictedParentCount;
+                    RootCloseRelativeError = Pending.RelativeError;
+                    RootCloseSimplifyError = Pending.SimplifyError;
+                    RootCloseSourceTriangleCount = Pending.SourceTriangleCount;
+                    break;
+                }
+
+                PendingReductions.push_back(std::move(Pending));
+                ++GroupOrdinal;
+            }
+
+            if (bCloseCurrentLevelAsRoot)
+            {
+                if (CurrentClusters.size() > GClusterDAGMaxRootChildRefs)
+                {
+                    CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " root close requested but child budget exceeded" << ", reason=" << RootCloseReason << ", currentClusters=" << CurrentClusters.size() << ", maxRootChildRefs=" << GClusterDAGMaxRootChildRefs << ", triggerGroup=" << RootCloseTriggerGroup << ", sourceTriangles=" << RootCloseSourceTriangleCount << ", desiredParents=" << RootCloseDesiredParentCount << ", predictedParents=" << RootClosePredictedParentCount << ", relativeError=" << FormatFloat(RootCloseRelativeError) << ", simplifyError=" << FormatFloat(RootCloseSimplifyError));
                     return false;
                 }
 
-                FBuilderVertexStreams GroupStreams = std::move(ReducedGroupStreams);
-                std::vector<uint32_t> GroupIndices = std::move(ReducedGroupIndices);
+                CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " closing multi-child root before committing level" << ", reason=" << RootCloseReason << ", closeInputClusters=" << CurrentClusters.size() << ", maxRootChildRefs=" << GClusterDAGMaxRootChildRefs << ", triggerGroup=" << RootCloseTriggerGroup << ", sourceTriangles=" << RootCloseSourceTriangleCount << ", desiredParents=" << RootCloseDesiredParentCount << ", predictedParents=" << RootClosePredictedParentCount << ", relativeError=" << FormatFloat(RootCloseRelativeError) << ", simplifyError=" << FormatFloat(RootCloseSimplifyError));
+                return FinalizeRootDAG(RootCloseReason);
+            }
 
-                const FGroupSphere GroupBoundsSphere = BuildGroupSphere(State.Dag, ChildClusters, false);
-                const FGroupSphere GroupSphere = BuildGroupSphere(State.Dag, ChildClusters, true);
-                float ChildMaxError = 0.0f;
-                for (uint32_t ClusterIndex : ChildClusters)
-                {
-                    ChildMaxError = (std::max)(ChildMaxError, State.Dag.Clusters[ClusterIndex].LODError);
-                    ChildMaxError = (std::max)(ChildMaxError, State.ClusterInheritedErrors[ClusterIndex]);
-                }
+            std::vector<uint32_t> NextClusters;
+            size_t NextTriangleCount = 0;
+            bool bReducedAnyGroup = !PendingReductions.empty();
 
+            for (FPendingClusterGroupReduction& Pending : PendingReductions)
+            {
                 FClusterGroup Group;
-                Group.ChildRefs = MakeClusterRefs(ChildClusters);
-                Group.BoundsCenter = GroupBoundsSphere.Center;
-                Group.BoundsRadius = GroupBoundsSphere.Radius;
-                Group.LodBoundsCenter = GroupSphere.Center;
-                Group.LodBoundsRadius = GroupSphere.Radius;
-                Group.ParentLODError = (std::max)(ChildMaxError, SimplifyError);
+                Group.ChildRefs = MakeClusterRefs(Pending.ChildClusters);
+                Group.BoundsCenter = Pending.GroupBoundsSphere.Center;
+                Group.BoundsRadius = Pending.GroupBoundsSphere.Radius;
+                Group.LodBoundsCenter = Pending.GroupSphere.Center;
+                Group.LodBoundsRadius = Pending.GroupSphere.Radius;
+                Group.ParentLODError = (std::max)(Pending.ChildMaxError, Pending.SimplifyError);
                 Group.MipLevel = Level - 1;
 
                 const uint32_t GroupIndex = static_cast<uint32_t>(State.Dag.Groups.size());
                 State.Dag.Groups.push_back(Group);
 
-                for (uint32_t ClusterIndex : ChildClusters)
+                for (uint32_t ClusterIndex : Pending.ChildClusters)
                 {
                     State.Dag.Clusters[ClusterIndex].GroupIndex = GroupIndex;
                     State.ClusterInheritedErrors[ClusterIndex] = Group.ParentLODError;
                 }
 
-                const uint32_t GroupBaseVertex = AppendVertexStreams(State.Dag, GroupStreams);
+                const uint32_t GroupBaseVertex = AppendVertexStreams(State.Dag, Pending.GroupStreams);
                 std::vector<uint32_t> ParentClusters;
                 if (!BuildMeshletClustersForGeometry(
                     PrimitiveIndex,
                     State,
-                    GroupStreams,
-                    GroupIndices,
+                    Pending.GroupStreams,
+                    Pending.GroupIndices,
                     GroupBaseVertex,
                     Level,
-                    static_cast<int32_t>(GroupOrdinal),
+                    static_cast<int32_t>(Pending.GroupOrdinal),
                     Group.ParentLODError,
-                    GroupSphere.Center,
-                    GroupSphere.Radius,
+                    Pending.GroupSphere.Center,
+                    Pending.GroupSphere.Radius,
                     GClusterDAGInvalidIndex,
                     GroupIndex,
                     0.0f,
                     Params,
                     ParentClusters))
                 {
-                    CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " BuildMeshletClustersForGeometry failed" << ", groupIndex=" << GroupIndex << ", childClusters=" << ChildClusters.size() << ", simplified=" << (bSimplified ? "true" : "false") << ", simplifyError=" << FormatFloat(SimplifyError));
+                    CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " group " << Pending.GroupOrdinal << " BuildMeshletClustersForGeometry failed" << ", groupIndex=" << GroupIndex << ", childClusters=" << Pending.ChildClusters.size() << ", simplifyError=" << FormatFloat(Pending.SimplifyError));
                     return false;
                 }
 
-                const uint32_t ParentBudgetForValidation = MaxAllowedParentCount;
+                const uint32_t ParentBudgetForValidation = Pending.MaxAllowedParentCount;
                 const bool bWithinParentBudget = ParentClusters.size() <= ParentBudgetForValidation;
-                const bool bActualParentReduction = ParentClusters.size() < ChildClusters.size();
+                const bool bActualParentReduction = ParentClusters.size() < Pending.ChildClusters.size();
                 if (ParentClusters.empty() || !bActualParentReduction)
                 {
-                    CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " produced invalid parent reduction" << ", childClusters=" << ChildClusters.size() << ", desiredParents=" << DesiredParentCount << ", maxAllowedParents=" << ParentBudgetForValidation << ", predictedParents=" << PredictedParentCount << ", actualParents=" << ParentClusters.size() << ", outputTriangles=" << (GroupIndices.size() / 3));
+                    CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " group " << Pending.GroupOrdinal << " produced invalid parent reduction" << ", childClusters=" << Pending.ChildClusters.size() << ", desiredParents=" << Pending.DesiredParentCount << ", maxAllowedParents=" << ParentBudgetForValidation << ", predictedParents=" << Pending.PredictedParentCount << ", actualParents=" << ParentClusters.size() << ", outputTriangles=" << (Pending.GroupIndices.size() / 3));
                     return false;
                 }
 
                 if (!bWithinParentBudget)
                 {
-                    CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " accepted over-budget parent reduction" << ", reason=force_fit_floor" << ", childClusters=" << ChildClusters.size() << ", desiredParents=" << DesiredParentCount << ", maxAllowedParents=" << ParentBudgetForValidation << ", predictedParents=" << PredictedParentCount << ", actualParents=" << ParentClusters.size() << ", outputTriangles=" << (GroupIndices.size() / 3));
+                    CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " group " << Pending.GroupOrdinal << " accepted over-budget parent reduction" << ", reason=force_fit_floor" << ", childClusters=" << Pending.ChildClusters.size() << ", desiredParents=" << Pending.DesiredParentCount << ", maxAllowedParents=" << ParentBudgetForValidation << ", predictedParents=" << Pending.PredictedParentCount << ", actualParents=" << ParentClusters.size() << ", outputTriangles=" << (Pending.GroupIndices.size() / 3));
                 }
 
                 State.Dag.Groups[GroupIndex].ParentRefs = MakeClusterRefs(ParentClusters);
                 for (uint32_t ParentClusterIndex : ParentClusters)
                 {
-                    State.Dag.Clusters[ParentClusterIndex].LodBoundsCenter = GroupSphere.Center;
-                    State.Dag.Clusters[ParentClusterIndex].LodBoundsRadius = GroupSphere.Radius;
+                    State.Dag.Clusters[ParentClusterIndex].LodBoundsCenter = Pending.GroupSphere.Center;
+                    State.Dag.Clusters[ParentClusterIndex].LodBoundsRadius = Pending.GroupSphere.Radius;
                     NextTriangleCount += State.Dag.Clusters[ParentClusterIndex].TriangleCount;
                 }
 
                 NextClusters.insert(NextClusters.end(), ParentClusters.begin(), ParentClusters.end());
-                CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "Level " << Level << " group " << GroupOrdinal << " result" << ", childClusters=" << ChildClusters.size() << ", desiredParents=" << DesiredParentCount << ", maxAllowedParents=" << ParentBudgetForValidation << ", predictedParents=" << PredictedParentCount << ", parentClusters=" << ParentClusters.size() << ", parentBudgetExceeded=" << (!bWithinParentBudget ? "true" : "false") << ", outputTriangles=" << (GroupIndices.size() / 3) << ", simplifyError=" << FormatFloat(SimplifyError) << ", relativeError=" << FormatFloat(ComputeRelativeError(SimplifyError, GroupSphere.Radius)) << ", childMaxError=" << FormatFloat(ChildMaxError) << ", parentError=" << FormatFloat(Group.ParentLODError) << ", lodRadius=" << FormatFloat(GroupSphere.Radius));
-                ++GroupOrdinal;
+                CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "Level " << Level << " group " << Pending.GroupOrdinal << " result" << ", childClusters=" << Pending.ChildClusters.size() << ", desiredParents=" << Pending.DesiredParentCount << ", maxAllowedParents=" << ParentBudgetForValidation << ", predictedParents=" << Pending.PredictedParentCount << ", parentClusters=" << ParentClusters.size() << ", parentBudgetExceeded=" << (!bWithinParentBudget ? "true" : "false") << ", outputTriangles=" << (Pending.GroupIndices.size() / 3) << ", simplifyError=" << FormatFloat(Pending.SimplifyError) << ", relativeError=" << FormatFloat(Pending.RelativeError) << ", childMaxError=" << FormatFloat(Pending.ChildMaxError) << ", parentError=" << FormatFloat(Group.ParentLODError) << ", lodRadius=" << FormatFloat(Pending.GroupSphere.Radius));
             }
 
             if (NextClusters.empty())
@@ -2056,78 +2362,76 @@ namespace
             CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "Level " << Level << " complete" << ", outputClusters=" << CurrentClusters.size() << ", outputTriangles=" << CurrentTriangleCount << ", totalDagClusters=" << State.Dag.Clusters.size() << ", totalDagGroups=" << State.Dag.Groups.size());
         }
 
-        if (CurrentClusters.empty())
-        {
-            CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "no root clusters remained after reduction.");
-            return false;
-        }
-
-        if (CurrentClusters.size() != 1)
-        {
-            CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "failed to converge to a single root cluster" << ", remainingClusters=" << CurrentClusters.size() << ", maxLevels=" << Params.MaxLevels);
-            return false;
-        }
-
-        FClusterGroup RootGroup;
-        const FGroupSphere RootBoundsSphere = BuildGroupSphere(State.Dag, CurrentClusters, false);
-        const FGroupSphere RootSphere = BuildGroupSphere(State.Dag, CurrentClusters, true);
-        RootGroup.ChildRefs = MakeClusterRefs(CurrentClusters);
-        RootGroup.BoundsCenter = RootBoundsSphere.Center;
-        RootGroup.BoundsRadius = RootBoundsSphere.Radius;
-        RootGroup.LodBoundsCenter = RootSphere.Center;
-        RootGroup.LodBoundsRadius = RootSphere.Radius;
-        RootGroup.ParentLODError = 1e10f;
-        RootGroup.MipLevel = 0;
-        RootGroup.bRoot = true;
-
-        for (uint32_t ClusterIndex : CurrentClusters)
-        {
-            RootGroup.MipLevel = (std::max)(RootGroup.MipLevel, State.Dag.Clusters[ClusterIndex].MipLevel);
-        }
-
-        const uint32_t RootGroupIndex = static_cast<uint32_t>(State.Dag.Groups.size());
-        State.Dag.Groups.push_back(std::move(RootGroup));
-        for (uint32_t ClusterIndex : CurrentClusters)
-        {
-            State.Dag.Clusters[ClusterIndex].GroupIndex = RootGroupIndex;
-        }
-
-        OutDag = std::move(State.Dag);
-        OutDag.RootGroupIndex = RootGroupIndex;
-
-        if (!ValidateMonotonicErrors(OutDag))
-        {
-            CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "ValidateMonotonicErrors failed; discarding DAG.");
-            OutDag = {};
-            return false;
-        }
-
-        if (!ValidateGroupSphereCoverage(PrimitiveIndex, OutDag))
-        {
-            CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "ValidateGroupSphereCoverage failed; discarding DAG.");
-            OutDag = {};
-            return false;
-        }
-
-        LogLeafLodBoundsDiagnostics(PrimitiveIndex, OutDag);
-
-        EncodeRuntimeClusterHierarchy(OutDag);
-        if (!OutDag.HasRuntimeHierarchy())
-        {
-            CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "EncodeRuntimeClusterHierarchy failed; discarding DAG.");
-            OutDag = {};
-            return false;
-        }
-
-        CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "completed" << ", rootGroupIndex=" << OutDag.RootGroupIndex << ", rootChildren=" << OutDag.Groups[OutDag.RootGroupIndex].ChildRefs.size() << ", clusters=" << OutDag.Clusters.size() << ", groups=" << OutDag.Groups.size() << ", runtimeClusters=" << OutDag.RuntimeHierarchy.Clusters.size() << ", runtimeGroups=" << OutDag.RuntimeHierarchy.Groups.size() << ", sharedVertices=" << OutDag.Positions.size() << ", sharedTriangles=" << (OutDag.TriangleIndices.size() / 3));
-
-        return OutDag.IsValid();
+        return FinalizeRootDAG(CurrentClusters.size() == 1 ? "single_root_converged" : "max_levels_or_convergence_floor");
 #else
         CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "meshoptimizer is unavailable; builder is disabled.");
-        (void)Primitive;
+        (void)InputStreams;
+        (void)InputIndices;
         (void)Params;
         return false;
 #endif
+    }
+
+    FBuilderVertexStreams MakeBuilderStreamsFromPrimitive(const FMesh::FPrimitive& Primitive, uint32_t SectionIndex)
+    {
+        FBuilderVertexStreams Streams;
+        Streams.Positions = Primitive.VertexStreams.Positions;
+        Streams.Normals = Primitive.VertexStreams.Normals;
+        Streams.UVs = Primitive.VertexStreams.UVs;
+        Streams.Tangents = Primitive.VertexStreams.Tangents;
+        Streams.Colors = Primitive.VertexStreams.Colors;
+        EnsureVertexStreamSize(Streams);
+        Streams.SectionIndices.assign(Streams.Positions.size(), SectionIndex);
+        return Streams;
+    }
+
+    bool BuildClusterDAGForPrimitive(size_t PrimitiveIndex, const FMesh::FPrimitive& Primitive, const FClusterDAGBuildParams& Params, FClusterDAG& OutDag)
+    {
+        FBuilderVertexStreams Streams = MakeBuilderStreamsFromPrimitive(Primitive, static_cast<uint32_t>(PrimitiveIndex));
+        return BuildClusterDAGForGeometry(PrimitiveIndex, Streams, Primitive.Indices, Params, OutDag);
+    }
+
+    bool BuildClusterDAGForMesh(const std::vector<FMesh::FPrimitive>& Primitives, const FClusterDAGBuildParams& Params, FClusterDAG& OutDag)
+    {
+        FBuilderVertexStreams CombinedStreams;
+        std::vector<uint32_t> CombinedIndices;
+        uint32_t BaseVertex = 0;
+        uint32_t NonEmptyPrimitiveCount = 0;
+        for (size_t PrimitiveIndex = 0; PrimitiveIndex < Primitives.size(); ++PrimitiveIndex)
+        {
+            const FMesh::FPrimitive& Primitive = Primitives[PrimitiveIndex];
+            if (Primitive.VertexStreams.Positions.empty() || Primitive.Indices.empty())
+            {
+                continue;
+            }
+
+            FBuilderVertexStreams Streams = MakeBuilderStreamsFromPrimitive(Primitive, static_cast<uint32_t>(PrimitiveIndex));
+            const uint32_t VertexCount = static_cast<uint32_t>(Streams.Positions.size());
+            CombinedStreams.Positions.insert(CombinedStreams.Positions.end(), Streams.Positions.begin(), Streams.Positions.end());
+            CombinedStreams.Normals.insert(CombinedStreams.Normals.end(), Streams.Normals.begin(), Streams.Normals.end());
+            CombinedStreams.UVs.insert(CombinedStreams.UVs.end(), Streams.UVs.begin(), Streams.UVs.end());
+            CombinedStreams.Tangents.insert(CombinedStreams.Tangents.end(), Streams.Tangents.begin(), Streams.Tangents.end());
+            CombinedStreams.Colors.insert(CombinedStreams.Colors.end(), Streams.Colors.begin(), Streams.Colors.end());
+            CombinedStreams.SectionIndices.insert(CombinedStreams.SectionIndices.end(), Streams.SectionIndices.begin(), Streams.SectionIndices.end());
+
+            CombinedIndices.reserve(CombinedIndices.size() + Primitive.Indices.size());
+            for (uint32_t Index : Primitive.Indices)
+            {
+                CombinedIndices.push_back(BaseVertex + Index);
+            }
+
+            BaseVertex += VertexCount;
+            ++NonEmptyPrimitiveCount;
+        }
+
+        CLUSTER_DAG_LOG_INFO(0, "whole mesh input" << ", primitives=" << Primitives.size() << ", nonEmptyPrimitives=" << NonEmptyPrimitiveCount << ", vertices=" << CombinedStreams.Positions.size() << ", indices=" << CombinedIndices.size() << ", triangles=" << (CombinedIndices.size() / 3));
+        if (NonEmptyPrimitiveCount == 0)
+        {
+            OutDag = {};
+            return false;
+        }
+
+        return BuildClusterDAGForGeometry(0, CombinedStreams, CombinedIndices, Params, OutDag);
     }
 }
 
@@ -2466,6 +2770,7 @@ namespace
         OutHeader.UVCount = 0;
         OutHeader.TangentCount = 0;
         OutHeader.ColorCount = 0;
+        OutHeader.VertexSectionIndexCount = static_cast<uint32_t>(Dag.VertexSectionIndices.size());
         OutHeader.TriangleIndexCount = static_cast<uint32_t>(Dag.TriangleIndices.size());
         OutHeader.ExternalEdgeCount = static_cast<uint32_t>(Dag.ExternalEdges.size());
         OutHeader.ClusterVertexCount = static_cast<uint32_t>(Dag.ClusterVertices.size());
@@ -2499,6 +2804,7 @@ namespace
             || !WritePodVector(Stream, EmptyFloat2s)
             || !WritePodVector(Stream, EmptyFloat4s)
             || !WritePodVector(Stream, EmptyFloat4s)
+            || !WritePodVector(Stream, Dag.VertexSectionIndices)
             || !WritePodVector(Stream, Dag.TriangleIndices)
             || !WritePodVector(Stream, Dag.ExternalEdges)
             || !WritePodVector(Stream, Dag.ClusterVertices)
@@ -2547,6 +2853,7 @@ namespace
             || !ReadPodVector(Stream, Dag.UVs, DagHeader.UVCount)
             || !ReadPodVector(Stream, Dag.Tangents, DagHeader.TangentCount)
             || !ReadPodVector(Stream, Dag.Colors, DagHeader.ColorCount)
+            || !ReadPodVector(Stream, Dag.VertexSectionIndices, DagHeader.VertexSectionIndexCount)
             || !ReadPodVector(Stream, Dag.TriangleIndices, DagHeader.TriangleIndexCount)
             || !ReadPodVector(Stream, Dag.ExternalEdges, DagHeader.ExternalEdgeCount)
             || !ReadPodVector(Stream, Dag.ClusterVertices, DagHeader.ClusterVertexCount)
@@ -2611,6 +2918,7 @@ namespace
             && Dag.UVs.empty()
             && Dag.Tangents.empty()
             && Dag.Colors.empty()
+            && Dag.VertexSectionIndices.empty()
             && Dag.TriangleIndices.empty()
             && Dag.ExternalEdges.empty()
             && Dag.ClusterVertices.empty()
@@ -2724,6 +3032,7 @@ namespace
             && PodVectorEqual(Expected.TriangleIndices, Actual.TriangleIndices)
             && PodVectorEqual(Expected.ExternalEdges, Actual.ExternalEdges)
             && PodVectorEqual(Expected.ClusterVertices, Actual.ClusterVertices)
+            && PodVectorEqual(Expected.VertexSectionIndices, Actual.VertexSectionIndices)
             && RuntimeHierarchyEqual(Expected.RuntimeHierarchy, Actual.RuntimeHierarchy)
             && PackedVertexDataEqual(Expected.PackedVertexData, Actual.PackedVertexData);
     }
@@ -3389,29 +3698,26 @@ bool SaveClusterDAGCacheFile(
 void FMesh::BuildClusterDAGs(const FClusterDAGBuildParams& Params)
 {
     ClusterDAGs.clear();
-    ClusterDAGs.reserve(Primitives.size());
+    ClusterDAGs.reserve(1);
 
-    for (size_t PrimitiveIndex = 0; PrimitiveIndex < Primitives.size(); ++PrimitiveIndex)
+    FClusterDAG Dag;
+    if (!BuildClusterDAGForMesh(Primitives, Params, Dag))
     {
-        FClusterDAG Dag;
-        if (!BuildClusterDAGForPrimitive(PrimitiveIndex, Primitives[PrimitiveIndex], Params, Dag) && !Primitives[PrimitiveIndex].Indices.empty())
-        {
-            std::ostringstream Stream;
-            Stream << "Cluster DAG build skipped for primitive[" << PrimitiveIndex << "]; keeping legacy meshlet path only.";
-            LogWarning(Stream.str());
-        }
-
-        ClusterDAGs.push_back(std::move(Dag));
+        LogWarning("Cluster DAG whole-mesh build skipped; keeping legacy meshlet path only.");
     }
+
+    ClusterDAGs.push_back(std::move(Dag));
 }
 
 const FClusterDAG* FMesh::GetClusterDAG(size_t Index) const
 {
-    if (Index >= ClusterDAGs.size())
+    if (ClusterDAGs.empty())
     {
         return nullptr;
     }
-    return &ClusterDAGs[Index];
+
+    (void)Index;
+    return &ClusterDAGs.front();
 }
 
 bool FMesh::HasClusterDAGs() const

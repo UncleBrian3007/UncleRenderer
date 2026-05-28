@@ -18,7 +18,7 @@ using Microsoft::WRL::ComPtr;
 
 namespace
 {
-    constexpr uint32_t kGpuCullingBindlessDwordCount   = 32;
+    constexpr uint32_t kGpuCullingBindlessDwordCount   = 48;
     constexpr uint32_t kMeshletRunBindlessDwordCount   = 8;
     constexpr uint32_t kVisibilityListBindlessDwordCount = 8;
 
@@ -1147,6 +1147,7 @@ void FGpuDrivenCulling::DispatchGpuCulling(
     const DirectX::XMMATRIX ViewProjection = Camera.GetViewMatrix() * Camera.GetProjectionMatrix();
     DirectX::XMFLOAT4X4 ViewProjectionMatrix = {};
     DirectX::XMStoreFloat4x4(&ViewProjectionMatrix, ViewProjection);
+    std::memcpy(Constants.ViewProjection, &ViewProjectionMatrix, sizeof(DirectX::XMFLOAT4X4));
 
     Constants.DebugPrintEnabled                 = Config.bGpuDebugPrintEnabled ? 1u : 0u;
     const DirectX::XMFLOAT3 CameraPosition = Camera.GetPosition();
@@ -1329,6 +1330,11 @@ FRenderer::FGpuDrivenCullingProvider FRenderer::GetGpuDrivenCullingProvider(bool
     Provider.bClusterDagFastShaderEnabled = IsClusterDagFastShaderEnabled();
     Provider.bClusterDagGpuDebugEnabled = IsClusterDagDebugEnabled() && GpuDebugState.IsPrintEnabled();
     Provider.ViewportHeightPixels = Viewport.Height;
+    Provider.bHZBOcclusionEnabled = GpuDrivenCullingState.IsHZBOcclusionEnabled();
+    Provider.HZBBindlessIndex = GpuDrivenCullingState.GetHZBCullingBindlessIndex();
+    Provider.HZBWidth = GpuDrivenCullingState.GetHZBCullingWidth();
+    Provider.HZBHeight = GpuDrivenCullingState.GetHZBCullingHeight();
+    Provider.HZBMipCount = GpuDrivenCullingState.GetHZBCullingMipCount();
     Provider.GpuDebugPrintStatsUavBindlessIndex = Provider.bClusterDagGpuDebugEnabled ? GpuDebugState.GetPrintStatsUavBindlessIndex() : UINT32_MAX;
     Provider.GpuDebugLineBufferUavBindlessIndex = Provider.bClusterDagGpuDebugEnabled ? GpuDebugState.GetLineBufferUavBindlessIndex() : UINT32_MAX;
     return Provider;

@@ -2,6 +2,7 @@
 #define CLUSTER_DAG_TRAVERSAL_COMMON_HLSL
 
 #include "../CullingConstants.hlsl"
+#include "../HzbOcclusionCommon.hlsl"
 #include "ClusterDagCommon.hlsl"
 
 #ifndef USE_CLUSTER_DAG_DEBUG
@@ -403,6 +404,15 @@ void RecordFrustumCulled(uint debugPrintStatsIndex)
     }
 }
 
+void RecordOcclusionCulled(uint debugPrintStatsIndex)
+{
+    if (DebugPrintEnabled != 0u && debugPrintStatsIndex != 0xffffffffu)
+    {
+        RWByteAddressBuffer DebugPrintStats = ResourceDescriptorHeap[debugPrintStatsIndex];
+        DebugPrintStats.InterlockedAdd(4u * kDebugPrintStatsOccludedIndex, 1u);
+    }
+}
+
 void RecordStackOverflow(uint debugPrintStatsIndex)
 {
     if (DebugPrintEnabled != 0u && debugPrintStatsIndex != 0xffffffffu)
@@ -462,6 +472,7 @@ void RecordQueueOverflow(uint debugPrintStatsIndex)
 }
 #else
 void RecordFrustumCulled(uint debugPrintStatsIndex) {}
+void RecordOcclusionCulled(uint debugPrintStatsIndex) {}
 void RecordStackOverflow(uint debugPrintStatsIndex) {}
 void RecordExpandedOverflow(uint debugPrintStatsIndex) {}
 void RecordIterationOverflow(uint debugPrintStatsIndex) {}

@@ -663,6 +663,22 @@ bool SceneModelResourceLoader::LoadModelsFromJson(
             }
 
             const size_t SectionCount = PrimitiveSections->size();
+            const FClusterDAG* WholeMeshClusterDAG = Mesh.GetClusterDAG(0);
+            bool bWholeMeshClusterDagRuntimeAllowed =
+                WholeMeshClusterDAG
+                && WholeMeshClusterDAG->HasRuntimeHierarchy()
+                && LoadedNode.SkinIndex < 0
+                && !WholeMeshClusterDAG->RuntimeHierarchy.PackedIndices.empty();
+            for (const FGltfPrimitiveSection& Section : *PrimitiveSections)
+            {
+                if (Section.Material.bAlphaBlend)
+                {
+                    bWholeMeshClusterDagRuntimeAllowed = false;
+                    break;
+                }
+            }
+            std::vector<size_t> SectionModelIndices;
+            SectionModelIndices.reserve(SectionCount);
 
             for (size_t SectionIndex = 0; SectionIndex < SectionCount; ++SectionIndex)
             {
@@ -795,19 +811,18 @@ bool SceneModelResourceLoader::LoadModelsFromJson(
                     ModelResource.BaseIndexCount = ModelResource.DrawIndexCount;
                 }
 
-                if (const FClusterDAG* ClusterDAG = Mesh.GetClusterDAG(SectionIndex))
+                if (WholeMeshClusterDAG && bWholeMeshClusterDagRuntimeAllowed && SectionIndex == 0)
                 {
+                    const FClusterDAG* ClusterDAG = WholeMeshClusterDAG;
                     ModelResource.ClusterDagMeshIndex = static_cast<uint32_t>(MeshIndex);
-                    ModelResource.ClusterDagPrimitiveIndex = static_cast<uint32_t>(SectionIndex);
+                    ModelResource.ClusterDagPrimitiveIndex = 0u;
                     ModelResource.ClusterDagSourceFilePath = MeshPath.wstring();
                     std::filesystem::path ClusterDagCachePath = MeshPath;
                     ClusterDagCachePath.replace_extension(L".vmesh");
                     ModelResource.ClusterDagCacheFilePath = ClusterDagCachePath.wstring();
                     ModelResource.bUseClusterDagRuntime =
                         ClusterDAG->HasRuntimeHierarchy()
-                        && LoadedNode.SkinIndex < 0
-                        && !Section.Material.bAlphaBlend
-                        && !Section.Material.bAlphaMask
+                        && bWholeMeshClusterDagRuntimeAllowed
                         && !ClusterDAG->RuntimeHierarchy.PackedIndices.empty();
                     ModelResource.ClusterDagRuntimeHierarchy = ClusterDAG->RuntimeHierarchy;
 
@@ -948,7 +963,45 @@ bool SceneModelResourceLoader::LoadModelsFromJson(
                 ModelResource.PipelineKey = RendererUtils::BuildPipelineKey(ModelResource);
                 UpdateSceneBounds(ModelResource.Center, ModelResource.Radius, SceneMin, SceneMax);
 
+                SectionModelIndices.push_back(OutModels.size());
                 OutModels.push_back(std::move(ModelResource));
+            }
+
+            if (!SectionModelIndices.empty())
+            {
+                FSceneModelResource& OwnerModel = OutModels[SectionModelIndices.front()];
+                if (OwnerModel.bUseClusterDagRuntime)
+                {
+                    std::vector<uint32_t> SectionModelIndexU32;
+                    SectionModelIndexU32.reserve(SectionModelIndices.size());
+                    for (size_t ModelIndex : SectionModelIndices)
+                    {
+                        SectionModelIndexU32.push_back(static_cast<uint32_t>(ModelIndex));
+                    }
+
+                    OwnerModel.ClusterDagSectionModelIndices = SectionModelIndexU32;
+                    OwnerModel.bCoveredByClusterDagRuntime = true;
+                    for (size_t SectionOrdinal = 1; SectionOrdinal < SectionModelIndices.size(); ++SectionOrdinal)
+                    {
+                        FSceneModelResource& SectionModel = OutModels[SectionModelIndices[SectionOrdinal]];
+                        SectionModel.bCoveredByClusterDagRuntime = true;
+                        SectionModel.ClusterDagMeshIndex = OwnerModel.ClusterDagMeshIndex;
+                        SectionModel.ClusterDagPrimitiveIndex = 0u;
+                        SectionModel.ClusterDagSourceFilePath = OwnerModel.ClusterDagSourceFilePath;
+                        SectionModel.ClusterDagCacheFilePath = OwnerModel.ClusterDagCacheFilePath;
+                        SectionModel.ClusterDagVertexPackingMode = OwnerModel.ClusterDagVertexPackingMode;
+                        SectionModel.ClusterDagPackedVertexData = OwnerModel.ClusterDagPackedVertexData;
+                        SectionModel.ClusterDagPackedPositionOffset = OwnerModel.ClusterDagPackedPositionOffset;
+                        SectionModel.ClusterDagPackedPositionScale = OwnerModel.ClusterDagPackedPositionScale;
+                        SectionModel.ClusterDagPackedConstantUV = OwnerModel.ClusterDagPackedConstantUV;
+                        SectionModel.ClusterDagPackedConstantColor = OwnerModel.ClusterDagPackedConstantColor;
+                        SectionModel.ClusterDagVertexBuffers = OwnerModel.ClusterDagVertexBuffers;
+                        SectionModel.ClusterDagIndexBuffer = OwnerModel.ClusterDagIndexBuffer;
+                        SectionModel.ClusterDagColorBuffer = OwnerModel.ClusterDagColorBuffer;
+                        SectionModel.ClusterDagDebugColorBuffer = OwnerModel.ClusterDagDebugColorBuffer;
+                        SectionModel.ClusterDagIndexCount = OwnerModel.ClusterDagIndexCount;
+                    }
+                }
             }
         }
 

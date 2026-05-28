@@ -13,11 +13,12 @@ class FDX12CommandContext;
 class FCamera;
 struct FDeferredPassContext;
 
-static constexpr uint32_t kCullingConstantDwords = 28;
+static constexpr uint32_t kCullingConstantDwords = 44;
 
 struct FGpuCullingConstants
 {
     float    FrustumPlanes[6][4];
+    float    ViewProjection[4][4];
     uint32_t DebugPrintEnabled;
     float    CameraPosition[3];
 };
@@ -194,6 +195,11 @@ public:
 
     void RefreshCullingPersistentValidation(uint32_t FramesInFlight);
     void ConfigureHZBOcclusion(bool bEnabled, uint32_t HZBBindlessIndex, uint32_t Width, uint32_t Height, uint32_t MipCount);
+    bool IsHZBOcclusionEnabled() const { return bHZBOcclusionEnabled; }
+    uint32_t GetHZBCullingBindlessIndex() const { return HZBCullingBindlessIndex; }
+    uint32_t GetHZBCullingWidth() const { return HZBCullingWidth; }
+    uint32_t GetHZBCullingHeight() const { return HZBCullingHeight; }
+    uint32_t GetHZBCullingMipCount() const { return HZBCullingMipCount; }
     bool CreateCullingConstantBuffers(FDX12Device* Device, uint32_t FramesInFlight);
     bool CreatePerFrameCullingResources(FDX12Device* Device, uint32_t FramesInFlight, uint64_t CommandBufferSize, uint32_t IndirectCommandCount, uint32_t RangeCount);
     void ResetCullingStatesToCommon(uint32_t FramesInFlight);

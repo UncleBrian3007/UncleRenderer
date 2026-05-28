@@ -28,6 +28,11 @@ cbuffer ClusterDagPersistentBindlessConstants : register(b1)
     uint StreamingRequestCapacity;
     uint StreamingResourceId;
     uint PageSlotBytes;
+    uint HZBTextureIndex;
+    uint HZBEnabled;
+    uint HZBMipCount;
+    uint HZBWidth;
+    uint HZBHeight;
     float ClusterDAGTargetErrorPixels;
     float ViewportHeightPixels;
     uint ClusterDAGForceMipEnabled;
@@ -153,6 +158,7 @@ void PersistentClusterDagCullCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     StructuredBuffer<ClusterDagPageTableEntry> PageTable = ResourceDescriptorHeap[streamingEnabled ? PageTableBufferIndex : GroupBufferIndex];
     ByteAddressBuffer PageData = ResourceDescriptorHeap[pagedFetchEnabled ? PageDataBufferIndex : CommandTemplatesIndex];
     RWStructuredBuffer<ClusterDagStreamingRequest> StreamingRequests = ResourceDescriptorHeap[streamingEnabled ? StreamingRequestBufferIndex : VisitedGroupEpochBufferIndex];
+    Texture2D<float2> HZBTexture = ResourceDescriptorHeap[HZBTextureIndex];
 
     const uint currentEpoch = TraversalEpoch;
     const uint maxLoopCount = max((GroupCount + ClusterCount) * 8u, 1024u);
@@ -228,6 +234,11 @@ void PersistentClusterDagCullCS(uint3 dispatchThreadId : SV_DispatchThreadID)
                                 DebugDrawClusterBoundsCross(DebugLineBufferIndex, lodCenter, lodRadius, 0xff3030ffu);
                             }
 #endif
+                            continue;
+                        }
+                        if (HZBEnabled != 0u && IsSphereOccludedByHZB(lodCenter, lodRadius, CullingViewProjection, HZBTexture, HZBWidth, HZBHeight, HZBMipCount))
+                        {
+                            RecordOcclusionCulled(DebugPrintStatsIndex);
                             continue;
                         }
 

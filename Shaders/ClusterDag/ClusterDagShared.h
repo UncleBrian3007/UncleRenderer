@@ -8,6 +8,9 @@
 #define kClusterDagGpuPagePayloadMagic                              0x47504443u
 #define kClusterDagGpuPagePayloadVersion                            4u
 
+// Shared traversal limits
+#define kClusterDagMaxChildRefsPerGroup                             256u
+
 // Payload header field byte offsets
 #define kClusterDagGpuPageHeaderMagicOffset                         0u
 #define kClusterDagGpuPageHeaderVersionOffset                       4u

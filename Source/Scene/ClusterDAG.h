@@ -6,8 +6,10 @@
 #include <vector>
 
 #include "../Math/MathTypes.h"
+#include "../../Shaders/ClusterDag/ClusterDagShared.h"
 
 constexpr uint32_t GClusterDAGInvalidIndex = 0xffffffffu;
+constexpr uint32_t GClusterDAGMaxRootChildRefs = kClusterDagMaxChildRefsPerGroup;
 
 struct FClusterBounds
 {
@@ -87,7 +89,7 @@ struct FRuntimeClusterDrawData
 {
     uint32_t IndexStart = 0;
     uint32_t IndexCount = 0;
-    uint32_t Reserved0 = 0;
+    uint32_t SectionIndex = 0;
     uint32_t Reserved1 = 0;
 };
 
@@ -187,6 +189,7 @@ struct FClusterDAG
     std::vector<FFloat2> UVs;
     std::vector<FFloat4> Tangents;
     std::vector<FFloat4> Colors;
+    std::vector<uint32_t> VertexSectionIndices;
     std::vector<uint8_t> TriangleIndices;
     std::vector<uint8_t> ExternalEdges;
     std::vector<uint32_t> ClusterVertices;
@@ -202,7 +205,7 @@ struct FClusterDAG
         }
 
         const FClusterGroup& RootGroup = Groups[RootGroupIndex];
-        if (!RootGroup.bRoot || RootGroup.ChildRefs.size() != 1)
+        if (!RootGroup.bRoot || RootGroup.ChildRefs.empty() || RootGroup.ChildRefs.size() > GClusterDAGMaxRootChildRefs)
         {
             return false;
         }

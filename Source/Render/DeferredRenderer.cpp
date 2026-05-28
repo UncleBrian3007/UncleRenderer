@@ -1191,7 +1191,7 @@ void FDeferredRenderer::EnsureClusterDagSceneConstantsPrepared(const FCamera& Ca
     for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
     {
         const FSceneModelResource& Model = SceneModels[ModelIndex];
-        if (!ClusterDagRuntime->UsesRuntimePath(Model))
+        if (!ClusterDagRuntime->UsesRuntimePath(Model) && !Model.bCoveredByClusterDagRuntime)
         {
             continue;
         }

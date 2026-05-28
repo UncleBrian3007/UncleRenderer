@@ -93,6 +93,11 @@ public:
         bool bClusterDagFastShaderEnabled = false;
         bool bClusterDagGpuDebugEnabled = false;
         float ViewportHeightPixels = 0.0f;
+        bool bHZBOcclusionEnabled = false;
+        uint32_t HZBBindlessIndex = UINT32_MAX;
+        uint32_t HZBWidth = 0;
+        uint32_t HZBHeight = 0;
+        uint32_t HZBMipCount = 0;
         uint32_t GpuDebugPrintStatsUavBindlessIndex = UINT32_MAX;
         uint32_t GpuDebugLineBufferUavBindlessIndex = UINT32_MAX;
 

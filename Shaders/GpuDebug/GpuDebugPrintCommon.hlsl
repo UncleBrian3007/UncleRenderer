@@ -6,6 +6,7 @@ static const uint kDebugPrintEntryStride = 16;
 static const uint kDebugPrintMaxEntries = 4096;
 static const uint kDebugPrintDefaultAdvance = 8;
 static const uint kDebugPrintStatsCount = 32;
+static const uint kDebugPrintStatsOccludedIndex = 1;
 static const uint kDebugPrintStatsLateVisibleIndex = 4;
 static const uint kDebugPrintStatsClusterDagVisibleIndex = 5;
 static const uint kDebugPrintStatsClusterDagHwRasterIndex = 7;

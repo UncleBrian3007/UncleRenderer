@@ -830,7 +830,7 @@ uint32_t RendererUtils::BuildPipelineKey(const FSceneModelResource& Model)
     const uint32_t UseAnisotropyModel = (Model.ShadingModelId == 3u) ? 1u : 0u;
     const uint32_t UseSkinning = (IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) && Model.BoneMatrixCount > 0) ? 1u : 0u;
     const uint32_t UseDoubleSided = Model.bDoubleSided ? 1u : 0u;
-    return (UseNormal) | (UseMr << 1) | (UseBase << 2) | (UseEmissive << 3) | (UseAlphaMask << 4)
+    return (UseNormal) | (UseMr << 1) | (UseBase << 2) | (UseEmissive << 3) | (UseAlphaMask << GPipelineKeyAlphaMaskBit)
         | (UseSheenModel << 5) | (UseClearcoatModel << 6) | (UseAnisotropyModel << 7)
         | (UseSkinning << GPipelineKeySkinningBit) | (UseDoubleSided << GPipelineKeyDoubleSidedBit);
 }

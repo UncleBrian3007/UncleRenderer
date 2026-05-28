@@ -158,6 +158,8 @@ namespace RendererUtils
 {
     constexpr uint32_t GPipelineKeySkinningBit = RENDER_PIPELINE_KEY_SKINNING_BIT;
     constexpr uint32_t GPipelineKeyDoubleSidedBit = RENDER_PIPELINE_KEY_DOUBLE_SIDED_BIT;
+    constexpr uint32_t GPipelineKeyAlphaMaskBit = RENDER_PIPELINE_KEY_ALPHA_MASK_BIT;
+    constexpr uint32_t GPipelineKeyAlphaMaskMask = RENDER_PIPELINE_KEY_ALPHA_MASK_MASK;
     constexpr uint32_t GPipelineKeyDoubleSidedMask = RENDER_PIPELINE_KEY_DOUBLE_SIDED_MASK;
     constexpr uint32_t GMaterialBindlessIndexCount = 10;
     using FMaterialBindlessIndices = std::array<uint32_t, GMaterialBindlessIndexCount>;

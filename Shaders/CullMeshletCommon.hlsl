@@ -1,6 +1,9 @@
 #ifndef CULL_MESHLET_COMMON_HLSL
 #define CULL_MESHLET_COMMON_HLSL
 
+#include "GpuDebug/GpuDebugPrintCommon.hlsl"
+#include "HzbOcclusionCommon.hlsl"
+
 bool IsConeVisible_SphereExpanded(
     float3 center,
     float radius,
@@ -26,93 +29,6 @@ bool IsConeVisible_SphereExpanded(
         dot(view, -axis) >= axisCutoff.w * dist + radius;
 
     return !coneCulled;
-}
-
-float4 ProjectToClip(float3 position)
-{
-    return mul(float4(position, 1.0f), ViewProjection);
-}
-
-bool IsOccluded(float3 center, float radius, Texture2D<float2> HZBTexture)
-{
-    float3 boundsMin = center - radius;
-    float3 boundsMax = center + radius;
-
-    float3 corners[8] =
-    {
-        float3(boundsMin.x, boundsMin.y, boundsMin.z),
-        float3(boundsMax.x, boundsMin.y, boundsMin.z),
-        float3(boundsMin.x, boundsMax.y, boundsMin.z),
-        float3(boundsMax.x, boundsMax.y, boundsMin.z),
-        float3(boundsMin.x, boundsMin.y, boundsMax.z),
-        float3(boundsMax.x, boundsMin.y, boundsMax.z),
-        float3(boundsMin.x, boundsMax.y, boundsMax.z),
-        float3(boundsMax.x, boundsMax.y, boundsMax.z)
-    };
-
-    float2 minUv = float2(1.0f, 1.0f);
-    float2 maxUv = float2(0.0f, 0.0f);
-    float maxDepth = 0.0f;
-
-    bool anyBehind = false;
-
-    [unroll]
-    for (uint i = 0; i < 8; ++i)
-    {
-        float4 clip = ProjectToClip(corners[i]);
-        if (clip.w <= 0.0f)
-        {
-            anyBehind = true;
-            break;
-        }
-
-        float3 ndc = clip.xyz / clip.w;
-        float2 uv;
-        uv.x = ndc.x * 0.5f + 0.5f;
-        uv.y = 1 - (ndc.y * 0.5f + 0.5f);
-
-        minUv = min(minUv, uv);
-        maxUv = max(maxUv, uv);
-        maxDepth = max(maxDepth, ndc.z);
-    }
-
-    if (anyBehind)
-    {
-        return false;
-    }
-
-    if (maxUv.x < 0.0f || maxUv.y < 0.0f || minUv.x > 1.0f || minUv.y > 1.0f)
-    {
-        return false;
-    }
-
-    minUv = saturate(minUv);
-    maxUv = saturate(maxUv);
-
-    float2 extent = maxUv - minUv;
-    float2 pixelSize = extent * float2(HZBWidth, HZBHeight);
-    float maxDim = max(pixelSize.x, pixelSize.y);
-    uint mipLevel = 0;
-    if (maxDim > 1.0f)
-    {
-        mipLevel = (uint)clamp(floor(log2(maxDim)), 0.0f, (float)(HZBMipCount - 1));
-    }
-
-    uint mipWidth = max(1u, HZBWidth >> mipLevel);
-    uint mipHeight = max(1u, HZBHeight >> mipLevel);
-
-    uint2 minCoord = uint2(minUv * float2(mipWidth, mipHeight));
-    uint2 maxCoord = uint2(maxUv * float2(mipWidth, mipHeight));
-    minCoord = min(minCoord, uint2(mipWidth - 1, mipHeight - 1));
-    maxCoord = min(maxCoord, uint2(mipWidth - 1, mipHeight - 1));
-
-    float hzbDepth = 1.0f;
-    hzbDepth = min(hzbDepth, HZBTexture.Load(int3(minCoord, mipLevel)).x);
-    hzbDepth = min(hzbDepth, HZBTexture.Load(int3(maxCoord.x, minCoord.y, mipLevel)).x);
-    hzbDepth = min(hzbDepth, HZBTexture.Load(int3(minCoord.x, maxCoord.y, mipLevel)).x);
-    hzbDepth = min(hzbDepth, HZBTexture.Load(int3(maxCoord, mipLevel)).x);
-
-    return maxDepth < hzbDepth;
 }
 
 void EvaluateMeshletVisibility(
@@ -146,7 +62,7 @@ void EvaluateMeshletVisibility(
     occluded = false;
     if (visible && HZBEnabled != 0)
     {
-        occluded = IsOccluded(center, radius, HZBTexture);
+        occluded = IsSphereOccludedByHZB(center, radius, ViewProjection, HZBTexture, HZBWidth, HZBHeight, HZBMipCount);
         visible = !occluded;
     }
 }
@@ -173,7 +89,7 @@ void RecordMeshletDebug(
     }
     else if (occluded)
     {
-        DebugPrintStats.InterlockedAdd(4, 1);
+        DebugPrintStats.InterlockedAdd(4 * kDebugPrintStatsOccludedIndex, 1);
     }
 }
 

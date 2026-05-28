@@ -103,6 +103,7 @@ struct FBuilderVertexStreams
     std::vector<FFloat2> UVs;
     std::vector<FFloat4> Tangents;
     std::vector<FFloat4> Colors;
+    std::vector<uint32_t> SectionIndices;
 };
 
 inline void EnsureVertexStreamSize(FBuilderVertexStreams& Streams)
@@ -116,23 +117,29 @@ inline void EnsureVertexStreamSize(FBuilderVertexStreams& Streams)
         Streams.Tangents.resize(VertexCount, FFloat4(1.0f, 0.0f, 0.0f, 1.0f));
     if (Streams.Colors.size() != VertexCount)
         Streams.Colors.resize(VertexCount, FFloat4(1.0f, 1.0f, 1.0f, 1.0f));
+    if (Streams.SectionIndices.size() != VertexCount)
+        Streams.SectionIndices.resize(VertexCount, 0u);
 }
 
 struct FScratchCorner
 {
     uint32_t SourceVertexIndex = GClusterDAGInvalidIndex;
     uint32_t PositionNodeIndex = GClusterDAGInvalidIndex;
+    uint32_t SectionIndex = 0;
 };
 
 struct FScratchTriangle
 {
     std::array<uint32_t, 3> CornerIndices{ GClusterDAGInvalidIndex, GClusterDAGInvalidIndex, GClusterDAGInvalidIndex };
     std::array<uint32_t, 3> PositionNodeIndices{ GClusterDAGInvalidIndex, GClusterDAGInvalidIndex, GClusterDAGInvalidIndex };
+    uint32_t SectionIndex = 0;
 };
 
 struct FScratchPositionNode
 {
     FFloat3 Position{ 0.0f, 0.0f, 0.0f };
+    uint32_t FirstSectionIndex = GClusterDAGInvalidIndex;
+    bool bMixedSection = false;
     bool bLocked = false;
 };
 
@@ -151,6 +158,8 @@ struct FMergedClusterScratch
     std::vector<FScratchPositionNode> PositionNodes;
     std::vector<FScratchEdge> Edges;
     uint32_t LockedPositionCount = 0;
+    uint32_t SectionBoundaryEdgeCount = 0;
+    uint32_t SectionSeamPositionCount = 0;
     uint32_t ExternalEdgeCount = 0;
     uint32_t NonManifoldEdgeCount = 0;
     uint32_t ActiveTriangleCount = 0;

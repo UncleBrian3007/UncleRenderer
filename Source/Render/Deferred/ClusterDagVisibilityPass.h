@@ -52,7 +52,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> DepthExportRootSignature;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> ResolveRootSignature;
     Microsoft::WRL::ComPtr<ID3D12CommandSignature> CommandSignature;
-    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2> VisibilityPipelines;
+    std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 4> VisibilityPipelines;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> PrepareSoftwareRasterArgsPipeline;
     std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, 2> SoftwareRasterPipelines;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> DepthExportPipeline;
