@@ -174,7 +174,7 @@ void FObjectId::AddPass(FDeferredPassContext& Context) const
             }
 
             const FSceneModelResource& Model = Owner.SceneModels[ModelIndex];
-            if (Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+            if (Model.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
             {
                 continue;
             }

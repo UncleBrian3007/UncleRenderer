@@ -15,6 +15,7 @@
 #include "RayTracingRuntime.h"
 #include "RendererUtils.h"
 #include "../Core/RendererConfig.h"
+#include "../World/World.h"
 
 struct FSceneModelResource;
 class FEnvironmentMap;
@@ -170,8 +171,27 @@ public:
     float GetSceneRadius() const { return SceneRadius; }
 
     // Scene Models
-    virtual const std::vector<FSceneModelResource>* GetSceneModels() const { return &SceneModels; }
-    std::vector<FSceneModelResource>& GetSceneModelsMutable() { return SceneModels; }
+    virtual const std::vector<FSceneModelResource>* GetSceneModels() const
+    {
+        if (const std::vector<FSceneModelResource>* Models = World.GetSceneModels())
+        {
+            return Models;
+        }
+        return &SceneModels;
+    }
+
+    std::vector<FSceneModelResource>& GetSceneModelsMutable()
+    {
+        if (std::vector<FSceneModelResource>* Models = World.GetSceneModelsMutable())
+        {
+            return *Models;
+        }
+        return SceneModels;
+    }
+
+    // World (owns the logical StaticMesh / SkeletalMesh objects)
+    FWorld& GetWorld() { return World; }
+    const FWorld& GetWorld() const { return World; }
     virtual bool GetSceneModelStats(size_t& OutTotal, size_t& OutCulled) const;
 
     // Object ID
@@ -370,6 +390,7 @@ protected:
 
     // Scene Models
     std::vector<FSceneModelResource> SceneModels;
+    FWorld World;
     std::vector<bool> SceneModelVisibility;
     std::vector<bool> SceneModelSkinningVisibility;
 

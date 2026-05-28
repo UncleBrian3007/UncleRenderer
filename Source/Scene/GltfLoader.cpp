@@ -38,17 +38,19 @@ namespace
         {
             const std::vector<FMesh::FPrimitive>& Primitives = Mesh.GetPrimitives();
             const std::vector<FClusterDAG>& ClusterDAGs = Mesh.GetClusterDAGs();
-            if (Primitives.size() != ClusterDAGs.size())
+
+            // Whole-mesh build produces exactly one shared ClusterDAG per mesh covering all primitives.
+            const bool bHasGeometry = std::any_of(
+                Primitives.begin(), Primitives.end(),
+                [](const FMesh::FPrimitive& Primitive) { return !Primitive.Indices.empty(); });
+            if (!bHasGeometry)
             {
-                return false;
+                continue;
             }
 
-            for (size_t PrimitiveIndex = 0; PrimitiveIndex < Primitives.size(); ++PrimitiveIndex)
+            if (ClusterDAGs.empty() || !ClusterDAGs.front().IsValid())
             {
-                if (!Primitives[PrimitiveIndex].Indices.empty() && !ClusterDAGs[PrimitiveIndex].IsValid())
-                {
-                    return false;
-                }
+                return false;
             }
         }
 
@@ -839,7 +841,8 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
             {
                 for (size_t MeshIndex = 0; MeshIndex < LoadedMeshes.size(); ++MeshIndex)
                 {
-                    if (CachedClusterDAGs[MeshIndex].size() != LoadedMeshes[MeshIndex].GetPrimitives().size())
+                    // Whole-mesh build stores exactly one shared ClusterDAG per mesh (not one per primitive).
+                    if (CachedClusterDAGs[MeshIndex].size() != 1u)
                     {
                         bLoadedClusterDAGCache = false;
                         break;

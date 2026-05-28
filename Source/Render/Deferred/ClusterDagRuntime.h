@@ -125,6 +125,49 @@ private:
 
     bool PrepareRuntimeData(FDeferredRenderer& Owner, FPreparedData& OutData);
     bool ValidatePreparedRuntimeData(const FPreparedData& Data) const;
+    uint32_t ResolveDrawDataModelIndex(
+        const std::vector<FSceneModelResource>& SceneModels,
+        const FSceneModelResource& Model,
+        uint32_t SortedIndex,
+        const FRuntimeClusterDrawData& RuntimeDrawData) const;
+    uint32_t GetOrAddRangeForModel(
+        const std::vector<FSceneModelResource>& SceneModels,
+        uint32_t ModelIndex,
+        FPreparedData& OutData);
+    void AppendModelDrawDatas(
+        const std::vector<FSceneModelResource>& SceneModels,
+        const FSceneModelResource& Model,
+        uint32_t SortedIndex,
+        const FRuntimeClusterHierarchy& RuntimeHierarchy,
+        D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferBase,
+        uint32_t SceneConstantBufferStride,
+        FPreparedData& OutData,
+        std::vector<uint32_t>& OutLocalDrawDataModelIndices,
+        std::vector<uint32_t>& OutLocalDrawDataRangeIndices);
+    void AppendModelGroupsAndStreamingPages(
+        const FSceneModelResource& Model,
+        uint32_t SortedIndex,
+        const FRuntimeClusterHierarchy& RuntimeHierarchy,
+        uint32_t BaseGroupIndex,
+        uint32_t BaseClusterIndex,
+        uint32_t BaseChildRefIndex,
+        uint32_t BaseDrawDataIndex,
+        const DirectX::XMMATRIX& World,
+        float ModelScale,
+        const std::vector<uint32_t>& LocalDrawDataModelIndices,
+        const std::vector<uint32_t>& LocalDrawDataRangeIndices,
+        FPreparedData& OutData);
+    void AppendModelChildRefs(
+        const FRuntimeClusterHierarchy& RuntimeHierarchy,
+        uint32_t BaseClusterIndex,
+        FPreparedData& OutData) const;
+    void AppendModelClusters(
+        const FRuntimeClusterHierarchy& RuntimeHierarchy,
+        uint32_t BaseGroupIndex,
+        uint32_t BaseDrawDataIndex,
+        const DirectX::XMMATRIX& World,
+        float ModelScale,
+        FPreparedData& OutData) const;
     bool CreateRuntimeResources(FDeferredRenderer& Owner, FDX12Device* Device, const FPreparedData& Data);
     bool UploadRuntimeResources(FDeferredRenderer& Owner, FDX12Device* Device, const FPreparedData& Data);
     void PopulateCullingConstants(FDeferredRenderer& Owner, const FCamera& Camera) const;

@@ -21,6 +21,9 @@
     <Filter Include="Source Files\Scene">
       <UniqueIdentifier>{7E36DB02-4582-4F47-B31D-6016C0647E83}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Source Files\World">
+      <UniqueIdentifier>{A1F4C2E8-7B3D-4E6A-9C2F-1D5E8B0A4F71}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Header Files\Core">
       <UniqueIdentifier>{4E2D4E49-F7A9-43E2-A94C-109AC55B146F}</UniqueIdentifier>
     </Filter>
@@ -35,6 +38,9 @@
     </Filter>
     <Filter Include="Header Files\Math">
       <UniqueIdentifier>{E9A80031-0BCB-4C13-903E-0736CF42DF0D}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\World">
+      <UniqueIdentifier>{B2E5D3F9-8C4E-4F7B-AD30-2E6F9C1B5A82}</UniqueIdentifier>
     </Filter>
     <Filter Include="Source Files\ThirdParty">
       <UniqueIdentifier>{b364e1e7-c9ba-4e77-b0cf-f0e46d7fe6e9}</UniqueIdentifier>
@@ -196,6 +202,15 @@
     </ClCompile>
     <ClCompile Include="Source\Render\SceneModelResourceLoader.cpp">
       <Filter>Source Files\Render</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\World\MeshMaterial.cpp">
+      <Filter>Source Files\World</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\World\StaticMesh.cpp">
+      <Filter>Source Files\World</Filter>
+    </ClCompile>
+    <ClCompile Include="Source\World\SkeletalMesh.cpp">
+      <Filter>Source Files\World</Filter>
     </ClCompile>
     <ClCompile Include="Source\Render\EnvironmentMap.cpp">
       <Filter>Source Files\Render</Filter>
@@ -465,6 +480,21 @@
     </ClInclude>
     <ClInclude Include="Source\Render\SceneModelResource.h">
       <Filter>Header Files\Render</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\World\Object.h">
+      <Filter>Header Files\World</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\World\MeshMaterial.h">
+      <Filter>Header Files\World</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\World\StaticMesh.h">
+      <Filter>Header Files\World</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\World\SkeletalMesh.h">
+      <Filter>Header Files\World</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\World\World.h">
+      <Filter>Header Files\World</Filter>
     </ClInclude>
     <ClInclude Include="Source\Render\SceneModelResourceLoader.h">
       <Filter>Header Files\Render</Filter>

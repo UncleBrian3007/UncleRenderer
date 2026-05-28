@@ -566,7 +566,7 @@ bool FDeferredRenderer::InitializeSceneResources(FDX12Device* Device, DXGI_FORMA
 bool FDeferredRenderer::InitializeSceneModelResources(FDX12Device* Device, const FRendererConfig& Config)
 {
     const std::wstring SceneFilePath = Config.SceneFile.empty() ? L"Assets/Scenes/Scene.json" : Config.SceneFile;
-    if (!SceneModelResourceLoader::LoadModelsFromJson(Device, SceneFilePath, SceneModels, SceneCenter, SceneRadius, &GltfScenes))
+    if (!SceneModelResourceLoader::LoadModelsFromJson(Device, SceneFilePath, SceneModels, SceneCenter, SceneRadius, &GltfScenes, &World))
     {
         LogError("scene JSON could not be loaded.");
         return false;
@@ -956,100 +956,7 @@ bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, std::vector<FSc
 
     for (size_t i = 0; i < Models.size(); ++i)
     {
-        FSceneModelResource& Model = Models[i];
-
-        if (!Model.BaseColorTexturePath.empty())
-        {
-            FTextureLoadRequest BaseColorRequest;
-            BaseColorRequest.Path = Model.BaseColorTexturePath;
-            BaseColorRequest.bUseSolidColor = false;
-            BaseColorRequest.bUseSRGB = true;
-            BaseColorRequest.OutTexture = &Model.BaseColor.Resource;
-            Requests.push_back(BaseColorRequest);
-        }
-
-        if (!Model.MetallicRoughnessTexturePath.empty())
-        {
-            FTextureLoadRequest MetallicRoughnessRequest;
-            MetallicRoughnessRequest.Path = Model.MetallicRoughnessTexturePath;
-            MetallicRoughnessRequest.bUseSolidColor = false;
-            MetallicRoughnessRequest.OutTexture = &Model.MetallicRoughness.Resource;
-            Requests.push_back(MetallicRoughnessRequest);
-        }
-
-        if (!Model.NormalTexturePath.empty())
-        {
-            FTextureLoadRequest NormalRequest;
-            NormalRequest.Path = Model.NormalTexturePath;
-            NormalRequest.bUseSolidColor = false;
-            NormalRequest.OutTexture = &Model.Normal.Resource;
-            Requests.push_back(NormalRequest);
-        }
-
-        if (!Model.EmissiveTexturePath.empty())
-        {
-            FTextureLoadRequest EmissiveRequest;
-            EmissiveRequest.Path = Model.EmissiveTexturePath;
-            EmissiveRequest.bUseSolidColor = false;
-            EmissiveRequest.bUseSRGB = true;
-            EmissiveRequest.OutTexture = &Model.Emissive.Resource;
-            Requests.push_back(EmissiveRequest);
-        }
-
-        if (!Model.SheenColorTexturePath.empty())
-        {
-            FTextureLoadRequest SheenColorRequest;
-            SheenColorRequest.Path = Model.SheenColorTexturePath;
-            SheenColorRequest.bUseSolidColor = false;
-            SheenColorRequest.bUseSRGB = true;
-            SheenColorRequest.OutTexture = &Model.SheenColor.Resource;
-            Requests.push_back(SheenColorRequest);
-        }
-
-        if (!Model.SheenRoughnessTexturePath.empty())
-        {
-            FTextureLoadRequest SheenRoughnessRequest;
-            SheenRoughnessRequest.Path = Model.SheenRoughnessTexturePath;
-            SheenRoughnessRequest.bUseSolidColor = false;
-            SheenRoughnessRequest.OutTexture = &Model.SheenRoughness.Resource;
-            Requests.push_back(SheenRoughnessRequest);
-        }
-
-        if (!Model.ClearcoatTexturePath.empty())
-        {
-            FTextureLoadRequest ClearcoatRequest;
-            ClearcoatRequest.Path = Model.ClearcoatTexturePath;
-            ClearcoatRequest.bUseSolidColor = false;
-            ClearcoatRequest.OutTexture = &Model.Clearcoat.Resource;
-            Requests.push_back(ClearcoatRequest);
-        }
-
-        if (!Model.ClearcoatRoughnessTexturePath.empty())
-        {
-            FTextureLoadRequest ClearcoatRoughnessRequest;
-            ClearcoatRoughnessRequest.Path = Model.ClearcoatRoughnessTexturePath;
-            ClearcoatRoughnessRequest.bUseSolidColor = false;
-            ClearcoatRoughnessRequest.OutTexture = &Model.ClearcoatRoughness.Resource;
-            Requests.push_back(ClearcoatRoughnessRequest);
-        }
-
-        if (!Model.ClearcoatNormalTexturePath.empty())
-        {
-            FTextureLoadRequest ClearcoatNormalRequest;
-            ClearcoatNormalRequest.Path = Model.ClearcoatNormalTexturePath;
-            ClearcoatNormalRequest.bUseSolidColor = false;
-            ClearcoatNormalRequest.OutTexture = &Model.ClearcoatNormal.Resource;
-            Requests.push_back(ClearcoatNormalRequest);
-        }
-
-        if (!Model.AnisotropyTexturePath.empty())
-        {
-            FTextureLoadRequest AnisotropyRequest;
-            AnisotropyRequest.Path = Model.AnisotropyTexturePath;
-            AnisotropyRequest.bUseSolidColor = false;
-            AnisotropyRequest.OutTexture = &Model.Anisotropy.Resource;
-            Requests.push_back(AnisotropyRequest);
-        }
+        Models[i].Material.AppendTextureLoadRequests(Requests);
     }
 
     LogInfo("Loading " + std::to_string(Requests.size()) + " textures in parallel for " + std::to_string(Models.size()) + " models");
@@ -1061,23 +968,7 @@ bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, std::vector<FSc
 
     for (FSceneModelResource& Model : Models)
     {
-        const auto RegisterSrv = [&](FBindlessTexture& Tex)
-        {
-            if (!Tex.Get()) { return; }
-            const D3D12_RESOURCE_DESC Desc = Tex->GetDesc();
-            Tex.SrvBindlessIndex = Device->CreateBindlessSrv(Tex.Get(),
-                CD3DX12_SHADER_RESOURCE_VIEW_DESC::Tex2D(Desc.Format, Desc.MipLevels));
-        };
-        RegisterSrv(Model.BaseColor);
-        RegisterSrv(Model.MetallicRoughness);
-        RegisterSrv(Model.Normal);
-        RegisterSrv(Model.Emissive);
-        RegisterSrv(Model.SheenColor);
-        RegisterSrv(Model.SheenRoughness);
-        RegisterSrv(Model.Clearcoat);
-        RegisterSrv(Model.ClearcoatRoughness);
-        RegisterSrv(Model.ClearcoatNormal);
-        RegisterSrv(Model.Anisotropy);
+        Model.Material.CreateTextureSrvs(Device);
     }
 
     return true;

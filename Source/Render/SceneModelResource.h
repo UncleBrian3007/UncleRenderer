@@ -13,15 +13,10 @@
 #include "../Math/MathTypes.h"
 #include "../Scene/Mesh.h"
 #include "../Scene/ClusterDAG.h"
+#include "../World/MeshMaterial.h"
 
 constexpr uint32_t kMeshVertexStreamCount = 7;
 constexpr uint32_t kClusterDagVertexStreamCount = 4;
-
-struct FTextureTransform
-{
-    DirectX::XMFLOAT4 OffsetScale{ 0.0f, 0.0f, 1.0f, 1.0f };
-    DirectX::XMFLOAT2 Rotation{ 1.0f, 0.0f };
-};
 
 struct FMeshGeometryBuffers
 {
@@ -59,52 +54,7 @@ struct FSceneModelResource
     bool bHasPreviousWorldMatrix = false;
     DirectX::XMFLOAT3 Center{ 0.0f, 0.0f, 0.0f };
     float Radius = 1.0f;
-    DirectX::XMFLOAT3 BaseColorFactor{ 1.0f, 1.0f, 1.0f };
-    float BaseColorAlpha = 1.0f;
-    float MetallicFactor = 1.0f;
-    float RoughnessFactor = 1.0f;
-    DirectX::XMFLOAT3 EmissiveFactor{ 0.0f, 0.0f, 0.0f };
-    DirectX::XMFLOAT3 SheenColorFactor{ 0.0f, 0.0f, 0.0f };
-    float SheenRoughnessFactor = 0.0f;
-    float ClearcoatFactor = 0.0f;
-    float ClearcoatRoughnessFactor = 0.0f;
-    float AnisotropyStrength = 0.0f;
-    float AnisotropyRotation = 0.0f;
-    float AlphaCutoff = 0.5f;
-    uint32_t AlphaMode = 0;
-    bool bDoubleSided = false;
-    uint32_t ShadingModelId = 0;
-    std::wstring BaseColorTexturePath;
-    std::wstring MetallicRoughnessTexturePath;
-    std::wstring NormalTexturePath;
-    std::wstring EmissiveTexturePath;
-    std::wstring SheenColorTexturePath;
-    std::wstring SheenRoughnessTexturePath;
-    std::wstring ClearcoatTexturePath;
-    std::wstring ClearcoatRoughnessTexturePath;
-    std::wstring ClearcoatNormalTexturePath;
-    std::wstring AnisotropyTexturePath;
-    bool bHasNormalMap = true;
-    FBindlessTexture BaseColor;
-    FBindlessTexture MetallicRoughness;
-    FBindlessTexture Normal;
-    FBindlessTexture Emissive;
-    FBindlessTexture SheenColor;
-    FBindlessTexture SheenRoughness;
-    FBindlessTexture Clearcoat;
-    FBindlessTexture ClearcoatRoughness;
-    FBindlessTexture ClearcoatNormal;
-    FBindlessTexture Anisotropy;
-    FTextureTransform BaseColorTransform;
-    FTextureTransform MetallicRoughnessTransform;
-    FTextureTransform NormalTransform;
-    FTextureTransform EmissiveTransform;
-    FTextureTransform SheenColorTransform;
-    FTextureTransform SheenRoughnessTransform;
-    FTextureTransform ClearcoatTransform;
-    FTextureTransform ClearcoatRoughnessTransform;
-    FTextureTransform ClearcoatNormalTransform;
-    FTextureTransform AnisotropyTransform;
+    FMeshMaterial Material;
     std::string Name;
     DirectX::XMFLOAT3 BoundsMin{ 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT3 BoundsMax{ 0.0f, 0.0f, 0.0f };
@@ -160,8 +110,24 @@ struct FSceneModelResource
             && Geometry.IndexBuffer.HasSrv()
             && Geometry.IndexCount >= 3u
             && DrawIndexCount >= 3u
-            && AlphaMode == 0u;
+            && Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Opaque);
     }
+
+	bool IsClusterDagRuntimeAlphaModeAllowed() const
+	{
+		return Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Opaque)
+			|| Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask);
+	}
+
+	bool IsRuntimeDagModel() const
+	{
+		return bUseClusterDagRuntime
+			&& BoneMatrixBuffer.SrvBindlessIndex == UINT32_MAX
+			&& IsClusterDagRuntimeAlphaModeAllowed()
+			&& ClusterDagRuntimeHierarchy.IsValid()
+			&& !ClusterDagRuntimeHierarchy.Clusters.empty()
+			&& !ClusterDagRuntimeHierarchy.DrawDatas.empty();
+	};
 };
 
 inline bool ComputeSceneModelStats(

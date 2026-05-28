@@ -116,13 +116,6 @@ struct FSceneConstants
 static_assert(sizeof(FSceneConstants) == 1280, "FSceneConstants must be 1280 bytes for 256-byte CBV alignment.");
 static_assert(sizeof(FSceneConstants) % 256 == 0, "FSceneConstants must be 256-byte aligned for shared CBV+SRV use.");
 
-enum class EAlphaMode : uint32_t
-{
-    Opaque = 0,
-    Mask = 1,
-    Blend = 2
-};
-
 struct FIndirectDrawCommand
 {
     D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = 0;

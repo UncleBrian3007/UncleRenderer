@@ -15,6 +15,7 @@
 #include "../Render/Renderer.h"
 #include "../Render/DeferredRenderer.h"
 #include "../Render/ForwardRenderer.h"
+#include "../World/SkeletalMesh.h"
 #include "../Render/RenderGraph.h"
 #include "../Render/RendererUtils.h"
 #include "../Scene/Camera.h"
@@ -2654,6 +2655,53 @@ void FApplication::RenderUI()
         if (bLightingChanged)
         {
             UpdateRendererLighting();
+        }
+    }
+
+    if (ActiveRenderer && ImGui::CollapsingHeader("World Objects"))
+    {
+        const FWorld& SceneWorld = ActiveRenderer->GetWorld();
+        const std::vector<std::unique_ptr<IObject>>& Objects = SceneWorld.GetObjects();
+        ImGui::Text("Objects: %zu", Objects.size());
+        ImGui::Separator();
+
+        for (size_t ObjectIndex = 0; ObjectIndex < Objects.size(); ++ObjectIndex)
+        {
+            const IObject* Object = Objects[ObjectIndex].get();
+            if (!Object)
+            {
+                continue;
+            }
+
+            const bool bSkeletal = Object->GetType() == EObjectType::SkeletalMesh;
+            const char* TypeLabel = bSkeletal ? "Skeletal" : "Static";
+            const std::vector<uint32_t>& Sections = Object->GetSectionModelIndices();
+
+            const std::string Label = std::string(Object->GetName().empty() ? "(unnamed)" : Object->GetName())
+                + "  [" + TypeLabel + ", " + std::to_string(Sections.size()) + " sec]##obj" + std::to_string(ObjectIndex);
+
+            if (ImGui::TreeNode(Label.c_str()))
+            {
+                ImGui::Text("ObjectId: %u", Object->GetObjectId());
+                ImGui::Text("glTF scene/node/mesh: %d / %d / %d",
+                    Object->GetGltfSceneIndex(), Object->GetGltfNodeIndex(), Object->GetGltfMeshIndex());
+                if (bSkeletal)
+                {
+                    ImGui::Text("Skin: %d", static_cast<const FSkeletalMesh*>(Object)->GetGltfSkinIndex());
+                }
+
+                const DirectX::XMFLOAT4X4& M = Object->GetWorldMatrix();
+                ImGui::Text("Position: %.2f, %.2f, %.2f", M._41, M._42, M._43);
+
+                std::string SectionList;
+                for (size_t s = 0; s < Sections.size(); ++s)
+                {
+                    SectionList += std::to_string(Sections[s]);
+                    if (s + 1 < Sections.size()) { SectionList += ", "; }
+                }
+                ImGui::TextWrapped("Sections: %s", SectionList.c_str());
+                ImGui::TreePop();
+            }
         }
     }
 

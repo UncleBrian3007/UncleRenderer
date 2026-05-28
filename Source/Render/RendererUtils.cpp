@@ -580,9 +580,9 @@ void RendererUtils::UpdateSceneConstants(const FUpdateSceneConstantsParams& Para
     const XMMATRIX ViewInverse = XMMatrixInverse(nullptr, View);
     const XMMATRIX WorldMatrix = XMLoadFloat4x4(&Model.WorldMatrix);
 
-    const bool bHasEmissiveTexture = !Model.EmissiveTexturePath.empty();
-    const XMFLOAT3 BaseColorFactor = Model.BaseColorFactor;
-    const XMFLOAT3 EmissiveFactor = Model.EmissiveFactor;
+    const bool bHasEmissiveTexture = !Model.Material.EmissiveTexturePath.empty();
+    const XMFLOAT3 BaseColorFactor = Model.Material.BaseColorFactor;
+    const XMFLOAT3 EmissiveFactor = Model.Material.EmissiveFactor;
 
     FSceneConstants Constants = {};
     XMStoreFloat4x4(&Constants.World, WorldMatrix);
@@ -607,18 +607,18 @@ void RendererUtils::UpdateSceneConstants(const FUpdateSceneConstantsParams& Para
     Constants.ShadowStrength = Params.ShadowStrength;
     Constants.ShadowBias = Params.ShadowBias;
     Constants.ShadowMapSize = DirectX::XMFLOAT2(Params.ShadowMapWidth, Params.ShadowMapHeight);
-    Constants.MetallicFactor = Model.MetallicFactor;
-    Constants.RoughnessFactor = Model.RoughnessFactor;
-    Constants.BaseColorAlpha = Model.BaseColorAlpha;
-    Constants.AlphaCutoff = Model.AlphaCutoff;
-    Constants.AlphaMode = Model.AlphaMode;
-    Constants.SheenColorFactor = Model.SheenColorFactor;
-    Constants.SheenRoughnessFactor = Model.SheenRoughnessFactor;
-    Constants.ShadingModelId = Model.ShadingModelId;
-    Constants.ClearcoatFactor = Model.ClearcoatFactor;
-    Constants.ClearcoatRoughnessFactor = Model.ClearcoatRoughnessFactor;
-    Constants.AnisotropyStrength = Model.AnisotropyStrength;
-    Constants.AnisotropyRotation = Model.AnisotropyRotation;
+    Constants.MetallicFactor = Model.Material.MetallicFactor;
+    Constants.RoughnessFactor = Model.Material.RoughnessFactor;
+    Constants.BaseColorAlpha = Model.Material.BaseColorAlpha;
+    Constants.AlphaCutoff = Model.Material.AlphaCutoff;
+    Constants.AlphaMode = Model.Material.AlphaMode;
+    Constants.SheenColorFactor = Model.Material.SheenColorFactor;
+    Constants.SheenRoughnessFactor = Model.Material.SheenRoughnessFactor;
+    Constants.ShadingModelId = Model.Material.ShadingModelId;
+    Constants.ClearcoatFactor = Model.Material.ClearcoatFactor;
+    Constants.ClearcoatRoughnessFactor = Model.Material.ClearcoatRoughnessFactor;
+    Constants.AnisotropyStrength = Model.Material.AnisotropyStrength;
+    Constants.AnisotropyRotation = Model.Material.AnisotropyRotation;
     Constants.EnvMapMipCount = Params.EnvMapMipCount;
     const bool bUseClusterDagVertexBuffers =
         Params.bUseClusterDagIndexBuffer
@@ -656,44 +656,44 @@ void RendererUtils::UpdateSceneConstants(const FUpdateSceneConstantsParams& Para
         ? Model.ClusterDagVertexPackingMode
         : 0u;
     Constants.MaterialTextureIndices0 = DirectX::XMUINT4(
-        Model.BaseColor.SrvBindlessIndex,
-        Model.MetallicRoughness.SrvBindlessIndex,
-        Model.Normal.SrvBindlessIndex,
-        Model.Emissive.SrvBindlessIndex);
+        Model.Material.BaseColor.SrvBindlessIndex,
+        Model.Material.MetallicRoughness.SrvBindlessIndex,
+        Model.Material.Normal.SrvBindlessIndex,
+        Model.Material.Emissive.SrvBindlessIndex);
     Constants.MaterialTextureIndices1 = DirectX::XMUINT4(
-        Model.SheenColor.SrvBindlessIndex,
-        Model.SheenRoughness.SrvBindlessIndex,
-        Model.Clearcoat.SrvBindlessIndex,
-        Model.ClearcoatRoughness.SrvBindlessIndex);
+        Model.Material.SheenColor.SrvBindlessIndex,
+        Model.Material.SheenRoughness.SrvBindlessIndex,
+        Model.Material.Clearcoat.SrvBindlessIndex,
+        Model.Material.ClearcoatRoughness.SrvBindlessIndex);
     Constants.MaterialTextureIndices2 = DirectX::XMUINT4(
-        Model.ClearcoatNormal.SrvBindlessIndex,
-        Model.Anisotropy.SrvBindlessIndex,
+        Model.Material.ClearcoatNormal.SrvBindlessIndex,
+        Model.Material.Anisotropy.SrvBindlessIndex,
         UINT32_MAX,
         UINT32_MAX);
     Constants.ClusterDagMaterialPipelineKey = Model.PipelineKey;
     Constants.GtaoIntensity = Params.bGtaoEnabled ? Params.GtaoIntensity : 0.0f;
 
     Constants.DeferredLightingVisualizationMode = Params.DeferredLightingVisualizationMode;
-    Constants.BaseColorTransformOffsetScale = Model.BaseColorTransform.OffsetScale;
-    Constants.BaseColorTransformRotation = Model.BaseColorTransform.Rotation;
-    Constants.MetallicRoughnessTransformOffsetScale = Model.MetallicRoughnessTransform.OffsetScale;
-    Constants.MetallicRoughnessTransformRotation = Model.MetallicRoughnessTransform.Rotation;
-    Constants.NormalTransformOffsetScale = Model.NormalTransform.OffsetScale;
-    Constants.NormalTransformRotation = Model.NormalTransform.Rotation;
-    Constants.EmissiveTransformOffsetScale = Model.EmissiveTransform.OffsetScale;
-    Constants.EmissiveTransformRotation = Model.EmissiveTransform.Rotation;
-    Constants.SheenColorTransformOffsetScale = Model.SheenColorTransform.OffsetScale;
-    Constants.SheenColorTransformRotation = Model.SheenColorTransform.Rotation;
-    Constants.SheenRoughnessTransformOffsetScale = Model.SheenRoughnessTransform.OffsetScale;
-    Constants.SheenRoughnessTransformRotation = Model.SheenRoughnessTransform.Rotation;
-    Constants.ClearcoatTransformOffsetScale = Model.ClearcoatTransform.OffsetScale;
-    Constants.ClearcoatTransformRotation = Model.ClearcoatTransform.Rotation;
-    Constants.ClearcoatRoughnessTransformOffsetScale = Model.ClearcoatRoughnessTransform.OffsetScale;
-    Constants.ClearcoatRoughnessTransformRotation = Model.ClearcoatRoughnessTransform.Rotation;
-    Constants.ClearcoatNormalTransformOffsetScale = Model.ClearcoatNormalTransform.OffsetScale;
-    Constants.ClearcoatNormalTransformRotation = Model.ClearcoatNormalTransform.Rotation;
-    Constants.AnisotropyTransformOffsetScale = Model.AnisotropyTransform.OffsetScale;
-    Constants.AnisotropyTransformRotation = Model.AnisotropyTransform.Rotation;
+    Constants.BaseColorTransformOffsetScale = Model.Material.BaseColorTransform.OffsetScale;
+    Constants.BaseColorTransformRotation = Model.Material.BaseColorTransform.Rotation;
+    Constants.MetallicRoughnessTransformOffsetScale = Model.Material.MetallicRoughnessTransform.OffsetScale;
+    Constants.MetallicRoughnessTransformRotation = Model.Material.MetallicRoughnessTransform.Rotation;
+    Constants.NormalTransformOffsetScale = Model.Material.NormalTransform.OffsetScale;
+    Constants.NormalTransformRotation = Model.Material.NormalTransform.Rotation;
+    Constants.EmissiveTransformOffsetScale = Model.Material.EmissiveTransform.OffsetScale;
+    Constants.EmissiveTransformRotation = Model.Material.EmissiveTransform.Rotation;
+    Constants.SheenColorTransformOffsetScale = Model.Material.SheenColorTransform.OffsetScale;
+    Constants.SheenColorTransformRotation = Model.Material.SheenColorTransform.Rotation;
+    Constants.SheenRoughnessTransformOffsetScale = Model.Material.SheenRoughnessTransform.OffsetScale;
+    Constants.SheenRoughnessTransformRotation = Model.Material.SheenRoughnessTransform.Rotation;
+    Constants.ClearcoatTransformOffsetScale = Model.Material.ClearcoatTransform.OffsetScale;
+    Constants.ClearcoatTransformRotation = Model.Material.ClearcoatTransform.Rotation;
+    Constants.ClearcoatRoughnessTransformOffsetScale = Model.Material.ClearcoatRoughnessTransform.OffsetScale;
+    Constants.ClearcoatRoughnessTransformRotation = Model.Material.ClearcoatRoughnessTransform.Rotation;
+    Constants.ClearcoatNormalTransformOffsetScale = Model.Material.ClearcoatNormalTransform.OffsetScale;
+    Constants.ClearcoatNormalTransformRotation = Model.Material.ClearcoatNormalTransform.Rotation;
+    Constants.AnisotropyTransformOffsetScale = Model.Material.AnisotropyTransform.OffsetScale;
+    Constants.AnisotropyTransformRotation = Model.Material.AnisotropyTransform.Rotation;
 
     memcpy(Params.ConstantBufferMapped + Params.ConstantBufferOffset, &Constants, sizeof(Constants));
 }
@@ -702,16 +702,16 @@ RendererUtils::FMaterialBindlessIndices RendererUtils::BuildMaterialBindlessIndi
 {
     return
     {
-        Model.BaseColor.SrvBindlessIndex,
-        Model.MetallicRoughness.SrvBindlessIndex,
-        Model.Normal.SrvBindlessIndex,
-        Model.Emissive.SrvBindlessIndex,
-        Model.SheenColor.SrvBindlessIndex,
-        Model.SheenRoughness.SrvBindlessIndex,
-        Model.Clearcoat.SrvBindlessIndex,
-        Model.ClearcoatRoughness.SrvBindlessIndex,
-        Model.ClearcoatNormal.SrvBindlessIndex,
-        Model.Anisotropy.SrvBindlessIndex
+        Model.Material.BaseColor.SrvBindlessIndex,
+        Model.Material.MetallicRoughness.SrvBindlessIndex,
+        Model.Material.Normal.SrvBindlessIndex,
+        Model.Material.Emissive.SrvBindlessIndex,
+        Model.Material.SheenColor.SrvBindlessIndex,
+        Model.Material.SheenRoughness.SrvBindlessIndex,
+        Model.Material.Clearcoat.SrvBindlessIndex,
+        Model.Material.ClearcoatRoughness.SrvBindlessIndex,
+        Model.Material.ClearcoatNormal.SrvBindlessIndex,
+        Model.Material.Anisotropy.SrvBindlessIndex
     };
 }
 
@@ -820,16 +820,16 @@ bool RendererUtils::IsAabbInCameraFrustum(
 
 uint32_t RendererUtils::BuildPipelineKey(const FSceneModelResource& Model)
 {
-    const uint32_t UseNormal = Model.bHasNormalMap ? 1u : 0u;
-    const uint32_t UseMr = !Model.MetallicRoughnessTexturePath.empty() ? 1u : 0u;
-    const uint32_t UseBase = !Model.BaseColorTexturePath.empty() ? 1u : 0u;
-    const uint32_t UseEmissive = !Model.EmissiveTexturePath.empty() ? 1u : 0u;
-    const uint32_t UseAlphaMask = (Model.AlphaMode == 1u) ? 1u : 0u;
-    const uint32_t UseSheenModel = (Model.ShadingModelId == 1u) ? 1u : 0u;
-    const uint32_t UseClearcoatModel = (Model.ShadingModelId == 2u) ? 1u : 0u;
-    const uint32_t UseAnisotropyModel = (Model.ShadingModelId == 3u) ? 1u : 0u;
+    const uint32_t UseNormal = Model.Material.bHasNormalMap ? 1u : 0u;
+    const uint32_t UseMr = !Model.Material.MetallicRoughnessTexturePath.empty() ? 1u : 0u;
+    const uint32_t UseBase = !Model.Material.BaseColorTexturePath.empty() ? 1u : 0u;
+    const uint32_t UseEmissive = !Model.Material.EmissiveTexturePath.empty() ? 1u : 0u;
+    const uint32_t UseAlphaMask = (Model.Material.AlphaMode == 1u) ? 1u : 0u;
+    const uint32_t UseSheenModel = (Model.Material.ShadingModelId == 1u) ? 1u : 0u;
+    const uint32_t UseClearcoatModel = (Model.Material.ShadingModelId == 2u) ? 1u : 0u;
+    const uint32_t UseAnisotropyModel = (Model.Material.ShadingModelId == 3u) ? 1u : 0u;
     const uint32_t UseSkinning = (IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) && Model.BoneMatrixCount > 0) ? 1u : 0u;
-    const uint32_t UseDoubleSided = Model.bDoubleSided ? 1u : 0u;
+    const uint32_t UseDoubleSided = Model.Material.bDoubleSided ? 1u : 0u;
     return (UseNormal) | (UseMr << 1) | (UseBase << 2) | (UseEmissive << 3) | (UseAlphaMask << GPipelineKeyAlphaMaskBit)
         | (UseSheenModel << 5) | (UseClearcoatModel << 6) | (UseAnisotropyModel << 7)
         | (UseSkinning << GPipelineKeySkinningBit) | (UseDoubleSided << GPipelineKeyDoubleSidedBit);

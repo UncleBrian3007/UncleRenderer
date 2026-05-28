@@ -765,23 +765,23 @@ void FRayTracingRuntime::BuildTlas(FRenderer& Owner, FDX12CommandContext& CmdCon
         InstData.UVBufferIndex = Model.Geometry.VertexBuffers[2].SrvBindlessIndex;
         InstData.IndexBufferIndex = Model.Geometry.IndexBuffer.SrvBindlessIndex;
         InstData.TangentBufferIndex = Model.Geometry.VertexBuffers[3].SrvBindlessIndex;
-        InstData.BaseColorTextureIndex = Model.BaseColor.SrvBindlessIndex;
-        InstData.NormalTextureIndex = Model.Normal.SrvBindlessIndex;
-        InstData.MetallicRoughnessTextureIndex = Model.MetallicRoughness.SrvBindlessIndex;
-        InstData.Flags = Model.bDoubleSided ? 1u : 0u;
-        InstData.EmissiveTextureIndex = Model.Emissive.SrvBindlessIndex;
+        InstData.BaseColorTextureIndex = Model.Material.BaseColor.SrvBindlessIndex;
+        InstData.NormalTextureIndex = Model.Material.Normal.SrvBindlessIndex;
+        InstData.MetallicRoughnessTextureIndex = Model.Material.MetallicRoughness.SrvBindlessIndex;
+        InstData.Flags = Model.Material.bDoubleSided ? 1u : 0u;
+        InstData.EmissiveTextureIndex = Model.Material.Emissive.SrvBindlessIndex;
         InstData.Padding0 = 0u;
         InstData.Padding1 = 0u;
-        InstData.EmissiveFactor = DirectX::XMFLOAT4(Model.EmissiveFactor.x, Model.EmissiveFactor.y, Model.EmissiveFactor.z, 0.0f);
+        InstData.EmissiveFactor = DirectX::XMFLOAT4(Model.Material.EmissiveFactor.x, Model.Material.EmissiveFactor.y, Model.Material.EmissiveFactor.z, 0.0f);
         InstData.BaseColorFactorAndAlpha = DirectX::XMFLOAT4(
-            Model.BaseColorFactor.x,
-            Model.BaseColorFactor.y,
-            Model.BaseColorFactor.z,
-            Model.BaseColorAlpha);
+            Model.Material.BaseColorFactor.x,
+            Model.Material.BaseColorFactor.y,
+            Model.Material.BaseColorFactor.z,
+            Model.Material.BaseColorAlpha);
         InstData.MetallicRoughnessAlphaCutoff = DirectX::XMFLOAT4(
-            Model.MetallicFactor,
-            Model.RoughnessFactor,
-            Model.AlphaCutoff,
+            Model.Material.MetallicFactor,
+            Model.Material.RoughnessFactor,
+            Model.Material.AlphaCutoff,
             0.0f);
         DirectX::XMMATRIX WorldMatrix = DirectX::XMLoadFloat4x4(&Model.WorldMatrix);
         DirectX::XMMATRIX WorldInverseTranspose = DirectX::XMMatrixTranspose(DirectX::XMMatrixInverse(nullptr, WorldMatrix));

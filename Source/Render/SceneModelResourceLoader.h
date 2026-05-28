@@ -7,6 +7,7 @@
 #include "../Scene/GltfAnimation.h"
 
 class FDX12Device;
+class FWorld;
 
 namespace SceneModelResourceLoader
 {
@@ -16,5 +17,6 @@ namespace SceneModelResourceLoader
         std::vector<FSceneModelResource>& OutModels,
         DirectX::XMFLOAT3& OutSceneCenter,
         float& OutSceneRadius,
-        std::vector<FGltfScene>* OutGltfScenes = nullptr);
+        std::vector<FGltfScene>* OutGltfScenes = nullptr,
+        FWorld* OutWorld = nullptr);
 }

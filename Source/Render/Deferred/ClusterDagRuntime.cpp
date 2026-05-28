@@ -76,12 +76,6 @@ namespace
         };
     }
 
-    bool IsClusterDagRuntimeAlphaModeAllowed(uint32_t AlphaMode)
-    {
-        return AlphaMode == static_cast<uint32_t>(EAlphaMode::Opaque)
-            || AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask);
-    }
-
     uint32_t GetClusterDagInitPipelineIndex(bool bClusterDagFastEnabled, bool bPersistentQueue)
     {
         return (bClusterDagFastEnabled ? 1u : 0u)
@@ -396,7 +390,7 @@ bool FClusterDagRuntime::UsesRuntimePath(const FSceneModelResource& Model) const
 {
     return (Model.bUseClusterDagRuntime || Model.bCoveredByClusterDagRuntime)
         && Model.BoneMatrixBuffer.SrvBindlessIndex == UINT32_MAX
-        && IsClusterDagRuntimeAlphaModeAllowed(Model.AlphaMode);
+        && Model.IsClusterDagRuntimeAlphaModeAllowed();
 }
 
 ID3D12Resource* FClusterDagRuntime::GetIndirectCommandBuffer(const FDeferredRenderer& Owner) const
@@ -617,6 +611,331 @@ bool FClusterDagRuntime::ValidatePreparedRuntimeData(const FPreparedData& Data) 
     return true;
 }
 
+uint32_t FClusterDagRuntime::ResolveDrawDataModelIndex(
+    const std::vector<FSceneModelResource>& SceneModels,
+    const FSceneModelResource& Model,
+    uint32_t SortedIndex,
+    const FRuntimeClusterDrawData& RuntimeDrawData) const
+{
+    const uint32_t SectionIndex = RuntimeDrawData.SectionIndex;
+    if (SectionIndex < Model.ClusterDagSectionModelIndices.size())
+    {
+        const uint32_t SectionModelIndex = Model.ClusterDagSectionModelIndices[SectionIndex];
+        if (SectionModelIndex < SceneModels.size())
+        {
+            return SectionModelIndex;
+        }
+    }
+    return SortedIndex;
+}
+
+uint32_t FClusterDagRuntime::GetOrAddRangeForModel(
+    const std::vector<FSceneModelResource>& SceneModels,
+    uint32_t ModelIndex,
+    FPreparedData& OutData)
+{
+    const FSceneModelResource& RangeModel = SceneModels[ModelIndex];
+    const uint32_t PipelineKey = RangeModel.PipelineKey;
+    const RendererUtils::FMaterialBindlessIndices MaterialIndices = RendererUtils::BuildMaterialBindlessIndices(RangeModel);
+    if (IndirectDrawRanges.empty()
+        || IndirectDrawRanges.back().PipelineKey != PipelineKey
+        || IndirectDrawRanges.back().MaterialBindlessIndices != MaterialIndices)
+    {
+        IndirectDrawRanges.push_back(FRenderer::FIndirectDrawRange::Make(
+            static_cast<uint32_t>(OutData.CommandTemplates.size()),
+            PipelineKey, MaterialIndices, RangeModel.Name));
+    }
+    return static_cast<uint32_t>(IndirectDrawRanges.size() - 1);
+}
+
+void FClusterDagRuntime::AppendModelDrawDatas(
+    const std::vector<FSceneModelResource>& SceneModels,
+    const FSceneModelResource& Model,
+    uint32_t SortedIndex,
+    const FRuntimeClusterHierarchy& RuntimeHierarchy,
+    D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferBase,
+    uint32_t SceneConstantBufferStride,
+    FPreparedData& OutData,
+    std::vector<uint32_t>& OutLocalDrawDataModelIndices,
+    std::vector<uint32_t>& OutLocalDrawDataRangeIndices)
+{
+    OutLocalDrawDataModelIndices.assign(RuntimeHierarchy.DrawDatas.size(), SortedIndex);
+    OutLocalDrawDataRangeIndices.assign(RuntimeHierarchy.DrawDatas.size(), 0u);
+
+    for (uint32_t LocalDrawDataIndex = 0; LocalDrawDataIndex < static_cast<uint32_t>(RuntimeHierarchy.DrawDatas.size()); ++LocalDrawDataIndex)
+    {
+        const FRuntimeClusterDrawData& RuntimeDrawData = RuntimeHierarchy.DrawDatas[LocalDrawDataIndex];
+        const uint32_t DrawModelIndex = ResolveDrawDataModelIndex(SceneModels, Model, SortedIndex, RuntimeDrawData);
+        const uint32_t RangeIndex = GetOrAddRangeForModel(SceneModels, DrawModelIndex, OutData);
+        OutLocalDrawDataModelIndices[LocalDrawDataIndex] = DrawModelIndex;
+        OutLocalDrawDataRangeIndices[LocalDrawDataIndex] = RangeIndex;
+
+        OutData.DrawDatas.push_back(FClusterDrawData::Make(
+            RuntimeDrawData.IndexStart, RuntimeDrawData.IndexCount,
+            RangeIndex, IndirectDrawRanges[RangeIndex].Start, 0u, DrawModelIndex));
+        const uint32_t DrawDataIndex = static_cast<uint32_t>(OutData.DrawDatas.size() - 1);
+
+        OutData.CommandTemplates.push_back(FIndirectDrawCommand::Make(
+            ConstantBufferBase + SceneConstantBufferStride * DrawModelIndex,
+            RuntimeDrawData.IndexStart, RuntimeDrawData.IndexCount, 0, DrawDataIndex));
+        IndirectDrawRanges[RangeIndex].Count += 1;
+    }
+}
+
+void FClusterDagRuntime::AppendModelGroupsAndStreamingPages(
+    const FSceneModelResource& Model,
+    uint32_t SortedIndex,
+    const FRuntimeClusterHierarchy& RuntimeHierarchy,
+    uint32_t BaseGroupIndex,
+    uint32_t BaseClusterIndex,
+    uint32_t BaseChildRefIndex,
+    uint32_t BaseDrawDataIndex,
+    const DirectX::XMMATRIX& World,
+    float ModelScale,
+    const std::vector<uint32_t>& LocalDrawDataModelIndices,
+    const std::vector<uint32_t>& LocalDrawDataRangeIndices,
+    FPreparedData& OutData)
+{
+    for (uint32_t LocalGroupIndex = 0; LocalGroupIndex < static_cast<uint32_t>(RuntimeHierarchy.Groups.size()); ++LocalGroupIndex)
+    {
+        const FRuntimeClusterGroup& RuntimeGroup = RuntimeHierarchy.Groups[LocalGroupIndex];
+        FSceneGroupData GroupData;
+        GroupData.Bounds = TransformBoundingSphere(
+            DirectX::XMFLOAT4(RuntimeGroup.BoundsCenter.x, RuntimeGroup.BoundsCenter.y, RuntimeGroup.BoundsCenter.z, RuntimeGroup.BoundsRadius),
+            World,
+            ModelScale);
+        GroupData.LodBounds = TransformBoundingSphere(
+            DirectX::XMFLOAT4(RuntimeGroup.LodBoundsCenter.x, RuntimeGroup.LodBoundsCenter.y, RuntimeGroup.LodBoundsCenter.z, RuntimeGroup.LodBoundsRadius),
+            World,
+            ModelScale);
+        GroupData.ParentLODError = RuntimeGroup.ParentLODError * ModelScale;
+        GroupData.ChildRefStart = BaseChildRefIndex + RuntimeGroup.ChildRefStart; // Local to global index
+        GroupData.ChildRefCount = RuntimeGroup.ChildRefCount;
+        const uint32_t PageIndex = LocalGroupIndex == RuntimeHierarchy.RootGroupIndex
+            ? GClusterDagRootStreamingPageIndex
+            : BaseGroupIndex + LocalGroupIndex + 1u;
+        if (PageIndex != GClusterDagRootStreamingPageIndex)
+        {
+            if (OutData.StreamingPageSources.size() <= PageIndex)
+            {
+                OutData.StreamingPageSources.resize(PageIndex + 1u);
+            }
+
+            FClusterDagStreamingPageSource& PageSource = OutData.StreamingPageSources[PageIndex];
+            PageSource.bValid = !Model.ClusterDagSourceFilePath.empty()
+                && !Model.ClusterDagCacheFilePath.empty()
+                && Model.ClusterDagMeshIndex != GClusterDAGInvalidIndex
+                && Model.ClusterDagPrimitiveIndex != GClusterDAGInvalidIndex
+                && Model.ClusterDagPackedVertexData.IsValid();
+            PageSource.PageIndex = PageIndex;
+            PageSource.MeshIndex = Model.ClusterDagMeshIndex;
+            PageSource.DagIndex = Model.ClusterDagPrimitiveIndex;
+            PageSource.LocalPageIndex = LocalGroupIndex + 1u;
+            PageSource.GlobalGroupIndex = BaseGroupIndex + LocalGroupIndex;
+            PageSource.SceneGroupBounds[0] = GroupData.Bounds.x;
+            PageSource.SceneGroupBounds[1] = GroupData.Bounds.y;
+            PageSource.SceneGroupBounds[2] = GroupData.Bounds.z;
+            PageSource.SceneGroupBounds[3] = GroupData.Bounds.w;
+            PageSource.SceneGroupLodBounds[0] = GroupData.LodBounds.x;
+            PageSource.SceneGroupLodBounds[1] = GroupData.LodBounds.y;
+            PageSource.SceneGroupLodBounds[2] = GroupData.LodBounds.z;
+            PageSource.SceneGroupLodBounds[3] = GroupData.LodBounds.w;
+            PageSource.SceneGroupParentLODError = GroupData.ParentLODError;
+            PageSource.SceneGroupChildRefCount = RuntimeGroup.ChildRefCount;
+            PageSource.SceneGroupFlags = (RuntimeGroup.Flags & GClusterDagGroupFlagsLowMask)
+                | ((PageIndex & GClusterDagGroupFlagsLowMask) << GClusterDagGroupPageIndexShift);
+            PageSource.SceneGroupMipLevel = RuntimeGroup.MipLevel;
+            PageSource.SceneGroupChildRefs.clear();
+            PageSource.SceneGroupChildRefs.reserve(RuntimeGroup.ChildRefCount);
+            for (uint32_t ChildRefOffset = 0u; ChildRefOffset < RuntimeGroup.ChildRefCount; ++ChildRefOffset)
+            {
+                FRuntimeClusterChildRef ChildRef = RuntimeHierarchy.ChildRefs[RuntimeGroup.ChildRefStart + ChildRefOffset];
+                if (ChildRef.ClusterIndex != GClusterDAGInvalidIndex)
+                {
+                    ChildRef.ClusterIndex += BaseClusterIndex;
+                }
+                PageSource.SceneGroupChildRefs.push_back(ChildRef);
+            }
+
+            std::vector<uint32_t> PageClusterIndices;
+            PageClusterIndices.reserve(RuntimeGroup.ChildRefCount);
+            for (uint32_t ChildRefOffset = 0u; ChildRefOffset < RuntimeGroup.ChildRefCount; ++ChildRefOffset)
+            {
+                const FRuntimeClusterChildRef& ChildRef = RuntimeHierarchy.ChildRefs[RuntimeGroup.ChildRefStart + ChildRefOffset];
+                if (ChildRef.ClusterIndex != GClusterDAGInvalidIndex && ChildRef.ClusterIndex < RuntimeHierarchy.Clusters.size())
+                {
+                    PageClusterIndices.push_back(ChildRef.ClusterIndex);
+                }
+            }
+            std::sort(PageClusterIndices.begin(), PageClusterIndices.end());
+            PageClusterIndices.erase(std::unique(PageClusterIndices.begin(), PageClusterIndices.end()), PageClusterIndices.end());
+
+            PageSource.ScenePageClusters.clear();
+            PageSource.ScenePageClusters.reserve(PageClusterIndices.size());
+            PageSource.ScenePageDrawDatas.clear();
+            PageSource.ScenePagePackedIndices.clear();
+            PageSource.ScenePagePackedPositions.clear();
+            PageSource.ScenePagePackedNormals.clear();
+            PageSource.ScenePagePackedUVs.clear();
+            PageSource.ScenePagePackedTangents.clear();
+            PageSource.ScenePagePackedColors.clear();
+            std::unordered_map<uint32_t, uint32_t> PageVertexRemap;
+            for (uint32_t LocalClusterIndex : PageClusterIndices)
+            {
+                const FRuntimeCluster& RuntimeCluster = RuntimeHierarchy.Clusters[LocalClusterIndex];
+                FClusterDagStreamingPageSource::FSceneClusterRecord ClusterRecord;
+                ClusterRecord.GlobalClusterIndex = BaseClusterIndex + LocalClusterIndex;
+
+                const DirectX::XMFLOAT4 SceneBounds = TransformBoundingSphere(
+                    DirectX::XMFLOAT4(RuntimeCluster.Bounds.Center.x, RuntimeCluster.Bounds.Center.y, RuntimeCluster.Bounds.Center.z, RuntimeCluster.Bounds.Radius),
+                    World,
+                    ModelScale);
+                const DirectX::XMFLOAT4 SceneLodBounds = TransformBoundingSphere(
+                    DirectX::XMFLOAT4(RuntimeCluster.LodBoundsCenter.x, RuntimeCluster.LodBoundsCenter.y, RuntimeCluster.LodBoundsCenter.z, RuntimeCluster.LodBoundsRadius),
+                    World,
+                    ModelScale);
+                ClusterRecord.Bounds[0] = SceneBounds.x;
+                ClusterRecord.Bounds[1] = SceneBounds.y;
+                ClusterRecord.Bounds[2] = SceneBounds.z;
+                ClusterRecord.Bounds[3] = SceneBounds.w;
+                ClusterRecord.LodBounds[0] = SceneLodBounds.x;
+                ClusterRecord.LodBounds[1] = SceneLodBounds.y;
+                ClusterRecord.LodBounds[2] = SceneLodBounds.z;
+                ClusterRecord.LodBounds[3] = SceneLodBounds.w;
+                ClusterRecord.LODError = RuntimeCluster.LODError * ModelScale;
+                ClusterRecord.MaxEdgeLength = RuntimeCluster.MaxEdgeLength * ModelScale;
+                ClusterRecord.GroupIndex = RuntimeCluster.GroupIndex != GClusterDAGInvalidIndex ? BaseGroupIndex + RuntimeCluster.GroupIndex : GClusterDAGInvalidIndex;
+                ClusterRecord.GeneratingGroupIndex = RuntimeCluster.GeneratingGroupIndex != GClusterDAGInvalidIndex ? BaseGroupIndex + RuntimeCluster.GeneratingGroupIndex : GClusterDAGInvalidIndex;
+                ClusterRecord.DrawDataStart = BaseDrawDataIndex + RuntimeCluster.DrawDataStart;
+                ClusterRecord.DrawDataCount = RuntimeCluster.DrawDataCount;
+                ClusterRecord.TriangleCount = RuntimeCluster.TriangleCount;
+                ClusterRecord.MipLevel = RuntimeCluster.MipLevel;
+                PageSource.ScenePageClusters.push_back(ClusterRecord);
+
+                if (RuntimeCluster.DrawDataStart > RuntimeHierarchy.DrawDatas.size()
+                    || RuntimeCluster.DrawDataCount > RuntimeHierarchy.DrawDatas.size() - RuntimeCluster.DrawDataStart)
+                {
+                    PageSource.bValid = false;
+                    continue;
+                }
+
+                for (uint32_t DrawDataOffset = 0u; DrawDataOffset < RuntimeCluster.DrawDataCount; ++DrawDataOffset)
+                {
+                    const uint32_t LocalDrawDataIndex = RuntimeCluster.DrawDataStart + DrawDataOffset;
+                    const FRuntimeClusterDrawData& RuntimeDrawData = RuntimeHierarchy.DrawDatas[LocalDrawDataIndex];
+                    const uint32_t PageLocalIndexStart = static_cast<uint32_t>(PageSource.ScenePagePackedIndices.size());
+                    FClusterDagStreamingPageSource::FSceneDrawDataRecord DrawRecord;
+                    DrawRecord.GlobalDrawDataIndex = BaseDrawDataIndex + LocalDrawDataIndex;
+                    DrawRecord.StartIndex = PageLocalIndexStart;
+                    DrawRecord.IndexCount = RuntimeDrawData.IndexCount;
+                    const uint32_t DrawRangeIndex = LocalDrawDataIndex < LocalDrawDataRangeIndices.size() ? LocalDrawDataRangeIndices[LocalDrawDataIndex] : 0u;
+                    const uint32_t DrawModelIndex = LocalDrawDataIndex < LocalDrawDataModelIndices.size() ? LocalDrawDataModelIndices[LocalDrawDataIndex] : SortedIndex;
+                    DrawRecord.RangeIndex = DrawRangeIndex;
+                    DrawRecord.RangeCommandStart = DrawRangeIndex < IndirectDrawRanges.size() ? IndirectDrawRanges[DrawRangeIndex].Start : 0u;
+                    DrawRecord.RangeCommandCount = 0u;
+                    DrawRecord.ModelIndex = DrawModelIndex;
+                    PageSource.ScenePageDrawDatas.push_back(DrawRecord);
+
+                    if (RuntimeDrawData.IndexStart <= RuntimeHierarchy.PackedIndices.size()
+                        && RuntimeDrawData.IndexCount <= RuntimeHierarchy.PackedIndices.size() - RuntimeDrawData.IndexStart)
+                    {
+                        for (uint32_t IndexOffset = 0u; IndexOffset < RuntimeDrawData.IndexCount; ++IndexOffset)
+                        {
+                            const uint32_t SourceVertexIndex = RuntimeHierarchy.PackedIndices[RuntimeDrawData.IndexStart + IndexOffset];
+                            uint32_t PageVertexIndex = 0u;
+                            const auto RemapIt = PageVertexRemap.find(SourceVertexIndex);
+                            if (RemapIt != PageVertexRemap.end())
+                            {
+                                PageVertexIndex = RemapIt->second;
+                            }
+                            else
+                            {
+                                PageVertexIndex = static_cast<uint32_t>(PageSource.ScenePagePackedPositions.size());
+                                PageVertexRemap.emplace(SourceVertexIndex, PageVertexIndex);
+                                if (SourceVertexIndex < Model.ClusterDagPackedVertexData.Positions.size())
+                                {
+                                    PageSource.ScenePagePackedPositions.push_back(Model.ClusterDagPackedVertexData.Positions[SourceVertexIndex]);
+                                }
+                                if (SourceVertexIndex < Model.ClusterDagPackedVertexData.Normals.size())
+                                {
+                                    PageSource.ScenePagePackedNormals.push_back(Model.ClusterDagPackedVertexData.Normals[SourceVertexIndex]);
+                                }
+                                if (SourceVertexIndex < Model.ClusterDagPackedVertexData.UVs.size())
+                                {
+                                    PageSource.ScenePagePackedUVs.push_back(Model.ClusterDagPackedVertexData.UVs[SourceVertexIndex]);
+                                }
+                                if (SourceVertexIndex < Model.ClusterDagPackedVertexData.Tangents.size())
+                                {
+                                    PageSource.ScenePagePackedTangents.push_back(Model.ClusterDagPackedVertexData.Tangents[SourceVertexIndex]);
+                                }
+                                if (SourceVertexIndex < Model.ClusterDagPackedVertexData.Colors.size())
+                                {
+                                    PageSource.ScenePagePackedColors.push_back(Model.ClusterDagPackedVertexData.Colors[SourceVertexIndex]);
+                                }
+                            }
+                            PageSource.ScenePagePackedIndices.push_back(PageVertexIndex);
+                        }
+                    }
+                }
+            }
+            PageSource.SourceFilePath = Model.ClusterDagSourceFilePath;
+            PageSource.CacheFilePath = Model.ClusterDagCacheFilePath;
+        }
+        GroupData.Flags = (RuntimeGroup.Flags & GClusterDagGroupFlagsLowMask)
+            | ((PageIndex & GClusterDagGroupFlagsLowMask) << GClusterDagGroupPageIndexShift);
+        GroupData.MipLevel = RuntimeGroup.MipLevel;
+        OutData.Groups.push_back(GroupData);
+        OutData.StreamingPageCount = (std::max)(OutData.StreamingPageCount, PageIndex + 1u);
+    }
+}
+
+void FClusterDagRuntime::AppendModelChildRefs(
+    const FRuntimeClusterHierarchy& RuntimeHierarchy,
+    uint32_t BaseClusterIndex,
+    FPreparedData& OutData) const
+{
+    for (const FRuntimeClusterChildRef& RuntimeChildRef : RuntimeHierarchy.ChildRefs)
+    {
+        FRuntimeClusterChildRef ChildRef = RuntimeChildRef;
+        if (ChildRef.ClusterIndex != GClusterDAGInvalidIndex)
+        {
+            ChildRef.ClusterIndex += BaseClusterIndex; // Local to global index
+        }
+        OutData.ChildRefs.push_back(ChildRef);
+    }
+}
+
+void FClusterDagRuntime::AppendModelClusters(
+    const FRuntimeClusterHierarchy& RuntimeHierarchy,
+    uint32_t BaseGroupIndex,
+    uint32_t BaseDrawDataIndex,
+    const DirectX::XMMATRIX& World,
+    float ModelScale,
+    FPreparedData& OutData) const
+{
+    for (const FRuntimeCluster& RuntimeCluster : RuntimeHierarchy.Clusters)
+    {
+        FSceneClusterData ClusterData;
+        ClusterData.Bounds = TransformBoundingSphere(
+            DirectX::XMFLOAT4(RuntimeCluster.Bounds.Center.x, RuntimeCluster.Bounds.Center.y, RuntimeCluster.Bounds.Center.z, RuntimeCluster.Bounds.Radius),
+            World,
+            ModelScale);
+        ClusterData.LodBounds = TransformBoundingSphere(
+            DirectX::XMFLOAT4(RuntimeCluster.LodBoundsCenter.x, RuntimeCluster.LodBoundsCenter.y, RuntimeCluster.LodBoundsCenter.z, RuntimeCluster.LodBoundsRadius),
+            World,
+            ModelScale);
+        ClusterData.LODError = RuntimeCluster.LODError * ModelScale;
+        ClusterData.MaxEdgeLength = RuntimeCluster.MaxEdgeLength * ModelScale;
+        ClusterData.GroupIndex = RuntimeCluster.GroupIndex != GClusterDAGInvalidIndex ? BaseGroupIndex + RuntimeCluster.GroupIndex : GClusterDAGInvalidIndex; // Local to global index
+        ClusterData.GeneratingGroupIndex = RuntimeCluster.GeneratingGroupIndex != GClusterDAGInvalidIndex ? BaseGroupIndex + RuntimeCluster.GeneratingGroupIndex : GClusterDAGInvalidIndex; // Local to global index
+        ClusterData.DrawDataStart = BaseDrawDataIndex + RuntimeCluster.DrawDataStart; // Local to global index
+        ClusterData.DrawDataCount = RuntimeCluster.DrawDataCount;
+        ClusterData.TriangleCount = RuntimeCluster.TriangleCount;
+        ClusterData.MipLevel = RuntimeCluster.MipLevel;
+        OutData.Clusters.push_back(ClusterData);
+    }
+}
+
 bool FClusterDagRuntime::PrepareRuntimeData(FDeferredRenderer& Owner, FPreparedData& OutData)
 {
     OutData = {};
@@ -636,16 +955,6 @@ bool FClusterDagRuntime::PrepareRuntimeData(FDeferredRenderer& Owner, FPreparedD
         return false;
     }
 
-    auto IsRuntimeDagModel = [](const FSceneModelResource& Model)
-    {
-        return Model.bUseClusterDagRuntime
-            && Model.BoneMatrixBuffer.SrvBindlessIndex == UINT32_MAX
-            && IsClusterDagRuntimeAlphaModeAllowed(Model.AlphaMode)
-            && Model.ClusterDagRuntimeHierarchy.IsValid()
-            && !Model.ClusterDagRuntimeHierarchy.Clusters.empty()
-            && !Model.ClusterDagRuntimeHierarchy.DrawDatas.empty();
-    };
-
     std::vector<uint32_t> SortedIndices(SceneModels.size());
     for (uint32_t Index = 0; Index < SortedIndices.size(); ++Index)
     {
@@ -654,8 +963,8 @@ bool FClusterDagRuntime::PrepareRuntimeData(FDeferredRenderer& Owner, FPreparedD
 
     std::sort(SortedIndices.begin(), SortedIndices.end(), [&](uint32_t A, uint32_t B)
     {
-        const bool bDagA = IsRuntimeDagModel(SceneModels[A]);
-        const bool bDagB = IsRuntimeDagModel(SceneModels[B]);
+        const bool bDagA = SceneModels[A].IsRuntimeDagModel();
+        const bool bDagB = SceneModels[B].IsRuntimeDagModel();
         if (bDagA != bDagB)
         {
             return bDagA > bDagB;
@@ -683,7 +992,7 @@ bool FClusterDagRuntime::PrepareRuntimeData(FDeferredRenderer& Owner, FPreparedD
         FSceneModelResource& Model = SceneModels[SortedIndex];
         Model.ClusterDagRuntimeClusterOffset = 0;
         Model.ClusterDagRuntimeClusterCount = 0;
-        if (!IsRuntimeDagModel(Model))
+        if (!Model.IsRuntimeDagModel())
         {
             continue;
         }
@@ -713,7 +1022,7 @@ bool FClusterDagRuntime::PrepareRuntimeData(FDeferredRenderer& Owner, FPreparedD
     for (uint32_t SortedIndex : SortedIndices)
     {
         FSceneModelResource& Model = SceneModels[SortedIndex];
-        if (!IsRuntimeDagModel(Model))
+        if (!Model.IsRuntimeDagModel())
         {
             continue;
         }
@@ -728,284 +1037,37 @@ bool FClusterDagRuntime::PrepareRuntimeData(FDeferredRenderer& Owner, FPreparedD
 
         Model.ClusterDagRuntimeClusterOffset = BaseClusterIndex;
         Model.ClusterDagRuntimeClusterCount = static_cast<uint32_t>(RuntimeHierarchy.Clusters.size());
+        std::vector<uint32_t> LocalDrawDataModelIndices;
+        std::vector<uint32_t> LocalDrawDataRangeIndices;
+        AppendModelDrawDatas(
+            SceneModels,
+            Model,
+            SortedIndex,
+            RuntimeHierarchy,
+            ConstantBufferBase,
+            static_cast<uint32_t>(SceneConstantBufferStride),
+            OutData,
+            LocalDrawDataModelIndices,
+            LocalDrawDataRangeIndices);
 
-        auto ResolveDrawDataModelIndex = [&](const FRuntimeClusterDrawData& RuntimeDrawData) -> uint32_t
-        {
-            const uint32_t SectionIndex = RuntimeDrawData.SectionIndex;
-            if (SectionIndex < Model.ClusterDagSectionModelIndices.size())
-            {
-                const uint32_t SectionModelIndex = Model.ClusterDagSectionModelIndices[SectionIndex];
-                if (SectionModelIndex < SceneModels.size())
-                {
-                    return SectionModelIndex;
-                }
-            }
-            return SortedIndex;
-        };
+        AppendModelGroupsAndStreamingPages(
+            Model,
+            SortedIndex,
+            RuntimeHierarchy,
+            BaseGroupIndex,
+            BaseClusterIndex,
+            BaseChildRefIndex,
+            BaseDrawDataIndex,
+            World,
+            ModelScale,
+            LocalDrawDataModelIndices,
+            LocalDrawDataRangeIndices,
+            OutData);
 
-        auto GetOrAddRangeForModel = [&](uint32_t ModelIndex) -> uint32_t
-        {
-            const FSceneModelResource& RangeModel = SceneModels[ModelIndex];
-            const uint32_t PipelineKey = RangeModel.PipelineKey;
-            const RendererUtils::FMaterialBindlessIndices MaterialIndices = RendererUtils::BuildMaterialBindlessIndices(RangeModel);
-            if (IndirectDrawRanges.empty()
-                || IndirectDrawRanges.back().PipelineKey != PipelineKey
-                || IndirectDrawRanges.back().MaterialBindlessIndices != MaterialIndices)
-            {
-                IndirectDrawRanges.push_back(FRenderer::FIndirectDrawRange::Make(
-                    static_cast<uint32_t>(OutData.CommandTemplates.size()),
-                    PipelineKey, MaterialIndices, RangeModel.Name));
-            }
-            return static_cast<uint32_t>(IndirectDrawRanges.size() - 1);
-        };
-
-        std::vector<uint32_t> LocalDrawDataModelIndices(RuntimeHierarchy.DrawDatas.size(), SortedIndex);
-        std::vector<uint32_t> LocalDrawDataRangeIndices(RuntimeHierarchy.DrawDatas.size(), 0u);
-        for (uint32_t LocalDrawDataIndex = 0; LocalDrawDataIndex < static_cast<uint32_t>(RuntimeHierarchy.DrawDatas.size()); ++LocalDrawDataIndex)
-        {
-            const FRuntimeClusterDrawData& RuntimeDrawData = RuntimeHierarchy.DrawDatas[LocalDrawDataIndex];
-            const uint32_t DrawModelIndex = ResolveDrawDataModelIndex(RuntimeDrawData);
-            const uint32_t RangeIndex = GetOrAddRangeForModel(DrawModelIndex);
-            LocalDrawDataModelIndices[LocalDrawDataIndex] = DrawModelIndex;
-            LocalDrawDataRangeIndices[LocalDrawDataIndex] = RangeIndex;
-
-            OutData.DrawDatas.push_back(FClusterDrawData::Make(
-                RuntimeDrawData.IndexStart, RuntimeDrawData.IndexCount,
-                RangeIndex, IndirectDrawRanges[RangeIndex].Start, 0u, DrawModelIndex));
-            const uint32_t DrawDataIndex = static_cast<uint32_t>(OutData.DrawDatas.size() - 1);
-
-            OutData.CommandTemplates.push_back(FIndirectDrawCommand::Make(
-                ConstantBufferBase + SceneConstantBufferStride * DrawModelIndex,
-                RuntimeDrawData.IndexStart, RuntimeDrawData.IndexCount, 0, DrawDataIndex));
-            IndirectDrawRanges[RangeIndex].Count += 1;
-        }
-
-        for (uint32_t LocalGroupIndex = 0; LocalGroupIndex < static_cast<uint32_t>(RuntimeHierarchy.Groups.size()); ++LocalGroupIndex)
-        {
-            const FRuntimeClusterGroup& RuntimeGroup = RuntimeHierarchy.Groups[LocalGroupIndex];
-            FSceneGroupData GroupData;
-            GroupData.Bounds = TransformBoundingSphere(
-                DirectX::XMFLOAT4(RuntimeGroup.BoundsCenter.x, RuntimeGroup.BoundsCenter.y, RuntimeGroup.BoundsCenter.z, RuntimeGroup.BoundsRadius),
-                World,
-                ModelScale);
-            GroupData.LodBounds = TransformBoundingSphere(
-                DirectX::XMFLOAT4(RuntimeGroup.LodBoundsCenter.x, RuntimeGroup.LodBoundsCenter.y, RuntimeGroup.LodBoundsCenter.z, RuntimeGroup.LodBoundsRadius),
-                World,
-                ModelScale);
-            GroupData.ParentLODError = RuntimeGroup.ParentLODError * ModelScale;
-            GroupData.ChildRefStart = BaseChildRefIndex + RuntimeGroup.ChildRefStart; // Local to global index
-            GroupData.ChildRefCount = RuntimeGroup.ChildRefCount;
-            const uint32_t PageIndex = LocalGroupIndex == RuntimeHierarchy.RootGroupIndex
-                ? GClusterDagRootStreamingPageIndex
-                : BaseGroupIndex + LocalGroupIndex + 1u;
-            if (PageIndex != GClusterDagRootStreamingPageIndex)
-            {
-                if (OutData.StreamingPageSources.size() <= PageIndex)
-                {
-                    OutData.StreamingPageSources.resize(PageIndex + 1u);
-                }
-
-                FClusterDagStreamingPageSource& PageSource = OutData.StreamingPageSources[PageIndex];
-                PageSource.bValid = !Model.ClusterDagSourceFilePath.empty()
-                    && !Model.ClusterDagCacheFilePath.empty()
-                    && Model.ClusterDagMeshIndex != GClusterDAGInvalidIndex
-                    && Model.ClusterDagPrimitiveIndex != GClusterDAGInvalidIndex
-                    && Model.ClusterDagPackedVertexData.IsValid();
-                PageSource.PageIndex = PageIndex;
-                PageSource.MeshIndex = Model.ClusterDagMeshIndex;
-                PageSource.DagIndex = Model.ClusterDagPrimitiveIndex;
-                PageSource.LocalPageIndex = LocalGroupIndex + 1u;
-                PageSource.GlobalGroupIndex = BaseGroupIndex + LocalGroupIndex;
-                PageSource.SceneGroupBounds[0] = GroupData.Bounds.x;
-                PageSource.SceneGroupBounds[1] = GroupData.Bounds.y;
-                PageSource.SceneGroupBounds[2] = GroupData.Bounds.z;
-                PageSource.SceneGroupBounds[3] = GroupData.Bounds.w;
-                PageSource.SceneGroupLodBounds[0] = GroupData.LodBounds.x;
-                PageSource.SceneGroupLodBounds[1] = GroupData.LodBounds.y;
-                PageSource.SceneGroupLodBounds[2] = GroupData.LodBounds.z;
-                PageSource.SceneGroupLodBounds[3] = GroupData.LodBounds.w;
-                PageSource.SceneGroupParentLODError = GroupData.ParentLODError;
-                PageSource.SceneGroupChildRefCount = RuntimeGroup.ChildRefCount;
-                PageSource.SceneGroupFlags = (RuntimeGroup.Flags & GClusterDagGroupFlagsLowMask)
-                    | ((PageIndex & GClusterDagGroupFlagsLowMask) << GClusterDagGroupPageIndexShift);
-                PageSource.SceneGroupMipLevel = RuntimeGroup.MipLevel;
-                PageSource.SceneGroupChildRefs.clear();
-                PageSource.SceneGroupChildRefs.reserve(RuntimeGroup.ChildRefCount);
-                for (uint32_t ChildRefOffset = 0u; ChildRefOffset < RuntimeGroup.ChildRefCount; ++ChildRefOffset)
-                {
-                    FRuntimeClusterChildRef ChildRef = RuntimeHierarchy.ChildRefs[RuntimeGroup.ChildRefStart + ChildRefOffset];
-                    if (ChildRef.ClusterIndex != GClusterDAGInvalidIndex)
-                    {
-                        ChildRef.ClusterIndex += BaseClusterIndex;
-                    }
-                    PageSource.SceneGroupChildRefs.push_back(ChildRef);
-                }
-
-                std::vector<uint32_t> PageClusterIndices;
-                PageClusterIndices.reserve(RuntimeGroup.ChildRefCount);
-                for (uint32_t ChildRefOffset = 0u; ChildRefOffset < RuntimeGroup.ChildRefCount; ++ChildRefOffset)
-                {
-                    const FRuntimeClusterChildRef& ChildRef = RuntimeHierarchy.ChildRefs[RuntimeGroup.ChildRefStart + ChildRefOffset];
-                    if (ChildRef.ClusterIndex != GClusterDAGInvalidIndex && ChildRef.ClusterIndex < RuntimeHierarchy.Clusters.size())
-                    {
-                        PageClusterIndices.push_back(ChildRef.ClusterIndex);
-                    }
-                }
-                std::sort(PageClusterIndices.begin(), PageClusterIndices.end());
-                PageClusterIndices.erase(std::unique(PageClusterIndices.begin(), PageClusterIndices.end()), PageClusterIndices.end());
-
-                PageSource.ScenePageClusters.clear();
-                PageSource.ScenePageClusters.reserve(PageClusterIndices.size());
-                PageSource.ScenePageDrawDatas.clear();
-                PageSource.ScenePagePackedIndices.clear();
-                PageSource.ScenePagePackedPositions.clear();
-                PageSource.ScenePagePackedNormals.clear();
-                PageSource.ScenePagePackedUVs.clear();
-                PageSource.ScenePagePackedTangents.clear();
-                PageSource.ScenePagePackedColors.clear();
-                std::unordered_map<uint32_t, uint32_t> PageVertexRemap;
-                for (uint32_t LocalClusterIndex : PageClusterIndices)
-                {
-                    const FRuntimeCluster& RuntimeCluster = RuntimeHierarchy.Clusters[LocalClusterIndex];
-                    FClusterDagStreamingPageSource::FSceneClusterRecord ClusterRecord;
-                    ClusterRecord.GlobalClusterIndex = BaseClusterIndex + LocalClusterIndex;
-
-                    const DirectX::XMFLOAT4 SceneBounds = TransformBoundingSphere(
-                        DirectX::XMFLOAT4(RuntimeCluster.Bounds.Center.x, RuntimeCluster.Bounds.Center.y, RuntimeCluster.Bounds.Center.z, RuntimeCluster.Bounds.Radius),
-                        World,
-                        ModelScale);
-                    const DirectX::XMFLOAT4 SceneLodBounds = TransformBoundingSphere(
-                        DirectX::XMFLOAT4(RuntimeCluster.LodBoundsCenter.x, RuntimeCluster.LodBoundsCenter.y, RuntimeCluster.LodBoundsCenter.z, RuntimeCluster.LodBoundsRadius),
-                        World,
-                        ModelScale);
-                    ClusterRecord.Bounds[0] = SceneBounds.x;
-                    ClusterRecord.Bounds[1] = SceneBounds.y;
-                    ClusterRecord.Bounds[2] = SceneBounds.z;
-                    ClusterRecord.Bounds[3] = SceneBounds.w;
-                    ClusterRecord.LodBounds[0] = SceneLodBounds.x;
-                    ClusterRecord.LodBounds[1] = SceneLodBounds.y;
-                    ClusterRecord.LodBounds[2] = SceneLodBounds.z;
-                    ClusterRecord.LodBounds[3] = SceneLodBounds.w;
-                    ClusterRecord.LODError = RuntimeCluster.LODError * ModelScale;
-                    ClusterRecord.MaxEdgeLength = RuntimeCluster.MaxEdgeLength * ModelScale;
-                    ClusterRecord.GroupIndex = RuntimeCluster.GroupIndex != GClusterDAGInvalidIndex ? BaseGroupIndex + RuntimeCluster.GroupIndex : GClusterDAGInvalidIndex;
-                    ClusterRecord.GeneratingGroupIndex = RuntimeCluster.GeneratingGroupIndex != GClusterDAGInvalidIndex ? BaseGroupIndex + RuntimeCluster.GeneratingGroupIndex : GClusterDAGInvalidIndex;
-                    ClusterRecord.DrawDataStart = BaseDrawDataIndex + RuntimeCluster.DrawDataStart;
-                    ClusterRecord.DrawDataCount = RuntimeCluster.DrawDataCount;
-                    ClusterRecord.TriangleCount = RuntimeCluster.TriangleCount;
-                    ClusterRecord.MipLevel = RuntimeCluster.MipLevel;
-                    PageSource.ScenePageClusters.push_back(ClusterRecord);
-
-                    if (RuntimeCluster.DrawDataStart > RuntimeHierarchy.DrawDatas.size()
-                        || RuntimeCluster.DrawDataCount > RuntimeHierarchy.DrawDatas.size() - RuntimeCluster.DrawDataStart)
-                    {
-                        PageSource.bValid = false;
-                        continue;
-                    }
-
-                    for (uint32_t DrawDataOffset = 0u; DrawDataOffset < RuntimeCluster.DrawDataCount; ++DrawDataOffset)
-                    {
-                        const uint32_t LocalDrawDataIndex = RuntimeCluster.DrawDataStart + DrawDataOffset;
-                        const FRuntimeClusterDrawData& RuntimeDrawData = RuntimeHierarchy.DrawDatas[LocalDrawDataIndex];
-                        const uint32_t PageLocalIndexStart = static_cast<uint32_t>(PageSource.ScenePagePackedIndices.size());
-                        FClusterDagStreamingPageSource::FSceneDrawDataRecord DrawRecord;
-                        DrawRecord.GlobalDrawDataIndex = BaseDrawDataIndex + LocalDrawDataIndex;
-                        DrawRecord.StartIndex = PageLocalIndexStart;
-                        DrawRecord.IndexCount = RuntimeDrawData.IndexCount;
-                        const uint32_t DrawRangeIndex = LocalDrawDataIndex < LocalDrawDataRangeIndices.size() ? LocalDrawDataRangeIndices[LocalDrawDataIndex] : 0u;
-                        const uint32_t DrawModelIndex = LocalDrawDataIndex < LocalDrawDataModelIndices.size() ? LocalDrawDataModelIndices[LocalDrawDataIndex] : SortedIndex;
-                        DrawRecord.RangeIndex = DrawRangeIndex;
-                        DrawRecord.RangeCommandStart = DrawRangeIndex < IndirectDrawRanges.size() ? IndirectDrawRanges[DrawRangeIndex].Start : 0u;
-                        DrawRecord.RangeCommandCount = 0u;
-                        DrawRecord.ModelIndex = DrawModelIndex;
-                        PageSource.ScenePageDrawDatas.push_back(DrawRecord);
-
-                        if (RuntimeDrawData.IndexStart <= RuntimeHierarchy.PackedIndices.size()
-                            && RuntimeDrawData.IndexCount <= RuntimeHierarchy.PackedIndices.size() - RuntimeDrawData.IndexStart)
-                        {
-                            for (uint32_t IndexOffset = 0u; IndexOffset < RuntimeDrawData.IndexCount; ++IndexOffset)
-                            {
-                                const uint32_t SourceVertexIndex = RuntimeHierarchy.PackedIndices[RuntimeDrawData.IndexStart + IndexOffset];
-                                uint32_t PageVertexIndex = 0u;
-                                const auto RemapIt = PageVertexRemap.find(SourceVertexIndex);
-                                if (RemapIt != PageVertexRemap.end())
-                                {
-                                    PageVertexIndex = RemapIt->second;
-                                }
-                                else
-                                {
-                                    PageVertexIndex = static_cast<uint32_t>(PageSource.ScenePagePackedPositions.size());
-                                    PageVertexRemap.emplace(SourceVertexIndex, PageVertexIndex);
-                                    if (SourceVertexIndex < Model.ClusterDagPackedVertexData.Positions.size())
-                                    {
-                                        PageSource.ScenePagePackedPositions.push_back(Model.ClusterDagPackedVertexData.Positions[SourceVertexIndex]);
-                                    }
-                                    if (SourceVertexIndex < Model.ClusterDagPackedVertexData.Normals.size())
-                                    {
-                                        PageSource.ScenePagePackedNormals.push_back(Model.ClusterDagPackedVertexData.Normals[SourceVertexIndex]);
-                                    }
-                                    if (SourceVertexIndex < Model.ClusterDagPackedVertexData.UVs.size())
-                                    {
-                                        PageSource.ScenePagePackedUVs.push_back(Model.ClusterDagPackedVertexData.UVs[SourceVertexIndex]);
-                                    }
-                                    if (SourceVertexIndex < Model.ClusterDagPackedVertexData.Tangents.size())
-                                    {
-                                        PageSource.ScenePagePackedTangents.push_back(Model.ClusterDagPackedVertexData.Tangents[SourceVertexIndex]);
-                                    }
-                                    if (SourceVertexIndex < Model.ClusterDagPackedVertexData.Colors.size())
-                                    {
-                                        PageSource.ScenePagePackedColors.push_back(Model.ClusterDagPackedVertexData.Colors[SourceVertexIndex]);
-                                    }
-                                }
-                                PageSource.ScenePagePackedIndices.push_back(PageVertexIndex);
-                            }
-                        }
-                    }
-                }
-                PageSource.SourceFilePath = Model.ClusterDagSourceFilePath;
-                PageSource.CacheFilePath = Model.ClusterDagCacheFilePath;
-            }
-            GroupData.Flags = (RuntimeGroup.Flags & GClusterDagGroupFlagsLowMask)
-                | ((PageIndex & GClusterDagGroupFlagsLowMask) << GClusterDagGroupPageIndexShift);
-            GroupData.MipLevel = RuntimeGroup.MipLevel;
-            OutData.Groups.push_back(GroupData);
-            OutData.StreamingPageCount = (std::max)(OutData.StreamingPageCount, PageIndex + 1u);
-        }
-
-        for (const FRuntimeClusterChildRef& RuntimeChildRef : RuntimeHierarchy.ChildRefs)
-        {
-            FRuntimeClusterChildRef ChildRef = RuntimeChildRef;
-            if (ChildRef.ClusterIndex != GClusterDAGInvalidIndex)
-            {
-                ChildRef.ClusterIndex += BaseClusterIndex; // Local to global index
-            }
-            OutData.ChildRefs.push_back(ChildRef);
-        }
+        AppendModelChildRefs(RuntimeHierarchy, BaseClusterIndex, OutData);
 
         OutData.RootGroups.push_back(BaseGroupIndex + RuntimeHierarchy.RootGroupIndex); // Local to global index
-
-        for (const FRuntimeCluster& RuntimeCluster : RuntimeHierarchy.Clusters)
-        {
-            FSceneClusterData ClusterData;
-            ClusterData.Bounds = TransformBoundingSphere(
-                DirectX::XMFLOAT4(RuntimeCluster.Bounds.Center.x, RuntimeCluster.Bounds.Center.y, RuntimeCluster.Bounds.Center.z, RuntimeCluster.Bounds.Radius),
-                World,
-                ModelScale);
-            ClusterData.LodBounds = TransformBoundingSphere(
-                DirectX::XMFLOAT4(RuntimeCluster.LodBoundsCenter.x, RuntimeCluster.LodBoundsCenter.y, RuntimeCluster.LodBoundsCenter.z, RuntimeCluster.LodBoundsRadius),
-                World,
-                ModelScale);
-            ClusterData.LODError = RuntimeCluster.LODError * ModelScale;
-            ClusterData.MaxEdgeLength = RuntimeCluster.MaxEdgeLength * ModelScale;
-            ClusterData.GroupIndex = RuntimeCluster.GroupIndex != GClusterDAGInvalidIndex ? BaseGroupIndex + RuntimeCluster.GroupIndex : GClusterDAGInvalidIndex; // Local to global index
-            ClusterData.GeneratingGroupIndex = RuntimeCluster.GeneratingGroupIndex != GClusterDAGInvalidIndex ? BaseGroupIndex + RuntimeCluster.GeneratingGroupIndex : GClusterDAGInvalidIndex; // Local to global index
-            ClusterData.DrawDataStart = BaseDrawDataIndex + RuntimeCluster.DrawDataStart; // Local to global index
-            ClusterData.DrawDataCount = RuntimeCluster.DrawDataCount;
-            ClusterData.TriangleCount = RuntimeCluster.TriangleCount;
-            ClusterData.MipLevel = RuntimeCluster.MipLevel;
-            OutData.Clusters.push_back(ClusterData);
-        }
-
+        AppendModelClusters(RuntimeHierarchy, BaseGroupIndex, BaseDrawDataIndex, World, ModelScale, OutData);
     }
 
     OutData.RangeOffsets.reserve(IndirectDrawRanges.size());

@@ -166,6 +166,9 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <ClCompile Include="Source\Render\RayTracingRuntime.cpp" />
     <ClCompile Include="Source\Render\ObjectId.cpp" />
     <ClCompile Include="Source\Render\SceneModelResourceLoader.cpp" />
+    <ClCompile Include="Source\World\MeshMaterial.cpp" />
+    <ClCompile Include="Source\World\StaticMesh.cpp" />
+    <ClCompile Include="Source\World\SkeletalMesh.cpp" />
     <ClCompile Include="Source\Render\Renderer.cpp" />
     <ClCompile Include="Source\Render\RendererUtils.cpp" />
     <ClCompile Include="Source\Render\SkyAtmosphere.cpp">
@@ -268,6 +271,11 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <ClInclude Include="Source\Render\RendererUtils.h" />
     <ClInclude Include="Source\Render\SceneModelResource.h" />
     <ClInclude Include="Source\Render\SceneModelResourceLoader.h" />
+    <ClInclude Include="Source\World\Object.h" />
+    <ClInclude Include="Source\World\MeshMaterial.h" />
+    <ClInclude Include="Source\World\StaticMesh.h" />
+    <ClInclude Include="Source\World\SkeletalMesh.h" />
+    <ClInclude Include="Source\World\World.h" />
     <ClInclude Include="Source\Render\RayTracingRuntime.h" />
     <ClInclude Include="Source\Render\SkyAtmosphere.h" />
     <ClInclude Include="Source\Render\TextureLoader.h" />

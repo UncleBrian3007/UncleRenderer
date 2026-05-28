@@ -677,7 +677,7 @@ void FDeferredBasePass::AddShadowPass(FDeferredPassContext& Context) const
         for (size_t ModelIndex = 0; ModelIndex < Owner.SceneModels.size(); ++ModelIndex)
         {
             const FSceneModelResource& Model = Owner.SceneModels[ModelIndex];
-            if (Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+            if (Model.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
             {
                 continue;
             }
@@ -693,12 +693,12 @@ void FDeferredBasePass::AddShadowPass(FDeferredPassContext& Context) const
             }
 
             const FSceneModelResource& Model = Owner.SceneModels[ModelIndex];
-            if (Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+            if (Model.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
             {
                 continue;
             }
             const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) && Model.BoneMatrixCount > 0;
-            SetShadowPipeline(bUseSkinning, Model.bDoubleSided);
+            SetShadowPipeline(bUseSkinning, Model.Material.bDoubleSided);
             SetBasePassEmptyBindlessIndices(LocalCommandList);
             BindBasePassPerModelConstants(LocalCommandList, Owner, ModelIndex, Model);
             DrawModelInstanced(LocalCommandList, Model);
@@ -770,8 +770,8 @@ void FDeferredBasePass::AddDepthPrepass(FDeferredPassContext& Context) const
             }
 
             const FSceneModelResource& Model = Owner.SceneModels[ModelIndex];
-            if (Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask)
-                || Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+            if (Model.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask)
+                || Model.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
             {
                 continue;
             }
@@ -780,7 +780,7 @@ void FDeferredBasePass::AddDepthPrepass(FDeferredPassContext& Context) const
                 continue;
             }
             const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) && Model.BoneMatrixCount > 0;
-            ID3D12PipelineState* DesiredPipeline = bUseSkinning ? DepthPrepassPipelinesSkinned[Model.bDoubleSided ? 1u : 0u].Get() : DepthPrepassPipelines[Model.bDoubleSided ? 1u : 0u].Get();
+            ID3D12PipelineState* DesiredPipeline = bUseSkinning ? DepthPrepassPipelinesSkinned[Model.Material.bDoubleSided ? 1u : 0u].Get() : DepthPrepassPipelines[Model.Material.bDoubleSided ? 1u : 0u].Get();
             if (DesiredPipeline != CurrentPipeline)
             {
                 CurrentPipeline = DesiredPipeline;
@@ -935,7 +935,7 @@ void FDeferredBasePass::AddBasePass(FDeferredPassContext& Context, bool bClearTa
                     }
 
                     const FSceneModelResource& Model = Owner.SceneModels[ModelIndex];
-                    if (Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+                    if (Model.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
                     {
                         continue;
                     }
@@ -973,7 +973,7 @@ void FDeferredBasePass::AddBasePass(FDeferredPassContext& Context, bool bClearTa
                 }
 
                 const FSceneModelResource& Model = Owner.SceneModels[ModelIndex];
-                if (Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+                if (Model.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
                 {
                     continue;
                 }
@@ -1079,7 +1079,7 @@ void FDeferredBasePass::AddVelocityPass(FDeferredPassContext& Context) const
             }
 
             const FSceneModelResource& Model = Owner.SceneModels[ModelIndex];
-            if (Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+            if (Model.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
             {
                 continue;
             }
@@ -1098,9 +1098,9 @@ void FDeferredBasePass::AddVelocityPass(FDeferredPassContext& Context) const
                 continue;
             }
 
-            const bool bUseAlphaMask = Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask);
+            const bool bUseAlphaMask = Model.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask);
             const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) && Model.BoneMatrixCount > 0;
-            const uint32_t PipelineIndex = (bUseAlphaMask ? 1u : 0u) | (Model.bDoubleSided ? 2u : 0u);
+            const uint32_t PipelineIndex = (bUseAlphaMask ? 1u : 0u) | (Model.Material.bDoubleSided ? 2u : 0u);
             ID3D12PipelineState* Pipeline = bUseSkinning ? VelocityPipelinesSkinned[PipelineIndex].Get() : VelocityPipelines[PipelineIndex].Get();
 
             LocalCommandList->SetPipelineState(Pipeline);

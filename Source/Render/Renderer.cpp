@@ -77,7 +77,14 @@ D3D12_GPU_DESCRIPTOR_HANDLE FRenderer::GetBindlessGpuHandle(uint32_t Index) cons
 
 bool FRenderer::GetSceneModelStats(size_t& OutTotal, size_t& OutCulled) const
 {
-    return ::ComputeSceneModelStats(SceneModels, SceneModelVisibility, OutTotal, OutCulled);
+    const std::vector<FSceneModelResource>* Models = GetSceneModels();
+    if (!Models)
+    {
+        OutTotal = 0;
+        OutCulled = 0;
+        return false;
+    }
+    return ::ComputeSceneModelStats(*Models, SceneModelVisibility, OutTotal, OutCulled);
 }
 
 
@@ -139,6 +146,8 @@ FRayTracingRuntime& FRenderer::GetRayTracingRuntime()
 
 void FRenderer::InitializeCommonSettings(uint32_t Width, uint32_t Height, const FRendererConfig& Config)
 {
+    World.LinkSceneModels(&SceneModels);
+
     if (!RayTracingRuntime)
     {
         RayTracingRuntime = std::make_unique<FRayTracingRuntime>();
@@ -724,7 +733,7 @@ bool FRenderer::PrepareGpuDrivenDrawData(FGpuDrivenPreparedData& OutData)
     size_t TotalCommandCount = 0;
     for (const FSceneModelResource& Model : SceneModels)
     {
-        if (Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+        if (Model.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
         {
             continue;
         }
@@ -751,7 +760,7 @@ bool FRenderer::PrepareGpuDrivenDrawData(FGpuDrivenPreparedData& OutData)
     {
         const FSceneModelResource& Model = SceneModels[SortedIndex];
         const uint32_t PipelineKey = Model.PipelineKey;
-        if (Model.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+        if (Model.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
         {
             continue;
         }
@@ -815,7 +824,7 @@ bool FRenderer::PrepareGpuDrivenDrawData(FGpuDrivenPreparedData& OutData)
                 Command,
                 DrawData,
                 { Center.x, Center.y, Center.z, BoundsData.Radius * ModelScale },
-                { Axis.x, Axis.y, Axis.z, Model.bDoubleSided ? -1.0f : BoundsData.ConeCutoff },
+                { Axis.x, Axis.y, Axis.z, Model.Material.bDoubleSided ? -1.0f : BoundsData.ConeCutoff },
                 { Apex.x, Apex.y, Apex.z, 0.0f });
 
             IndirectDrawRanges.back().Count += 1;
