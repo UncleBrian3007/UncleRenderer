@@ -11,7 +11,8 @@
 class FDX12CommandContext;
 class FDX12Device;
 class FRenderer;
-struct FSceneModelResource;
+class FWorld;
+struct FMeshSection;
 
 class FRayTracingRuntime
 {
@@ -26,7 +27,7 @@ public:
     };
 
     bool CreatePipeline(FRenderer& Owner, FDX12Device* Device);
-    static bool BuildSceneModelBlas(FDX12Device* Device, std::vector<FSceneModelResource>& Models);
+    static bool BuildSceneBlas(FDX12Device* Device, FWorld& World);
     void UpdateBlasRefit(FRenderer& Owner, FDX12CommandContext& CmdContext);
     void BuildTlas(FRenderer& Owner, FDX12CommandContext& CmdContext);
     uint32_t UpdateDepthSrv(FRenderer& Owner, uint32_t FrameIndex, ID3D12Resource* DepthBuffer);

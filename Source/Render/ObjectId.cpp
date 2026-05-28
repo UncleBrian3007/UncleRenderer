@@ -9,7 +9,7 @@
 #include "DeferredRenderer.h"
 #include "RenderGraph.h"
 #include "RendererUtils.h"
-#include "SceneModelResource.h"
+#include "../World/MeshSection.h"
 #include "ShaderCompiler.h"
 #include "../Core/GpuDebugMarkers.h"
 #include "../RHI/DX12Device.h"
@@ -142,6 +142,7 @@ void FObjectId::AddPass(FDeferredPassContext& Context) const
         {
             return;
         }
+        const std::vector<FDrawSectionView>& DrawSections = Owner.GetWorld().GetDrawSectionViews();
 
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
 
@@ -159,43 +160,46 @@ void FObjectId::AddPass(FDeferredPassContext& Context) const
         const UINT ClearValue[4] = { 0, 0, 0, 0 };
         LocalCommandList->ClearRenderTargetView(ObjectId->GetRtvHandle(), reinterpret_cast<const float*>(ClearValue), 0, nullptr);
 
-        for (size_t ModelIndex = 0; ModelIndex < Owner.SceneModels.size(); ++ModelIndex)
+        for (const FDrawSectionView& DrawSection : DrawSections)
         {
-            const FSceneModelResource& Model = Owner.SceneModels[ModelIndex];
-            const uint64_t ConstantBufferOffset = Owner.SceneConstantBufferStride * ModelIndex;
-            Owner.UpdateSceneConstants(*Data.Camera, Model, ModelIndex, ConstantBufferOffset);
+            const uint32_t DrawSectionIndex = DrawSection.DrawSectionIndex;
+            const FMeshSection& Section = *DrawSection.Section;
+            const uint64_t ConstantBufferOffset = Owner.SceneConstantBufferStride * DrawSectionIndex;
+            Owner.UpdateSceneConstants(*Data.Camera, Section, DrawSectionIndex, ConstantBufferOffset);
         }
 
-        for (size_t ModelIndex = 0; ModelIndex < Owner.SceneModels.size(); ++ModelIndex)
+        for (const FDrawSectionView& DrawSection : DrawSections)
         {
-            if (!Owner.SceneModelVisibility.empty() && !Owner.SceneModelVisibility[ModelIndex])
+            const uint32_t DrawSectionIndex = DrawSection.DrawSectionIndex;
+            if (!DrawSection.Section->bVisible)
             {
                 continue;
             }
 
-            const FSceneModelResource& Model = Owner.SceneModels[ModelIndex];
-            if (Model.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+            const FMeshSection& Section = *DrawSection.Section;
+            const FSectionRenderData& RenderData = DrawSection.Section->GetRenderData();
+            if (RenderData.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
             {
                 continue;
             }
-            const uint64_t ConstantBufferOffset = Owner.SceneConstantBufferStride * ModelIndex;
+            const uint64_t ConstantBufferOffset = Owner.SceneConstantBufferStride * DrawSectionIndex;
 
-            LocalCommandList->IASetVertexBuffers(0, Model.Geometry.VertexBufferCount, Model.Geometry.VertexBufferViews.data());
-            LocalCommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
+            LocalCommandList->IASetVertexBuffers(0, RenderData.Geometry.VertexBufferCount, RenderData.Geometry.VertexBufferViews.data());
+            LocalCommandList->IASetIndexBuffer(&RenderData.Geometry.IndexBufferView);
 
             const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = Owner.GetSceneConstantBufferAddress();
             LocalCommandList->SetGraphicsRootConstantBufferView(0, ConstantBufferAddress + ConstantBufferOffset);
-            LocalCommandList->SetGraphicsRoot32BitConstants(1, 1, &Model.ObjectId, 0);
+            LocalCommandList->SetGraphicsRoot32BitConstants(1, 1, &Section.ObjectId, 0);
 
-            if (AreModelPixEventsEnabled())
+            if (AreSectionPixEventsEnabled())
             {
-                const std::wstring ModelLabel = Model.Name.empty() ? L"Model" : std::wstring(Model.Name.begin(), Model.Name.end());
-                FScopedPixEvent ModelEvent(LocalCommandList, ModelLabel.c_str());
-                LocalCommandList->DrawIndexedInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0, 0);
+                const std::wstring SectionLabel = Section.Name.empty() ? L"Section" : std::wstring(Section.Name.begin(), Section.Name.end());
+                FScopedPixEvent ModelEvent(LocalCommandList, SectionLabel.c_str());
+                LocalCommandList->DrawIndexedInstanced(RenderData.DrawIndexCount, 1, RenderData.DrawIndexStart, 0, 0);
             }
             else
             {
-                LocalCommandList->DrawIndexedInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0, 0);
+                LocalCommandList->DrawIndexedInstanced(RenderData.DrawIndexCount, 1, RenderData.DrawIndexStart, 0, 0);
             }
         }
 

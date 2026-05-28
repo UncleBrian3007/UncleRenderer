@@ -77,7 +77,7 @@ struct FRendererConfig
     bool bLogMeshOptimizationStats = false;
     bool bEnableGraphDump = false;
     bool bEnableGpuTiming = false;
-    bool bEnableModelPixEvents = true;
+    bool bEnableSectionPixEvents = true;
     float LightYaw = -1.19028997f;
     float LightPitch = -1.07681236f;
     float LightIntensity = 1.0f;

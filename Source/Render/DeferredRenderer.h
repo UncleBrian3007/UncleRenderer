@@ -93,7 +93,7 @@ public:
     bool IsClusterDagFastShaderEnabled() const override;
     bool IsClusterDagDebugEnabled() const override;
     EClusterDAGTraversalMode GetClusterDagTraversalMode() const override;
-    bool ShouldUseClusterDagRuntimePath(const FSceneModelResource& Model) const override;
+    bool ShouldUseClusterDagRuntimePath(const FMeshSection& Section) const override;
     bool IsClusterDagRuntimePathReady() const;
     bool IsClusterDagVisibilityPathReady() const;
     FClusterDagStreamingManager* GetClusterDagStreamingManager() const { return ClusterDagStreamingManager.get(); }
@@ -168,7 +168,7 @@ private:
     bool InitializeEnvironmentAndDescriptorResources(FDX12Device* Device, const FRendererConfig& Config);
     bool InitializeGpuDebugResources(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
     bool CreateClusterDagSceneConstantBuffersPerFrame(FDX12Device* Device, uint32_t ModelCount);
-    bool CreateSceneTextures(FDX12Device* Device, std::vector<FSceneModelResource>& Models);
+    bool CreateSceneTextures(FDX12Device* Device, FWorld& World);
     bool CreateGpuDrivenResources(FDX12Device* Device);
 
     // Frame rendering
@@ -178,10 +178,11 @@ private:
     void UpdateCullingVisibility(const FCamera& Camera);
 
     // Scene constants
-    void WriteSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, uint64_t ConstantBufferOffset, uint8_t* ConstantBufferMapped, bool bUseClusterDagIndexBuffer);
-    void UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, size_t ModelIndex, uint64_t ConstantBufferOffset, bool bUseClusterDagIndexBuffer = false);
-    void UpdateClusterDagSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, size_t ModelIndex, uint64_t ConstantBufferOffset);
+    void WriteSceneConstants(const FCamera& Camera, const FMeshSection& Section, uint64_t ConstantBufferOffset, uint8_t* ConstantBufferMapped, bool bUseClusterDagIndexBuffer);
+    void UpdateSceneConstants(const FCamera& Camera, const FMeshSection& Section, size_t DrawSectionIndex, uint64_t ConstantBufferOffset, bool bUseClusterDagIndexBuffer = false);
+    void UpdateClusterDagSceneConstants(const FCamera& Camera, const FMeshSection& Section, size_t DrawSectionIndex, uint64_t ConstantBufferOffset);
     void EnsureClusterDagSceneConstantsPrepared(const FCamera& Camera);
+    void EnsureClusterDagDebugColorBuffers();
     uint8_t* GetClusterDagSceneConstantBufferMapped() const;
 
     // Config / state helpers

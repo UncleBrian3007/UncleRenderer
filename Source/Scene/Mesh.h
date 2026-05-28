@@ -61,9 +61,7 @@ public:
     const std::vector<FPrimitive>& GetPrimitives() const { return Primitives; }
     const FMeshletGroup* GetMeshletGroup(size_t Index) const;
     size_t GetMeshletGroupCount() const { return MeshletGroups.size(); }
-    const FClusterDAG* GetClusterDAG(size_t Index) const;
-    const std::vector<FClusterDAG>& GetClusterDAGs() const { return ClusterDAGs; }
-    size_t GetClusterDAGCount() const { return ClusterDAGs.size(); }
+    const FClusterDAG* GetClusterDAG() const;
     bool HasMeshlets() const;
     bool HasClusterDAGs() const;
     static void SetOptimizationStatsLoggingEnabled(bool bEnabled);
@@ -71,7 +69,7 @@ public:
 
     void SetMeshletIndexingAllowed(bool bAllowed) { bAllowMeshletIndexing = bAllowed; }
     bool IsMeshletIndexingAllowed() const { return bAllowMeshletIndexing; }
-    void SetClusterDAGs(std::vector<FClusterDAG>&& InClusterDAGs) { ClusterDAGs = std::move(InClusterDAGs); }
+    void SetClusterDAG(FClusterDAG&& InClusterDAG) { ClusterDAG = std::move(InClusterDAG); }
 
     static FMesh CreateCube(float Size = 1.0f);
     static FMesh CreateSphere(float Radius = 1.0f, uint32_t SliceCount = 32, uint32_t StackCount = 16);
@@ -86,6 +84,6 @@ public:
 private:
     std::vector<FPrimitive> Primitives;
     std::vector<FMeshletGroup> MeshletGroups;
-    std::vector<FClusterDAG> ClusterDAGs;
+    FClusterDAG ClusterDAG;
     bool bAllowMeshletIndexing = false;
 };

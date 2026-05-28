@@ -25,6 +25,10 @@ constexpr uint32_t kSkinningConstantsDwordCount = 6;
 
 
 
+FRenderer::FRenderer()
+{
+}
+
 FRenderer::~FRenderer()
 {
 }
@@ -75,16 +79,19 @@ D3D12_GPU_DESCRIPTOR_HANDLE FRenderer::GetBindlessGpuHandle(uint32_t Index) cons
     return Handle;
 }
 
-bool FRenderer::GetSceneModelStats(size_t& OutTotal, size_t& OutCulled) const
+bool FRenderer::GetSceneSectionStats(size_t& OutTotal, size_t& OutCulled) const
 {
-    const std::vector<FSceneModelResource>* Models = GetSceneModels();
-    if (!Models)
+    const std::vector<FConstDrawSectionView>& DrawSections = World.GetDrawSectionViews();
+    OutTotal = DrawSections.size();
+    OutCulled = 0;
+    for (const FConstDrawSectionView& DrawSection : DrawSections)
     {
-        OutTotal = 0;
-        OutCulled = 0;
-        return false;
+        if (DrawSection.Section && !DrawSection.Section->bVisible)
+        {
+            ++OutCulled;
+        }
     }
-    return ::ComputeSceneModelStats(*Models, SceneModelVisibility, OutTotal, OutCulled);
+    return true;
 }
 
 
@@ -146,8 +153,6 @@ FRayTracingRuntime& FRenderer::GetRayTracingRuntime()
 
 void FRenderer::InitializeCommonSettings(uint32_t Width, uint32_t Height, const FRendererConfig& Config)
 {
-    World.LinkSceneModels(&SceneModels);
-
     if (!RayTracingRuntime)
     {
         RayTracingRuntime = std::make_unique<FRayTracingRuntime>();
@@ -534,40 +539,41 @@ void FRenderer::DispatchGpuCulling(
 bool FRenderer::CreateSkinnedPositionBuffers()
 {
     bool bAllReady = true;
-    for (FSceneModelResource& Model : SceneModels)
+    for (const FDrawSectionView& DrawSection : GetWorld().GetDrawSectionViews())
     {
-        if (!IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) || Model.BoneMatrixCount == 0)
+        FMeshSection& Section = *DrawSection.Section;
+        if (!IsValidBindlessIndex(Section.BoneMatrixBuffer.SrvBindlessIndex) || Section.BoneMatrixCount == 0)
         {
             continue;
         }
 
-        const uint32_t VertexStride = Model.Geometry.VertexBufferViews[0].StrideInBytes;
+        const uint32_t VertexStride = Section.Geometry.VertexBufferViews[kMeshVertexStreamPosition].StrideInBytes;
         const uint32_t VertexCount = VertexStride > 0
-            ? (Model.Geometry.VertexBufferViews[0].SizeInBytes / VertexStride)
+            ? (Section.Geometry.VertexBufferViews[kMeshVertexStreamPosition].SizeInBytes / VertexStride)
             : 0;
         if (VertexCount == 0)
         {
             continue;
         }
 
-        Model.SkinnedPositionBuffers.resize(FramesInFlight);
+        Section.SkinnedPositionBuffers.resize(FramesInFlight);
         for (uint32_t FrameIndex = 0; FrameIndex < FramesInFlight; ++FrameIndex)
         {
             CreateBindlessBuffer(Device,
                 L"SkinnedPositionBuffer_" + std::to_wstring(FrameIndex),
                 CreateStructuredBufferDesc<FFloat3>(VertexCount),
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                Model.SkinnedPositionBuffers[FrameIndex],
+                Section.SkinnedPositionBuffers[FrameIndex],
                 true, true);
         }
 
         bool bReady = true;
         for (uint32_t FrameIndex = 0; FrameIndex < FramesInFlight; ++FrameIndex)
         {
-            bReady = bReady && Model.SkinnedPositionBuffers[FrameIndex].IsFullyBound();
+            bReady = bReady && Section.SkinnedPositionBuffers[FrameIndex].IsFullyBound();
         }
 
-        Model.bUseSkinning = Model.bUseSkinning && bReady;
+        Section.bUseSkinning = Section.bUseSkinning && bReady;
         bAllReady = bAllReady && bReady;
     }
 
@@ -576,8 +582,12 @@ bool FRenderer::CreateSkinnedPositionBuffers()
 
 void FRenderer::DispatchSkinning(FDX12CommandContext& CmdContext, const DirectX::XMMATRIX& LightViewProjection)
 {
-    SceneModelSkinningVisibility.assign(SceneModels.size(), false);
-    if (SceneModels.empty())
+    const std::vector<FDrawSectionView>& DrawSections = GetWorld().GetDrawSectionViews();
+    for (const FDrawSectionView& DrawSection : DrawSections)
+    {
+        DrawSection.Section->bSkinningVisible = false;
+    }
+    if (DrawSections.empty())
     {
         return;
     }
@@ -588,33 +598,33 @@ void FRenderer::DispatchSkinning(FDX12CommandContext& CmdContext, const DirectX:
     RendererUtils::BuildFrustumPlanesFromMatrix(LightViewProjection, LightPlanes);
 
     bool bHasVisibleSkinning = false;
-    for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+    for (const FDrawSectionView& DrawSection : DrawSections)
     {
-        FSceneModelResource& Model = SceneModels[ModelIndex];
-        const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) && Model.BoneMatrixCount > 0
-            && FrameIndex < Model.SkinnedPositionBuffers.size();
+        FMeshSection& Section = *DrawSection.Section;
+        const bool bUseSkinning = IsValidBindlessIndex(Section.BoneMatrixBuffer.SrvBindlessIndex) && Section.BoneMatrixCount > 0
+            && FrameIndex < Section.SkinnedPositionBuffers.size();
 
         if (bUseSkinning)
         {
-            const uint32_t SlotToUse = (Model.bSkinningUpdatedThisFrame || Model.LastSkinnedSlot == UINT32_MAX)
+            const uint32_t SlotToUse = (Section.bSkinningUpdatedThisFrame || Section.LastSkinnedSlot == UINT32_MAX)
                 ? FrameIndex
-                : Model.LastSkinnedSlot;
-            Model.SkinnedPositionBuffer = Model.SkinnedPositionBuffers[SlotToUse];
+                : Section.LastSkinnedSlot;
+            Section.SkinnedPositionBuffer = Section.SkinnedPositionBuffers[SlotToUse];
         }
         else
         {
-            Model.SkinnedPositionBuffer = {};
+            Section.SkinnedPositionBuffer = {};
         }
 
-        if (!bUseSkinning || !Model.SkinnedPositionBuffer || !IsValidBindlessIndex(Model.SkinnedPositionBuffer.UavBindlessIndex))
+        if (!bUseSkinning || !Section.SkinnedPositionBuffer || !IsValidBindlessIndex(Section.SkinnedPositionBuffer.UavBindlessIndex))
         {
             continue;
         }
 
-        const bool bCameraVisible = SceneModelVisibility.empty() ? true : SceneModelVisibility[ModelIndex];
-        const bool bShadowVisible = RendererUtils::IsAabbInCameraFrustum(LightPlanes, Model.BoundsMin, Model.BoundsMax);
+        const bool bCameraVisible = Section.bVisible;
+        const bool bShadowVisible = RendererUtils::IsAabbInCameraFrustum(LightPlanes, Section.BoundsMin, Section.BoundsMax);
         const bool bVisible = bCameraVisible || bShadowVisible;
-        SceneModelSkinningVisibility[ModelIndex] = bVisible;
+        Section.bSkinningVisible = bVisible;
         bHasVisibleSkinning = bHasVisibleSkinning || bVisible;
     }
 
@@ -640,52 +650,53 @@ void FRenderer::DispatchSkinning(FDX12CommandContext& CmdContext, const DirectX:
     CommandList->SetComputeRootSignature(SkinningRootSignature.Get());
     CommandList->SetPipelineState(SkinningPipeline.Get());
 
-    for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+    for (const FDrawSectionView& DrawSection : DrawSections)
     {
-        FSceneModelResource& Model = SceneModels[ModelIndex];
-        const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) && Model.BoneMatrixCount > 0
-            && FrameIndex < Model.SkinnedPositionBuffers.size();
-        if (!bUseSkinning || !SceneModelSkinningVisibility[ModelIndex])
+        FMeshSection& Section = *DrawSection.Section;
+        const bool bUseSkinning = IsValidBindlessIndex(Section.BoneMatrixBuffer.SrvBindlessIndex) && Section.BoneMatrixCount > 0
+            && FrameIndex < Section.SkinnedPositionBuffers.size();
+        if (!bUseSkinning || !Section.bSkinningVisible)
         {
             continue;
         }
 
-        if (!Model.bSkinningUpdatedThisFrame && Model.LastSkinnedSlot != UINT32_MAX)
+        if (!Section.bSkinningUpdatedThisFrame && Section.LastSkinnedSlot != UINT32_MAX)
         {
             continue;
         }
 
-        ID3D12Resource* SkinnedBuffer = Model.SkinnedPositionBuffers[FrameIndex].Get();
+        ID3D12Resource* SkinnedBuffer = Section.SkinnedPositionBuffers[FrameIndex].Get();
         if (!SkinnedBuffer)
         {
             continue;
         }
 
-        const uint32_t VertexStride = Model.Geometry.VertexBufferViews[0].StrideInBytes;
+        const uint32_t VertexStride = Section.Geometry.VertexBufferViews[kMeshVertexStreamPosition].StrideInBytes;
         const uint32_t VertexCount = VertexStride > 0
-            ? (Model.Geometry.VertexBufferViews[0].SizeInBytes / VertexStride)
+            ? (Section.Geometry.VertexBufferViews[kMeshVertexStreamPosition].SizeInBytes / VertexStride)
             : 0;
         if (VertexCount == 0)
         {
             continue;
         }
 
-        if (Model.SkinnedPositionBuffers[FrameIndex].State != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+        if (Section.SkinnedPositionBuffers[FrameIndex].State != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
         {
-            const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(SkinnedBuffer, Model.SkinnedPositionBuffers[FrameIndex].State, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(SkinnedBuffer, Section.SkinnedPositionBuffers[FrameIndex].State, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             CommandList->ResourceBarrier(1, &Barrier);
-            Model.SkinnedPositionBuffers[FrameIndex].State = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+            Section.SkinnedPositionBuffers[FrameIndex].State = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
         }
 
         const uint32_t Constants[kSkinningConstantsDwordCount] =
         {
             VertexCount,
-            Model.Geometry.VertexBuffers[0].SrvBindlessIndex,
-            Model.Geometry.VertexBuffers[5].SrvBindlessIndex,
-            Model.Geometry.VertexBuffers[6].SrvBindlessIndex,
-            Model.BoneMatrixBuffer.SrvBindlessIndex,
-            Model.SkinnedPositionBuffer.UavBindlessIndex
+            Section.Geometry.VertexBuffers[kMeshVertexStreamPosition].SrvBindlessIndex,
+            Section.Geometry.VertexBuffers[kMeshVertexStreamJoints].SrvBindlessIndex,
+            Section.Geometry.VertexBuffers[kMeshVertexStreamWeights].SrvBindlessIndex,
+            Section.BoneMatrixBuffer.SrvBindlessIndex,
+            Section.SkinnedPositionBuffer.UavBindlessIndex
         };
+
         CommandList->SetComputeRoot32BitConstants(0, _countof(Constants), Constants, 0);
 
         const uint32_t DispatchCount = (VertexCount + 63) / 64;
@@ -696,59 +707,57 @@ void FRenderer::DispatchSkinning(FDX12CommandContext& CmdContext, const DirectX:
 
         const auto Barrier = CD3DX12_RESOURCE_BARRIER::Transition(SkinnedBuffer, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         CommandList->ResourceBarrier(1, &Barrier);
-        Model.SkinnedPositionBuffers[FrameIndex].State = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-        Model.LastSkinnedSlot = FrameIndex;
+        Section.SkinnedPositionBuffers[FrameIndex].State = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        Section.LastSkinnedSlot = FrameIndex;
     }
 }
 
 
 bool FRenderer::PrepareGpuDrivenDrawData(FGpuDrivenPreparedData& OutData)
 {
-    if (SceneModels.empty() || !GetSceneConstantBuffer())
+    const std::vector<FDrawSectionView>& DrawSections = GetWorld().GetDrawSectionViews();
+    if (DrawSections.empty() || !GetSceneConstantBuffer())
     {
         return false;
     }
 
     IndirectDrawRanges.clear();
 
-    std::vector<uint32_t> SortedIndices(SceneModels.size());
-    for (uint32_t Index = 0; Index < SortedIndices.size(); ++Index)
-    {
-        SortedIndices[Index] = Index;
-    }
+    std::vector<FDrawSectionView> SortedSections = DrawSections;
 
-    std::sort(SortedIndices.begin(), SortedIndices.end(), [&](uint32_t A, uint32_t B)
+    std::sort(SortedSections.begin(), SortedSections.end(), [&](const FDrawSectionView& A, const FDrawSectionView& B)
     {
-        const uint32_t KeyA = SceneModels[A].PipelineKey;
-        const uint32_t KeyB = SceneModels[B].PipelineKey;
+        const uint32_t KeyA = A.Section->PipelineKey;
+        const uint32_t KeyB = B.Section->PipelineKey;
         if (KeyA != KeyB)
         {
             return KeyA < KeyB;
         }
-        const RendererUtils::FMaterialBindlessIndices IndicesA = RendererUtils::BuildMaterialBindlessIndices(SceneModels[A]);
-        const RendererUtils::FMaterialBindlessIndices IndicesB = RendererUtils::BuildMaterialBindlessIndices(SceneModels[B]);
+        const RendererUtils::FMaterialBindlessIndices IndicesA = RendererUtils::BuildMaterialBindlessIndices(*A.Section);
+        const RendererUtils::FMaterialBindlessIndices IndicesB = RendererUtils::BuildMaterialBindlessIndices(*B.Section);
         return IndicesA < IndicesB;
     });
 
     size_t TotalCommandCount = 0;
-    for (const FSceneModelResource& Model : SceneModels)
+    for (const FDrawSectionView& DrawSection : DrawSections)
     {
-        if (Model.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+        const FMeshSection& Section = *DrawSection.Section;
+        if (Section.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
         {
             continue;
         }
 
-        if (ShouldUseClusterDagRuntimePath(Model))
+        if (ShouldUseClusterDagRuntimePath(Section))
         {
             continue;
         }
 
-        if (!Model.bUseMeshletCulling || Model.Meshlets.empty() || Model.MeshletBounds.empty())
+        if (!Section.bUseMeshletCulling || Section.Meshlets.empty() || Section.MeshletBounds.empty())
         {
             continue;
         }
 
-        TotalCommandCount += Model.Meshlets.size();
+        TotalCommandCount += Section.Meshlets.size();
     }
 
     OutData.Reserve(TotalCommandCount);
@@ -756,52 +765,53 @@ bool FRenderer::PrepareGpuDrivenDrawData(FGpuDrivenPreparedData& OutData)
     const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferBase = GetSceneConstantBufferAddress();
     uint32_t GroupIndex = 0;
 
-    for (uint32_t SortedIndex : SortedIndices)
+    for (const FDrawSectionView& DrawSection : SortedSections)
     {
-        const FSceneModelResource& Model = SceneModels[SortedIndex];
-        const uint32_t PipelineKey = Model.PipelineKey;
-        if (Model.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+        const FMeshSection& Section = *DrawSection.Section;
+        const uint32_t DrawSectionIndex = DrawSection.DrawSectionIndex;
+        const uint32_t PipelineKey = Section.PipelineKey;
+        if (Section.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
         {
             continue;
         }
 
-        if (ShouldUseClusterDagRuntimePath(Model))
+        if (ShouldUseClusterDagRuntimePath(Section))
         {
             continue;
         }
 
-        if (!Model.bUseMeshletCulling || Model.Meshlets.empty() || Model.MeshletBounds.empty())
+        if (!Section.bUseMeshletCulling || Section.Meshlets.empty() || Section.MeshletBounds.empty())
         {
             continue;
         }
 
-        const RendererUtils::FMaterialBindlessIndices MaterialIndices = RendererUtils::BuildMaterialBindlessIndices(Model);
+        const RendererUtils::FMaterialBindlessIndices MaterialIndices = RendererUtils::BuildMaterialBindlessIndices(Section);
         if (IndirectDrawRanges.empty()
             || IndirectDrawRanges.back().PipelineKey != PipelineKey
             || IndirectDrawRanges.back().MaterialBindlessIndices != MaterialIndices)
         {
             IndirectDrawRanges.push_back(FIndirectDrawRange::Make(
                 static_cast<uint32_t>(OutData.Commands.size()),
-                PipelineKey, MaterialIndices, Model.Name));
+                PipelineKey, MaterialIndices, Section.Name));
         }
 
         const uint32_t RangeIndex = static_cast<uint32_t>(IndirectDrawRanges.size() - 1);
-        const DirectX::XMMATRIX World = DirectX::XMLoadFloat4x4(&Model.WorldMatrix);
+        const DirectX::XMMATRIX World = DirectX::XMLoadFloat4x4(&Section.WorldMatrix);
         const DirectX::XMMATRIX NormalMatrix = DirectX::XMMatrixTranspose(DirectX::XMMatrixInverse(nullptr, World));
-        const float ScaleX = std::sqrt(Model.WorldMatrix._11 * Model.WorldMatrix._11 + Model.WorldMatrix._21 * Model.WorldMatrix._21 + Model.WorldMatrix._31 * Model.WorldMatrix._31);
-        const float ScaleY = std::sqrt(Model.WorldMatrix._12 * Model.WorldMatrix._12 + Model.WorldMatrix._22 * Model.WorldMatrix._22 + Model.WorldMatrix._32 * Model.WorldMatrix._32);
-        const float ScaleZ = std::sqrt(Model.WorldMatrix._13 * Model.WorldMatrix._13 + Model.WorldMatrix._23 * Model.WorldMatrix._23 + Model.WorldMatrix._33 * Model.WorldMatrix._33);
-        const float ModelScale = (std::max)((std::max)(ScaleX, ScaleY), ScaleZ);
+        const float ScaleX = std::sqrt(Section.WorldMatrix._11 * Section.WorldMatrix._11 + Section.WorldMatrix._21 * Section.WorldMatrix._21 + Section.WorldMatrix._31 * Section.WorldMatrix._31);
+        const float ScaleY = std::sqrt(Section.WorldMatrix._12 * Section.WorldMatrix._12 + Section.WorldMatrix._22 * Section.WorldMatrix._22 + Section.WorldMatrix._32 * Section.WorldMatrix._32);
+        const float ScaleZ = std::sqrt(Section.WorldMatrix._13 * Section.WorldMatrix._13 + Section.WorldMatrix._23 * Section.WorldMatrix._23 + Section.WorldMatrix._33 * Section.WorldMatrix._33);
+        const float SectionScale = (std::max)((std::max)(ScaleX, ScaleY), ScaleZ);
 
-        const size_t MeshletCount = (std::min)(Model.Meshlets.size(), Model.MeshletBounds.size());
+        const size_t MeshletCount = (std::min)(Section.Meshlets.size(), Section.MeshletBounds.size());
         for (size_t MeshletIndex = 0; MeshletIndex < MeshletCount; ++MeshletIndex)
         {
-            const FMesh::FMeshlet& Meshlet = Model.Meshlets[MeshletIndex];
-            const FMesh::FMeshletBounds& BoundsData = Model.MeshletBounds[MeshletIndex];
+            const FMesh::FMeshlet& Meshlet = Section.Meshlets[MeshletIndex];
+            const FMesh::FMeshletBounds& BoundsData = Section.MeshletBounds[MeshletIndex];
 
             const FIndirectDrawCommand Command = FIndirectDrawCommand::Make(
-                ConstantBufferBase + SceneConstantBufferStride * SortedIndex,
-                Meshlet.IndexOffset, Meshlet.IndexCount, SortedIndex);
+                ConstantBufferBase + SceneConstantBufferStride * DrawSectionIndex,
+                Meshlet.IndexOffset, Meshlet.IndexCount, DrawSectionIndex);
             const FMeshletDrawData DrawData = FMeshletDrawData::Make(
                 Meshlet.IndexOffset, Meshlet.IndexCount, RangeIndex, GroupIndex);
 
@@ -823,8 +833,8 @@ bool FRenderer::PrepareGpuDrivenDrawData(FGpuDrivenPreparedData& OutData)
             OutData.PushDraw(
                 Command,
                 DrawData,
-                { Center.x, Center.y, Center.z, BoundsData.Radius * ModelScale },
-                { Axis.x, Axis.y, Axis.z, Model.Material.bDoubleSided ? -1.0f : BoundsData.ConeCutoff },
+                { Center.x, Center.y, Center.z, BoundsData.Radius * SectionScale },
+                { Axis.x, Axis.y, Axis.z, Section.Material.bDoubleSided ? -1.0f : BoundsData.ConeCutoff },
                 { Apex.x, Apex.y, Apex.z, 0.0f });
 
             IndirectDrawRanges.back().Count += 1;

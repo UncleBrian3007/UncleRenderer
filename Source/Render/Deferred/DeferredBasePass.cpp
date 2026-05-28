@@ -42,10 +42,10 @@ namespace
         return (bUseSkinning ? 1u : 0u) | (bUseClusterDagDebugView ? 2u : 0u);
     }
 
-    void SetBasePassMaterialBindlessIndices(ID3D12GraphicsCommandList* CommandList, const FSceneModelResource& Model)
+    void SetBasePassMaterialBindlessIndices(ID3D12GraphicsCommandList* CommandList, const FSectionRenderData& RenderData)
     {
         static_assert(kBasePassBindlessDwordCount == RendererUtils::GMaterialBindlessIndexCount);
-        const RendererUtils::FMaterialBindlessIndices BindlessIndices = RendererUtils::BuildMaterialBindlessIndices(Model);
+        const RendererUtils::FMaterialBindlessIndices BindlessIndices = RendererUtils::BuildMaterialBindlessIndices(RenderData);
         CommandList->SetGraphicsRoot32BitConstants(1, static_cast<UINT>(BindlessIndices.size()), BindlessIndices.data(), 0);
     }
 
@@ -55,24 +55,24 @@ namespace
         CommandList->SetGraphicsRoot32BitConstants(1, _countof(BindlessIndices), BindlessIndices, 0);
     }
 
-    void BindBasePassPerModelConstants(ID3D12GraphicsCommandList* CommandList, const FDeferredRenderer& Owner, size_t ModelIndex, const FSceneModelResource& Model)
+    void BindBasePassPerSectionConstants(ID3D12GraphicsCommandList* CommandList, const FDeferredRenderer& Owner, size_t DrawSectionIndex, const FSectionRenderData& RenderData)
     {
         static_assert(kBasePassPerDrawDwordCount >= 1u);
-        CommandList->SetGraphicsRootConstantBufferView(0, Owner.GetSceneConstantBufferAddress() + Owner.GetSceneConstantBufferStride() * ModelIndex);
-        CommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
+        CommandList->SetGraphicsRootConstantBufferView(0, Owner.GetSceneConstantBufferAddress() + Owner.GetSceneConstantBufferStride() * DrawSectionIndex);
+        CommandList->SetGraphicsRoot32BitConstants(2, 1, &RenderData.DrawIndexStart, 0);
     }
 
-    void DrawModelInstanced(ID3D12GraphicsCommandList* CommandList, const FSceneModelResource& Model)
+    void DrawSectionInstanced(ID3D12GraphicsCommandList* CommandList, const FMeshSection& Section, const FSectionRenderData& RenderData)
     {
-        if (AreModelPixEventsEnabled())
+        if (AreSectionPixEventsEnabled())
         {
-            const std::wstring Label = Model.Name.empty() ? L"Model" : std::wstring(Model.Name.begin(), Model.Name.end());
+            const std::wstring Label = Section.Name.empty() ? L"Section" : std::wstring(Section.Name.begin(), Section.Name.end());
             FScopedPixEvent Event(CommandList, Label.c_str());
-            CommandList->DrawInstanced(Model.DrawIndexCount, 1, 0, 0);
+            CommandList->DrawInstanced(RenderData.DrawIndexCount, 1, 0, 0);
         }
         else
         {
-            CommandList->DrawInstanced(Model.DrawIndexCount, 1, 0, 0);
+            CommandList->DrawInstanced(RenderData.DrawIndexCount, 1, 0, 0);
         }
     }
 }
@@ -638,6 +638,7 @@ void FDeferredBasePass::AddShadowPass(FDeferredPassContext& Context) const
         {
             return;
         }
+        const std::vector<FDrawSectionView>& DrawSections = Owner.GetWorld().GetDrawSectionViews();
 
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
 
@@ -663,45 +664,49 @@ void FDeferredBasePass::AddShadowPass(FDeferredPassContext& Context) const
         LocalCommandList->RSSetScissorRects(1, &Owner.ShadowScissor);
         LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         LocalCommandList->OMSetRenderTargets(0, nullptr, FALSE, &Owner.ShadowDSVHandle);
-
         std::vector<bool> ShadowVisibility;
-        ShadowVisibility.resize(Owner.SceneModels.size(), true);
+        ShadowVisibility.resize(DrawSections.size(), false);
         DirectX::XMVECTOR ShadowPlanes[6] = {};
         RendererUtils::BuildFrustumPlanesFromMatrix(Data.LightViewProjection, ShadowPlanes);
-        for (size_t ModelIndex = 0; ModelIndex < Owner.SceneModels.size(); ++ModelIndex)
+        for (const FDrawSectionView& DrawSection : DrawSections)
         {
-            const FSceneModelResource& Model = Owner.SceneModels[ModelIndex];
-            ShadowVisibility[ModelIndex] = RendererUtils::IsAabbInCameraFrustum(ShadowPlanes, Model.BoundsMin, Model.BoundsMax);
+            const uint32_t DrawSectionIndex = DrawSection.DrawSectionIndex;
+            const FMeshSection& Section = *DrawSection.Section;
+            ShadowVisibility[DrawSectionIndex] = RendererUtils::IsAabbInCameraFrustum(ShadowPlanes, Section.BoundsMin, Section.BoundsMax);
         }
 
-        for (size_t ModelIndex = 0; ModelIndex < Owner.SceneModels.size(); ++ModelIndex)
+        for (const FDrawSectionView& DrawSection : DrawSections)
         {
-            const FSceneModelResource& Model = Owner.SceneModels[ModelIndex];
-            if (Model.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+            const uint32_t DrawSectionIndex = DrawSection.DrawSectionIndex;
+            const FMeshSection& Section = *DrawSection.Section;
+            const FSectionRenderData& RenderData = DrawSection.Section->GetRenderData();
+            if (RenderData.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
             {
                 continue;
             }
-            const uint64_t ConstantBufferOffset = Owner.SceneConstantBufferStride * ModelIndex;
-            Owner.UpdateSceneConstants(*Data.Camera, Model, ModelIndex, ConstantBufferOffset);
+            const uint64_t ConstantBufferOffset = Owner.SceneConstantBufferStride * DrawSectionIndex;
+            Owner.UpdateSceneConstants(*Data.Camera, Section, DrawSectionIndex, ConstantBufferOffset);
         }
 
-        for (size_t ModelIndex = 0; ModelIndex < Owner.SceneModels.size(); ++ModelIndex)
+        for (const FDrawSectionView& DrawSection : DrawSections)
         {
-            if (!ShadowVisibility[ModelIndex])
+            const uint32_t DrawSectionIndex = DrawSection.DrawSectionIndex;
+            if (!ShadowVisibility[DrawSectionIndex])
             {
                 continue;
             }
 
-            const FSceneModelResource& Model = Owner.SceneModels[ModelIndex];
-            if (Model.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+            const FMeshSection& Section = *DrawSection.Section;
+            const FSectionRenderData& RenderData = DrawSection.Section->GetRenderData();
+            if (RenderData.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
             {
                 continue;
             }
-            const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) && Model.BoneMatrixCount > 0;
-            SetShadowPipeline(bUseSkinning, Model.Material.bDoubleSided);
+            const bool bUseSkinning = IsValidBindlessIndex(Section.BoneMatrixBuffer.SrvBindlessIndex) && Section.BoneMatrixCount > 0;
+            SetShadowPipeline(bUseSkinning, RenderData.Material.bDoubleSided);
             SetBasePassEmptyBindlessIndices(LocalCommandList);
-            BindBasePassPerModelConstants(LocalCommandList, Owner, ModelIndex, Model);
-            DrawModelInstanced(LocalCommandList, Model);
+            BindBasePassPerSectionConstants(LocalCommandList, Owner, DrawSectionIndex, RenderData);
+            DrawSectionInstanced(LocalCommandList, Section, RenderData);
         }
     });
 }
@@ -731,6 +736,7 @@ void FDeferredBasePass::AddDepthPrepass(FDeferredPassContext& Context) const
         {
             return;
         }
+        const std::vector<FDrawSectionView>& DrawSections = Owner.GetWorld().GetDrawSectionViews();
 
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
 
@@ -750,45 +756,48 @@ void FDeferredBasePass::AddDepthPrepass(FDeferredPassContext& Context) const
 
         const bool bClusterDagRuntimePathReady = Owner.IsClusterDagRuntimePathReady();
         Owner.EnsureClusterDagSceneConstantsPrepared(*Data.Camera);
-        for (size_t ModelIndex = 0; ModelIndex < Owner.SceneModels.size(); ++ModelIndex)
+        for (const FDrawSectionView& DrawSection : DrawSections)
         {
-            const FSceneModelResource& Model = Owner.SceneModels[ModelIndex];
-            const uint64_t ConstantBufferOffset = Owner.SceneConstantBufferStride * ModelIndex;
-            const bool bUseClusterDagIndexBuffer = bClusterDagRuntimePathReady && Owner.ClusterDagRuntime->UsesRuntimePath(Model);
+            const uint32_t DrawSectionIndex = DrawSection.DrawSectionIndex;
+            const FMeshSection& Section = *DrawSection.Section;
+            const uint64_t ConstantBufferOffset = Owner.SceneConstantBufferStride * DrawSectionIndex;
+            const bool bUseClusterDagIndexBuffer = bClusterDagRuntimePathReady && Owner.ClusterDagRuntime->UsesRuntimeSection(Section);
             if (!bUseClusterDagIndexBuffer)
             {
-                Owner.UpdateSceneConstants(*Data.Camera, Model, ModelIndex, ConstantBufferOffset);
+                Owner.UpdateSceneConstants(*Data.Camera, Section, DrawSectionIndex, ConstantBufferOffset);
             }
         }
 
         ID3D12PipelineState* CurrentPipeline = nullptr;
-        for (size_t ModelIndex = 0; ModelIndex < Owner.SceneModels.size(); ++ModelIndex)
+        for (const FDrawSectionView& DrawSection : DrawSections)
         {
-            if (!Owner.SceneModelVisibility.empty() && !Owner.SceneModelVisibility[ModelIndex])
+            const uint32_t DrawSectionIndex = DrawSection.DrawSectionIndex;
+            if (!DrawSection.Section->bVisible)
             {
                 continue;
             }
 
-            const FSceneModelResource& Model = Owner.SceneModels[ModelIndex];
-            if (Model.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask)
-                || Model.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+            const FMeshSection& Section = *DrawSection.Section;
+            const FSectionRenderData& RenderData = DrawSection.Section->GetRenderData();
+            if (RenderData.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask)
+                || RenderData.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
             {
                 continue;
             }
-            if (bClusterDagRuntimePathReady && Owner.ClusterDagRuntime->UsesRuntimePath(Model))
+            if (bClusterDagRuntimePathReady && Owner.ClusterDagRuntime->UsesRuntimeSection(Section))
             {
                 continue;
             }
-            const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) && Model.BoneMatrixCount > 0;
-            ID3D12PipelineState* DesiredPipeline = bUseSkinning ? DepthPrepassPipelinesSkinned[Model.Material.bDoubleSided ? 1u : 0u].Get() : DepthPrepassPipelines[Model.Material.bDoubleSided ? 1u : 0u].Get();
+            const bool bUseSkinning = IsValidBindlessIndex(Section.BoneMatrixBuffer.SrvBindlessIndex) && Section.BoneMatrixCount > 0;
+            ID3D12PipelineState* DesiredPipeline = bUseSkinning ? DepthPrepassPipelinesSkinned[RenderData.Material.bDoubleSided ? 1u : 0u].Get() : DepthPrepassPipelines[RenderData.Material.bDoubleSided ? 1u : 0u].Get();
             if (DesiredPipeline != CurrentPipeline)
             {
                 CurrentPipeline = DesiredPipeline;
                 LocalCommandList->SetPipelineState(CurrentPipeline);
             }
             SetBasePassEmptyBindlessIndices(LocalCommandList);
-            BindBasePassPerModelConstants(LocalCommandList, Owner, ModelIndex, Model);
-            DrawModelInstanced(LocalCommandList, Model);
+            BindBasePassPerSectionConstants(LocalCommandList, Owner, DrawSectionIndex, RenderData);
+            DrawSectionInstanced(LocalCommandList, Section, RenderData);
         }
     });
 }
@@ -826,6 +835,8 @@ void FDeferredBasePass::AddBasePass(FDeferredPassContext& Context, bool bClearTa
         Builder.WriteTexture(Context.Resources.DepthHandle, D3D12_RESOURCE_STATE_DEPTH_WRITE);
     }, [this, &Owner, PassLabel](const FBasePassData& Data, FDX12CommandContext& Cmd)
     {
+        const std::vector<FDrawSectionView>& DrawSections = Owner.GetWorld().GetDrawSectionViews();
+
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
 
 
@@ -868,14 +879,15 @@ void FDeferredBasePass::AddBasePass(FDeferredPassContext& Context, bool bClearTa
 
         const bool bClusterDagRuntimePathReady = Owner.IsClusterDagRuntimePathReady();
         Owner.EnsureClusterDagSceneConstantsPrepared(*Data.Camera);
-        for (size_t ModelIndex = 0; ModelIndex < Owner.SceneModels.size(); ++ModelIndex)
+        for (const FDrawSectionView& DrawSection : DrawSections)
         {
-            const FSceneModelResource& Model = Owner.SceneModels[ModelIndex];
-            const uint64_t ConstantBufferOffset = Owner.SceneConstantBufferStride * ModelIndex;
-            const bool bUseClusterDagIndexBuffer = bClusterDagRuntimePathReady && Owner.ClusterDagRuntime->UsesRuntimePath(Model);
+            const uint32_t DrawSectionIndex = DrawSection.DrawSectionIndex;
+            const FMeshSection& Section = *DrawSection.Section;
+            const uint64_t ConstantBufferOffset = Owner.SceneConstantBufferStride * DrawSectionIndex;
+            const bool bUseClusterDagIndexBuffer = bClusterDagRuntimePathReady && Owner.ClusterDagRuntime->UsesRuntimeSection(Section);
             if (!bUseClusterDagIndexBuffer)
             {
-                Owner.UpdateSceneConstants(*Data.Camera, Model, ModelIndex, ConstantBufferOffset);
+                Owner.UpdateSceneConstants(*Data.Camera, Section, DrawSectionIndex, ConstantBufferOffset);
             }
         }
 
@@ -913,7 +925,7 @@ void FDeferredBasePass::AddBasePass(FDeferredPassContext& Context, bool bClearTa
 
                 const uint64_t Offset = static_cast<uint64_t>(Range.Start) * sizeof(FIndirectDrawCommand);
                 const uint64_t CountOffset = RangeIndex * sizeof(uint32_t);
-                if (AreModelPixEventsEnabled())
+                if (AreSectionPixEventsEnabled())
                 {
                     const wchar_t* Label = Range.Name.empty() ? L"IndirectDrawRange" : Range.Name.c_str();
                     FScopedPixEvent ModelEvent(LocalCommandList, Label);
@@ -927,72 +939,76 @@ void FDeferredBasePass::AddBasePass(FDeferredPassContext& Context, bool bClearTa
 
             if (!Owner.bEnableSkinningIndirectDraw && Data.bAllowSkinningFallback)
             {
-                for (size_t ModelIndex = 0; ModelIndex < Owner.SceneModels.size(); ++ModelIndex)
+                for (const FDrawSectionView& DrawSection : DrawSections)
                 {
-                    if (!Owner.SceneModelVisibility.empty() && !Owner.SceneModelVisibility[ModelIndex])
+                    const uint32_t DrawSectionIndex = DrawSection.DrawSectionIndex;
+                    if (!DrawSection.Section->bVisible)
                     {
                         continue;
                     }
 
-                    const FSceneModelResource& Model = Owner.SceneModels[ModelIndex];
-                    if (Model.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+                    const FMeshSection& Section = *DrawSection.Section;
+                    const FSectionRenderData& RenderData = DrawSection.Section->GetRenderData();
+                    if (RenderData.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
                     {
                         continue;
                     }
-                    if (bClusterDagRuntimePathReady && Owner.ClusterDagRuntime->UsesRuntimePath(Model))
+                    if (bClusterDagRuntimePathReady && Owner.ClusterDagRuntime->UsesRuntimeSection(Section))
                     {
                         continue;
                     }
 
-                    const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) && Model.BoneMatrixCount > 0;
+                    const bool bUseSkinning = IsValidBindlessIndex(Section.BoneMatrixBuffer.SrvBindlessIndex) && Section.BoneMatrixCount > 0;
                     if (!bUseSkinning)
                     {
                         continue;
                     }
 
-                    const uint32_t PipelineKey = BuildDeferredBasePassPipelineKey(Model.PipelineKey, Owner.GetDeferredLightingVisualizationMode());
+                    const uint32_t PipelineKey = BuildDeferredBasePassPipelineKey(Section.PipelineKey, Owner.GetDeferredLightingVisualizationMode());
                     if (!EnsureBasePassPipelineOrFail(PipelineKey, true, "DeferredBasePass/SkinningFallback"))
                     {
                         return;
                     }
                     
-                    SetBasePassMaterialBindlessIndices(LocalCommandList, Model);
-                    BindBasePassPerModelConstants(LocalCommandList, Owner, ModelIndex, Model);
+                    SetBasePassMaterialBindlessIndices(LocalCommandList, RenderData);
+                    BindBasePassPerSectionConstants(LocalCommandList, Owner, DrawSectionIndex, RenderData);
                     LocalCommandList->SetPipelineState(BasePassPipelinesSkinned[PipelineKey].Get());
-                    DrawModelInstanced(LocalCommandList, Model);
+                    DrawSectionInstanced(LocalCommandList, Section, RenderData);
                 }
             }
         }
         else
         {
-            for (size_t ModelIndex = 0; ModelIndex < Owner.SceneModels.size(); ++ModelIndex)
+            for (const FDrawSectionView& DrawSection : DrawSections)
             {
-                if (!Owner.SceneModelVisibility.empty() && !Owner.SceneModelVisibility[ModelIndex])
+                const uint32_t DrawSectionIndex = DrawSection.DrawSectionIndex;
+                if (!DrawSection.Section->bVisible)
                 {
                     continue;
                 }
 
-                const FSceneModelResource& Model = Owner.SceneModels[ModelIndex];
-                if (Model.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+                const FMeshSection& Section = *DrawSection.Section;
+                const FSectionRenderData& RenderData = DrawSection.Section->GetRenderData();
+                if (RenderData.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
                 {
                     continue;
                 }
-                if (bClusterDagRuntimePathReady && Owner.ClusterDagRuntime->UsesRuntimePath(Model))
+                if (bClusterDagRuntimePathReady && Owner.ClusterDagRuntime->UsesRuntimeSection(Section))
                 {
                     continue;
                 }
 
-                const bool bUseSkinning = (Model.PipelineKey & (1u << RendererUtils::GPipelineKeySkinningBit)) != 0;
-				const uint32_t PipelineKey = BuildDeferredBasePassPipelineKey(Model.PipelineKey, Owner.GetDeferredLightingVisualizationMode());
+                const bool bUseSkinning = (Section.PipelineKey & (1u << RendererUtils::GPipelineKeySkinningBit)) != 0;
+				const uint32_t PipelineKey = BuildDeferredBasePassPipelineKey(Section.PipelineKey, Owner.GetDeferredLightingVisualizationMode());
 				if (!EnsureBasePassPipelineOrFail(PipelineKey, bUseSkinning, "DeferredBasePass/Direct"))
 				{
 					return;
 				}
 
-                SetBasePassMaterialBindlessIndices(LocalCommandList, Model);
-                BindBasePassPerModelConstants(LocalCommandList, Owner, ModelIndex, Model);
+                SetBasePassMaterialBindlessIndices(LocalCommandList, RenderData);
+                BindBasePassPerSectionConstants(LocalCommandList, Owner, DrawSectionIndex, RenderData);
                 LocalCommandList->SetPipelineState(bUseSkinning ? BasePassPipelinesSkinned[PipelineKey].Get() : BasePassPipelines[PipelineKey].Get());
-                DrawModelInstanced(LocalCommandList, Model);
+                DrawSectionInstanced(LocalCommandList, Section, RenderData);
             }
         }
 
@@ -1019,6 +1035,8 @@ void FDeferredBasePass::AddVelocityPass(FDeferredPassContext& Context) const
         Builder.ReadTexture(Context.Resources.DepthHandle, D3D12_RESOURCE_STATE_DEPTH_READ);
     }, [this, &Owner](const FVelocityPassData& Data, FDX12CommandContext& Cmd)
     {
+        const std::vector<FDrawSectionView>& DrawSections = Owner.GetWorld().GetDrawSectionViews();
+
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
 
         const float ClearValue[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -1048,11 +1066,12 @@ void FDeferredBasePass::AddVelocityPass(FDeferredPassContext& Context) const
         static_assert(sizeof(FVelocityPassConstants) / sizeof(uint32_t) <= kBasePassVelocityConstantsDwordCount);
         LocalCommandList->SetGraphicsRoot32BitConstants(3, sizeof(FVelocityPassConstants) / sizeof(uint32_t), &VelocityConstants, 0);
 
-        for (size_t ModelIndex = 0; ModelIndex < Owner.SceneModels.size(); ++ModelIndex)
+        for (const FDrawSectionView& DrawSection : DrawSections)
         {
-            const FSceneModelResource& Model = Owner.SceneModels[ModelIndex];
-            const uint64_t ConstantBufferOffset = Owner.SceneConstantBufferStride * ModelIndex;
-            Owner.UpdateSceneConstants(*Data.Camera, Model, ModelIndex, ConstantBufferOffset);
+            const uint32_t DrawSectionIndex = DrawSection.DrawSectionIndex;
+            const FMeshSection& Section = *DrawSection.Section;
+            const uint64_t ConstantBufferOffset = Owner.SceneConstantBufferStride * DrawSectionIndex;
+            Owner.UpdateSceneConstants(*Data.Camera, Section, DrawSectionIndex, ConstantBufferOffset);
         }
 
         const auto IsWorldTransformChanged = [](const DirectX::XMFLOAT4X4& Current, const DirectX::XMFLOAT4X4& Previous)
@@ -1071,15 +1090,17 @@ void FDeferredBasePass::AddVelocityPass(FDeferredPassContext& Context) const
             return false;
         };
 
-        for (size_t ModelIndex = 0; ModelIndex < Owner.SceneModels.size(); ++ModelIndex)
+        for (const FDrawSectionView& DrawSection : DrawSections)
         {
-            if (!Owner.SceneModelVisibility.empty() && !Owner.SceneModelVisibility[ModelIndex])
+            const uint32_t DrawSectionIndex = DrawSection.DrawSectionIndex;
+            if (!DrawSection.Section->bVisible)
             {
                 continue;
             }
 
-            const FSceneModelResource& Model = Owner.SceneModels[ModelIndex];
-            if (Model.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+            const FMeshSection& Section = *DrawSection.Section;
+            const FSectionRenderData& RenderData = DrawSection.Section->GetRenderData();
+            if (RenderData.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
             {
                 continue;
             }
@@ -1087,9 +1108,9 @@ void FDeferredBasePass::AddVelocityPass(FDeferredPassContext& Context) const
             bool bNeedsVelocity = Data.bCameraMoved;
             if (!bNeedsVelocity)
             {
-                const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) && Model.BoneMatrixCount > 0;
-                const bool bWorldMoved = Model.bHasPreviousWorldMatrix && IsWorldTransformChanged(Model.WorldMatrix, Model.PreviousWorldMatrix);
-                const bool bSkinningMoved = bUseSkinning && Data.bAnySkinningUpdated && Model.bSkinningUpdatedThisFrame;
+                const bool bUseSkinning = IsValidBindlessIndex(Section.BoneMatrixBuffer.SrvBindlessIndex) && Section.BoneMatrixCount > 0;
+                const bool bWorldMoved = Section.bHasPreviousWorldMatrix && IsWorldTransformChanged(Section.WorldMatrix, Section.PreviousWorldMatrix);
+                const bool bSkinningMoved = bUseSkinning && Data.bAnySkinningUpdated && Section.bSkinningUpdatedThisFrame;
                 bNeedsVelocity = bWorldMoved || bSkinningMoved;
             }
 
@@ -1098,15 +1119,16 @@ void FDeferredBasePass::AddVelocityPass(FDeferredPassContext& Context) const
                 continue;
             }
 
-            const bool bUseAlphaMask = Model.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask);
-            const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) && Model.BoneMatrixCount > 0;
-            const uint32_t PipelineIndex = (bUseAlphaMask ? 1u : 0u) | (Model.Material.bDoubleSided ? 2u : 0u);
+            const bool bUseAlphaMask = RenderData.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask);
+            const bool bUseSkinning = IsValidBindlessIndex(Section.BoneMatrixBuffer.SrvBindlessIndex) && Section.BoneMatrixCount > 0;
+            const uint32_t PipelineIndex = (bUseAlphaMask ? 1u : 0u) | (RenderData.Material.bDoubleSided ? 2u : 0u);
             ID3D12PipelineState* Pipeline = bUseSkinning ? VelocityPipelinesSkinned[PipelineIndex].Get() : VelocityPipelines[PipelineIndex].Get();
 
             LocalCommandList->SetPipelineState(Pipeline);
-            SetBasePassMaterialBindlessIndices(LocalCommandList, Model);
-            BindBasePassPerModelConstants(LocalCommandList, Owner, ModelIndex, Model);
-            DrawModelInstanced(LocalCommandList, Model);
+            SetBasePassMaterialBindlessIndices(LocalCommandList, RenderData);
+            BindBasePassPerSectionConstants(LocalCommandList, Owner, DrawSectionIndex, RenderData);
+            DrawSectionInstanced(LocalCommandList, Section, RenderData);
         }
     });
 }
+

@@ -2,7 +2,7 @@
 
 #include "../DeferredRenderer.h"
 #include "../RendererUtils.h"
-#include "../SceneModelResource.h"
+#include "../../World/MeshSection.h"
 #include "../ShaderCompiler.h"
 #include "DeferredPassContext.h"
 #include "../../Core/GpuDebugMarkers.h"
@@ -321,15 +321,15 @@ void FSparseSdfGI::AddSdfUpdatePasses(FDeferredPassContext& Context) const
 
     AddReferenceBuildInitPass(Context);
 
-    uint32_t ModelIndex = 0;
-    std::vector<FSceneModelResource>& SceneModels = Context.Owner.GetSceneModelsMutable();
-    for (FSceneModelResource& Model : SceneModels)
+    uint32_t DrawSectionIndex = 0;
+    auto DrawSections = Context.Owner.GetWorld().BuildSectionList();
+    for (FMeshSection& Section : DrawSections)
     {
-        if (Model.IsStaticRegularMeshCandidate())
+        if (Section.IsStaticRegularMeshCandidate())
         {
-            AddModelReferenceEmitPass(Context, Model, ModelIndex);
+            AddSectionReferenceEmitPass(Context, Section, DrawSectionIndex);
         }
-        ++ModelIndex;
+        ++DrawSectionIndex;
     }
 
     AddPrepareSolveBrickReferencesArgsPass(Context);
@@ -624,19 +624,15 @@ uint64_t FSparseSdfGI::ComputeStaticSceneSignature(const FDeferredRenderer& Owne
     uint64_t Hash = kSparseSdfGIHashOffsetBasis;
     OutStaticCandidateCount = 0;
 
-    const std::vector<FSceneModelResource>* Models = Owner.GetSceneModels();
-    const uint64_t TotalModelCount = Models ? static_cast<uint64_t>(Models->size()) : 0ull;
-    HashValue(Hash, TotalModelCount);
-    if (!Models)
-    {
-        return Hash;
-    }
+    auto Sections = Owner.GetWorld().BuildSectionList();
+    const uint64_t TotalSectionCount = static_cast<uint64_t>(Sections.size());
+    HashValue(Hash, TotalSectionCount);
 
-    for (uint64_t ModelIndex = 0; ModelIndex < TotalModelCount; ++ModelIndex)
+    for (uint64_t DrawSectionIndex = 0; DrawSectionIndex < TotalSectionCount; ++DrawSectionIndex)
     {
-        const FSceneModelResource& Model = (*Models)[static_cast<size_t>(ModelIndex)];
-        const bool bCandidate = Model.IsStaticRegularMeshCandidate();
-        HashValue(Hash, ModelIndex);
+        const FMeshSection& Section = Sections[static_cast<size_t>(DrawSectionIndex)];
+        const bool bCandidate = Section.IsStaticRegularMeshCandidate();
+        HashValue(Hash, DrawSectionIndex);
         HashValue(Hash, bCandidate);
         if (!bCandidate)
         {
@@ -644,12 +640,12 @@ uint64_t FSparseSdfGI::ComputeStaticSceneSignature(const FDeferredRenderer& Owne
         }
 
         ++OutStaticCandidateCount;
-        HashValue(Hash, Model.DrawIndexStart);
-        HashValue(Hash, Model.DrawIndexCount);
-        HashValue(Hash, Model.Geometry.IndexCount);
-        HashValue(Hash, Model.Geometry.VertexBuffers[0].SrvBindlessIndex);
-        HashValue(Hash, Model.Geometry.IndexBuffer.SrvBindlessIndex);
-        HashFloat4x4(Hash, Model.WorldMatrix);
+        HashValue(Hash, Section.DrawIndexStart);
+        HashValue(Hash, Section.DrawIndexCount);
+        HashValue(Hash, Section.Geometry.IndexCount);
+        HashValue(Hash, Section.Geometry.VertexBuffers[kMeshVertexStreamPosition].SrvBindlessIndex);
+        HashValue(Hash, Section.Geometry.IndexBuffer.SrvBindlessIndex);
+        HashFloat4x4(Hash, Section.WorldMatrix);
     }
 
     HashValue(Hash, OutStaticCandidateCount);
@@ -673,13 +669,14 @@ void FSparseSdfGI::AddReferenceBuildInitPass(FDeferredPassContext& Context) cons
     const FRGBufferHandle BrickMetadataHandle = Context.Resources.SparseSdfGI.BrickMetadataHandle;
 
     uint32_t MaxStaticTriangleCount = 0;
-    if (const std::vector<FSceneModelResource>* Models = Context.Owner.GetSceneModels())
+    auto Sections = Context.Owner.GetWorld().BuildSectionList();
+    if (!Sections.empty())
     {
-        for (const FSceneModelResource& Model : *Models)
+        for (const FMeshSection& Section : Sections)
         {
-            if (Model.IsStaticRegularMeshCandidate())
+            if (Section.IsStaticRegularMeshCandidate())
             {
-                MaxStaticTriangleCount += Model.DrawIndexCount / 3u;
+                MaxStaticTriangleCount += Section.DrawIndexCount / 3u;
             }
         }
     }
@@ -791,12 +788,12 @@ void FSparseSdfGI::AddReferenceBuildInitPass(FDeferredPassContext& Context) cons
     });
 }
 
-void FSparseSdfGI::AddModelReferenceEmitPass(FDeferredPassContext& Context, FSceneModelResource& Model, uint32_t ModelIndex) const
+void FSparseSdfGI::AddSectionReferenceEmitPass(FDeferredPassContext& Context, FMeshSection& Section, uint32_t DrawSectionIndex) const
 {
     FDeferredRenderer& Owner = Context.Owner;
     FRenderGraph& Graph = Context.Graph;
-    FBindlessBuffer& PositionBuffer = Model.Geometry.VertexBuffers[0];
-    FBindlessBuffer& IndexBuffer = Model.Geometry.IndexBuffer;
+    FBindlessBuffer& PositionBuffer = Section.Geometry.VertexBuffers[kMeshVertexStreamPosition];
+    FBindlessBuffer& IndexBuffer = Section.Geometry.IndexBuffer;
     const FRGBufferHandle PositionHandle = ImportBindlessBuffer(Graph, "SparseSdfGI Position", PositionBuffer);
     const FRGBufferHandle IndexHandle = ImportBindlessBuffer(Graph, "SparseSdfGI Index", IndexBuffer);
     const FRGBufferHandle TrianglePoolHandle = Context.Resources.SparseSdfGI.TrianglePoolHandle;
@@ -805,7 +802,7 @@ void FSparseSdfGI::AddModelReferenceEmitPass(FDeferredPassContext& Context, FSce
     const FRGBufferHandle ReferenceCountersHandle = Context.Resources.SparseSdfGI.ReferenceCountersHandle;
     const FRGBufferHandle OccupiedBrickListHandle = Context.Resources.SparseSdfGI.OccupiedBrickListHandle;
 
-    const float ModelScale = MatrixMath::ComputeMaxScale(Model.WorldMatrix);
+    const float SectionScale = MatrixMath::ComputeMaxScale(Section.WorldMatrix);
     const FCascadeBounds Bounds = ComputeCascadeBounds(Owner);
 
     struct FReferenceEmitPassData
@@ -828,8 +825,8 @@ void FSparseSdfGI::AddModelReferenceEmitPass(FDeferredPassContext& Context, FSce
         FRGBufferHandle OccupiedBrickListHandle{};
     };
 
-    const std::string PassName = "SparseSdfGI Emit References Model " + std::to_string(ModelIndex);
-    Graph.AddPass<FReferenceEmitPassData>(PassName, [&, PositionHandle, IndexHandle, TrianglePoolHandle, BrickReferenceHeadsHandle, BrickReferencesHandle, ReferenceCountersHandle, OccupiedBrickListHandle, ModelScale, Bounds](FReferenceEmitPassData& Data, FRGPassBuilder& Builder)
+    const std::string PassName = "SparseSdfGI Emit References Section " + std::to_string(DrawSectionIndex);
+    Graph.AddPass<FReferenceEmitPassData>(PassName, [&, PositionHandle, IndexHandle, TrianglePoolHandle, BrickReferenceHeadsHandle, BrickReferencesHandle, ReferenceCountersHandle, OccupiedBrickListHandle, SectionScale, Bounds](FReferenceEmitPassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("SparseSdfGI");
         Data.bEnabled = bEnabled && bPersistentInputsValid;
@@ -843,28 +840,29 @@ void FSparseSdfGI::AddModelReferenceEmitPass(FDeferredPassContext& Context, FSce
         Data.BrickReferencesHandle = BrickReferencesHandle;
         Data.ReferenceCountersHandle = ReferenceCountersHandle;
         Data.OccupiedBrickListHandle = OccupiedBrickListHandle;
-        Data.TriangleCount = Model.DrawIndexCount / 3u;
-        if (const std::vector<FSceneModelResource>* Models = Owner.GetSceneModels())
+        Data.TriangleCount = Section.DrawIndexCount / 3u;
+        auto Sections = Owner.GetWorld().BuildSectionList();
+        if (!Sections.empty())
         {
-            for (const FSceneModelResource& SceneModel : *Models)
+            for (const FMeshSection& SceneSection : Sections)
             {
-                if (SceneModel.IsStaticRegularMeshCandidate())
+                if (SceneSection.IsStaticRegularMeshCandidate())
                 {
-                    Data.TrianglePoolCapacity += SceneModel.DrawIndexCount / 3u;
+                    Data.TrianglePoolCapacity += SceneSection.DrawIndexCount / 3u;
                 }
             }
         }
-        Data.DrawIndexStart = Model.DrawIndexStart;
-        Data.DrawIndexCount = Model.DrawIndexCount;
+        Data.DrawIndexStart = Section.DrawIndexStart;
+        Data.DrawIndexCount = Section.DrawIndexCount;
         Data.VoxelSize = Bounds.VoxelSize;
         Data.CascadeMin = Bounds.Min;
         Data.CascadeExtent = Bounds.Extent;
-        Data.World = Model.WorldMatrix;
-        Data.PositionBufferIndex = Model.Geometry.VertexBuffers[0].SrvBindlessIndex;
-        Data.IndexBufferIndex = Model.Geometry.IndexBuffer.SrvBindlessIndex;
+        Data.World = Section.WorldMatrix;
+        Data.PositionBufferIndex = Section.Geometry.VertexBuffers[kMeshVertexStreamPosition].SrvBindlessIndex;
+        Data.IndexBufferIndex = Section.Geometry.IndexBuffer.SrvBindlessIndex;
         Data.bEnabled = Data.bEnabled
             && Data.TriangleCount > 0u
-            && ModelScale > 0.0f
+            && SectionScale > 0.0f
             && static_cast<bool>(Data.TrianglePoolHandle)
             && static_cast<bool>(Data.BrickReferenceHeadsHandle)
             && static_cast<bool>(Data.BrickReferencesHandle)

@@ -3,7 +3,7 @@
 #include "EnvironmentMap.h"
 #include "ShaderCompiler.h"
 #include "RendererUtils.h"
-#include "SceneModelResourceLoader.h"
+#include "SceneWorldBuilder.h"
 #include "RenderGraph.h"
 #include "../Scene/GltfLoader.h"
 #include "../Scene/Camera.h"
@@ -78,12 +78,23 @@ namespace
 
     void SetForwardBindlessIndices(
         ID3D12GraphicsCommandList* CommandList,
-        const FSceneModelResource& Model,
+        const FMeshSection& Section,
         const FForwardBindlessFrameIndices& FrameIndices)
     {
         SetForwardBindlessIndices(
             CommandList,
-            RendererUtils::BuildMaterialBindlessIndices(Model),
+            RendererUtils::BuildMaterialBindlessIndices(Section),
+            FrameIndices);
+    }
+
+    void SetForwardBindlessIndices(
+        ID3D12GraphicsCommandList* CommandList,
+        const FSectionRenderData& RenderData,
+        const FForwardBindlessFrameIndices& FrameIndices)
+    {
+        SetForwardBindlessIndices(
+            CommandList,
+            RendererUtils::BuildMaterialBindlessIndices(RenderData),
             FrameIndices);
     }
 }
@@ -205,7 +216,7 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
     }
 
     const std::wstring SceneFilePath = Config.SceneFile.empty() ? L"Assets/Scenes/Scene.json" : Config.SceneFile;
-    if (!SceneModelResourceLoader::LoadModelsFromJson(Device, SceneFilePath, SceneModels, SceneCenter, SceneRadius, &GltfScenes, &World))
+    if (!SceneWorldBuilder::LoadWorldFromSceneFile(Device, SceneFilePath, World, SceneCenter, SceneRadius, &GltfScenes))
     {
         LogError("scene JSON could not be loaded.");
         return false;
@@ -219,7 +230,7 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
 
     SceneConstantBufferStride = (sizeof(FSceneConstants) + 255ULL) & ~255ULL;
 
-    const uint64_t ConstantBufferSize = SceneConstantBufferStride * (std::max<uint64_t>(1, SceneModels.size()));
+    const uint64_t ConstantBufferSize = SceneConstantBufferStride * (std::max<uint64_t>(1, GetWorld().GetDrawSectionCount()));
 
     if (!CreateSceneConstantBuffersPerFrame(Device, ConstantBufferSize))
     {
@@ -245,7 +256,7 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
         return false;
     }
 
-    if (!CreateSceneTextures(Device, SceneModels))
+    if (!CreateSceneTextures(Device, World))
     {
         LogError("Forward renderer initialization failed: scene texture creation failed");
         return false;
@@ -285,7 +296,8 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
         return;
     }
 
-    RendererUtils::UpdateGltfSceneAnimation(SceneModels, GltfScenes, DeltaTime);
+    GetWorld().Tick(DeltaTime);
+    RendererUtils::UpdateGltfSceneAnimation(World, GltfScenes, DeltaTime);
 
     GpuDebugState.PreparePrint(CmdContext);
     GpuDebugState.PrepareLine(CmdContext);
@@ -389,12 +401,13 @@ void FForwardRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCamer
         ShadowMaskHandle = Data.ShadowMaskHandle;
     }, [this, &Graph](const FRayTracingShadowPassData& Data, FDX12CommandContext& CmdContext)
     {
+        const std::vector<FDrawSectionView>& DrawSections = GetWorld().GetDrawSectionViews();
         if (!GetRayTracingRuntime().bRayTracingPipelineReady || !GetRayTracingRuntime().RayQueryShadowPipeline || !GetRayTracingRuntime().RayQueryRootSignature)
         {
             return;
         }
 
-        if (SceneModels.empty() || Data.Camera == nullptr)
+        if (DrawSections.empty() || Data.Camera == nullptr)
         {
             return;
         }
@@ -463,7 +476,7 @@ void FForwardRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCamer
         CommandList4->SetComputeRootShaderResourceView(0, GetRayTracingRuntime().TlasResultBuffers[FrameIndex]->GetGPUVirtualAddress());
         const uint64_t ConstantBufferOffset = 0;
         const DirectX::XMMATRIX LightViewProjection = RendererUtils::BuildDirectionalLightViewProjection(SceneCenter, SceneRadius, LightDirection);
-        UpdateSceneConstants(*Data.Camera, SceneModels.front(), ConstantBufferOffset, LightViewProjection);
+        UpdateSceneConstants(*Data.Camera, *DrawSections.front().Section, ConstantBufferOffset, LightViewProjection);
         const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
         CommandList4->SetComputeRootConstantBufferView(1, ConstantBufferAddress + ConstantBufferOffset);
         const uint32_t BindlessIndices[FRayTracingRuntime::RayQueryRootConstantDwordCount] =
@@ -541,6 +554,7 @@ void FForwardRenderer::AddShadowPass(FRenderGraph& Graph, const FCamera& Camera,
         }
     }, [this](const FShadowPassData& Data, FDX12CommandContext& Cmd)
     {
+        const std::vector<FDrawSectionView>& DrawSections = GetWorld().GetDrawSectionViews();
         if (!Data.bEnabled)
         {
             return;
@@ -570,59 +584,64 @@ void FForwardRenderer::AddShadowPass(FRenderGraph& Graph, const FCamera& Camera,
         LocalCommandList->OMSetRenderTargets(0, nullptr, FALSE, &ShadowDSVHandle);
 
         std::vector<bool> ShadowVisibility;
-        ShadowVisibility.resize(SceneModels.size(), true);
+        ShadowVisibility.resize(DrawSections.size(), false);
         DirectX::XMVECTOR ShadowPlanes[6] = {};
         RendererUtils::BuildFrustumPlanesFromMatrix(Data.LightViewProjection, ShadowPlanes);
-        for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+        for (const FDrawSectionView& DrawSection : DrawSections)
         {
-            const FSceneModelResource& Model = SceneModels[ModelIndex];
-            ShadowVisibility[ModelIndex] = RendererUtils::IsAabbInCameraFrustum(ShadowPlanes, Model.BoundsMin, Model.BoundsMax);
+            const uint32_t DrawSectionIndex = DrawSection.DrawSectionIndex;
+            const FMeshSection& Section = *DrawSection.Section;
+            ShadowVisibility[DrawSectionIndex] = RendererUtils::IsAabbInCameraFrustum(ShadowPlanes, Section.BoundsMin, Section.BoundsMax);
         }
 
-        for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+        for (const FDrawSectionView& DrawSection : DrawSections)
         {
-            const FSceneModelResource& Model = SceneModels[ModelIndex];
-            if (Model.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+            const uint32_t DrawSectionIndex = DrawSection.DrawSectionIndex;
+            const FMeshSection& Section = *DrawSection.Section;
+            const FSectionRenderData& RenderData = DrawSection.Section->GetRenderData();
+            if (RenderData.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
             {
                 continue;
             }
-            const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
-            UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset, Data.LightViewProjection);
+            const uint64_t ConstantBufferOffset = SceneConstantBufferStride * DrawSectionIndex;
+            UpdateSceneConstants(*Data.Camera, Section, ConstantBufferOffset, Data.LightViewProjection);
         }
 
-        for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+        for (const FDrawSectionView& DrawSection : DrawSections)
         {
-            if (!ShadowVisibility[ModelIndex])
+            const uint32_t DrawSectionIndex = DrawSection.DrawSectionIndex;
+            if (!ShadowVisibility[DrawSectionIndex])
             {
                 continue;
             }
 
-            const FSceneModelResource& Model = SceneModels[ModelIndex];
-            if (Model.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+            const FMeshSection& Section = *DrawSection.Section;
+            const FSectionRenderData& RenderData = DrawSection.Section->GetRenderData();
+            if (RenderData.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
             {
                 continue;
             }
-            const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
+            const uint64_t ConstantBufferOffset = SceneConstantBufferStride * DrawSectionIndex;
 
             const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
             LocalCommandList->SetGraphicsRootConstantBufferView(
                 0,
                 ConstantBufferAddress + ConstantBufferOffset);
-            LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
-            const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) && Model.BoneMatrixCount > 0;
-            SetShadowPipeline(bUseSkinning, Model.Material.bDoubleSided);
+            LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &RenderData.DrawIndexStart, 0);
+            const bool bUseSkinning = IsValidBindlessIndex(Section.BoneMatrixBuffer.SrvBindlessIndex) && Section.BoneMatrixCount > 0;
+            SetShadowPipeline(bUseSkinning, RenderData.Material.bDoubleSided);
 
-            if (AreModelPixEventsEnabled())
+            if (AreSectionPixEventsEnabled())
             {
-                const std::wstring ModelLabel = Model.Name.empty()
-                    ? L"Model"
-                    : std::wstring(Model.Name.begin(), Model.Name.end());
-                FScopedPixEvent ModelEvent(LocalCommandList, ModelLabel.c_str());
-                LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, 0, 0);
+                const std::wstring SectionLabel = Section.Name.empty()
+                    ? L"Section"
+                    : std::wstring(Section.Name.begin(), Section.Name.end());
+                FScopedPixEvent ModelEvent(LocalCommandList, SectionLabel.c_str());
+                LocalCommandList->DrawInstanced(RenderData.DrawIndexCount, 1, 0, 0);
             }
             else
             {
-                LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, 0, 0);
+                LocalCommandList->DrawInstanced(RenderData.DrawIndexCount, 1, 0, 0);
             }
         }
 
@@ -654,6 +673,7 @@ void FForwardRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Camer
         }
     }, [this](const FDepthPrepassData& Data, FDX12CommandContext& Cmd)
     {
+        const std::vector<FDrawSectionView>& DrawSections = GetWorld().GetDrawSectionViews();
         if (!Data.bEnabled)
         {
             return;
@@ -685,25 +705,27 @@ void FForwardRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Camer
             GetEnvironmentCubeSrvIndex(),
             GetBrdfLutSrvIndex());
 
-        for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+        for (const FDrawSectionView& DrawSection : DrawSections)
         {
-            if (!SceneModelVisibility.empty() && !SceneModelVisibility[ModelIndex])
+            const uint32_t DrawSectionIndex = DrawSection.DrawSectionIndex;
+            if (!DrawSection.Section->bVisible)
             {
                 continue;
             }
 
-            const FSceneModelResource& Model = SceneModels[ModelIndex];
-            if (Model.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask)
-                || Model.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+            const FMeshSection& Section = *DrawSection.Section;
+            const FSectionRenderData& RenderData = DrawSection.Section->GetRenderData();
+            if (RenderData.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask)
+                || RenderData.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
             {
                 continue;
             }
-            const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
+            const uint64_t ConstantBufferOffset = SceneConstantBufferStride * DrawSectionIndex;
 
-            UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset, Data.LightViewProjection);
+            UpdateSceneConstants(*Data.Camera, Section, ConstantBufferOffset, Data.LightViewProjection);
 
-            const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) && Model.BoneMatrixCount > 0;
-            ID3D12PipelineState* DesiredPipeline = bUseSkinning ? DepthPrepassPipelinesSkinned[Model.Material.bDoubleSided ? 1u : 0u].Get() : DepthPrepassPipelines[Model.Material.bDoubleSided ? 1u : 0u].Get();
+            const bool bUseSkinning = IsValidBindlessIndex(Section.BoneMatrixBuffer.SrvBindlessIndex) && Section.BoneMatrixCount > 0;
+            ID3D12PipelineState* DesiredPipeline = bUseSkinning ? DepthPrepassPipelinesSkinned[RenderData.Material.bDoubleSided ? 1u : 0u].Get() : DepthPrepassPipelines[RenderData.Material.bDoubleSided ? 1u : 0u].Get();
             if (DesiredPipeline != CurrentPipeline)
             {
                 CurrentPipeline = DesiredPipeline;
@@ -715,20 +737,20 @@ void FForwardRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Camer
                 0,
                 ConstantBufferAddress + ConstantBufferOffset);
             static_assert(1u <= kForwardPerDrawDwordCount);
-            SetForwardBindlessIndices(LocalCommandList, Model, BindlessFrameIndices);
-            LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
+            SetForwardBindlessIndices(LocalCommandList, RenderData, BindlessFrameIndices);
+            LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &RenderData.DrawIndexStart, 0);
 
-            if (AreModelPixEventsEnabled())
+            if (AreSectionPixEventsEnabled())
             {
-                const std::wstring ModelLabel = Model.Name.empty()
-                    ? L"Model"
-                    : std::wstring(Model.Name.begin(), Model.Name.end());
-                FScopedPixEvent ModelEvent(LocalCommandList, ModelLabel.c_str());
-                LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, 0, 0);
+                const std::wstring SectionLabel = Section.Name.empty()
+                    ? L"Section"
+                    : std::wstring(Section.Name.begin(), Section.Name.end());
+                FScopedPixEvent ModelEvent(LocalCommandList, SectionLabel.c_str());
+                LocalCommandList->DrawInstanced(RenderData.DrawIndexCount, 1, 0, 0);
             }
             else
             {
-                LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, 0, 0);
+                LocalCommandList->DrawInstanced(RenderData.DrawIndexCount, 1, 0, 0);
             }
         }
     });
@@ -800,6 +822,8 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
         }
     }, [this](const FForwardPassData& Data, FDX12CommandContext& Cmd)
     {
+        const std::vector<FDrawSectionView>& DrawSections = GetWorld().GetDrawSectionViews();
+
         ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
 
         const D3D12_CPU_DESCRIPTOR_HANDLE& DepthHandle = GetDSVHandle();
@@ -831,15 +855,17 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
             GetEnvironmentCubeSrvIndex(),
             GetBrdfLutSrvIndex());
 
-        for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+        for (const FDrawSectionView& DrawSection : DrawSections)
         {
-            const FSceneModelResource& Model = SceneModels[ModelIndex];
-            if (Model.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+            const uint32_t DrawSectionIndex = DrawSection.DrawSectionIndex;
+            const FMeshSection& Section = *DrawSection.Section;
+            const FSectionRenderData& RenderData = DrawSection.Section->GetRenderData();
+            if (RenderData.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
             {
                 continue;
             }
-            const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
-            UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset, Data.LightViewProjection);
+            const uint64_t ConstantBufferOffset = SceneConstantBufferStride * DrawSectionIndex;
+            UpdateSceneConstants(*Data.Camera, Section, ConstantBufferOffset, Data.LightViewProjection);
         }
 
         ID3D12Resource* IndirectBuffer = GetIndirectCommandBuffer();
@@ -875,7 +901,7 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
 
                 const uint64_t Offset = static_cast<uint64_t>(Range.Start) * sizeof(FIndirectDrawCommand);
                 const uint64_t CountOffset = RangeIndex * sizeof(uint32_t);
-                if (AreModelPixEventsEnabled())
+                if (AreSectionPixEventsEnabled())
                 {
                     const wchar_t* Label = Range.Name.empty() ? L"IndirectDrawRange" : Range.Name.c_str();
                     FScopedPixEvent ModelEvent(LocalCommandList, Label);
@@ -889,27 +915,29 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
 
             if (!bEnableSkinningIndirectDraw)
             {
-                for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+                for (const FDrawSectionView& DrawSection : DrawSections)
                 {
-                    if (!SceneModelVisibility.empty() && !SceneModelVisibility[ModelIndex])
+                    const uint32_t DrawSectionIndex = DrawSection.DrawSectionIndex;
+                    if (!DrawSection.Section->bVisible)
                     {
                         continue;
                     }
 
-                    const FSceneModelResource& Model = SceneModels[ModelIndex];
-                    if (Model.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+                    const FMeshSection& Section = *DrawSection.Section;
+                    const FSectionRenderData& RenderData = DrawSection.Section->GetRenderData();
+                    if (RenderData.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
                     {
                         continue;
                     }
 
-                    const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) && Model.BoneMatrixCount > 0;
+                    const bool bUseSkinning = IsValidBindlessIndex(Section.BoneMatrixBuffer.SrvBindlessIndex) && Section.BoneMatrixCount > 0;
                     if (!bUseSkinning)
                     {
                         continue;
                     }
 
-                    const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
-                    const uint32_t PipelineKey = (Model.PipelineKey & 0xFFu) | (((Model.PipelineKey >> 9) & 1u) << 8);
+                    const uint64_t ConstantBufferOffset = SceneConstantBufferStride * DrawSectionIndex;
+                    const uint32_t PipelineKey = (Section.PipelineKey & 0xFFu) | (((Section.PipelineKey >> 9) & 1u) << 8);
                     if (!EnsureBasePassPipelineOrFail(PipelineKey, true, "ForwardBasePass/SkinningFallback"))
                     {
                         return;
@@ -921,42 +949,44 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                         0,
                         ConstantBufferAddress + ConstantBufferOffset);
                     static_assert(1u <= kForwardPerDrawDwordCount);
-                    SetForwardBindlessIndices(LocalCommandList, Model, BindlessFrameIndices);
-                    LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
+                    SetForwardBindlessIndices(LocalCommandList, RenderData, BindlessFrameIndices);
+                    LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &RenderData.DrawIndexStart, 0);
 
-                    if (AreModelPixEventsEnabled())
+                    if (AreSectionPixEventsEnabled())
                     {
-                        const std::wstring ModelLabel = Model.Name.empty()
-                            ? L"Model"
-                            : std::wstring(Model.Name.begin(), Model.Name.end());
-                        FScopedPixEvent ModelEvent(LocalCommandList, ModelLabel.c_str());
-                        LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, 0, 0);
+                        const std::wstring SectionLabel = Section.Name.empty()
+                            ? L"Section"
+                            : std::wstring(Section.Name.begin(), Section.Name.end());
+                        FScopedPixEvent ModelEvent(LocalCommandList, SectionLabel.c_str());
+                        LocalCommandList->DrawInstanced(RenderData.DrawIndexCount, 1, 0, 0);
                     }
                     else
                     {
-                        LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, 0, 0);
+                        LocalCommandList->DrawInstanced(RenderData.DrawIndexCount, 1, 0, 0);
                     }
                 }
             }
         }
         else
         {
-            for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+            for (const FDrawSectionView& DrawSection : DrawSections)
             {
-                if (!SceneModelVisibility.empty() && !SceneModelVisibility[ModelIndex])
+                const uint32_t DrawSectionIndex = DrawSection.DrawSectionIndex;
+                if (!DrawSection.Section->bVisible)
                 {
                     continue;
                 }
 
-                const FSceneModelResource& Model = SceneModels[ModelIndex];
-                if (Model.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+                const FMeshSection& Section = *DrawSection.Section;
+                const FSectionRenderData& RenderData = DrawSection.Section->GetRenderData();
+                if (RenderData.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
                 {
                     continue;
                 }
-                const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
+                const uint64_t ConstantBufferOffset = SceneConstantBufferStride * DrawSectionIndex;
 
-                const bool bUseSkinning = (Model.PipelineKey & (1u << 8)) != 0;
-                const uint32_t PipelineKey = (Model.PipelineKey & 0xFFu) | (((Model.PipelineKey >> 9) & 1u) << 8);
+                const bool bUseSkinning = (Section.PipelineKey & (1u << 8)) != 0;
+                const uint32_t PipelineKey = (Section.PipelineKey & 0xFFu) | (((Section.PipelineKey >> 9) & 1u) << 8);
                 if (!EnsureBasePassPipelineOrFail(PipelineKey, bUseSkinning, "ForwardBasePass/Direct"))
                 {
                     return;
@@ -968,20 +998,20 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                     0,
                     ConstantBufferAddress + ConstantBufferOffset);
                 static_assert(1u <= kForwardPerDrawDwordCount);
-                SetForwardBindlessIndices(LocalCommandList, Model, BindlessFrameIndices);
-                LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &Model.DrawIndexStart, 0);
+                SetForwardBindlessIndices(LocalCommandList, RenderData, BindlessFrameIndices);
+                LocalCommandList->SetGraphicsRoot32BitConstants(2, 1, &RenderData.DrawIndexStart, 0);
 
-                if (AreModelPixEventsEnabled())
+                if (AreSectionPixEventsEnabled())
                 {
-                    const std::wstring ModelLabel = Model.Name.empty()
-                        ? L"Model"
-                        : std::wstring(Model.Name.begin(), Model.Name.end());
-                    FScopedPixEvent ModelEvent(LocalCommandList, ModelLabel.c_str());
-                    LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, 0, 0);
+                    const std::wstring SectionLabel = Section.Name.empty()
+                        ? L"Section"
+                        : std::wstring(Section.Name.begin(), Section.Name.end());
+                    FScopedPixEvent ModelEvent(LocalCommandList, SectionLabel.c_str());
+                    LocalCommandList->DrawInstanced(RenderData.DrawIndexCount, 1, 0, 0);
                 }
                 else
                 {
-                    LocalCommandList->DrawInstanced(Model.DrawIndexCount, 1, 0, 0);
+                    LocalCommandList->DrawInstanced(RenderData.DrawIndexCount, 1, 0, 0);
                 }
             }
         }
@@ -1010,6 +1040,7 @@ void FForwardRenderer::AddObjectIdPass(FRenderGraph& Graph, const FCamera& Camer
         }
     }, [this](const FObjectIdPassData& Data, FDX12CommandContext& Cmd)
     {
+        const std::vector<FDrawSectionView>& DrawSections = GetWorld().GetDrawSectionViews();
         if (!Data.bEnabled)
         {
             return;
@@ -1030,46 +1061,49 @@ void FForwardRenderer::AddObjectIdPass(FRenderGraph& Graph, const FCamera& Camer
         const UINT ClearValue[4] = { 0, 0, 0, 0 };
         LocalCommandList->ClearRenderTargetView(ObjectId->GetRtvHandle(), reinterpret_cast<const float*>(ClearValue), 0, nullptr);
 
-        for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+        for (const FDrawSectionView& DrawSection : DrawSections)
         {
-            const FSceneModelResource& Model = SceneModels[ModelIndex];
-            const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
-            UpdateSceneConstants(*Data.Camera, Model, ConstantBufferOffset, Data.LightViewProjection);
+            const uint32_t DrawSectionIndex = DrawSection.DrawSectionIndex;
+            const FMeshSection& Section = *DrawSection.Section;
+            const uint64_t ConstantBufferOffset = SceneConstantBufferStride * DrawSectionIndex;
+            UpdateSceneConstants(*Data.Camera, Section, ConstantBufferOffset, Data.LightViewProjection);
         }
 
-        for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+        for (const FDrawSectionView& DrawSection : DrawSections)
         {
-            if (!SceneModelVisibility.empty() && !SceneModelVisibility[ModelIndex])
+            const uint32_t DrawSectionIndex = DrawSection.DrawSectionIndex;
+            if (!DrawSection.Section->bVisible)
             {
                 continue;
             }
 
-            const FSceneModelResource& Model = SceneModels[ModelIndex];
-            if (Model.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
+            const FMeshSection& Section = *DrawSection.Section;
+            const FSectionRenderData& RenderData = DrawSection.Section->GetRenderData();
+            if (RenderData.Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Blend))
             {
                 continue;
             }
-            const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
+            const uint64_t ConstantBufferOffset = SceneConstantBufferStride * DrawSectionIndex;
 
-            LocalCommandList->IASetVertexBuffers(0, Model.Geometry.VertexBufferCount, Model.Geometry.VertexBufferViews.data());
-            LocalCommandList->IASetIndexBuffer(&Model.Geometry.IndexBufferView);
+            LocalCommandList->IASetVertexBuffers(0, RenderData.Geometry.VertexBufferCount, RenderData.Geometry.VertexBufferViews.data());
+            LocalCommandList->IASetIndexBuffer(&RenderData.Geometry.IndexBufferView);
             const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
             LocalCommandList->SetGraphicsRootConstantBufferView(
                 0,
                 ConstantBufferAddress + ConstantBufferOffset);
-            LocalCommandList->SetGraphicsRoot32BitConstants(1, 1, &Model.ObjectId, 0);
+            LocalCommandList->SetGraphicsRoot32BitConstants(1, 1, &Section.ObjectId, 0);
 
-            if (AreModelPixEventsEnabled())
+            if (AreSectionPixEventsEnabled())
             {
-                const std::wstring ModelLabel = Model.Name.empty()
-                    ? L"Model"
-                    : std::wstring(Model.Name.begin(), Model.Name.end());
-                FScopedPixEvent ModelEvent(LocalCommandList, ModelLabel.c_str());
-                LocalCommandList->DrawIndexedInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0, 0);
+                const std::wstring SectionLabel = Section.Name.empty()
+                    ? L"Section"
+                    : std::wstring(Section.Name.begin(), Section.Name.end());
+                FScopedPixEvent ModelEvent(LocalCommandList, SectionLabel.c_str());
+                LocalCommandList->DrawIndexedInstanced(RenderData.DrawIndexCount, 1, RenderData.DrawIndexStart, 0, 0);
             }
             else
             {
-                LocalCommandList->DrawIndexedInstanced(Model.DrawIndexCount, 1, Model.DrawIndexStart, 0, 0);
+                LocalCommandList->DrawIndexedInstanced(RenderData.DrawIndexCount, 1, RenderData.DrawIndexStart, 0, 0);
             }
         }
 
@@ -1160,7 +1194,7 @@ void FForwardRenderer::UpdateCullingVisibility(const FCamera& Camera)
     }
 
     const bool bGpuCullingActive = CanDispatchGpuCulling();
-    RendererUtils::UpdateCullingVisibility(*CullingCamera, SceneModels, SceneModelVisibility, !bGpuCullingActive);
+    RendererUtils::UpdateCullingVisibility(*CullingCamera, World, !bGpuCullingActive);
 }
 
 bool FForwardRenderer::CreateRootSignature(FDX12Device* Device)
@@ -1422,12 +1456,13 @@ bool FForwardRenderer::EnsureBasePassPipelineOrFail(uint32_t PipelineKey, bool b
     return false;
 }
 
-bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, std::vector<FSceneModelResource>& Models)
+bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, FWorld& World)
 {
     ShadowMap.SrvBindlessIndex = UINT32_MAX;
 
+    const std::vector<FDrawSectionView>& DrawSections = World.GetDrawSectionViews();
     std::vector<FTextureLoadRequest> Requests;
-    Requests.reserve(Models.size() * 10);
+    Requests.reserve(DrawSections.size() * 10);
 
     const auto ClampToByte = [](float Value)
     {
@@ -1444,13 +1479,13 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, std::vector<FSce
     };
 
     // Build load requests for all textures (each material owns its own slots).
-    for (size_t Index = 0; Index < Models.size(); ++Index)
+    for (const FDrawSectionView& DrawSection : DrawSections)
     {
-        Models[Index].Material.AppendTextureLoadRequests(Requests);
+        DrawSection.Section->Material.AppendTextureLoadRequests(Requests);
     }
 
     // Load all textures in parallel
-    LogInfo("Loading " + std::to_string(Requests.size()) + " textures in parallel for " + std::to_string(Models.size()) + " models");
+    LogInfo("Loading " + std::to_string(Requests.size()) + " textures in parallel for " + std::to_string(DrawSections.size()) + " sections");
     if (!TextureLoader->LoadTexturesParallel(Requests))
     {
         LogError("Failed to load scene textures");
@@ -1459,9 +1494,9 @@ bool FForwardRenderer::CreateSceneTextures(FDX12Device* Device, std::vector<FSce
 
     const auto ShadowSrvDesc = CD3DX12_SHADER_RESOURCE_VIEW_DESC::Tex2D(DXGI_FORMAT_R32_FLOAT, 1);
 
-    for (size_t Index = 0; Index < Models.size(); ++Index)
+    for (size_t Index = 0; Index < DrawSections.size(); ++Index)
     {
-        Models[Index].Material.CreateTextureSrvs(Device, static_cast<int>(Index));
+        DrawSections[Index].Section->Material.CreateTextureSrvs(Device, static_cast<int>(Index));
     }
 
     if (ShadowMap.SrvBindlessIndex == UINT32_MAX)
@@ -1530,13 +1565,13 @@ bool FForwardRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     return true;
 }
 
-void FForwardRenderer::UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, uint64_t ConstantBufferOffset, const DirectX::XMMATRIX& LightViewProjection)
+void FForwardRenderer::UpdateSceneConstants(const FCamera& Camera, const FMeshSection& Section, uint64_t ConstantBufferOffset, const DirectX::XMMATRIX& LightViewProjection)
 {
     const DirectX::XMVECTOR LightDir = DirectX::XMLoadFloat3(&LightDirection);
 
     RendererUtils::FUpdateSceneConstantsParams Params;
     Params.Camera = &Camera;
-    Params.Model = &Model;
+    Params.Section = &Section;
     Params.LightIntensity = LightIntensity;
     Params.LightDirection = LightDir;
     Params.LightColor = LightColor;

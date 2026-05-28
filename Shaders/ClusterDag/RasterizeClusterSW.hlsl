@@ -304,7 +304,7 @@ void RasterizeClusterSWCS(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_G
     {
         geometryEntry.PageDataBase = 0xffffffffu;
     }
-    const ClusterDagResolveSceneData sceneData = SceneDatas[drawData.ModelIndex];
+    const ClusterDagResolveSceneData sceneData = SceneDatas[drawData.DrawSectionIndex];
     const uint triangleCount = min(cluster.TriangleCount, 128u);
 
 #if CLUSTER_DAG_SW_RASTER_HZB_REJECT

@@ -277,7 +277,7 @@ bool FApplication::Initialize(HINSTANCE InstanceHandle)
     ForwardRenderer = std::make_unique<FForwardRenderer>();
     DeferredRenderer = std::make_unique<FDeferredRenderer>();
     Camera = std::make_unique<FCamera>();
-    SetModelPixEventsEnabled(RendererConfig.bEnableModelPixEvents);
+    SetSectionPixEventsEnabled(RendererConfig.bEnableSectionPixEvents);
 
     const std::wstring SceneFilePath = RendererConfig.SceneFile.empty() ? L"Assets/Scenes/Scene.json" : RendererConfig.SceneFile;
     CurrentScenePath = SceneFilePath;
@@ -723,20 +723,20 @@ void FApplication::ProcessObjectIdReadback()
     uint32_t ObjectId = 0;
     if (ActiveRenderer->ConsumeObjectIdReadback(ObjectId))
     {
-        const std::vector<FSceneModelResource>* Models = ActiveRenderer->GetSceneModels();
-        if (ObjectId > 0 && Models && ObjectId <= Models->size())
+        auto Sections = ActiveRenderer->GetWorld().BuildSectionList();
+        if (ObjectId > 0 && ObjectId <= Sections.size())
         {
-            SelectedModelIndex = static_cast<int32_t>(ObjectId - 1);
-            SelectedModelName = (*Models)[SelectedModelIndex].Name;
-            if (SelectedModelName.empty())
+            SelectedSectionIndex = static_cast<int32_t>(ObjectId - 1);
+            SelectedSectionName = Sections[SelectedSectionIndex].Name;
+            if (SelectedSectionName.empty())
             {
-                SelectedModelName = "Unnamed";
+                SelectedSectionName = "Unnamed";
             }
         }
         else
         {
-            SelectedModelIndex = -1;
-            SelectedModelName.clear();
+            SelectedSectionIndex = -1;
+            SelectedSectionName.clear();
         }
     }
     bPendingObjectIdReadback = false;
@@ -911,14 +911,14 @@ void FApplication::UpdateDebugPrimitives()
     std::vector<FRenderer::FGpuDebugLineEntry> DebugLines;
     std::vector<FRenderer::FGpuDebugBoxEntry> DebugBoxes;
 
-    const std::vector<FSceneModelResource>* Models = ActiveRenderer->GetSceneModels();
-    const bool bHasSceneModels = Models && !Models->empty();
-    const bool bHasSelectedModel =
-        bHasSceneModels
-        && SelectedModelIndex >= 0
-        && SelectedModelIndex < static_cast<int32_t>(Models->size());
+    auto Sections = ActiveRenderer->GetWorld().BuildSectionList();
+    const bool bHasDrawSections = !Sections.empty();
+    const bool bHasSelectedSection =
+        bHasDrawSections
+        && SelectedSectionIndex >= 0
+        && SelectedSectionIndex < static_cast<int32_t>(Sections.size());
 
-    if (!bHasSelectedModel)
+    if (!bHasSelectedSection)
     {
         ActiveRenderer->GetGpuDebugState().SetCpuDebugLines(DebugLines);
         ActiveRenderer->GetGpuDebugState().SetCpuDebugBoxes(DebugBoxes);
@@ -952,15 +952,15 @@ void FApplication::UpdateDebugPrimitives()
         return true;
     };
 
-    const auto AppendSelectionBounds = [&](const FSceneModelResource& Model)
+    const auto AppendSelectionBounds = [&](const FMeshSection& Section)
     {
         if (DebugLines.size() + 12u > MaxDebugLines)
         {
             return;
         }
 
-        const DirectX::XMFLOAT3& Min = Model.BoundsMin;
-        const DirectX::XMFLOAT3& Max = Model.BoundsMax;
+        const DirectX::XMFLOAT3& Min = Section.BoundsMin;
+        const DirectX::XMFLOAT3& Max = Section.BoundsMax;
         const std::array<DirectX::XMFLOAT3, 8> Corners =
         {
             DirectX::XMFLOAT3(Min.x, Min.y, Min.z),
@@ -993,8 +993,8 @@ void FApplication::UpdateDebugPrimitives()
         DrawEdge(3u, 7u);
     };
 
-    const FSceneModelResource& SelectedModel = (*Models)[SelectedModelIndex];
-    AppendSelectionBounds(SelectedModel);
+    const FMeshSection& SelectedSection = Sections[SelectedSectionIndex];
+    AppendSelectionBounds(SelectedSection);
 
     ActiveRenderer->GetGpuDebugState().SetCpuDebugLines(DebugLines);
     ActiveRenderer->GetGpuDebugState().SetCpuDebugBoxes(DebugBoxes);
@@ -1188,8 +1188,8 @@ bool FApplication::ReloadScene(const std::wstring& ScenePath)
     ForwardRenderer = std::move(NewForwardRenderer);
     DeferredRenderer = std::move(NewDeferredRenderer);
     ActiveRenderer = NewActiveRenderer;
-    SelectedModelIndex = -1;
-    SelectedModelName.clear();
+    SelectedSectionIndex = -1;
+    SelectedSectionName.clear();
     bPendingObjectIdReadback = false;
 
     CurrentScenePath = ScenePath;
@@ -1349,8 +1349,8 @@ void FApplication::CompleteAsyncSceneReload()
     ForwardRenderer = std::move(AsyncForwardRenderer);
     DeferredRenderer = std::move(AsyncDeferredRenderer);
     ActiveRenderer = AsyncActiveRenderer;
-    SelectedModelIndex = -1;
-    SelectedModelName.clear();
+    SelectedSectionIndex = -1;
+    SelectedSectionName.clear();
     bPendingObjectIdReadback = false;
     
     CurrentScenePath = AsyncScenePath;
@@ -1625,26 +1625,26 @@ void FApplication::RenderUI()
         ImGui::Text("CPU/GPU: %.3f / N/A", CpuFrameMs);
     }
 
-    size_t TotalModels = 0;
-    size_t CulledModels = 0;
+    size_t TotalSections = 0;
+    size_t CulledSections = 0;
     size_t TotalMeshlets = 0;
-    const std::vector<FSceneModelResource>* Models = ActiveRenderer ? ActiveRenderer->GetSceneModels() : nullptr;
-    if (Models)
+    if (ActiveRenderer)
     {
-        for (const FSceneModelResource& Model : *Models)
+        auto Sections = ActiveRenderer->GetWorld().BuildSectionList();
+        for (const FMeshSection& Section : Sections)
         {
-            TotalMeshlets += Model.Meshlets.size();
+            TotalMeshlets += Section.Meshlets.size();
         }
     }
 
-    const bool bHasModelStats = ActiveRenderer && ActiveRenderer->GetSceneModelStats(TotalModels, CulledModels);
-    if (bHasModelStats)
+    const bool bHasSectionStats = ActiveRenderer && ActiveRenderer->GetSceneSectionStats(TotalSections, CulledSections);
+    if (bHasSectionStats)
     {
-        ImGui::Text("Models (Total/Culled): %zu / %zu | Meshlets: %zu", TotalModels, CulledModels, TotalMeshlets);
+        ImGui::Text("Sections (Total/Culled): %zu / %zu | Meshlets: %zu", TotalSections, CulledSections, TotalMeshlets);
     }
     else
     {
-        ImGui::Text("Models (Total/Culled): N/A | Meshlets: %zu", TotalMeshlets);
+        ImGui::Text("Sections (Total/Culled): N/A | Meshlets: %zu", TotalMeshlets);
     }
 
     if (ImGui::CollapsingHeader("Details", ImGuiTreeNodeFlags_DefaultOpen))
@@ -1709,8 +1709,8 @@ void FApplication::RenderUI()
             }
         }
 
-        const char* SelectedName = SelectedModelIndex >= 0 ? SelectedModelName.c_str() : "None";
-        ImGui::Text("Selected: %s [%d]", SelectedName, SelectedModelIndex);
+        const char* SelectedName = SelectedSectionIndex >= 0 ? SelectedSectionName.c_str() : "None";
+        ImGui::Text("Selected: %s [%d]", SelectedName, SelectedSectionIndex);
         DXGI_QUERY_VIDEO_MEMORY_INFO LocalMemoryInfo = {};
         if (Device && Device->QueryLocalVideoMemory(LocalMemoryInfo))
         {
@@ -2545,9 +2545,9 @@ void FApplication::RenderUI()
             }
         }
 
-		//if (ImGui::Checkbox("Model Pix Events", &RendererConfig.bEnableModelPixEvents))
+		//if (ImGui::Checkbox("Section Pix Events", &RendererConfig.bEnableSectionPixEvents))
 		//{
-		//	SetModelPixEventsEnabled(RendererConfig.bEnableModelPixEvents);
+		//	SetSectionPixEventsEnabled(RendererConfig.bEnableSectionPixEvents);
 		//}
 
         ImGui::Separator();
@@ -2661,13 +2661,13 @@ void FApplication::RenderUI()
     if (ActiveRenderer && ImGui::CollapsingHeader("World Objects"))
     {
         const FWorld& SceneWorld = ActiveRenderer->GetWorld();
-        const std::vector<std::unique_ptr<IObject>>& Objects = SceneWorld.GetObjects();
+        const std::vector<std::unique_ptr<FObject>>& Objects = SceneWorld.GetObjects();
         ImGui::Text("Objects: %zu", Objects.size());
         ImGui::Separator();
 
         for (size_t ObjectIndex = 0; ObjectIndex < Objects.size(); ++ObjectIndex)
         {
-            const IObject* Object = Objects[ObjectIndex].get();
+            const FObject* Object = Objects[ObjectIndex].get();
             if (!Object)
             {
                 continue;
@@ -2675,7 +2675,7 @@ void FApplication::RenderUI()
 
             const bool bSkeletal = Object->GetType() == EObjectType::SkeletalMesh;
             const char* TypeLabel = bSkeletal ? "Skeletal" : "Static";
-            const std::vector<uint32_t>& Sections = Object->GetSectionModelIndices();
+            const std::vector<FMeshSection>& Sections = Object->GetSections();
 
             const std::string Label = std::string(Object->GetName().empty() ? "(unnamed)" : Object->GetName())
                 + "  [" + TypeLabel + ", " + std::to_string(Sections.size()) + " sec]##obj" + std::to_string(ObjectIndex);
@@ -2683,8 +2683,6 @@ void FApplication::RenderUI()
             if (ImGui::TreeNode(Label.c_str()))
             {
                 ImGui::Text("ObjectId: %u", Object->GetObjectId());
-                ImGui::Text("glTF scene/node/mesh: %d / %d / %d",
-                    Object->GetGltfSceneIndex(), Object->GetGltfNodeIndex(), Object->GetGltfMeshIndex());
                 if (bSkeletal)
                 {
                     ImGui::Text("Skin: %d", static_cast<const FSkeletalMesh*>(Object)->GetGltfSkinIndex());
@@ -2696,7 +2694,7 @@ void FApplication::RenderUI()
                 std::string SectionList;
                 for (size_t s = 0; s < Sections.size(); ++s)
                 {
-                    SectionList += std::to_string(Sections[s]);
+                    SectionList += Sections[s].Name.empty() ? std::to_string(s) : Sections[s].Name;
                     if (s + 1 < Sections.size()) { SectionList += ", "; }
                 }
                 ImGui::TextWrapped("Sections: %s", SectionList.c_str());

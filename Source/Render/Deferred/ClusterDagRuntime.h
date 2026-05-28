@@ -16,7 +16,7 @@ class FDX12Device;
 class FDX12CommandContext;
 class FCamera;
 struct FDeferredPassContext;
-struct FSceneModelResource;
+struct FMeshSection;
 struct FRendererConfig;
 
 class FClusterDagRuntime
@@ -29,7 +29,7 @@ public:
     void AddPasses(FDeferredPassContext& Context) const;
 
     bool HasResources() const;
-    bool UsesRuntimePath(const FSceneModelResource& Model) const;
+    bool UsesRuntimeSection(const FMeshSection& Section) const;
 
     ID3D12Resource* GetIndirectCommandBuffer(const FDeferredRenderer& Owner) const;
     D3D12_RESOURCE_STATES& GetIndirectCommandState(FDeferredRenderer& Owner);
@@ -85,11 +85,11 @@ private:
         uint32_t RangeIndex = 0;        // Which IndirectDrawRange (material/pipeline group) this packet belongs to; used as RunCounts array index
         uint32_t RangeCommandStart = 0; // IndirectDrawRanges[RangeIndex].Start; base slot in the output command buffer for this range, combined with the per-range atomic counter to produce the final output slot
         uint32_t RangeCommandCount = 0; // IndirectDrawRanges[RangeIndex].Count; capacity guard for GPU command appends
-        uint32_t ModelIndex = 0;        // Scene-model index used by the visibility resolve path to recover per-model shading data
+        uint32_t DrawSectionIndex = 0;        // Draw-section index used by the visibility resolve path to recover per-section shading data
 
-        static FClusterDrawData Make(uint32_t InStartIndex, uint32_t InIndexCount, uint32_t InRangeIndex, uint32_t InRangeCommandStart, uint32_t InRangeCommandCount, uint32_t InModelIndex)
+        static FClusterDrawData Make(uint32_t InStartIndex, uint32_t InIndexCount, uint32_t InRangeIndex, uint32_t InRangeCommandStart, uint32_t InRangeCommandCount, uint32_t InDrawSectionIndex)
         {
-            return { InStartIndex, InIndexCount, InRangeIndex, InRangeCommandStart, InRangeCommandCount, InModelIndex };
+            return { InStartIndex, InIndexCount, InRangeIndex, InRangeCommandStart, InRangeCommandCount, InDrawSectionIndex };
         }
     };
     static_assert(sizeof(FClusterDrawData) == 24, "FClusterDrawData must match cluster DAG runtime shader layout");
@@ -125,27 +125,26 @@ private:
 
     bool PrepareRuntimeData(FDeferredRenderer& Owner, FPreparedData& OutData);
     bool ValidatePreparedRuntimeData(const FPreparedData& Data) const;
-    uint32_t ResolveDrawDataModelIndex(
-        const std::vector<FSceneModelResource>& SceneModels,
-        const FSceneModelResource& Model,
+    uint32_t ResolveDrawDataSectionIndex(
+        const FWorldSectionList& DrawSections,
         uint32_t SortedIndex,
         const FRuntimeClusterDrawData& RuntimeDrawData) const;
-    uint32_t GetOrAddRangeForModel(
-        const std::vector<FSceneModelResource>& SceneModels,
-        uint32_t ModelIndex,
+    uint32_t GetOrAddRangeForSection(
+        const FWorldSectionList& DrawSections,
+        uint32_t DrawSectionIndex,
         FPreparedData& OutData);
-    void AppendModelDrawDatas(
-        const std::vector<FSceneModelResource>& SceneModels,
-        const FSceneModelResource& Model,
+    void AppendSectionDrawDataRecords(
+        const FWorldSectionList& DrawSections,
+        const FMeshSection& Section,
         uint32_t SortedIndex,
         const FRuntimeClusterHierarchy& RuntimeHierarchy,
         D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferBase,
         uint32_t SceneConstantBufferStride,
         FPreparedData& OutData,
-        std::vector<uint32_t>& OutLocalDrawDataModelIndices,
+        std::vector<uint32_t>& OutLocalDrawDataSectionIndices,
         std::vector<uint32_t>& OutLocalDrawDataRangeIndices);
-    void AppendModelGroupsAndStreamingPages(
-        const FSceneModelResource& Model,
+    void AppendSectionGroupsAndStreamingPages(
+        const FMeshSection& Section,
         uint32_t SortedIndex,
         const FRuntimeClusterHierarchy& RuntimeHierarchy,
         uint32_t BaseGroupIndex,
@@ -153,20 +152,20 @@ private:
         uint32_t BaseChildRefIndex,
         uint32_t BaseDrawDataIndex,
         const DirectX::XMMATRIX& World,
-        float ModelScale,
-        const std::vector<uint32_t>& LocalDrawDataModelIndices,
+        float SectionScale,
+        const std::vector<uint32_t>& LocalDrawDataSectionIndices,
         const std::vector<uint32_t>& LocalDrawDataRangeIndices,
         FPreparedData& OutData);
-    void AppendModelChildRefs(
+    void AppendSectionChildRefs(
         const FRuntimeClusterHierarchy& RuntimeHierarchy,
         uint32_t BaseClusterIndex,
         FPreparedData& OutData) const;
-    void AppendModelClusters(
+    void AppendSectionClusters(
         const FRuntimeClusterHierarchy& RuntimeHierarchy,
         uint32_t BaseGroupIndex,
         uint32_t BaseDrawDataIndex,
         const DirectX::XMMATRIX& World,
-        float ModelScale,
+        float SectionScale,
         FPreparedData& OutData) const;
     bool CreateRuntimeResources(FDeferredRenderer& Owner, FDX12Device* Device, const FPreparedData& Data);
     bool UploadRuntimeResources(FDeferredRenderer& Owner, FDX12Device* Device, const FPreparedData& Data);

@@ -17,7 +17,6 @@
 #include "../Core/RendererConfig.h"
 #include "../World/World.h"
 
-struct FSceneModelResource;
 class FEnvironmentMap;
 class FHzb;
 class FTextureLoader;
@@ -30,6 +29,8 @@ class FCamera;
 class FRenderer
 {
 public:
+    FRenderer();
+
     // Type Aliases
     using ECullingMode = FGpuDrivenCulling::ECullingMode;
     using FGpuDebugPrintEntry = GpuDebug::FGpuDebugPrintEntry;
@@ -170,29 +171,10 @@ public:
     DirectX::XMFLOAT3 GetSceneCenter() const { return SceneCenter; }
     float GetSceneRadius() const { return SceneRadius; }
 
-    // Scene Models
-    virtual const std::vector<FSceneModelResource>* GetSceneModels() const
-    {
-        if (const std::vector<FSceneModelResource>* Models = World.GetSceneModels())
-        {
-            return Models;
-        }
-        return &SceneModels;
-    }
-
-    std::vector<FSceneModelResource>& GetSceneModelsMutable()
-    {
-        if (std::vector<FSceneModelResource>* Models = World.GetSceneModelsMutable())
-        {
-            return *Models;
-        }
-        return SceneModels;
-    }
-
     // World (owns the logical StaticMesh / SkeletalMesh objects)
     FWorld& GetWorld() { return World; }
     const FWorld& GetWorld() const { return World; }
-    virtual bool GetSceneModelStats(size_t& OutTotal, size_t& OutCulled) const;
+    virtual bool GetSceneSectionStats(size_t& OutTotal, size_t& OutCulled) const;
 
     // Object ID
     virtual void RequestObjectIdReadback(uint32_t X, uint32_t Y) { ObjectId->RequestReadback(X, Y); }
@@ -215,7 +197,7 @@ public:
     virtual bool IsClusterDagFastShaderEnabled() const { return false; }
     virtual bool IsClusterDagDebugEnabled() const { return false; }
     virtual EClusterDAGTraversalMode GetClusterDagTraversalMode() const { return EClusterDAGTraversalMode::LevelSplitQueue; }
-    virtual bool ShouldUseClusterDagRuntimePath(const FSceneModelResource& Model) const { return false; }
+    virtual bool ShouldUseClusterDagRuntimePath(const FMeshSection& Section) const { return false; }
 
     // Path Tracing
     virtual bool IsPathTracingPreferred() const { return false; }
@@ -388,12 +370,8 @@ protected:
     float LightIntensity = 1.0f;
     DirectX::XMFLOAT3 LightColor{ 1.0f, 1.0f, 1.0f };
 
-    // Scene Models
-    std::vector<FSceneModelResource> SceneModels;
+    // Scene Sections
     FWorld World;
-    std::vector<bool> SceneModelVisibility;
-    std::vector<bool> SceneModelSkinningVisibility;
-
     // Shadows
     FBindlessTexture ShadowMap;
     Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> ShadowDSVHeap;

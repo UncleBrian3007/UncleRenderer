@@ -63,13 +63,12 @@ struct FClusterDagStreamingPageSource
         uint32_t RangeIndex = 0u;
         uint32_t RangeCommandStart = 0u;
         uint32_t RangeCommandCount = 0u;
-        uint32_t ModelIndex = 0u;
+        uint32_t DrawSectionIndex = 0u;
     };
 
     bool bValid = false;
     uint32_t PageIndex = 0xffffffffu;
     uint32_t MeshIndex = 0xffffffffu;
-    uint32_t DagIndex = 0xffffffffu;
     uint32_t LocalPageIndex = 0xffffffffu;
     uint32_t GlobalGroupIndex = 0xffffffffu;
     float SceneGroupBounds[4] = {};

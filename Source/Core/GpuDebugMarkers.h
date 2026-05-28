@@ -10,7 +10,7 @@
 #endif
 
 inline bool GPixEventsEnabled = true;
-inline bool GModelPixEventsEnabled = true;
+inline bool GSectionPixEventsEnabled = true;
 
 class FScopedPixEvent
 {
@@ -50,14 +50,14 @@ inline void SetPixEventsEnabled(bool bEnabled)
     GPixEventsEnabled = bEnabled;
 }
 
-inline void SetModelPixEventsEnabled(bool bEnabled)
+inline void SetSectionPixEventsEnabled(bool bEnabled)
 {
-    GModelPixEventsEnabled = bEnabled;
+    GSectionPixEventsEnabled = bEnabled;
 }
 
-inline bool AreModelPixEventsEnabled()
+inline bool AreSectionPixEventsEnabled()
 {
-    return GModelPixEventsEnabled;
+    return GSectionPixEventsEnabled;
 }
 
 inline bool BeginPixGpuCapture(bool bShouldCapture = true)

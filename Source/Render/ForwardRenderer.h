@@ -49,7 +49,7 @@ private:
     // Initialization
     bool CreateRootSignature(FDX12Device* Device);
     bool CreatePipelineState(FDX12Device* Device, DXGI_FORMAT BackBufferFormat);
-    bool CreateSceneTextures(FDX12Device* Device, std::vector<FSceneModelResource>& Models);
+    bool CreateSceneTextures(FDX12Device* Device, FWorld& World);
     bool CreateGpuDrivenResources(FDX12Device* Device);
 
     // Pipeline management
@@ -63,7 +63,7 @@ private:
     void ConfigureFrameGraph(FRenderGraph& Graph) const;
     void ImportFrameResources(FRenderGraph& Graph, FForwardFrameResources& OutResources);
     void UpdateCullingVisibility(const FCamera& Camera);
-    void UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, uint64_t ConstantBufferOffset, const DirectX::XMMATRIX& LightViewProjection);
+    void UpdateSceneConstants(const FCamera& Camera, const FMeshSection& Section, uint64_t ConstantBufferOffset, const DirectX::XMMATRIX& LightViewProjection);
 
     // Render passes
     void AddGpuCullingPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle DepthHandle);

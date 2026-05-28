@@ -135,7 +135,7 @@ namespace
         uint32_t RangeIndex = 0u;
         uint32_t RangeCommandStart = 0u;
         uint32_t RangeCommandCount = 0u;
-        uint32_t ModelIndex = 0u;
+        uint32_t DrawSectionIndex = 0u;
         uint32_t Reserved1 = 0u;
     };
     static_assert(sizeof(FClusterDagGpuPageDrawDataRecord) == kClusterDagGpuPageDrawDataRecordStride);
@@ -145,7 +145,7 @@ namespace
     static_assert(offsetof(FClusterDagGpuPageDrawDataRecord, RangeIndex) == kClusterDagGpuPageDrawDataRecordRangeIndexOffset);
     static_assert(offsetof(FClusterDagGpuPageDrawDataRecord, RangeCommandStart) == kClusterDagGpuPageDrawDataRecordRangeCommandStartOffset);
     static_assert(offsetof(FClusterDagGpuPageDrawDataRecord, RangeCommandCount) == kClusterDagGpuPageDrawDataRecordRangeCommandCountOffset);
-    static_assert(offsetof(FClusterDagGpuPageDrawDataRecord, ModelIndex) == kClusterDagGpuPageDrawDataRecordModelIndexOffset);
+    static_assert(offsetof(FClusterDagGpuPageDrawDataRecord, DrawSectionIndex) == kClusterDagGpuPageDrawDataRecordDrawSectionIndexOffset);
 
     uint32_t ClampConfigUint(uint32_t Value, uint32_t MinValue, uint32_t MaxValue)
     {
@@ -220,7 +220,7 @@ bool FClusterDagStreamingManager::BuildGpuPagePayload(
         DrawDataRecord.RangeIndex = SourceDrawData.RangeIndex;
         DrawDataRecord.RangeCommandStart = SourceDrawData.RangeCommandStart;
         DrawDataRecord.RangeCommandCount = SourceDrawData.RangeCommandCount;
-        DrawDataRecord.ModelIndex = SourceDrawData.ModelIndex;
+        DrawDataRecord.DrawSectionIndex = SourceDrawData.DrawSectionIndex;
         DrawDataRecords.push_back(DrawDataRecord);
     }
 
@@ -582,7 +582,6 @@ void FClusterDagStreamingManager::InitializePageReadSources(const std::vector<FC
             if (bStreamingPayload
                 && !bRestorePayload
                 && Desc.MeshIndex == Source.MeshIndex
-                && Desc.DagIndex == Source.DagIndex
                 && Desc.LocalPageIndex == Source.LocalPageIndex)
             {
                 FPageReadSource& ReadSource = PageReadSources[Source.PageIndex];

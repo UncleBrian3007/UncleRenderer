@@ -1,19 +1,21 @@
 #include "StaticMesh.h"
 
-#include "../Render/SceneModelResource.h"
-
-FMeshMaterial* FStaticMesh::GetMaterial(std::vector<FSceneModelResource>& SceneModels, size_t SectionIndex) const
+FMeshMaterial* FStaticMesh::GetMaterial(size_t SectionIndex)
 {
-    if (SectionIndex >= SectionModelIndices.size())
+    if (SectionIndex >= Sections.size())
     {
         return nullptr;
     }
 
-    const uint32_t ModelIndex = SectionModelIndices[SectionIndex];
-    if (ModelIndex >= SceneModels.size())
+    return &Sections[SectionIndex].Material;
+}
+
+const FMeshMaterial* FStaticMesh::GetMaterial(size_t SectionIndex) const
+{
+    if (SectionIndex >= Sections.size())
     {
         return nullptr;
     }
 
-    return &SceneModels[ModelIndex].Material;
+    return &Sections[SectionIndex].Material;
 }

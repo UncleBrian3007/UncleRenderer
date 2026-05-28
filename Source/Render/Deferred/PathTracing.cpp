@@ -291,12 +291,13 @@ void FPathTracing::AddPathTracingPass(FDeferredPassContext& Context)
     {
         FDeferredRenderer& Owner = *OwnerPtr;
         FRenderGraph& Graph = *GraphPtr;
+        auto DrawSections = Owner.GetWorld().BuildSectionList();
         if (!Owner.GetRayTracingRuntime().bRayTracingPipelineReady || !Owner.GetRayTracingRuntime().RayQueryRootSignature)
         {
             return;
         }
 
-        if (Owner.SceneModels.empty() || Data.Camera == nullptr)
+        if (DrawSections.empty() || Data.Camera == nullptr)
         {
             return;
         }
@@ -382,7 +383,7 @@ void FPathTracing::AddPathTracingPass(FDeferredPassContext& Context)
         CommandList4->SetComputeRootSignature(Owner.GetRayTracingRuntime().RayQueryRootSignature.Get());
         CommandList4->SetComputeRootShaderResourceView(0, Owner.GetRayTracingRuntime().TlasResultBuffers[FrameIndex]->GetGPUVirtualAddress());
         const uint64_t ConstantBufferOffset = 0;
-        Owner.UpdateSceneConstants(*Data.Camera, Owner.SceneModels.front(), 0u, ConstantBufferOffset);
+        Owner.UpdateSceneConstants(*Data.Camera, DrawSections.front(), 0u, ConstantBufferOffset);
         const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = Owner.GetSceneConstantBufferAddress();
         CommandList4->SetComputeRootConstantBufferView(1, ConstantBufferAddress + ConstantBufferOffset);
 

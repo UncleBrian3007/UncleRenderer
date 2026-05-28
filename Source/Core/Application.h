@@ -136,8 +136,8 @@ private:
     std::wstring PendingScenePath;
 
     // Selection
-    int32_t      SelectedModelIndex = -1;
-    std::string  SelectedModelName;
+    int32_t      SelectedSectionIndex = -1;
+    std::string  SelectedSectionName;
     bool         bPendingObjectIdReadback = false;
     uint32_t     PendingObjectIdX = 0;
     uint32_t     PendingObjectIdY = 0;

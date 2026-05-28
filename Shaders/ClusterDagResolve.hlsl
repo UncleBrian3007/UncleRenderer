@@ -214,7 +214,7 @@ PSOutput ClusterDagResolvePS(VSOutput Input)
     {
         geometryEntry.PageDataBase = 0xffffffffu;
     }
-    const ClusterDagResolveSceneData sceneData = SceneDatas[drawData.ModelIndex];
+    const ClusterDagResolveSceneData sceneData = SceneDatas[drawData.DrawSectionIndex];
 
     uint vertexIndex0 = 0u;
     uint vertexIndex1 = 0u;

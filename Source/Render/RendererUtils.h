@@ -12,12 +12,13 @@
 #include <limits>
 #include "../../Shaders/PipelineKeyShared.h"
 #include "GpuResource.h"
-#include "SceneModelResource.h"
+#include "../World/MeshSection.h"
 #include "../Scene/GltfAnimation.h"
 
 class FDX12Device;
 class FCamera;
 class FShaderCompiler;
+class FWorld;
 struct FGltfMaterialTextures;
 
 struct FSceneConstants
@@ -160,7 +161,7 @@ namespace RendererUtils
     struct FUpdateSceneConstantsParams
     {
         const FCamera* Camera = nullptr;
-        const FSceneModelResource* Model = nullptr;
+        const FMeshSection* Section = nullptr;
         float LightIntensity = 1.0f;
         DirectX::XMVECTOR LightDirection = DirectX::XMVectorZero();
         DirectX::XMFLOAT3 LightColor{ 1.0f, 1.0f, 1.0f };
@@ -237,13 +238,13 @@ namespace RendererUtils
         DirectX::XMVECTOR OutPlanes[6]);
     void UpdateCullingVisibility(
         const FCamera& Camera,
-        std::vector<FSceneModelResource>& Models,
-        std::vector<bool>& OutVisibility,
+        FWorld& World,
         bool bAllowMeshletCulling);
     void UpdateSceneConstants(const FUpdateSceneConstantsParams& Params);
-    FMaterialBindlessIndices BuildMaterialBindlessIndices(const FSceneModelResource& Model);
+    FMaterialBindlessIndices BuildMaterialBindlessIndices(const FMeshSection& Section);
+    FMaterialBindlessIndices BuildMaterialBindlessIndices(const FSectionRenderData& RenderData);
     bool UpdateGltfSceneAnimation(
-        std::vector<FSceneModelResource>& Models,
+        FWorld& World,
         std::vector<FGltfScene>& Scenes,
         float DeltaTime);
     DirectX::XMMATRIX BuildDirectionalLightViewProjection(
@@ -257,5 +258,5 @@ namespace RendererUtils
 
     // Builds a pipeline key from material properties for shader permutation selection
     // bit 0: Normal, bit 1: MR, bit 2: BaseColor, bit 3: Emissive, bit 4: AlphaMask
-    uint32_t BuildPipelineKey(const FSceneModelResource& Model);
+    uint32_t BuildPipelineKey(const FMeshSection& Section);
 }

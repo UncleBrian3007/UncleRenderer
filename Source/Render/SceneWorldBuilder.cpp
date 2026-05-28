@@ -2,7 +2,7 @@
 #define NOMINMAX
 #endif
 
-#include "SceneModelResourceLoader.h"
+#include "SceneWorldBuilder.h"
 #include "RendererUtils.h"
 #include "GpuResource.h"
 #include "RayTracingRuntime.h"
@@ -476,95 +476,44 @@ namespace
         return true;
     }
 
-    uint32_t PackClusterDagDebugColor(uint32_t ClusterIndex, uint32_t MipLevel)
-    {
-        uint32_t Hash = ClusterIndex * 747796405u + 2891336453u + MipLevel * 277803737u;
-        Hash ^= Hash >> 16;
-        Hash *= 2246822519u;
-        Hash ^= Hash >> 13;
-        Hash *= 3266489917u;
-        Hash ^= Hash >> 16;
-
-        const uint8_t R = static_cast<uint8_t>(96u + (Hash & 0x7fu));
-        const uint8_t G = static_cast<uint8_t>(96u + ((Hash >> 8) & 0x7fu));
-        const uint8_t B = static_cast<uint8_t>(96u + ((Hash >> 16) & 0x7fu));
-        const uint8_t A = static_cast<uint8_t>((std::min)(MipLevel, 255u));
-        return static_cast<uint32_t>(R)
-            | (static_cast<uint32_t>(G) << 8)
-            | (static_cast<uint32_t>(B) << 16)
-            | (static_cast<uint32_t>(A) << 24);
-    }
-
-    std::vector<uint32_t> BuildClusterDagDebugColorTable(const FRuntimeClusterHierarchy& RuntimeHierarchy, uint32_t IndexCount)
-    {
-        std::vector<uint32_t> DebugColors(IndexCount, 0xffffffffu);
-        for (uint32_t ClusterIndex = 0; ClusterIndex < static_cast<uint32_t>(RuntimeHierarchy.Clusters.size()); ++ClusterIndex)
-        {
-            const FRuntimeCluster& Cluster = RuntimeHierarchy.Clusters[ClusterIndex];
-            const uint32_t PackedColor = PackClusterDagDebugColor(ClusterIndex, Cluster.MipLevel);
-            for (uint32_t DrawDataOffset = 0; DrawDataOffset < Cluster.DrawDataCount; ++DrawDataOffset)
-            {
-                const uint32_t DrawDataIndex = Cluster.DrawDataStart + DrawDataOffset;
-                if (DrawDataIndex >= RuntimeHierarchy.DrawDatas.size())
-                {
-                    continue;
-                }
-
-                const FRuntimeClusterDrawData& DrawData = RuntimeHierarchy.DrawDatas[DrawDataIndex];
-                if (DrawData.IndexStart >= IndexCount)
-                {
-                    continue;
-                }
-
-                const uint32_t DrawDataEnd = (std::min)(DrawData.IndexStart + DrawData.IndexCount, IndexCount);
-                for (uint32_t IndexOffset = DrawData.IndexStart; IndexOffset < DrawDataEnd; ++IndexOffset)
-                {
-                    DebugColors[IndexOffset] = PackedColor;
-                }
-            }
-        }
-
-        return DebugColors;
-    }
-
-    void InitializeModelResourceFromSection(
+    void InitializeMeshSectionFromSection(
         const FNodeSectionBuildInputs& Inputs,
         const FGltfPrimitiveSection& Section,
         size_t SectionIndex,
         uint32_t ObjectId,
-        FSceneModelResource& OutModelResource)
+        FMeshSection& OutMeshSection)
     {
         using namespace DirectX;
 
-        OutModelResource.DrawIndexStart = Section.IndexStart;
-        OutModelResource.DrawIndexCount = Section.IndexCount;
-        OutModelResource.BaseIndexCount = Section.IndexCount;
+        OutMeshSection.DrawIndexStart = Section.IndexStart;
+        OutMeshSection.DrawIndexCount = Section.IndexCount;
+        OutMeshSection.BaseIndexCount = Section.IndexCount;
 
-        XMStoreFloat4x4(&OutModelResource.WorldMatrix, Inputs.World);
-        XMStoreFloat4x4(&OutModelResource.ModelTransform, Inputs.ModelTransform);
-        OutModelResource.GltfSceneIndex = Inputs.SceneIndex;
-        OutModelResource.GltfNodeIndex = Inputs.Node.NodeIndex;
-        OutModelResource.GltfMeshIndex = static_cast<int>(Inputs.MeshIndex);
-        OutModelResource.GltfSkinIndex = Inputs.Node.SkinIndex;
+        XMStoreFloat4x4(&OutMeshSection.WorldMatrix, Inputs.World);
+        XMStoreFloat4x4(&OutMeshSection.ModelTransform, Inputs.ModelTransform);
+        OutMeshSection.GltfSceneIndex = Inputs.SceneIndex;
+        OutMeshSection.GltfNodeIndex = Inputs.Node.NodeIndex;
+        OutMeshSection.GltfMeshIndex = static_cast<int>(Inputs.MeshIndex);
+        OutMeshSection.GltfSkinIndex = Inputs.Node.SkinIndex;
 
         const XMVECTOR CenterVec = XMVector3TransformCoord(
             XMVectorSet(Inputs.MeshCenter.x, Inputs.MeshCenter.y, Inputs.MeshCenter.z, 1.0f),
             Inputs.World);
-        XMStoreFloat3(&OutModelResource.Center, CenterVec);
-        OutModelResource.Radius = Inputs.MeshRadius * Inputs.NodeScale;
+        XMStoreFloat3(&OutMeshSection.Center, CenterVec);
+        OutMeshSection.Radius = Inputs.MeshRadius * Inputs.NodeScale;
 
         if (Inputs.SectionCount > 1)
         {
-            OutModelResource.Name = Inputs.BaseName + "_Prim" + std::to_string(SectionIndex);
+            OutMeshSection.Name = Inputs.BaseName + "_Sec" + std::to_string(SectionIndex);
         }
         else
         {
-            OutModelResource.Name = Inputs.BaseName;
+            OutMeshSection.Name = Inputs.BaseName;
         }
 
-        OutModelResource.ObjectId = ObjectId;
-        XMStoreFloat3(&OutModelResource.BoundsMin, Inputs.BoundsMin);
-        XMStoreFloat3(&OutModelResource.BoundsMax, Inputs.BoundsMax);
+        OutMeshSection.ObjectId = ObjectId;
+        XMStoreFloat3(&OutMeshSection.BoundsMin, Inputs.BoundsMin);
+        XMStoreFloat3(&OutMeshSection.BoundsMax, Inputs.BoundsMax);
 
         const std::wstring EmptyTexture;
         const FGltfMaterialTextureSet& Material = Section.Material;
@@ -580,7 +529,7 @@ namespace
         const std::wstring& ClearcoatNormalPath = !Material.ClearcoatNormal.empty() ? Material.ClearcoatNormal : EmptyTexture;
         const std::wstring& AnisotropyPath = !Material.Anisotropy.empty() ? Material.Anisotropy : EmptyTexture;
 
-        FMeshMaterial& OutMaterial = OutModelResource.Material;
+        FMeshMaterial& OutMaterial = OutMeshSection.Material;
         OutMaterial.BaseColorTexturePath = Inputs.SceneModel.BaseColorTexturePath.empty() ? BaseColorPath : Inputs.SceneModel.BaseColorTexturePath;
         OutMaterial.MetallicRoughnessTexturePath = Inputs.SceneModel.MetallicRoughnessTexturePath.empty() ? MetallicRoughnessPath : Inputs.SceneModel.MetallicRoughnessTexturePath;
         OutMaterial.NormalTexturePath = Inputs.SceneModel.NormalTexturePath.empty() ? NormalPath : Inputs.SceneModel.NormalTexturePath;
@@ -632,12 +581,12 @@ namespace
         OutMaterial.AnisotropyTransform.Rotation = BuildRotationConstants(Material.AnisotropyTransform);
     }
 
-    bool BuildModelResourceGeometryForSection(
+    bool BuildMeshSectionGeometryForSection(
         FDX12Device* Device,
         const FNodeSectionBuildInputs& Inputs,
         size_t SectionIndex,
         FUploadBatch& UploadBatch,
-        FSceneModelResource& InOutModelResource)
+        FMeshSection& InOutMeshSection)
     {
         if (SectionIndex >= Inputs.MeshPrimitives.size())
         {
@@ -646,7 +595,7 @@ namespace
 
         const FMesh::FMeshletGroup* MeshletGroup = Inputs.Mesh.GetMeshletGroup(SectionIndex);
         const bool bUseMeshletIndices = Inputs.Mesh.IsMeshletIndexingAllowed() && MeshletGroup && !MeshletGroup->MeshletIndices.empty();
-        if (!CreatePrimitiveGeometry(Device, Inputs.MeshPrimitives[SectionIndex], InOutModelResource.Geometry, !bUseMeshletIndices, &UploadBatch))
+        if (!CreatePrimitiveGeometry(Device, Inputs.MeshPrimitives[SectionIndex], InOutMeshSection.Geometry, !bUseMeshletIndices, &UploadBatch))
         {
             LogError("Failed to create primitive geometry for scene mesh: " + StringUtils::PathToUtf8(Inputs.MeshPath));
             return false;
@@ -654,22 +603,22 @@ namespace
 
         if (bUseMeshletIndices)
         {
-            if (CreateIndexBufferFromIndices(Device, MeshletGroup->MeshletIndices, InOutModelResource.Geometry, &UploadBatch))
+            if (CreateIndexBufferFromIndices(Device, MeshletGroup->MeshletIndices, InOutMeshSection.Geometry, &UploadBatch))
             {
-                InOutModelResource.bUseMeshletCulling = true;
-                InOutModelResource.Meshlets = MeshletGroup->Meshlets;
-                InOutModelResource.MeshletBounds = MeshletGroup->MeshletBounds;
-                InOutModelResource.MeshletIndices = MeshletGroup->MeshletIndices;
-                InOutModelResource.DrawIndexStart = 0;
-                InOutModelResource.DrawIndexCount = static_cast<uint32_t>(MeshletGroup->MeshletIndices.size());
-                InOutModelResource.BaseIndexCount = InOutModelResource.DrawIndexCount;
+                InOutMeshSection.bUseMeshletCulling = true;
+                InOutMeshSection.Meshlets = MeshletGroup->Meshlets;
+                InOutMeshSection.MeshletBounds = MeshletGroup->MeshletBounds;
+                InOutMeshSection.MeshletIndices = MeshletGroup->MeshletIndices;
+                InOutMeshSection.DrawIndexStart = 0;
+                InOutMeshSection.DrawIndexCount = static_cast<uint32_t>(MeshletGroup->MeshletIndices.size());
+                InOutMeshSection.BaseIndexCount = InOutMeshSection.DrawIndexCount;
             }
         }
         else
         {
-            InOutModelResource.DrawIndexStart = 0;
-            InOutModelResource.DrawIndexCount = static_cast<uint32_t>(Inputs.MeshPrimitives[SectionIndex].Indices.size());
-            InOutModelResource.BaseIndexCount = InOutModelResource.DrawIndexCount;
+            InOutMeshSection.DrawIndexStart = 0;
+            InOutMeshSection.DrawIndexCount = static_cast<uint32_t>(Inputs.MeshPrimitives[SectionIndex].Indices.size());
+            InOutMeshSection.BaseIndexCount = InOutMeshSection.DrawIndexCount;
         }
 
         return true;
@@ -680,7 +629,7 @@ namespace
         const FNodeSectionBuildInputs& Inputs,
         size_t SectionIndex,
         FUploadBatch& UploadBatch,
-        FSceneModelResource& InOutModelResource)
+        FMeshSection& InOutMeshSection)
     {
         if (!(Inputs.WholeMeshClusterDAG && Inputs.bWholeMeshClusterDagRuntimeAllowed && SectionIndex == 0))
         {
@@ -688,99 +637,88 @@ namespace
         }
 
         const FClusterDAG* ClusterDAG = Inputs.WholeMeshClusterDAG;
-        InOutModelResource.ClusterDagMeshIndex = static_cast<uint32_t>(Inputs.MeshIndex);
-        InOutModelResource.ClusterDagPrimitiveIndex = 0u;
-        InOutModelResource.ClusterDagSourceFilePath = Inputs.MeshPath.wstring();
+        InOutMeshSection.ClusterDagMeshIndex = static_cast<uint32_t>(Inputs.MeshIndex);
+        InOutMeshSection.ClusterDagSourceFilePath = Inputs.MeshPath.wstring();
         std::filesystem::path ClusterDagCachePath = Inputs.MeshPath;
         ClusterDagCachePath.replace_extension(L".vmesh");
-        InOutModelResource.ClusterDagCacheFilePath = ClusterDagCachePath.wstring();
-        InOutModelResource.bUseClusterDagRuntime =
+        InOutMeshSection.ClusterDagCacheFilePath = ClusterDagCachePath.wstring();
+        InOutMeshSection.bUseClusterDagRuntime =
             ClusterDAG->HasRuntimeHierarchy()
             && Inputs.bWholeMeshClusterDagRuntimeAllowed
             && !ClusterDAG->RuntimeHierarchy.PackedIndices.empty();
-        InOutModelResource.ClusterDagRuntimeHierarchy = ClusterDAG->RuntimeHierarchy;
+        InOutMeshSection.ClusterDagRuntimeHierarchy = ClusterDAG->RuntimeHierarchy;
 
-        if (!InOutModelResource.bUseClusterDagRuntime)
+        if (!InOutMeshSection.bUseClusterDagRuntime)
         {
             return;
         }
 
         FClusterDAGPackedVertexData ClusterDagPackedVertexData;
-        InOutModelResource.bUseClusterDagRuntime =
-            BuildClusterDagPackedVertexStreams(*ClusterDAG, ClusterDagPackedVertexData);
+        InOutMeshSection.bUseClusterDagRuntime = BuildClusterDagPackedVertexStreams(*ClusterDAG, ClusterDagPackedVertexData);
 
         FMeshGeometryBuffers ClusterDagGeometry = {};
         const bool bCreatedClusterDagGeometry =
-            InOutModelResource.bUseClusterDagRuntime
-            && CreateStructuredBufferFromData( Device, ClusterDagPackedVertexData.Positions, InOutModelResource.ClusterDagVertexBuffers[0], L"ClusterDagPositionBuffer", &UploadBatch)
-			&& CreateStructuredBufferFromData(Device, ClusterDagPackedVertexData.Normals, InOutModelResource.ClusterDagVertexBuffers[1], L"ClusterDagNormalBuffer", &UploadBatch)
+            InOutMeshSection.bUseClusterDagRuntime
+            && CreateStructuredBufferFromData(Device, ClusterDagPackedVertexData.Positions, InOutMeshSection.ClusterDagVertexBuffers[kClusterDagVertexStreamPosition], L"ClusterDagPositionBuffer", &UploadBatch)
+			&& CreateStructuredBufferFromData(Device, ClusterDagPackedVertexData.Normals, InOutMeshSection.ClusterDagVertexBuffers[kClusterDagVertexStreamNormal], L"ClusterDagNormalBuffer", &UploadBatch)
             && (ClusterDagPackedVertexData.UVs.empty()
-                || CreateStructuredBufferFromData( Device, ClusterDagPackedVertexData.UVs, InOutModelResource.ClusterDagVertexBuffers[2], L"ClusterDagUvBuffer", &UploadBatch))
+                || CreateStructuredBufferFromData(Device, ClusterDagPackedVertexData.UVs, InOutMeshSection.ClusterDagVertexBuffers[kClusterDagVertexStreamUv], L"ClusterDagUvBuffer", &UploadBatch))
             && (ClusterDagPackedVertexData.Tangents.empty()
-                || CreateStructuredBufferFromData( Device, ClusterDagPackedVertexData.Tangents, InOutModelResource.ClusterDagVertexBuffers[3], L"ClusterDagTangentBuffer", &UploadBatch))
-            && (ClusterDagPackedVertexData.Colors.empty()
-                || CreateStructuredBufferFromData( Device, ClusterDagPackedVertexData.Colors, InOutModelResource.ClusterDagColorBuffer, L"ClusterDagColorBuffer", &UploadBatch))
+                || CreateStructuredBufferFromData(Device, ClusterDagPackedVertexData.Tangents, InOutMeshSection.ClusterDagVertexBuffers[kClusterDagVertexStreamTangent], L"ClusterDagTangentBuffer", &UploadBatch))
+            && (ClusterDagPackedVertexData.Colors.empty() || CreateStructuredBufferFromData(Device, ClusterDagPackedVertexData.Colors, InOutMeshSection.ClusterDagColorBuffer, L"ClusterDagColorBuffer", &UploadBatch))
             && CreateIndexBufferFromIndices(Device, ClusterDAG->RuntimeHierarchy.PackedIndices, ClusterDagGeometry, &UploadBatch);
         if (bCreatedClusterDagGeometry)
         {
-            InOutModelResource.ClusterDagVertexPackingMode = GClusterDagVertexPackingModeBasic;
-            InOutModelResource.ClusterDagPackedVertexData = ClusterDagPackedVertexData;
-            InOutModelResource.ClusterDagPackedPositionOffset = ClusterDagPackedVertexData.PositionOffset;
-            InOutModelResource.ClusterDagPackedPositionScale = ClusterDagPackedVertexData.PositionScale;
-            InOutModelResource.ClusterDagPackedConstantUV = DirectX::XMFLOAT4(
+            InOutMeshSection.ClusterDagVertexPackingMode = GClusterDagVertexPackingModeBasic;
+            InOutMeshSection.ClusterDagPackedVertexData = ClusterDagPackedVertexData;
+            InOutMeshSection.ClusterDagPackedPositionOffset = ClusterDagPackedVertexData.PositionOffset;
+            InOutMeshSection.ClusterDagPackedPositionScale = ClusterDagPackedVertexData.PositionScale;
+            InOutMeshSection.ClusterDagPackedConstantUV = DirectX::XMFLOAT4(
                 ClusterDagPackedVertexData.ConstantUV.x,
                 ClusterDagPackedVertexData.ConstantUV.y,
                 0.0f,
                 0.0f);
-            InOutModelResource.ClusterDagPackedConstantColor = DirectX::XMFLOAT4(
+            InOutMeshSection.ClusterDagPackedConstantColor = DirectX::XMFLOAT4(
                 ClusterDagPackedVertexData.ConstantColor.x,
                 ClusterDagPackedVertexData.ConstantColor.y,
                 ClusterDagPackedVertexData.ConstantColor.z,
                 ClusterDagPackedVertexData.ConstantColor.w);
-            InOutModelResource.ClusterDagIndexBuffer = ClusterDagGeometry.IndexBuffer;
-            InOutModelResource.ClusterDagIndexCount = ClusterDagGeometry.IndexCount;
+            InOutMeshSection.ClusterDagIndexBuffer = ClusterDagGeometry.IndexBuffer;
+            InOutMeshSection.ClusterDagIndexCount = ClusterDagGeometry.IndexCount;
 
             const bool bDagVertexSrvReady = AreAllBindlessIndicesValid(
-                    InOutModelResource.ClusterDagVertexBuffers[0].SrvBindlessIndex,
-                    InOutModelResource.ClusterDagVertexBuffers[1].SrvBindlessIndex,
-                    InOutModelResource.ClusterDagIndexBuffer.SrvBindlessIndex);
+                InOutMeshSection.ClusterDagVertexBuffers[kClusterDagVertexStreamPosition].SrvBindlessIndex,
+                InOutMeshSection.ClusterDagVertexBuffers[kClusterDagVertexStreamNormal].SrvBindlessIndex,
+                InOutMeshSection.ClusterDagIndexBuffer.SrvBindlessIndex);
             if (!bDagVertexSrvReady)
             {
-                InOutModelResource.bUseClusterDagRuntime = false;
-                InOutModelResource.ClusterDagVertexPackingMode = GClusterDagVertexPackingModeNone;
+                InOutMeshSection.bUseClusterDagRuntime = false;
+                InOutMeshSection.ClusterDagVertexPackingMode = GClusterDagVertexPackingModeNone;
             }
 
-            if (InOutModelResource.bUseClusterDagRuntime)
-            {
-                const std::vector<uint32_t> DebugColors = BuildClusterDagDebugColorTable( ClusterDAG->RuntimeHierarchy, InOutModelResource.ClusterDagIndexCount);
-                if (!DebugColors.empty())
-                {
-                    CreateStructuredBufferFromData( Device, DebugColors, InOutModelResource.ClusterDagDebugColorBuffer, L"ClusterDagDebugColorBuffer", &UploadBatch);
-                }
-            }
         }
         else
         {
-            InOutModelResource.bUseClusterDagRuntime = false;
-            InOutModelResource.ClusterDagVertexPackingMode = GClusterDagVertexPackingModeNone;
+            InOutMeshSection.bUseClusterDagRuntime = false;
+            InOutMeshSection.ClusterDagVertexPackingMode = GClusterDagVertexPackingModeNone;
         }
     }
 
-    void InitializeSkinningForModel(FDX12Device* Device, const FGltfScene& LoadedScene, FSceneModelResource& InOutModelResource)
+    void InitializeSkinningForMeshSection(FDX12Device* Device, const FGltfScene& LoadedScene, FMeshSection& InOutMeshSection)
     {
-        if (!(Device && InOutModelResource.GltfSkinIndex >= 0))
+        if (!(Device && InOutMeshSection.GltfSkinIndex >= 0))
         {
             return;
         }
 
-        if (static_cast<size_t>(InOutModelResource.GltfSkinIndex) >= LoadedScene.Skins.size())
+        if (static_cast<size_t>(InOutMeshSection.GltfSkinIndex) >= LoadedScene.Skins.size())
         {
             return;
         }
 
-        const FGltfSkin& Skin = LoadedScene.Skins[static_cast<size_t>(InOutModelResource.GltfSkinIndex)];
-        InOutModelResource.BoneMatrixCount = static_cast<uint32_t>(Skin.Joints.size());
-        if (InOutModelResource.BoneMatrixCount == 0)
+        const FGltfSkin& Skin = LoadedScene.Skins[static_cast<size_t>(InOutMeshSection.GltfSkinIndex)];
+        InOutMeshSection.BoneMatrixCount = static_cast<uint32_t>(Skin.Joints.size());
+        if (InOutMeshSection.BoneMatrixCount == 0)
         {
             return;
         }
@@ -789,17 +727,17 @@ namespace
         if (!CreateMappedBindlessBuffer(
             Device,
             L"SkinMatrixBuffer",
-            CreateStructuredBufferDesc<DirectX::XMFLOAT4X4>(InOutModelResource.BoneMatrixCount),
-            InOutModelResource.BoneMatrixBuffer,
+            CreateStructuredBufferDesc<DirectX::XMFLOAT4X4>(InOutMeshSection.BoneMatrixCount),
+            InOutMeshSection.BoneMatrixBuffer,
             MappedData))
         {
             return;
         }
 
-        InOutModelResource.BoneMatrixBufferMapped = static_cast<uint8_t*>(MappedData);
-        const uint64_t BufferSize = sizeof(DirectX::XMFLOAT4X4) * InOutModelResource.BoneMatrixCount;
-        std::vector<DirectX::XMFLOAT4X4> IdentityMatrices(InOutModelResource.BoneMatrixCount);
-        for (uint32_t JointIndex = 0; JointIndex < InOutModelResource.BoneMatrixCount; ++JointIndex)
+        InOutMeshSection.BoneMatrixBufferMapped = static_cast<uint8_t*>(MappedData);
+        const uint64_t BufferSize = sizeof(DirectX::XMFLOAT4X4) * InOutMeshSection.BoneMatrixCount;
+        std::vector<DirectX::XMFLOAT4X4> IdentityMatrices(InOutMeshSection.BoneMatrixCount);
+        for (uint32_t JointIndex = 0; JointIndex < InOutMeshSection.BoneMatrixCount; ++JointIndex)
         {
             IdentityMatrices[JointIndex] = DirectX::XMFLOAT4X4(
                 1.0f, 0.0f, 0.0f, 0.0f,
@@ -807,64 +745,58 @@ namespace
                 0.0f, 0.0f, 1.0f, 0.0f,
                 0.0f, 0.0f, 0.0f, 1.0f);
         }
-        std::memcpy(InOutModelResource.BoneMatrixBufferMapped, IdentityMatrices.data(), BufferSize);
-        CreateBindlessBufferSrv(Device, InOutModelResource.BoneMatrixBuffer);
-        InOutModelResource.bUseSkinning = IsValidBindlessIndex(InOutModelResource.BoneMatrixBuffer.SrvBindlessIndex);
+        std::memcpy(InOutMeshSection.BoneMatrixBufferMapped, IdentityMatrices.data(), BufferSize);
+        CreateBindlessBufferSrv(Device, InOutMeshSection.BoneMatrixBuffer);
+        InOutMeshSection.bUseSkinning = IsValidBindlessIndex(InOutMeshSection.BoneMatrixBuffer.SrvBindlessIndex);
     }
 
-    void PropagateClusterDagOwnerDataToSections(std::vector<FSceneModelResource>& InOutModels, const std::vector<uint32_t>& SectionModelIndices)
+    void PropagateClusterDagOwnerDataToSections(std::vector<FMeshSection>& InOutSections)
     {
-        if (SectionModelIndices.empty())
+        if (InOutSections.empty())
         {
             return;
         }
 
-        FSceneModelResource& OwnerModel = InOutModels[SectionModelIndices.front()];
-        if (!OwnerModel.bUseClusterDagRuntime)
+        FMeshSection& OwnerMeshSection = InOutSections.front();
+        if (!OwnerMeshSection.bUseClusterDagRuntime)
         {
             return;
         }
 
-        OwnerModel.ClusterDagSectionModelIndices = SectionModelIndices;
-        OwnerModel.bCoveredByClusterDagRuntime = true;
-        for (size_t SectionOrdinal = 1; SectionOrdinal < SectionModelIndices.size(); ++SectionOrdinal)
+        OwnerMeshSection.bCoveredByClusterDagRuntime = true;
+        for (size_t SectionOrdinal = 1; SectionOrdinal < InOutSections.size(); ++SectionOrdinal)
         {
-            FSceneModelResource& SectionModel = InOutModels[SectionModelIndices[SectionOrdinal]];
-            SectionModel.bCoveredByClusterDagRuntime = true;
-            SectionModel.ClusterDagMeshIndex = OwnerModel.ClusterDagMeshIndex;
-            SectionModel.ClusterDagPrimitiveIndex = 0u;
-            SectionModel.ClusterDagSourceFilePath = OwnerModel.ClusterDagSourceFilePath;
-            SectionModel.ClusterDagCacheFilePath = OwnerModel.ClusterDagCacheFilePath;
-            SectionModel.ClusterDagVertexPackingMode = OwnerModel.ClusterDagVertexPackingMode;
-            SectionModel.ClusterDagPackedVertexData = OwnerModel.ClusterDagPackedVertexData;
-            SectionModel.ClusterDagPackedPositionOffset = OwnerModel.ClusterDagPackedPositionOffset;
-            SectionModel.ClusterDagPackedPositionScale = OwnerModel.ClusterDagPackedPositionScale;
-            SectionModel.ClusterDagPackedConstantUV = OwnerModel.ClusterDagPackedConstantUV;
-            SectionModel.ClusterDagPackedConstantColor = OwnerModel.ClusterDagPackedConstantColor;
-            SectionModel.ClusterDagVertexBuffers = OwnerModel.ClusterDagVertexBuffers;
-            SectionModel.ClusterDagIndexBuffer = OwnerModel.ClusterDagIndexBuffer;
-            SectionModel.ClusterDagColorBuffer = OwnerModel.ClusterDagColorBuffer;
-            SectionModel.ClusterDagDebugColorBuffer = OwnerModel.ClusterDagDebugColorBuffer;
-            SectionModel.ClusterDagIndexCount = OwnerModel.ClusterDagIndexCount;
+            FMeshSection& MeshSection = InOutSections[SectionOrdinal];
+            MeshSection.bCoveredByClusterDagRuntime = true;
+            MeshSection.ClusterDagMeshIndex = OwnerMeshSection.ClusterDagMeshIndex;
+            MeshSection.ClusterDagSourceFilePath = OwnerMeshSection.ClusterDagSourceFilePath;
+            MeshSection.ClusterDagCacheFilePath = OwnerMeshSection.ClusterDagCacheFilePath;
+            MeshSection.ClusterDagVertexPackingMode = OwnerMeshSection.ClusterDagVertexPackingMode;
+            MeshSection.ClusterDagPackedVertexData = OwnerMeshSection.ClusterDagPackedVertexData;
+            MeshSection.ClusterDagPackedPositionOffset = OwnerMeshSection.ClusterDagPackedPositionOffset;
+            MeshSection.ClusterDagPackedPositionScale = OwnerMeshSection.ClusterDagPackedPositionScale;
+            MeshSection.ClusterDagPackedConstantUV = OwnerMeshSection.ClusterDagPackedConstantUV;
+            MeshSection.ClusterDagPackedConstantColor = OwnerMeshSection.ClusterDagPackedConstantColor;
+            MeshSection.ClusterDagVertexBuffers = OwnerMeshSection.ClusterDagVertexBuffers;
+            MeshSection.ClusterDagIndexBuffer = OwnerMeshSection.ClusterDagIndexBuffer;
+            MeshSection.ClusterDagColorBuffer = OwnerMeshSection.ClusterDagColorBuffer;
+            MeshSection.ClusterDagDebugColorBuffer = OwnerMeshSection.ClusterDagDebugColorBuffer;
+            MeshSection.ClusterDagIndexCount = OwnerMeshSection.ClusterDagIndexCount;
         }
     }
 
 }
 
-bool SceneModelResourceLoader::LoadModelsFromJson(
+bool SceneWorldBuilder::LoadWorldFromSceneFile(
     FDX12Device* Device,
     const std::wstring& SceneFilePath,
-    std::vector<FSceneModelResource>& OutModels,
+    FWorld& OutWorld,
     DirectX::XMFLOAT3& OutSceneCenter,
     float& OutSceneRadius,
-    std::vector<FGltfScene>* OutGltfScenes,
-    FWorld* OutWorld)
+    std::vector<FGltfScene>* OutGltfScenes)
 {
-    OutModels.clear();
-    if (OutWorld)
-    {
-        OutWorld->Clear();
-    }
+    OutWorld.Clear();
+
     uint32_t NextObjectId = 1;
 
     const std::filesystem::path ScenePath(SceneFilePath);
@@ -1016,7 +948,7 @@ bool SceneModelResourceLoader::LoadModelsFromJson(
             }
 
             const size_t SectionCount = PrimitiveSections->size();
-            const FClusterDAG* WholeMeshClusterDAG = Mesh.GetClusterDAG(0);
+            const FClusterDAG* WholeMeshClusterDAG = Mesh.GetClusterDAG();
             bool bWholeMeshClusterDagRuntimeAllowed =
                 WholeMeshClusterDAG
                 && WholeMeshClusterDAG->HasRuntimeHierarchy()
@@ -1030,9 +962,6 @@ bool SceneModelResourceLoader::LoadModelsFromJson(
                     break;
                 }
             }
-            std::vector<uint32_t> SectionModelIndices;
-            SectionModelIndices.reserve(SectionCount);
-
             const FNodeSectionBuildInputs SectionInputs
             {
                 Model,
@@ -1056,53 +985,76 @@ bool SceneModelResourceLoader::LoadModelsFromJson(
                 BoundsMax
             };
 
+            const bool bSkeletal = LoadedNode.SkinIndex >= 0;
+            std::unique_ptr<FObject> Object;
+            if (bSkeletal)
+            {
+                auto Skeletal = std::make_unique<FSkeletalMesh>();
+                Skeletal->SetGltfSkinIndex(LoadedNode.SkinIndex);
+                Object = std::move(Skeletal);
+            }
+            else
+            {
+                Object = std::make_unique<FStaticMesh>();
+            }
+
+            Object->SetName(BaseName);
+            Object->SetGltfIndices(SceneIndex, LoadedNode.NodeIndex, static_cast<int>(MeshIndex));
+            std::vector<FMeshSection>& Sections = Object->GetSections();
+            Sections.clear();
+            Sections.reserve(SectionCount);
+
+            bool bObjectBuildSucceeded = true;
             for (size_t SectionIndex = 0; SectionIndex < SectionCount; ++SectionIndex)
             {
                 const FGltfPrimitiveSection& Section = (*PrimitiveSections)[SectionIndex];
 
-                FSceneModelResource ModelResource;
-                InitializeModelResourceFromSection(SectionInputs, Section, SectionIndex, NextObjectId++, ModelResource);
-                if (!BuildModelResourceGeometryForSection(Device, SectionInputs, SectionIndex, UploadBatch, ModelResource))
+                FMeshSection MeshSection;
+                InitializeMeshSectionFromSection(SectionInputs, Section, SectionIndex, NextObjectId++, MeshSection);
+                if (!BuildMeshSectionGeometryForSection(Device, SectionInputs, SectionIndex, UploadBatch, MeshSection))
                 {
-                    continue;
+                    bObjectBuildSucceeded = false;
+                    break;
                 }
 
-                ConfigureWholeMeshClusterDagRuntimeForSection(Device, SectionInputs, SectionIndex, UploadBatch, ModelResource);
-                InitializeSkinningForModel(Device, LoadedScene, ModelResource);
+                ConfigureWholeMeshClusterDagRuntimeForSection(Device, SectionInputs, SectionIndex, UploadBatch, MeshSection);
+                InitializeSkinningForMeshSection(Device, LoadedScene, MeshSection);
 
-                ModelResource.PipelineKey = RendererUtils::BuildPipelineKey(ModelResource);
-                UpdateSceneBounds(ModelResource.Center, ModelResource.Radius, SceneMin, SceneMax);
+                MeshSection.PipelineKey = RendererUtils::BuildPipelineKey(MeshSection);
+                UpdateSceneBounds(MeshSection.Center, MeshSection.Radius, SceneMin, SceneMax);
 
-                SectionModelIndices.push_back((uint32_t)OutModels.size());
-                OutModels.push_back(std::move(ModelResource));
+                Sections.push_back(std::move(MeshSection));
             }
 
-            PropagateClusterDagOwnerDataToSections(OutModels, SectionModelIndices);
-
-            // Build the logical world object grouping this node's sections.
-            if (OutWorld && !SectionModelIndices.empty())
+            if (!bObjectBuildSucceeded)
             {
-                const bool bSkeletal = LoadedNode.SkinIndex >= 0;
-                std::unique_ptr<IObject> Object;
-                if (bSkeletal)
-                {
-                    auto Skeletal = std::make_unique<FSkeletalMesh>();
-                    Skeletal->SetGltfSkinIndex(LoadedNode.SkinIndex);
-                    Object = std::move(Skeletal);
-                }
-                else
-                {
-                    Object = std::make_unique<FStaticMesh>();
-                }
+                Sections.clear();
+                continue;
+            }
 
-                Object->SetName(BaseName);
-                Object->SetGltfIndices(SceneIndex, LoadedNode.NodeIndex, static_cast<int>(MeshIndex));
-                Object->GetSectionModelIndices() = SectionModelIndices;
-                Object->SetObjectId(OutModels[SectionModelIndices.front()].ObjectId);
+            PropagateClusterDagOwnerDataToSections(Sections);
+
+            if (!Sections.empty())
+            {
+                Object->SetObjectId(Sections.front().ObjectId);
                 DirectX::XMFLOAT4X4 ObjectWorldMatrix;
                 DirectX::XMStoreFloat4x4(&ObjectWorldMatrix, World);
                 Object->SetWorldMatrix(ObjectWorldMatrix);
-                OutWorld->AddObject(std::move(Object));
+                Object->ResetPreviousWorldMatrix();
+
+                DirectX::XMFLOAT3 ObjectBoundsMin{ std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max() };
+                DirectX::XMFLOAT3 ObjectBoundsMax{ std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest() };
+                for (const FMeshSection& MeshSection : Sections)
+                {
+                    ObjectBoundsMin.x = (std::min)(ObjectBoundsMin.x, MeshSection.BoundsMin.x);
+                    ObjectBoundsMin.y = (std::min)(ObjectBoundsMin.y, MeshSection.BoundsMin.y);
+                    ObjectBoundsMin.z = (std::min)(ObjectBoundsMin.z, MeshSection.BoundsMin.z);
+                    ObjectBoundsMax.x = (std::max)(ObjectBoundsMax.x, MeshSection.BoundsMax.x);
+                    ObjectBoundsMax.y = (std::max)(ObjectBoundsMax.y, MeshSection.BoundsMax.y);
+                    ObjectBoundsMax.z = (std::max)(ObjectBoundsMax.z, MeshSection.BoundsMax.z);
+                }
+                Object->SetBounds(ObjectBoundsMin, ObjectBoundsMax);
+                OutWorld.AddObject(std::move(Object));
             }
         }
 
@@ -1118,9 +1070,9 @@ bool SceneModelResourceLoader::LoadModelsFromJson(
         UploadBatch.ExecuteAndFlush();
     }
 
-    FRayTracingRuntime::BuildSceneModelBlas(Device, OutModels);
+    FRayTracingRuntime::BuildSceneBlas(Device, OutWorld);
 
-    if (OutModels.empty())
+    if (OutWorld.GetDrawSectionCount() == 0)
     {
         LogError("No renderable models could be created from scene JSON: " + ScenePathUtf8);
         return false;

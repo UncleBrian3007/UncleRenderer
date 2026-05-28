@@ -200,7 +200,7 @@
     <ClCompile Include="Source\Render\Renderer.cpp">
       <Filter>Source Files\Render</Filter>
     </ClCompile>
-    <ClCompile Include="Source\Render\SceneModelResourceLoader.cpp">
+    <ClCompile Include="Source\Render\SceneWorldBuilder.cpp">
       <Filter>Source Files\Render</Filter>
     </ClCompile>
     <ClCompile Include="Source\World\MeshMaterial.cpp">
@@ -478,10 +478,10 @@
     <ClInclude Include="Source\Render\RendererUtils.h">
       <Filter>Header Files\Render</Filter>
     </ClInclude>
-    <ClInclude Include="Source\Render\SceneModelResource.h">
-      <Filter>Header Files\Render</Filter>
-    </ClInclude>
     <ClInclude Include="Source\World\Object.h">
+      <Filter>Header Files\World</Filter>
+    </ClInclude>
+    <ClInclude Include="Source\World\MeshSection.h">
       <Filter>Header Files\World</Filter>
     </ClInclude>
     <ClInclude Include="Source\World\MeshMaterial.h">
@@ -496,7 +496,7 @@
     <ClInclude Include="Source\World\World.h">
       <Filter>Header Files\World</Filter>
     </ClInclude>
-    <ClInclude Include="Source\Render\SceneModelResourceLoader.h">
+    <ClInclude Include="Source\Render\SceneWorldBuilder.h">
       <Filter>Header Files\Render</Filter>
     </ClInclude>
     <ClInclude Include="Source\Render\RayTracingRuntime.h">

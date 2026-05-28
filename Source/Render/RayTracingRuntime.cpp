@@ -101,7 +101,7 @@ namespace
     }
 }
 
-bool FRayTracingRuntime::BuildSceneModelBlas(FDX12Device* Device, std::vector<FSceneModelResource>& Models)
+bool FRayTracingRuntime::BuildSceneBlas(FDX12Device* Device, FWorld& World)
 {
     using Microsoft::WRL::ComPtr;
 
@@ -138,18 +138,19 @@ bool FRayTracingRuntime::BuildSceneModelBlas(FDX12Device* Device, std::vector<FS
         return true;
     }
 
-    for (FSceneModelResource& Model : Models)
+    for (const FDrawSectionView& DrawSection : World.GetDrawSectionViews())
     {
-        if (!Model.Geometry.VertexBuffers[0] || !Model.Geometry.IndexBuffer)
+        FMeshSection& Section = *DrawSection.Section;
+        if (!Section.Geometry.VertexBuffers[kMeshVertexStreamPosition] || !Section.Geometry.IndexBuffer)
         {
             continue;
         }
 
-        const uint32_t VertexStride = Model.Geometry.VertexBufferViews[0].StrideInBytes;
+        const uint32_t VertexStride = Section.Geometry.VertexBufferViews[kMeshVertexStreamPosition].StrideInBytes;
         const uint32_t VertexCount = VertexStride > 0
-            ? (Model.Geometry.VertexBufferViews[0].SizeInBytes / VertexStride)
+            ? (Section.Geometry.VertexBufferViews[kMeshVertexStreamPosition].SizeInBytes / VertexStride)
             : 0;
-        const uint32_t IndexCount = Model.Geometry.IndexCount;
+        const uint32_t IndexCount = Section.Geometry.IndexCount;
         if (VertexCount == 0 || IndexCount == 0)
         {
             continue;
@@ -158,11 +159,11 @@ bool FRayTracingRuntime::BuildSceneModelBlas(FDX12Device* Device, std::vector<FS
         D3D12_RAYTRACING_GEOMETRY_DESC GeometryDesc = {};
         GeometryDesc.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
         GeometryDesc.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
-        GeometryDesc.Triangles.VertexBuffer.StartAddress = Model.Geometry.VertexBuffers[0]->GetGPUVirtualAddress();
+        GeometryDesc.Triangles.VertexBuffer.StartAddress = Section.Geometry.VertexBuffers[kMeshVertexStreamPosition]->GetGPUVirtualAddress();
         GeometryDesc.Triangles.VertexBuffer.StrideInBytes = VertexStride;
         GeometryDesc.Triangles.VertexCount = VertexCount;
         GeometryDesc.Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
-        GeometryDesc.Triangles.IndexBuffer = Model.Geometry.IndexBuffer->GetGPUVirtualAddress();
+        GeometryDesc.Triangles.IndexBuffer = Section.Geometry.IndexBuffer->GetGPUVirtualAddress();
         GeometryDesc.Triangles.IndexCount = IndexCount;
         GeometryDesc.Triangles.IndexFormat = DXGI_FORMAT_R32_UINT;
 
@@ -172,7 +173,7 @@ bool FRayTracingRuntime::BuildSceneModelBlas(FDX12Device* Device, std::vector<FS
         Inputs.NumDescs = 1;
         Inputs.pGeometryDescs = &GeometryDesc;
         Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
-        if (Model.bUseSkinning)
+        if (Section.bUseSkinning)
         {
             Inputs.Flags |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE;
         }
@@ -190,32 +191,32 @@ bool FRayTracingRuntime::BuildSceneModelBlas(FDX12Device* Device, std::vector<FS
                 PrebuildInfo.ResultDataMaxSizeInBytes,
                 D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
-                Model.BlasResultBuffer,
+                Section.BlasResultBuffer,
                 L"BLAS_Result")
             || !CreateRayTracingBuffer(
                 Device,
                 PrebuildInfo.ScratchDataSizeInBytes,
                 D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                Model.BlasScratchBuffer,
+                Section.BlasScratchBuffer,
                 L"BLAS_Scratch"))
         {
-            LogWarning("Failed to allocate BLAS buffers for model: " + Model.Name);
+            LogWarning("Failed to allocate BLAS buffers for section: " + Section.Name);
             continue;
         }
 
         D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC BuildDesc = {};
         BuildDesc.Inputs = Inputs;
-        BuildDesc.DestAccelerationStructureData = Model.BlasResultBuffer->GetGPUVirtualAddress();
-        BuildDesc.ScratchAccelerationStructureData = Model.BlasScratchBuffer->GetGPUVirtualAddress();
+        BuildDesc.DestAccelerationStructureData = Section.BlasResultBuffer->GetGPUVirtualAddress();
+        BuildDesc.ScratchAccelerationStructureData = Section.BlasScratchBuffer->GetGPUVirtualAddress();
 
         CommandList4->BuildRaytracingAccelerationStructure(&BuildDesc, 0, nullptr);
 
-        const auto Barrier = CD3DX12_RESOURCE_BARRIER::UAV(Model.BlasResultBuffer.Get());
+        const auto Barrier = CD3DX12_RESOURCE_BARRIER::UAV(Section.BlasResultBuffer.Get());
         CommandList4->ResourceBarrier(1, &Barrier);
 
-        Model.BlasGeometryDesc = GeometryDesc;
-        Model.bHasRayTracingBlas = true;
+        Section.BlasGeometryDesc = GeometryDesc;
+        Section.bHasRayTracingBlas = true;
     }
 
     HR_CHECK(CommandList->Close());
@@ -601,59 +602,58 @@ void FRayTracingRuntime::UpdateBlasRefit(FRenderer& Owner, FDX12CommandContext& 
     CommandList4->ResourceBarrier(1, &SkinningBarrier);
 
     const uint32_t FrameIndex = CmdContext.GetCurrentFrameIndex();
+    auto DrawSections = Owner.GetWorld().BuildSectionList();
 
-    for (size_t ModelIndex = 0; ModelIndex < Owner.SceneModels.size(); ++ModelIndex)
+    for (size_t DrawSectionIndex = 0; DrawSectionIndex < DrawSections.size(); ++DrawSectionIndex)
     {
-        FSceneModelResource& Model = Owner.SceneModels[ModelIndex];
-        if (!Model.bHasRayTracingBlas || !Model.BlasResultBuffer || !Model.BlasScratchBuffer)
+        FMeshSection& Section = DrawSections[DrawSectionIndex];
+        if (!Section.bHasRayTracingBlas || !Section.BlasResultBuffer || !Section.BlasScratchBuffer)
         {
             continue;
         }
 
-        const bool bUseSkinning = IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) && Model.BoneMatrixCount > 0
-            && FrameIndex < Model.SkinnedPositionBuffers.size();
+        const bool bUseSkinning = IsValidBindlessIndex(Section.BoneMatrixBuffer.SrvBindlessIndex) && Section.BoneMatrixCount > 0
+            && FrameIndex < Section.SkinnedPositionBuffers.size();
         if (!bUseSkinning)
         {
             continue;
         }
 
-        if (!Model.bSkinningUpdatedThisFrame)
+        if (!Section.bSkinningUpdatedThisFrame)
+        {
+            continue;
+        }
+        if (!Section.bSkinningVisible)
         {
             continue;
         }
 
-        if (!Owner.SceneModelSkinningVisibility.empty() && ModelIndex < Owner.SceneModelSkinningVisibility.size()
-            && !Owner.SceneModelSkinningVisibility[ModelIndex])
-        {
-            continue;
-        }
-
-        ID3D12Resource* SkinnedBuffer = Model.SkinnedPositionBuffers[FrameIndex].Get();
+        ID3D12Resource* SkinnedBuffer = Section.SkinnedPositionBuffers[FrameIndex].Get();
         if (!SkinnedBuffer)
         {
             continue;
         }
 
-        Model.BlasGeometryDesc.Triangles.VertexBuffer.StartAddress = SkinnedBuffer->GetGPUVirtualAddress();
+        Section.BlasGeometryDesc.Triangles.VertexBuffer.StartAddress = SkinnedBuffer->GetGPUVirtualAddress();
 
         D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS Inputs = {};
         Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
         Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
         Inputs.NumDescs = 1;
-        Inputs.pGeometryDescs = &Model.BlasGeometryDesc;
+        Inputs.pGeometryDescs = &Section.BlasGeometryDesc;
         Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE
             | D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE
             | D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE;
 
         D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC BuildDesc = {};
         BuildDesc.Inputs = Inputs;
-        BuildDesc.DestAccelerationStructureData = Model.BlasResultBuffer->GetGPUVirtualAddress();
-        BuildDesc.SourceAccelerationStructureData = Model.BlasResultBuffer->GetGPUVirtualAddress();
-        BuildDesc.ScratchAccelerationStructureData = Model.BlasScratchBuffer->GetGPUVirtualAddress();
+        BuildDesc.DestAccelerationStructureData = Section.BlasResultBuffer->GetGPUVirtualAddress();
+        BuildDesc.SourceAccelerationStructureData = Section.BlasResultBuffer->GetGPUVirtualAddress();
+        BuildDesc.ScratchAccelerationStructureData = Section.BlasScratchBuffer->GetGPUVirtualAddress();
 
         CommandList4->BuildRaytracingAccelerationStructure(&BuildDesc, 0, nullptr);
 
-        const auto Barrier = CD3DX12_RESOURCE_BARRIER::UAV(Model.BlasResultBuffer.Get());
+        const auto Barrier = CD3DX12_RESOURCE_BARRIER::UAV(Section.BlasResultBuffer.Get());
         CommandList4->ResourceBarrier(1, &Barrier);
         bHasUpdates = true;
     }
@@ -688,8 +688,10 @@ void FRayTracingRuntime::BuildTlas(FRenderer& Owner, FDX12CommandContext& CmdCon
         return;
     }
 
+    auto DrawSections = Owner.GetWorld().BuildSectionList();
+
     std::vector<D3D12_RAYTRACING_INSTANCE_DESC> Instances;
-    Instances.reserve(Owner.SceneModels.size());
+    Instances.reserve(DrawSections.size());
 
     // Build instance data buffer for path tracing
     struct FPathTracingInstanceData
@@ -719,18 +721,17 @@ void FRayTracingRuntime::BuildTlas(FRenderer& Owner, FDX12CommandContext& CmdCon
     static_assert((offsetof(FPathTracingInstanceData, BaseColorFactorAndAlpha) % 16u) == 0u, "Invalid BaseColorFactorAndAlpha alignment");
 
     std::vector<FPathTracingInstanceData> InstanceDataArray;
-    InstanceDataArray.reserve(Owner.SceneModels.size());
+    InstanceDataArray.reserve(DrawSections.size());
 
     uint32_t InstanceId = 0;
-    for (size_t ModelIndex = 0; ModelIndex < Owner.SceneModels.size(); ++ModelIndex)
+    for (size_t DrawSectionIndex = 0; DrawSectionIndex < DrawSections.size(); ++DrawSectionIndex)
     {
-        const FSceneModelResource& Model = Owner.SceneModels[ModelIndex];
-        if (!Model.bHasRayTracingBlas || !Model.BlasResultBuffer)
+        const FMeshSection& Section = DrawSections[DrawSectionIndex];
+        if (!Section.bHasRayTracingBlas || !Section.BlasResultBuffer)
         {
             continue;
         }
-
-        if (!Owner.SceneModelVisibility.empty() && !Owner.SceneModelVisibility[ModelIndex])
+        if (!Section.bVisible)
         {
             continue;
         }
@@ -739,10 +740,10 @@ void FRayTracingRuntime::BuildTlas(FRenderer& Owner, FDX12CommandContext& CmdCon
         InstanceDesc.InstanceID = InstanceId++;
         InstanceDesc.InstanceMask = 0xFF;
         InstanceDesc.Flags = D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
-        InstanceDesc.AccelerationStructure = Model.BlasResultBuffer->GetGPUVirtualAddress();
+        InstanceDesc.AccelerationStructure = Section.BlasResultBuffer->GetGPUVirtualAddress();
 
         DirectX::XMFLOAT4X4 World = {};
-        DirectX::XMStoreFloat4x4(&World, DirectX::XMMatrixTranspose(DirectX::XMLoadFloat4x4(&Model.WorldMatrix)));
+        DirectX::XMStoreFloat4x4(&World, DirectX::XMMatrixTranspose(DirectX::XMLoadFloat4x4(&Section.WorldMatrix)));
         InstanceDesc.Transform[0][0] = World._11;
         InstanceDesc.Transform[0][1] = World._12;
         InstanceDesc.Transform[0][2] = World._13;
@@ -760,30 +761,30 @@ void FRayTracingRuntime::BuildTlas(FRenderer& Owner, FDX12CommandContext& CmdCon
 
         // Build instance data for path tracing (same order as TLAS instances)
         FPathTracingInstanceData InstData = {};
-        InstData.PositionBufferIndex = Model.Geometry.VertexBuffers[0].SrvBindlessIndex;
-        InstData.NormalBufferIndex = Model.Geometry.VertexBuffers[1].SrvBindlessIndex;
-        InstData.UVBufferIndex = Model.Geometry.VertexBuffers[2].SrvBindlessIndex;
-        InstData.IndexBufferIndex = Model.Geometry.IndexBuffer.SrvBindlessIndex;
-        InstData.TangentBufferIndex = Model.Geometry.VertexBuffers[3].SrvBindlessIndex;
-        InstData.BaseColorTextureIndex = Model.Material.BaseColor.SrvBindlessIndex;
-        InstData.NormalTextureIndex = Model.Material.Normal.SrvBindlessIndex;
-        InstData.MetallicRoughnessTextureIndex = Model.Material.MetallicRoughness.SrvBindlessIndex;
-        InstData.Flags = Model.Material.bDoubleSided ? 1u : 0u;
-        InstData.EmissiveTextureIndex = Model.Material.Emissive.SrvBindlessIndex;
+        InstData.PositionBufferIndex = Section.Geometry.VertexBuffers[kMeshVertexStreamPosition].SrvBindlessIndex;
+        InstData.NormalBufferIndex = Section.Geometry.VertexBuffers[kMeshVertexStreamNormal].SrvBindlessIndex;
+        InstData.UVBufferIndex = Section.Geometry.VertexBuffers[kMeshVertexStreamUv].SrvBindlessIndex;
+        InstData.IndexBufferIndex = Section.Geometry.IndexBuffer.SrvBindlessIndex;
+        InstData.TangentBufferIndex = Section.Geometry.VertexBuffers[kMeshVertexStreamTangent].SrvBindlessIndex;
+        InstData.BaseColorTextureIndex = Section.Material.BaseColor.SrvBindlessIndex;
+        InstData.NormalTextureIndex = Section.Material.Normal.SrvBindlessIndex;
+        InstData.MetallicRoughnessTextureIndex = Section.Material.MetallicRoughness.SrvBindlessIndex;
+        InstData.Flags = Section.Material.bDoubleSided ? 1u : 0u;
+        InstData.EmissiveTextureIndex = Section.Material.Emissive.SrvBindlessIndex;
         InstData.Padding0 = 0u;
         InstData.Padding1 = 0u;
-        InstData.EmissiveFactor = DirectX::XMFLOAT4(Model.Material.EmissiveFactor.x, Model.Material.EmissiveFactor.y, Model.Material.EmissiveFactor.z, 0.0f);
+        InstData.EmissiveFactor = DirectX::XMFLOAT4(Section.Material.EmissiveFactor.x, Section.Material.EmissiveFactor.y, Section.Material.EmissiveFactor.z, 0.0f);
         InstData.BaseColorFactorAndAlpha = DirectX::XMFLOAT4(
-            Model.Material.BaseColorFactor.x,
-            Model.Material.BaseColorFactor.y,
-            Model.Material.BaseColorFactor.z,
-            Model.Material.BaseColorAlpha);
+            Section.Material.BaseColorFactor.x,
+            Section.Material.BaseColorFactor.y,
+            Section.Material.BaseColorFactor.z,
+            Section.Material.BaseColorAlpha);
         InstData.MetallicRoughnessAlphaCutoff = DirectX::XMFLOAT4(
-            Model.Material.MetallicFactor,
-            Model.Material.RoughnessFactor,
-            Model.Material.AlphaCutoff,
+            Section.Material.MetallicFactor,
+            Section.Material.RoughnessFactor,
+            Section.Material.AlphaCutoff,
             0.0f);
-        DirectX::XMMATRIX WorldMatrix = DirectX::XMLoadFloat4x4(&Model.WorldMatrix);
+        DirectX::XMMATRIX WorldMatrix = DirectX::XMLoadFloat4x4(&Section.WorldMatrix);
         DirectX::XMMATRIX WorldInverseTranspose = DirectX::XMMatrixTranspose(DirectX::XMMatrixInverse(nullptr, WorldMatrix));
         DirectX::XMStoreFloat4x4(&InstData.WorldInverseTranspose, WorldInverseTranspose);
 

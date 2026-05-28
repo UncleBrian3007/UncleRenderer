@@ -70,4 +70,4 @@
 #define kClusterDagGpuPageDrawDataRecordRangeIndexOffset            12u
 #define kClusterDagGpuPageDrawDataRecordRangeCommandStartOffset     16u
 #define kClusterDagGpuPageDrawDataRecordRangeCommandCountOffset     20u
-#define kClusterDagGpuPageDrawDataRecordModelIndexOffset            24u
+#define kClusterDagGpuPageDrawDataRecordDrawSectionIndexOffset            24u

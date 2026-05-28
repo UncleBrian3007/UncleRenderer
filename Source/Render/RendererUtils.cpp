@@ -13,6 +13,7 @@
 #include "../RHI/DX12Commons.h"
 #include "../RHI/DX12CommandContext.h"
 #include "../RHI/DX12CommandQueue.h"
+#include "../World/World.h"
 #include <vector>
 #include <cstring>
 #include <algorithm>
@@ -454,39 +455,39 @@ bool RendererUtils::CreateSphereGeometry(FDX12Device* Device, FMeshGeometryBuffe
 
 void RendererUtils::UpdateCullingVisibility(
     const FCamera& Camera,
-    std::vector<FSceneModelResource>& Models,
-    std::vector<bool>& OutVisibility,
+    FWorld& World,
     bool bAllowMeshletCulling)
 {
-    OutVisibility.assign(Models.size(), true);
+    (void)bAllowMeshletCulling;
     DirectX::XMVECTOR Planes[6] = {};
     RendererUtils::BuildCameraFrustumPlanes(Camera, Planes);
-    for (size_t ModelIndex = 0; ModelIndex < Models.size(); ++ModelIndex)
+    for (const FDrawSectionView& DrawSection : World.GetDrawSectionViews())
     {
-        FSceneModelResource& Model = Models[ModelIndex];
-        const bool bModelVisible = RendererUtils::IsAabbInCameraFrustum(Planes, Model.BoundsMin, Model.BoundsMax);
-        OutVisibility[ModelIndex] = bModelVisible;
+        FMeshSection& Section = *DrawSection.Section;
+        Section.bVisible = RendererUtils::IsAabbInCameraFrustum(Planes, Section.BoundsMin, Section.BoundsMax);
     }
 }
 
 bool RendererUtils::UpdateGltfSceneAnimation(
-    std::vector<FSceneModelResource>& Models,
+    FWorld& World,
     std::vector<FGltfScene>& Scenes,
     float DeltaTime)
 {
-    for (FSceneModelResource& Model : Models)
+    const std::vector<FDrawSectionView>& DrawSections = World.GetDrawSectionViews();
+    for (const FDrawSectionView& DrawSection : DrawSections)
     {
-        Model.bSkinningUpdatedThisFrame = false;
+        DrawSection.Section->bSkinningUpdatedThisFrame = false;
     }
 
-    if (Scenes.empty() || Models.empty())
+    if (Scenes.empty() || DrawSections.empty())
     {
         return false;
     }
 
-    const bool bHasSkinning = std::any_of(Models.begin(), Models.end(), [](const FSceneModelResource& Model)
+    const bool bHasSkinning = std::any_of(DrawSections.begin(), DrawSections.end(), [](const FDrawSectionView& DrawSection)
     {
-        return Model.GltfSkinIndex >= 0 && Model.BoneMatrixBufferMapped != nullptr;
+        const FMeshSection& Section = *DrawSection.Section;
+        return Section.GltfSkinIndex >= 0 && Section.BoneMatrixBufferMapped != nullptr;
     });
     if (!bHasSkinning)
     {
@@ -505,14 +506,15 @@ bool RendererUtils::UpdateGltfSceneAnimation(
     }
 
     bool bAnySkinningUpdated = false;
-    for (FSceneModelResource& Model : Models)
+    for (const FDrawSectionView& DrawSection : DrawSections)
     {
-        if (Model.GltfSceneIndex < 0 || Model.GltfNodeIndex < 0)
+        FMeshSection& Section = *DrawSection.Section;
+        if (Section.GltfSceneIndex < 0 || Section.GltfNodeIndex < 0)
         {
             continue;
         }
 
-        const size_t SceneIndex = static_cast<size_t>(Model.GltfSceneIndex);
+        const size_t SceneIndex = static_cast<size_t>(Section.GltfSceneIndex);
         if (SceneIndex >= Scenes.size())
         {
             continue;
@@ -520,7 +522,7 @@ bool RendererUtils::UpdateGltfSceneAnimation(
 
         const FGltfScene& Scene = Scenes[SceneIndex];
         const std::vector<DirectX::XMFLOAT4X4>& WorldMatrices = Scene.Pose.WorldMatrices;
-        const size_t NodeIndex = static_cast<size_t>(Model.GltfNodeIndex);
+        const size_t NodeIndex = static_cast<size_t>(Section.GltfNodeIndex);
         if (NodeIndex >= WorldMatrices.size())
         {
             continue;
@@ -529,15 +531,15 @@ bool RendererUtils::UpdateGltfSceneAnimation(
         using namespace DirectX;
         const XMMATRIX NodeWorld = XMLoadFloat4x4(&WorldMatrices[NodeIndex]);
 
-        if (Model.GltfSkinIndex >= 0 && Model.BoneMatrixBufferMapped)
+        if (Section.GltfSkinIndex >= 0 && Section.BoneMatrixBufferMapped)
         {
-            const size_t SkinIndex = static_cast<size_t>(Model.GltfSkinIndex);
+            const size_t SkinIndex = static_cast<size_t>(Section.GltfSkinIndex);
             if (SkinIndex < Scene.Skins.size()
                 && SkinIndex < Scene.Pose.SkinMatrices.size())
             {
                 const FGltfSkin& Skin = Scene.Skins[SkinIndex];
                 const std::vector<DirectX::XMFLOAT4X4>& SkinMatrices = Scene.Pose.SkinMatrices[SkinIndex];
-                const size_t MatrixCount = std::min(SkinMatrices.size(), static_cast<size_t>(Model.BoneMatrixCount));
+                const size_t MatrixCount = std::min(SkinMatrices.size(), static_cast<size_t>(Section.BoneMatrixCount));
 
                 const XMMATRIX NodeWorldInv = XMMatrixInverse(nullptr, NodeWorld);
 
@@ -550,11 +552,11 @@ bool RendererUtils::UpdateGltfSceneAnimation(
                 }
 
                 const size_t CopyBytes = MatrixCount * sizeof(DirectX::XMFLOAT4X4);
-                std::memcpy(Model.BoneMatrixBufferMapped, FinalMatrices.data(), CopyBytes);
+                std::memcpy(Section.BoneMatrixBufferMapped, FinalMatrices.data(), CopyBytes);
 
                 if (bAnimationTimeAdvanced && !Scene.Animations.empty() && MatrixCount > 0)
                 {
-                    Model.bSkinningUpdatedThisFrame = true;
+                    Section.bSkinningUpdatedThisFrame = true;
                     bAnySkinningUpdated = true;
                 }
             }
@@ -574,15 +576,15 @@ void RendererUtils::UpdateSceneConstants(const FUpdateSceneConstantsParams& Para
     using namespace DirectX;
 
     const FCamera& Camera = *Params.Camera;
-    const FSceneModelResource& Model = *Params.Model;
+    const FMeshSection& Section = *Params.Section;
 
     const XMMATRIX View = Camera.GetViewMatrix();
     const XMMATRIX ViewInverse = XMMatrixInverse(nullptr, View);
-    const XMMATRIX WorldMatrix = XMLoadFloat4x4(&Model.WorldMatrix);
+    const XMMATRIX WorldMatrix = XMLoadFloat4x4(&Section.WorldMatrix);
 
-    const bool bHasEmissiveTexture = !Model.Material.EmissiveTexturePath.empty();
-    const XMFLOAT3 BaseColorFactor = Model.Material.BaseColorFactor;
-    const XMFLOAT3 EmissiveFactor = Model.Material.EmissiveFactor;
+    const bool bHasEmissiveTexture = !Section.Material.EmissiveTexturePath.empty();
+    const XMFLOAT3 BaseColorFactor = Section.Material.BaseColorFactor;
+    const XMFLOAT3 EmissiveFactor = Section.Material.EmissiveFactor;
 
     FSceneConstants Constants = {};
     XMStoreFloat4x4(&Constants.World, WorldMatrix);
@@ -607,111 +609,128 @@ void RendererUtils::UpdateSceneConstants(const FUpdateSceneConstantsParams& Para
     Constants.ShadowStrength = Params.ShadowStrength;
     Constants.ShadowBias = Params.ShadowBias;
     Constants.ShadowMapSize = DirectX::XMFLOAT2(Params.ShadowMapWidth, Params.ShadowMapHeight);
-    Constants.MetallicFactor = Model.Material.MetallicFactor;
-    Constants.RoughnessFactor = Model.Material.RoughnessFactor;
-    Constants.BaseColorAlpha = Model.Material.BaseColorAlpha;
-    Constants.AlphaCutoff = Model.Material.AlphaCutoff;
-    Constants.AlphaMode = Model.Material.AlphaMode;
-    Constants.SheenColorFactor = Model.Material.SheenColorFactor;
-    Constants.SheenRoughnessFactor = Model.Material.SheenRoughnessFactor;
-    Constants.ShadingModelId = Model.Material.ShadingModelId;
-    Constants.ClearcoatFactor = Model.Material.ClearcoatFactor;
-    Constants.ClearcoatRoughnessFactor = Model.Material.ClearcoatRoughnessFactor;
-    Constants.AnisotropyStrength = Model.Material.AnisotropyStrength;
-    Constants.AnisotropyRotation = Model.Material.AnisotropyRotation;
+    Constants.MetallicFactor = Section.Material.MetallicFactor;
+    Constants.RoughnessFactor = Section.Material.RoughnessFactor;
+    Constants.BaseColorAlpha = Section.Material.BaseColorAlpha;
+    Constants.AlphaCutoff = Section.Material.AlphaCutoff;
+    Constants.AlphaMode = Section.Material.AlphaMode;
+    Constants.SheenColorFactor = Section.Material.SheenColorFactor;
+    Constants.SheenRoughnessFactor = Section.Material.SheenRoughnessFactor;
+    Constants.ShadingModelId = Section.Material.ShadingModelId;
+    Constants.ClearcoatFactor = Section.Material.ClearcoatFactor;
+    Constants.ClearcoatRoughnessFactor = Section.Material.ClearcoatRoughnessFactor;
+    Constants.AnisotropyStrength = Section.Material.AnisotropyStrength;
+    Constants.AnisotropyRotation = Section.Material.AnisotropyRotation;
     Constants.EnvMapMipCount = Params.EnvMapMipCount;
     const bool bUseClusterDagVertexBuffers =
         Params.bUseClusterDagIndexBuffer
         && AreAllBindlessIndicesValid(
-            Model.ClusterDagVertexBuffers[0].SrvBindlessIndex,
-            Model.ClusterDagVertexBuffers[1].SrvBindlessIndex,
-            Model.ClusterDagIndexBuffer.SrvBindlessIndex);
+            Section.ClusterDagVertexBuffers[kClusterDagVertexStreamPosition].SrvBindlessIndex,
+            Section.ClusterDagVertexBuffers[kClusterDagVertexStreamNormal].SrvBindlessIndex,
+            Section.ClusterDagIndexBuffer.SrvBindlessIndex);
     Constants.VertexBufferBindlessIndices = DirectX::XMUINT4(
-        bUseClusterDagVertexBuffers ? Model.ClusterDagVertexBuffers[0].SrvBindlessIndex : Model.Geometry.VertexBuffers[0].SrvBindlessIndex,
-        bUseClusterDagVertexBuffers ? Model.ClusterDagVertexBuffers[1].SrvBindlessIndex : Model.Geometry.VertexBuffers[1].SrvBindlessIndex,
-        bUseClusterDagVertexBuffers ? Model.ClusterDagVertexBuffers[2].SrvBindlessIndex : Model.Geometry.VertexBuffers[2].SrvBindlessIndex,
-        bUseClusterDagVertexBuffers ? Model.ClusterDagVertexBuffers[3].SrvBindlessIndex : Model.Geometry.VertexBuffers[3].SrvBindlessIndex);
+        bUseClusterDagVertexBuffers ? Section.ClusterDagVertexBuffers[kClusterDagVertexStreamPosition].SrvBindlessIndex : Section.Geometry.VertexBuffers[kMeshVertexStreamPosition].SrvBindlessIndex,
+        bUseClusterDagVertexBuffers ? Section.ClusterDagVertexBuffers[kClusterDagVertexStreamNormal].SrvBindlessIndex : Section.Geometry.VertexBuffers[kMeshVertexStreamNormal].SrvBindlessIndex,
+        bUseClusterDagVertexBuffers ? Section.ClusterDagVertexBuffers[kClusterDagVertexStreamUv].SrvBindlessIndex : Section.Geometry.VertexBuffers[kMeshVertexStreamUv].SrvBindlessIndex,
+        bUseClusterDagVertexBuffers ? Section.ClusterDagVertexBuffers[kClusterDagVertexStreamTangent].SrvBindlessIndex : Section.Geometry.VertexBuffers[kMeshVertexStreamTangent].SrvBindlessIndex);
     Constants.ExtraBindlessIndices = DirectX::XMUINT4(
         bUseClusterDagVertexBuffers
-            ? Model.ClusterDagColorBuffer.SrvBindlessIndex
-            : Model.Geometry.VertexBuffers[4].SrvBindlessIndex,
+            ? Section.ClusterDagColorBuffer.SrvBindlessIndex
+            : Section.Geometry.VertexBuffers[kMeshVertexStreamColor].SrvBindlessIndex,
         bUseClusterDagVertexBuffers
-            ? Model.ClusterDagIndexBuffer.SrvBindlessIndex
-            : Model.Geometry.IndexBuffer.SrvBindlessIndex,
-        Params.bUseClusterDagDebugColor && IsValidBindlessIndex(Model.ClusterDagDebugColorBuffer.SrvBindlessIndex)
-            ? Model.ClusterDagDebugColorBuffer.SrvBindlessIndex
+            ? Section.ClusterDagIndexBuffer.SrvBindlessIndex
+            : Section.Geometry.IndexBuffer.SrvBindlessIndex,
+        Params.bUseClusterDagDebugColor && IsValidBindlessIndex(Section.ClusterDagDebugColorBuffer.SrvBindlessIndex)
+            ? Section.ClusterDagDebugColorBuffer.SrvBindlessIndex
             : UINT32_MAX,
         0u);
     Constants.SkinningBindlessIndices = DirectX::XMUINT4(
-        Model.Geometry.VertexBuffers[5].SrvBindlessIndex,
-        Model.Geometry.VertexBuffers[6].SrvBindlessIndex,
-        Model.BoneMatrixBuffer.SrvBindlessIndex,
-        Model.SkinnedPositionBuffer.SrvBindlessIndex);
-    Constants.ClusterDagPackedPositionOffset = Model.ClusterDagPackedPositionOffset;
-    Constants.ClusterDagPackedPositionScale = Model.ClusterDagPackedPositionScale;
-    Constants.ClusterDagPackedConstantUV = Model.ClusterDagPackedConstantUV;
-    Constants.ClusterDagPackedConstantColor = Model.ClusterDagPackedConstantColor;
+        Section.Geometry.VertexBuffers[kMeshVertexStreamJoints].SrvBindlessIndex,
+        Section.Geometry.VertexBuffers[kMeshVertexStreamWeights].SrvBindlessIndex,
+        Section.BoneMatrixBuffer.SrvBindlessIndex,
+        Section.SkinnedPositionBuffer.SrvBindlessIndex);
+    Constants.ClusterDagPackedPositionOffset = Section.ClusterDagPackedPositionOffset;
+    Constants.ClusterDagPackedPositionScale = Section.ClusterDagPackedPositionScale;
+    Constants.ClusterDagPackedConstantUV = Section.ClusterDagPackedConstantUV;
+    Constants.ClusterDagPackedConstantColor = Section.ClusterDagPackedConstantColor;
     Constants.ClusterDagVertexPackingMode =
         bUseClusterDagVertexBuffers
-        ? Model.ClusterDagVertexPackingMode
+        ? Section.ClusterDagVertexPackingMode
         : 0u;
     Constants.MaterialTextureIndices0 = DirectX::XMUINT4(
-        Model.Material.BaseColor.SrvBindlessIndex,
-        Model.Material.MetallicRoughness.SrvBindlessIndex,
-        Model.Material.Normal.SrvBindlessIndex,
-        Model.Material.Emissive.SrvBindlessIndex);
+        Section.Material.BaseColor.SrvBindlessIndex,
+        Section.Material.MetallicRoughness.SrvBindlessIndex,
+        Section.Material.Normal.SrvBindlessIndex,
+        Section.Material.Emissive.SrvBindlessIndex);
     Constants.MaterialTextureIndices1 = DirectX::XMUINT4(
-        Model.Material.SheenColor.SrvBindlessIndex,
-        Model.Material.SheenRoughness.SrvBindlessIndex,
-        Model.Material.Clearcoat.SrvBindlessIndex,
-        Model.Material.ClearcoatRoughness.SrvBindlessIndex);
+        Section.Material.SheenColor.SrvBindlessIndex,
+        Section.Material.SheenRoughness.SrvBindlessIndex,
+        Section.Material.Clearcoat.SrvBindlessIndex,
+        Section.Material.ClearcoatRoughness.SrvBindlessIndex);
     Constants.MaterialTextureIndices2 = DirectX::XMUINT4(
-        Model.Material.ClearcoatNormal.SrvBindlessIndex,
-        Model.Material.Anisotropy.SrvBindlessIndex,
+        Section.Material.ClearcoatNormal.SrvBindlessIndex,
+        Section.Material.Anisotropy.SrvBindlessIndex,
         UINT32_MAX,
         UINT32_MAX);
-    Constants.ClusterDagMaterialPipelineKey = Model.PipelineKey;
+    Constants.ClusterDagMaterialPipelineKey = Section.PipelineKey;
     Constants.GtaoIntensity = Params.bGtaoEnabled ? Params.GtaoIntensity : 0.0f;
 
     Constants.DeferredLightingVisualizationMode = Params.DeferredLightingVisualizationMode;
-    Constants.BaseColorTransformOffsetScale = Model.Material.BaseColorTransform.OffsetScale;
-    Constants.BaseColorTransformRotation = Model.Material.BaseColorTransform.Rotation;
-    Constants.MetallicRoughnessTransformOffsetScale = Model.Material.MetallicRoughnessTransform.OffsetScale;
-    Constants.MetallicRoughnessTransformRotation = Model.Material.MetallicRoughnessTransform.Rotation;
-    Constants.NormalTransformOffsetScale = Model.Material.NormalTransform.OffsetScale;
-    Constants.NormalTransformRotation = Model.Material.NormalTransform.Rotation;
-    Constants.EmissiveTransformOffsetScale = Model.Material.EmissiveTransform.OffsetScale;
-    Constants.EmissiveTransformRotation = Model.Material.EmissiveTransform.Rotation;
-    Constants.SheenColorTransformOffsetScale = Model.Material.SheenColorTransform.OffsetScale;
-    Constants.SheenColorTransformRotation = Model.Material.SheenColorTransform.Rotation;
-    Constants.SheenRoughnessTransformOffsetScale = Model.Material.SheenRoughnessTransform.OffsetScale;
-    Constants.SheenRoughnessTransformRotation = Model.Material.SheenRoughnessTransform.Rotation;
-    Constants.ClearcoatTransformOffsetScale = Model.Material.ClearcoatTransform.OffsetScale;
-    Constants.ClearcoatTransformRotation = Model.Material.ClearcoatTransform.Rotation;
-    Constants.ClearcoatRoughnessTransformOffsetScale = Model.Material.ClearcoatRoughnessTransform.OffsetScale;
-    Constants.ClearcoatRoughnessTransformRotation = Model.Material.ClearcoatRoughnessTransform.Rotation;
-    Constants.ClearcoatNormalTransformOffsetScale = Model.Material.ClearcoatNormalTransform.OffsetScale;
-    Constants.ClearcoatNormalTransformRotation = Model.Material.ClearcoatNormalTransform.Rotation;
-    Constants.AnisotropyTransformOffsetScale = Model.Material.AnisotropyTransform.OffsetScale;
-    Constants.AnisotropyTransformRotation = Model.Material.AnisotropyTransform.Rotation;
+    Constants.BaseColorTransformOffsetScale = Section.Material.BaseColorTransform.OffsetScale;
+    Constants.BaseColorTransformRotation = Section.Material.BaseColorTransform.Rotation;
+    Constants.MetallicRoughnessTransformOffsetScale = Section.Material.MetallicRoughnessTransform.OffsetScale;
+    Constants.MetallicRoughnessTransformRotation = Section.Material.MetallicRoughnessTransform.Rotation;
+    Constants.NormalTransformOffsetScale = Section.Material.NormalTransform.OffsetScale;
+    Constants.NormalTransformRotation = Section.Material.NormalTransform.Rotation;
+    Constants.EmissiveTransformOffsetScale = Section.Material.EmissiveTransform.OffsetScale;
+    Constants.EmissiveTransformRotation = Section.Material.EmissiveTransform.Rotation;
+    Constants.SheenColorTransformOffsetScale = Section.Material.SheenColorTransform.OffsetScale;
+    Constants.SheenColorTransformRotation = Section.Material.SheenColorTransform.Rotation;
+    Constants.SheenRoughnessTransformOffsetScale = Section.Material.SheenRoughnessTransform.OffsetScale;
+    Constants.SheenRoughnessTransformRotation = Section.Material.SheenRoughnessTransform.Rotation;
+    Constants.ClearcoatTransformOffsetScale = Section.Material.ClearcoatTransform.OffsetScale;
+    Constants.ClearcoatTransformRotation = Section.Material.ClearcoatTransform.Rotation;
+    Constants.ClearcoatRoughnessTransformOffsetScale = Section.Material.ClearcoatRoughnessTransform.OffsetScale;
+    Constants.ClearcoatRoughnessTransformRotation = Section.Material.ClearcoatRoughnessTransform.Rotation;
+    Constants.ClearcoatNormalTransformOffsetScale = Section.Material.ClearcoatNormalTransform.OffsetScale;
+    Constants.ClearcoatNormalTransformRotation = Section.Material.ClearcoatNormalTransform.Rotation;
+    Constants.AnisotropyTransformOffsetScale = Section.Material.AnisotropyTransform.OffsetScale;
+    Constants.AnisotropyTransformRotation = Section.Material.AnisotropyTransform.Rotation;
 
     memcpy(Params.ConstantBufferMapped + Params.ConstantBufferOffset, &Constants, sizeof(Constants));
 }
 
-RendererUtils::FMaterialBindlessIndices RendererUtils::BuildMaterialBindlessIndices(const FSceneModelResource& Model)
+RendererUtils::FMaterialBindlessIndices RendererUtils::BuildMaterialBindlessIndices(const FMeshSection& Section)
 {
     return
     {
-        Model.Material.BaseColor.SrvBindlessIndex,
-        Model.Material.MetallicRoughness.SrvBindlessIndex,
-        Model.Material.Normal.SrvBindlessIndex,
-        Model.Material.Emissive.SrvBindlessIndex,
-        Model.Material.SheenColor.SrvBindlessIndex,
-        Model.Material.SheenRoughness.SrvBindlessIndex,
-        Model.Material.Clearcoat.SrvBindlessIndex,
-        Model.Material.ClearcoatRoughness.SrvBindlessIndex,
-        Model.Material.ClearcoatNormal.SrvBindlessIndex,
-        Model.Material.Anisotropy.SrvBindlessIndex
+        Section.Material.BaseColor.SrvBindlessIndex,
+        Section.Material.MetallicRoughness.SrvBindlessIndex,
+        Section.Material.Normal.SrvBindlessIndex,
+        Section.Material.Emissive.SrvBindlessIndex,
+        Section.Material.SheenColor.SrvBindlessIndex,
+        Section.Material.SheenRoughness.SrvBindlessIndex,
+        Section.Material.Clearcoat.SrvBindlessIndex,
+        Section.Material.ClearcoatRoughness.SrvBindlessIndex,
+        Section.Material.ClearcoatNormal.SrvBindlessIndex,
+        Section.Material.Anisotropy.SrvBindlessIndex
+    };
+}
+
+RendererUtils::FMaterialBindlessIndices RendererUtils::BuildMaterialBindlessIndices(const FSectionRenderData& RenderData)
+{
+    return
+    {
+        RenderData.Material.BaseColor.SrvBindlessIndex,
+        RenderData.Material.MetallicRoughness.SrvBindlessIndex,
+        RenderData.Material.Normal.SrvBindlessIndex,
+        RenderData.Material.Emissive.SrvBindlessIndex,
+        RenderData.Material.SheenColor.SrvBindlessIndex,
+        RenderData.Material.SheenRoughness.SrvBindlessIndex,
+        RenderData.Material.Clearcoat.SrvBindlessIndex,
+        RenderData.Material.ClearcoatRoughness.SrvBindlessIndex,
+        RenderData.Material.ClearcoatNormal.SrvBindlessIndex,
+        RenderData.Material.Anisotropy.SrvBindlessIndex
     };
 }
 
@@ -818,18 +837,18 @@ bool RendererUtils::IsAabbInCameraFrustum(
     return true;
 }
 
-uint32_t RendererUtils::BuildPipelineKey(const FSceneModelResource& Model)
+uint32_t RendererUtils::BuildPipelineKey(const FMeshSection& Section)
 {
-    const uint32_t UseNormal = Model.Material.bHasNormalMap ? 1u : 0u;
-    const uint32_t UseMr = !Model.Material.MetallicRoughnessTexturePath.empty() ? 1u : 0u;
-    const uint32_t UseBase = !Model.Material.BaseColorTexturePath.empty() ? 1u : 0u;
-    const uint32_t UseEmissive = !Model.Material.EmissiveTexturePath.empty() ? 1u : 0u;
-    const uint32_t UseAlphaMask = (Model.Material.AlphaMode == 1u) ? 1u : 0u;
-    const uint32_t UseSheenModel = (Model.Material.ShadingModelId == 1u) ? 1u : 0u;
-    const uint32_t UseClearcoatModel = (Model.Material.ShadingModelId == 2u) ? 1u : 0u;
-    const uint32_t UseAnisotropyModel = (Model.Material.ShadingModelId == 3u) ? 1u : 0u;
-    const uint32_t UseSkinning = (IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex) && Model.BoneMatrixCount > 0) ? 1u : 0u;
-    const uint32_t UseDoubleSided = Model.Material.bDoubleSided ? 1u : 0u;
+    const uint32_t UseNormal = Section.Material.bHasNormalMap ? 1u : 0u;
+    const uint32_t UseMr = !Section.Material.MetallicRoughnessTexturePath.empty() ? 1u : 0u;
+    const uint32_t UseBase = !Section.Material.BaseColorTexturePath.empty() ? 1u : 0u;
+    const uint32_t UseEmissive = !Section.Material.EmissiveTexturePath.empty() ? 1u : 0u;
+    const uint32_t UseAlphaMask = (Section.Material.AlphaMode == 1u) ? 1u : 0u;
+    const uint32_t UseSheenModel = (Section.Material.ShadingModelId == 1u) ? 1u : 0u;
+    const uint32_t UseClearcoatModel = (Section.Material.ShadingModelId == 2u) ? 1u : 0u;
+    const uint32_t UseAnisotropyModel = (Section.Material.ShadingModelId == 3u) ? 1u : 0u;
+    const uint32_t UseSkinning = (IsValidBindlessIndex(Section.BoneMatrixBuffer.SrvBindlessIndex) && Section.BoneMatrixCount > 0) ? 1u : 0u;
+    const uint32_t UseDoubleSided = Section.Material.bDoubleSided ? 1u : 0u;
     return (UseNormal) | (UseMr << 1) | (UseBase << 2) | (UseEmissive << 3) | (UseAlphaMask << GPipelineKeyAlphaMaskBit)
         | (UseSheenModel << 5) | (UseClearcoatModel << 6) | (UseAnisotropyModel << 7)
         | (UseSkinning << GPipelineKeySkinningBit) | (UseDoubleSided << GPipelineKeyDoubleSidedBit);

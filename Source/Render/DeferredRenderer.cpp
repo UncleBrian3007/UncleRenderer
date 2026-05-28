@@ -3,7 +3,7 @@
 #include "EnvironmentMap.h"
 #include "ShaderCompiler.h"
 #include "RendererUtils.h"
-#include "SceneModelResourceLoader.h"
+#include "SceneWorldBuilder.h"
 #include "TextureLoader.h"
 #include "RenderGraph.h"
 #include "Deferred/DeferredPassContext.h"
@@ -42,6 +42,60 @@
 #include <sstream>
 
 using Microsoft::WRL::ComPtr;
+
+namespace
+{
+    uint32_t PackClusterDagDebugColor(uint32_t ClusterIndex, uint32_t MipLevel)
+    {
+        uint32_t Hash = ClusterIndex * 747796405u + 2891336453u + MipLevel * 277803737u;
+        Hash ^= Hash >> 16;
+        Hash *= 2246822519u;
+        Hash ^= Hash >> 13;
+        Hash *= 3266489917u;
+        Hash ^= Hash >> 16;
+
+        const uint8_t R = static_cast<uint8_t>(96u + (Hash & 0x7fu));
+        const uint8_t G = static_cast<uint8_t>(96u + ((Hash >> 8) & 0x7fu));
+        const uint8_t B = static_cast<uint8_t>(96u + ((Hash >> 16) & 0x7fu));
+        const uint8_t A = static_cast<uint8_t>((std::min)(MipLevel, 255u));
+        return static_cast<uint32_t>(R)
+            | (static_cast<uint32_t>(G) << 8)
+            | (static_cast<uint32_t>(B) << 16)
+            | (static_cast<uint32_t>(A) << 24);
+    }
+
+    std::vector<uint32_t> BuildClusterDagDebugColorTable(const FRuntimeClusterHierarchy& RuntimeHierarchy, uint32_t IndexCount)
+    {
+        std::vector<uint32_t> DebugColors(IndexCount, 0xffffffffu);
+        for (uint32_t ClusterIndex = 0; ClusterIndex < static_cast<uint32_t>(RuntimeHierarchy.Clusters.size()); ++ClusterIndex)
+        {
+            const FRuntimeCluster& Cluster = RuntimeHierarchy.Clusters[ClusterIndex];
+            const uint32_t PackedColor = PackClusterDagDebugColor(ClusterIndex, Cluster.MipLevel);
+            for (uint32_t DrawDataOffset = 0; DrawDataOffset < Cluster.DrawDataCount; ++DrawDataOffset)
+            {
+                const uint32_t DrawDataIndex = Cluster.DrawDataStart + DrawDataOffset;
+                if (DrawDataIndex >= RuntimeHierarchy.DrawDatas.size())
+                {
+                    continue;
+                }
+
+                const FRuntimeClusterDrawData& DrawData = RuntimeHierarchy.DrawDatas[DrawDataIndex];
+                if (DrawData.IndexStart >= IndexCount)
+                {
+                    continue;
+                }
+
+                const uint32_t DrawDataEnd = (std::min)(DrawData.IndexStart + DrawData.IndexCount, IndexCount);
+                for (uint32_t IndexOffset = DrawData.IndexStart; IndexOffset < DrawDataEnd; ++IndexOffset)
+                {
+                    DebugColors[IndexOffset] = PackedColor;
+                }
+            }
+        }
+
+        return DebugColors;
+    }
+}
 
 
 FDeferredRenderer::FDeferredRenderer()
@@ -102,9 +156,9 @@ EClusterDAGTraversalMode FDeferredRenderer::GetClusterDagTraversalMode() const
 {
     return ClusterDagRuntime->GetTraversalMode();
 }
-bool FDeferredRenderer::ShouldUseClusterDagRuntimePath(const FSceneModelResource& Model) const
+bool FDeferredRenderer::ShouldUseClusterDagRuntimePath(const FMeshSection& Section) const
 {
-    return IsClusterDagRuntimePathReady() && ClusterDagRuntime->UsesRuntimePath(Model);
+    return IsClusterDagRuntimePathReady() && ClusterDagRuntime->UsesRuntimeSection(Section);
 }
 bool FDeferredRenderer::IsClusterDagRuntimePathReady() const
 {
@@ -566,7 +620,7 @@ bool FDeferredRenderer::InitializeSceneResources(FDX12Device* Device, DXGI_FORMA
 bool FDeferredRenderer::InitializeSceneModelResources(FDX12Device* Device, const FRendererConfig& Config)
 {
     const std::wstring SceneFilePath = Config.SceneFile.empty() ? L"Assets/Scenes/Scene.json" : Config.SceneFile;
-    if (!SceneModelResourceLoader::LoadModelsFromJson(Device, SceneFilePath, SceneModels, SceneCenter, SceneRadius, &GltfScenes, &World))
+    if (!SceneWorldBuilder::LoadWorldFromSceneFile(Device, SceneFilePath, World, SceneCenter, SceneRadius, &GltfScenes))
     {
         LogError("scene JSON could not be loaded.");
         return false;
@@ -578,22 +632,24 @@ bool FDeferredRenderer::InitializeSceneModelResources(FDX12Device* Device, const
         return false;
     }
 
-    SceneWorldMatrix = SceneModels.front().WorldMatrix;
-    for (FSceneModelResource& Model : SceneModels)
+    const std::vector<FDrawSectionView>& DrawSections = GetWorld().GetDrawSectionViews();
+    SceneWorldMatrix = DrawSections.empty() ? DirectX::XMFLOAT4X4{} : DrawSections.front().Section->WorldMatrix;
+    for (const FDrawSectionView& DrawSection : DrawSections)
     {
-        Model.PreviousWorldMatrix = Model.WorldMatrix;
-        Model.bHasPreviousWorldMatrix = false;
+        FMeshSection& Section = *DrawSection.Section;
+        Section.PreviousWorldMatrix = Section.WorldMatrix;
+        Section.bHasPreviousWorldMatrix = false;
     }
 
     SceneConstantBufferStride = (sizeof(FSceneConstants) + 255ULL) & ~255ULL;
-    const uint64_t ConstantBufferSize = SceneConstantBufferStride * (std::max<uint64_t>(1, SceneModels.size()));
+    const uint64_t ConstantBufferSize = SceneConstantBufferStride * (std::max<uint64_t>(1, DrawSections.size()));
 
     if (!CreateSceneConstantBuffersPerFrame(Device, ConstantBufferSize))
     {
         LogError("Deferred renderer initialization failed: constant buffer creation failed");
         return false;
     }
-    if (!CreateClusterDagSceneConstantBuffersPerFrame(Device, static_cast<uint32_t>((std::max<size_t>)(1, SceneModels.size()))))
+    if (!CreateClusterDagSceneConstantBuffersPerFrame(Device, static_cast<uint32_t>((std::max<size_t>)(1, DrawSections.size()))))
     {
         LogError("Deferred renderer initialization failed: Cluster DAG constant buffer creation failed");
         return false;
@@ -632,7 +688,7 @@ bool FDeferredRenderer::InitializeEnvironmentAndDescriptorResources(FDX12Device*
     InitializeBindlessTexture(BlueNoiseScramblingRanking1SPPTexture, BuildTextureDescFromResource(BlueNoiseScramblingRanking1SPPTexture.Get()), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     WriteOrCreateBindlessTextureSrv(Device, BlueNoiseScramblingRanking1SPPTexture);
 
-    if (!CreateSceneTextures(Device, SceneModels))
+    if (!CreateSceneTextures(Device, World))
     {
         LogError("Deferred renderer initialization failed: scene texture creation failed");
         return false;
@@ -766,9 +822,10 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
         return;
     }
 
+    GetWorld().Tick(DeltaTime);
     ClusterDagSceneConstantsPreparedFrame = UINT32_MAX;
 
-    const bool bAnySkinningUpdated = RendererUtils::UpdateGltfSceneAnimation(SceneModels, GltfScenes, DeltaTime);
+    const bool bAnySkinningUpdated = RendererUtils::UpdateGltfSceneAnimation(World, GltfScenes, DeltaTime);
 
     GpuDebugState.PreparePrint(CmdContext);
     GpuDebugState.PrepareLine(CmdContext);
@@ -929,10 +986,11 @@ void FDeferredRenderer::FinalizeFrameState(const FDeferredFrameState& FrameState
     RestirGI->FinalizeFrame(*this);
     RestirGIDenoiser->FinalizeFrame(*this);
 
-    for (FSceneModelResource& Model : SceneModels)
+    for (const FDrawSectionView& DrawSection : GetWorld().GetDrawSectionViews())
     {
-        Model.PreviousWorldMatrix = Model.WorldMatrix;
-        Model.bHasPreviousWorldMatrix = true;
+        FMeshSection& Section = *DrawSection.Section;
+        Section.PreviousWorldMatrix = Section.WorldMatrix;
+        Section.bHasPreviousWorldMatrix = true;
     }
 }
 
@@ -944,38 +1002,39 @@ void FDeferredRenderer::OnFrameFenceSignaled(uint32_t FrameIndex, uint64_t Fence
     ClusterDagStreamingManager->OnFrameFenceSignaled(FrameIndex, FenceValue);
 }
 
-bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, std::vector<FSceneModelResource>& Models)
+bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, FWorld& World)
 {
     if (!TextureLoader)
     {
         return false;
     }
 
+    const std::vector<FDrawSectionView>& DrawSections = World.GetDrawSectionViews();
     std::vector<FTextureLoadRequest> Requests;
-    Requests.reserve(Models.size() * 10);
+    Requests.reserve(DrawSections.size() * 10);
 
-    for (size_t i = 0; i < Models.size(); ++i)
+    for (const FDrawSectionView& DrawSection : DrawSections)
     {
-        Models[i].Material.AppendTextureLoadRequests(Requests);
+        DrawSection.Section->Material.AppendTextureLoadRequests(Requests);
     }
 
-    LogInfo("Loading " + std::to_string(Requests.size()) + " textures in parallel for " + std::to_string(Models.size()) + " models");
+    LogInfo("Loading " + std::to_string(Requests.size()) + " textures in parallel for " + std::to_string(DrawSections.size()) + " sections");
     if (!TextureLoader->LoadTexturesParallel(Requests))
     {
         LogError("Failed to load scene textures");
         return false;
     }
 
-    for (FSceneModelResource& Model : Models)
+    for (const FDrawSectionView& DrawSection : DrawSections)
     {
-        Model.Material.CreateTextureSrvs(Device);
+        DrawSection.Section->Material.CreateTextureSrvs(Device);
     }
 
     return true;
 }
 
 
-void FDeferredRenderer::WriteSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, uint64_t ConstantBufferOffset, uint8_t* ConstantBufferMapped, bool bUseClusterDagIndexBuffer)
+void FDeferredRenderer::WriteSceneConstants(const FCamera& Camera, const FMeshSection& Section, uint64_t ConstantBufferOffset, uint8_t* ConstantBufferMapped, bool bUseClusterDagIndexBuffer)
 {
     if (ConstantBufferMapped == nullptr)
     {
@@ -991,32 +1050,33 @@ void FDeferredRenderer::WriteSceneConstants(const FCamera& Camera, const FSceneM
     const uint32_t TaaSampleIndex = Taa->GetSampleIndex();
     const uint32_t GtaoTemporalIndex = (Gtao->IsEnabled() && Gtao->IsJitterEnabled()) ? TaaSampleIndex : 0u;
 
-    const DirectX::XMMATRIX PreviousWorld = Model.bHasPreviousWorldMatrix
-        ? DirectX::XMLoadFloat4x4(&Model.PreviousWorldMatrix)
+    const DirectX::XMMATRIX PreviousWorld = Section.bHasPreviousWorldMatrix
+        ? DirectX::XMLoadFloat4x4(&Section.PreviousWorldMatrix)
         : DirectX::XMMatrixIdentity();
-    const bool bHasPreviousWorld = Model.bHasPreviousWorldMatrix;
+    const bool bHasPreviousWorld = Section.bHasPreviousWorldMatrix;
 
     uint32_t PreviousSkinnedPositionBindlessIndex = UINT32_MAX;
     bool bHasPreviousSkinning = false;
     const uint32_t FrameCount = GetFramesInFlight();
     const uint32_t PrevFrameIndex = FrameCount > 0 ? (GetFrameIndex() + FrameCount - 1u) % FrameCount : 0u;
-    if (IsValidBindlessIndex(Model.BoneMatrixBuffer.SrvBindlessIndex)
-        && Model.BoneMatrixCount > 0
-        && PrevFrameIndex < Model.SkinnedPositionBuffers.size())
+    if (IsValidBindlessIndex(Section.BoneMatrixBuffer.SrvBindlessIndex)
+        && Section.BoneMatrixCount > 0
+        && PrevFrameIndex < Section.SkinnedPositionBuffers.size())
     {
-        PreviousSkinnedPositionBindlessIndex = Model.SkinnedPositionBuffers[PrevFrameIndex].SrvBindlessIndex;
+        PreviousSkinnedPositionBindlessIndex = Section.SkinnedPositionBuffers[PrevFrameIndex].SrvBindlessIndex;
         bHasPreviousSkinning = IsValidBindlessIndex(PreviousSkinnedPositionBindlessIndex);
     }
 
     const EDeferredLightingVisualizationMode VisualizationMode = GetDeferredLightingVisualizationMode();
     const bool bUseClusterDagDebugColor =
-        (VisualizationMode == EDeferredLightingVisualizationMode::ClusterDagClusters
+        IsClusterDagDebugEnabled()
+        && (VisualizationMode == EDeferredLightingVisualizationMode::ClusterDagClusters
             || VisualizationMode == EDeferredLightingVisualizationMode::ClusterDagMip)
-        && Model.ClusterDagDebugColorBuffer.HasSrv();
+        && Section.ClusterDagDebugColorBuffer.HasSrv();
 
     RendererUtils::FUpdateSceneConstantsParams Params;
     Params.Camera = &Camera;
-    Params.Model = &Model;
+    Params.Section = &Section;
     Params.LightIntensity = LightIntensity;
     Params.LightDirection = LightDir;
     Params.LightColor = LightColor;
@@ -1042,25 +1102,97 @@ void FDeferredRenderer::WriteSceneConstants(const FCamera& Camera, const FSceneM
     RendererUtils::UpdateSceneConstants(Params);
 }
 
-void FDeferredRenderer::UpdateSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, size_t ModelIndex, uint64_t ConstantBufferOffset, bool bUseClusterDagIndexBuffer)
+void FDeferredRenderer::EnsureClusterDagDebugColorBuffers()
 {
-    (void)ModelIndex;
+    const EDeferredLightingVisualizationMode VisualizationMode = GetDeferredLightingVisualizationMode();
+    const bool bNeedsDebugColors =
+        IsClusterDagDebugEnabled()
+        && (VisualizationMode == EDeferredLightingVisualizationMode::ClusterDagClusters
+            || VisualizationMode == EDeferredLightingVisualizationMode::ClusterDagMip);
+    if (!bNeedsDebugColors || Device == nullptr)
+    {
+        return;
+    }
+
+    const std::vector<FDrawSectionView>& DrawSections = GetWorld().GetDrawSectionViews();
+    for (const FDrawSectionView& DrawSection : DrawSections)
+    {
+        FMeshSection& Section = *DrawSection.Section;
+        if ((!ClusterDagRuntime->UsesRuntimeSection(Section) && !Section.bCoveredByClusterDagRuntime)
+            || Section.ClusterDagDebugColorBuffer.HasSrv()
+            || !Section.ClusterDagRuntimeHierarchy.IsValid()
+            || Section.ClusterDagIndexCount == 0)
+        {
+            continue;
+        }
+
+        const std::vector<uint32_t> DebugColors = BuildClusterDagDebugColorTable(Section.ClusterDagRuntimeHierarchy, Section.ClusterDagIndexCount);
+        if (DebugColors.empty())
+        {
+            continue;
+        }
+
+        FBindlessBuffer DebugColorBuffer;
+        FUploadBuffer UploadBuffer;
+        CreateBindlessBufferWithUpload(
+            Device,
+            L"ClusterDagDebugColorBuffer",
+            CreateStructuredBufferDesc<uint32_t>(DebugColors.size()),
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            DebugColorBuffer,
+            UploadBuffer,
+            DebugColors.data(),
+            true,
+            false);
+
+        FDX12CommandContext UploadContext;
+        UploadContext.Initialize(Device, Device->GetGraphicsQueue(), 1);
+        UploadContext.BeginFrame(0);
+        ID3D12GraphicsCommandList* UploadCommandList = UploadContext.GetCommandList();
+        UploadCommandList->CopyBufferRegion(DebugColorBuffer.Get(), 0, UploadBuffer.Get(), 0, UploadBuffer.Size);
+        UploadContext.TransitionResource(DebugColorBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ);
+        UploadContext.CloseAndExecute();
+        UploadContext.GetQueue()->Flush();
+
+        if (!DebugColorBuffer.HasSrv())
+        {
+            continue;
+        }
+
+        if (DrawSection.Object && Section.bUseClusterDagRuntime)
+        {
+            std::vector<FMeshSection>& ObjectSections = DrawSection.Object->GetSections();
+            for (FMeshSection& ObjectSection : ObjectSections)
+            {
+                ObjectSection.ClusterDagDebugColorBuffer = DebugColorBuffer;
+            }
+        }
+        else
+        {
+            Section.ClusterDagDebugColorBuffer = DebugColorBuffer;
+        }
+    }
+}
+
+void FDeferredRenderer::UpdateSceneConstants(const FCamera& Camera, const FMeshSection& Section, size_t DrawSectionIndex, uint64_t ConstantBufferOffset, bool bUseClusterDagIndexBuffer)
+{
+    (void)DrawSectionIndex;
 
     WriteSceneConstants(
         Camera,
-        Model,
+        Section,
         ConstantBufferOffset,
         GetSceneConstantBufferMapped(),
         bUseClusterDagIndexBuffer);
 }
 
-void FDeferredRenderer::UpdateClusterDagSceneConstants(const FCamera& Camera, const FSceneModelResource& Model, size_t ModelIndex, uint64_t ConstantBufferOffset)
+void FDeferredRenderer::UpdateClusterDagSceneConstants(const FCamera& Camera, const FMeshSection& Section, size_t DrawSectionIndex, uint64_t ConstantBufferOffset)
 {
-    (void)ModelIndex;
+    (void)DrawSectionIndex;
 
     WriteSceneConstants(
         Camera,
-        Model,
+        Section,
         ConstantBufferOffset,
         GetClusterDagSceneConstantBufferMapped(),
         true);
@@ -1079,16 +1211,19 @@ void FDeferredRenderer::EnsureClusterDagSceneConstantsPrepared(const FCamera& Ca
         return;
     }
 
-    for (size_t ModelIndex = 0; ModelIndex < SceneModels.size(); ++ModelIndex)
+    EnsureClusterDagDebugColorBuffers();
+
+    const std::vector<FDrawSectionView>& DrawSections = GetWorld().GetDrawSectionViews();
+    for (const FDrawSectionView& DrawSection : DrawSections)
     {
-        const FSceneModelResource& Model = SceneModels[ModelIndex];
-        if (!ClusterDagRuntime->UsesRuntimePath(Model) && !Model.bCoveredByClusterDagRuntime)
+        const FMeshSection& Section = *DrawSection.Section;
+        if (!ClusterDagRuntime->UsesRuntimeSection(Section) && !Section.bCoveredByClusterDagRuntime)
         {
             continue;
         }
 
-        const uint64_t ConstantBufferOffset = SceneConstantBufferStride * ModelIndex;
-        UpdateClusterDagSceneConstants(Camera, Model, ModelIndex, ConstantBufferOffset);
+        const uint64_t ConstantBufferOffset = SceneConstantBufferStride * DrawSection.DrawSectionIndex;
+        UpdateClusterDagSceneConstants(Camera, Section, DrawSection.DrawSectionIndex, ConstantBufferOffset);
     }
 
     ClusterDagSceneConstantsPreparedFrame = GetFrameIndex();
@@ -1103,12 +1238,12 @@ void FDeferredRenderer::UpdateCullingVisibility(const FCamera& Camera)
     }
 
     const bool bGpuCullingActive = CanDispatchGpuCulling();
-    RendererUtils::UpdateCullingVisibility(*CullingCamera, SceneModels, SceneModelVisibility, !bGpuCullingActive);
+    RendererUtils::UpdateCullingVisibility(*CullingCamera, World, !bGpuCullingActive);
 }
 
 bool FDeferredRenderer::CreateGpuDrivenResources(FDX12Device* Device)
 {
-    if (SceneModels.empty() || !GetSceneConstantBuffer())
+    if (GetWorld().GetDrawSectionCount() == 0 || !GetSceneConstantBuffer())
     {
         return false;
     }

@@ -249,7 +249,6 @@ struct FClusterDAGStreamingPageDesc
     uint64_t FileOffset = 0;
     uint32_t PayloadBytes = 0;
     uint32_t MeshIndex = 0;
-    uint32_t DagIndex = 0;
     uint32_t LocalPageIndex = 0;
     uint32_t Flags = 0;
 };
@@ -265,9 +264,9 @@ bool LoadClusterDAGCacheFile(
     const std::wstring& CacheFilePath,
     const std::wstring& SourceFilePath,
     const FClusterDAGBuildParams& Params,
-    std::vector<std::vector<FClusterDAG>>& OutMeshClusterDAGs);
+    std::vector<FClusterDAG>& OutMeshClusterDAGs);
 bool SaveClusterDAGCacheFile(
     const std::wstring& CacheFilePath,
     const std::wstring& SourceFilePath,
     const FClusterDAGBuildParams& Params,
-    const std::vector<std::vector<FClusterDAG>>& MeshClusterDAGs);
+    const std::vector<FClusterDAG>& MeshClusterDAGs);

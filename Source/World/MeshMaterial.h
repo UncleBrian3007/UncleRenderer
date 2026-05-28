@@ -27,7 +27,7 @@ struct FTextureTransform
 };
 
 // Material parameters and texture bindings for a single mesh section.
-// Extracted from FSceneModelResource so meshes can own/share materials
+// Extracted from FMeshSection so meshes can own/share materials
 struct FMeshMaterial
 {
     // PBR / shading factors.

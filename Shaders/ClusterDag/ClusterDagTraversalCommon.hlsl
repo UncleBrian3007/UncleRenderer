@@ -175,7 +175,7 @@ ClusterDagDrawData LoadClusterDagDrawDataFromPageRecord(uint recordBase, ByteAdd
     drawData.RangeIndex = PageData.Load(recordBase + kClusterDagGpuPageDrawDataRecordRangeIndexOffset);
     drawData.RangeCommandStart = PageData.Load(recordBase + kClusterDagGpuPageDrawDataRecordRangeCommandStartOffset);
     drawData.RangeCommandCount = PageData.Load(recordBase + kClusterDagGpuPageDrawDataRecordRangeCommandCountOffset);
-    drawData.ModelIndex = PageData.Load(recordBase + kClusterDagGpuPageDrawDataRecordModelIndexOffset);
+    drawData.DrawSectionIndex = PageData.Load(recordBase + kClusterDagGpuPageDrawDataRecordDrawSectionIndexOffset);
     return drawData;
 }
 

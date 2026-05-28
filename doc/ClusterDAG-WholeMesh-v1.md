@@ -131,11 +131,17 @@ Whole-Mesh v1에서 작은 section이 수렴하는 메커니즘은 section seam 
 
 ## Multi-Child Root Closure
 
-The builder may close a whole-mesh DAG with a root group that references multiple child clusters instead of forcing convergence to one final cluster. The shared child-ref limit is `kClusterDagMaxChildRefsPerGroup` in `Shaders/ClusterDag/ClusterDagShared.h`; C++ exposes the same value as `GClusterDAGMaxRootChildRefs`.
+builder는 whole-mesh DAG를 반드시 "최종 클러스터 1개"로 강제 수렴시키지 않고, 여러 child cluster를 참조하는 root group으로 종료할 수 있습니다. 공유 child-ref 상한은 `Shaders/ClusterDag/ClusterDagShared.h`의 `kClusterDagMaxChildRefsPerGroup`이며, C++에서는 동일 값을 `GClusterDAGMaxRootChildRefs`로 노출합니다.
 
-The close path is used when a level preflight detects a natural convergence floor, insufficient parent reduction, or a relative simplify error above the root-close threshold. Closure happens from the level input, before committing that level's parent groups, so high-error upper levels are not added to the DAG.
+close 경로는 level preflight에서 다음 상황을 감지했을 때 사용됩니다.
 
-If closure is requested while the current cluster count exceeds the shared child-ref limit, the builder logs the reason and fails the whole-mesh DAG instead of silently producing an invalid root group.
+- 자연스러운 수렴 바닥(convergence floor)
+- parent reduction 부족
+- root-close 임계값을 넘는 relative simplify error
+
+closure는 해당 level의 parent group을 커밋하기 전에 level 입력에서 바로 수행됩니다. 따라서 오차가 큰 상위 레벨이 DAG에 추가되지 않습니다.
+
+closure가 요청된 시점의 current cluster 수가 shared child-ref 상한을 초과하면, builder는 이유를 로그로 남기고 whole-mesh DAG를 실패 처리합니다. 즉, 유효하지 않은 root group을 조용히 생성하지 않습니다.
 
 ## Alpha-Mask Visibility
 
@@ -144,3 +150,19 @@ whole-mesh ClusterDAG runtime은 visibility 단계에서 alpha-mask section을 �
 masked ClusterDAG draw range는 material pipeline key의 alpha-mask bit로 opaque range와 분리됩니다. HW visibility pass는 masked PSO variant에서만 UV와 vertex color alpha를 로드하고, base-color UV transform을 적용한 뒤 base-color texture alpha를 샘플합니다. alpha-test 기준은 base pass와 같은 `BaseColorAlpha * VertexColorAlpha * TextureAlpha < AlphaCutoff`입니다. opaque visibility PSO는 position-only 경로를 유지하고 `[earlydepthstencil]`도 그대로 사용합니다.
 
 SW raster path도 `AlphaMode == Mask`일 때만 같은 alpha-test를 수행합니다. compute shader에는 derivative가 없으므로 barycentric으로 UV/color alpha를 보간하고, texture alpha는 명시적 `SampleLevel(..., 0)`로 샘플합니다. 현재 SW raster는 하나의 visible-entry 리스트를 단일 indirect dispatch로 처리하므로, alpha-mask 여부는 shader permutation이 아니라 draw data의 `AlphaMode` uniform branch로 선택합니다.
+
+## Build-Time Optimization Note
+
+현재 구현에서 `vertex_count = State.Dag.Positions.size()`는 누적 값(이전 레벨 포함 전체 합)입니다. 이 때문에 상위 레벨로 갈수록 `vertex_count`가 커지고, 레벨마다 다음 비용이 반복됩니다.
+
+- meshopt ref 배열을 누적 정점 수 기준으로 할당
+- canonical 맵을 레벨마다 전체 크기로 재빌드
+
+결과적으로 레벨당 `O(전체 정점)` 비용이 발생하며, 이는 correctness와 무관하게 build time만 증가시킵니다.
+
+추후 최적화 방향:
+
+- "현재 레벨에서 실제로 참조되는 정점"으로 작업 범위를 좁혀,
+- ref 배열/맵 빌드를 레벨 로컬 정점 집합 기준으로 제한
+
+이 최적화는 출력 정합성을 바꾸지 않고 빌드 시간만 줄이는 성격입니다.

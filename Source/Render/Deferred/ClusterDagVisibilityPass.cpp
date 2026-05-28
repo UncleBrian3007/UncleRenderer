@@ -207,7 +207,7 @@ void FClusterDagVisibilityPass::AddVisibilityPass(FDeferredPassContext& Context)
             CommandList->SetPipelineState(Pipeline);
             const uint64_t Offset = static_cast<uint64_t>(Range.Start) * sizeof(FIndirectDrawCommand);
             const uint64_t CountOffset = RangeIndex * sizeof(uint32_t);
-            if (AreModelPixEventsEnabled())
+            if (AreSectionPixEventsEnabled())
             {
                 const wchar_t* Label = Range.Name.empty() ? L"ClusterDagVisibilityRange" : Range.Name.c_str();
                 FScopedPixEvent RangeEvent(CommandList, Label);

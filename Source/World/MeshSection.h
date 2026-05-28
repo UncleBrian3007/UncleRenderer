@@ -1,22 +1,33 @@
 #pragma once
 
-#include "GpuResource.h"
-#include <wrl.h>
-#include <d3d12.h>
-#include <DirectXMath.h>
-#include <cstdint>
-#include <string>
-#include <vector>
-#include <array>
-#include <limits>
-
+#include "../Render/GpuResource.h"
 #include "../Math/MathTypes.h"
 #include "../Scene/Mesh.h"
 #include "../Scene/ClusterDAG.h"
-#include "../World/MeshMaterial.h"
+#include "MeshMaterial.h"
+
+#include <DirectXMath.h>
+#include <array>
+#include <cstdint>
+#include <limits>
+#include <string>
+#include <vector>
+#include <wrl.h>
+#include <d3d12.h>
 
 constexpr uint32_t kMeshVertexStreamCount = 7;
+constexpr uint32_t kMeshVertexStreamPosition = 0;
+constexpr uint32_t kMeshVertexStreamNormal = 1;
+constexpr uint32_t kMeshVertexStreamUv = 2;
+constexpr uint32_t kMeshVertexStreamTangent = 3;
+constexpr uint32_t kMeshVertexStreamColor = 4;
+constexpr uint32_t kMeshVertexStreamJoints = 5;
+constexpr uint32_t kMeshVertexStreamWeights = 6;
 constexpr uint32_t kClusterDagVertexStreamCount = 4;
+constexpr uint32_t kClusterDagVertexStreamPosition = 0;
+constexpr uint32_t kClusterDagVertexStreamNormal = 1;
+constexpr uint32_t kClusterDagVertexStreamUv = 2;
+constexpr uint32_t kClusterDagVertexStreamTangent = 3;
 
 struct FMeshGeometryBuffers
 {
@@ -43,34 +54,37 @@ struct FMeshletDrawData
     }
 };
 
-struct FSceneModelResource
+struct FSectionRenderData
 {
     FMeshGeometryBuffers Geometry;
     uint32_t DrawIndexStart = 0;
     uint32_t DrawIndexCount = 0;
     uint32_t BaseIndexCount = 0;
-    DirectX::XMFLOAT4X4 WorldMatrix{};
-    DirectX::XMFLOAT4X4 PreviousWorldMatrix{};
-    bool bHasPreviousWorldMatrix = false;
-    DirectX::XMFLOAT3 Center{ 0.0f, 0.0f, 0.0f };
-    float Radius = 1.0f;
     FMeshMaterial Material;
-    std::string Name;
-    DirectX::XMFLOAT3 BoundsMin{ 0.0f, 0.0f, 0.0f };
-    DirectX::XMFLOAT3 BoundsMax{ 0.0f, 0.0f, 0.0f };
-    uint32_t ObjectId = 0;
     uint32_t PipelineKey = 0;
-    bool bUseSkinning = false;
-    bool bSkinningUpdatedThisFrame = false;
-    uint32_t LastSkinnedSlot = UINT32_MAX;
     bool bUseMeshletCulling = false;
     DirectX::XMFLOAT4X4 ModelTransform{};
-        int GltfSceneIndex = -1;
-    int GltfNodeIndex = -1;
-    int GltfMeshIndex = -1;
-    int GltfSkinIndex = -1;
+    std::vector<FMesh::FMeshlet> Meshlets;
+    std::vector<FMesh::FMeshletBounds> MeshletBounds;
+    std::vector<uint32_t> MeshletIndices;
+};
+
+struct FSectionSkinningData
+{
+    bool bUseSkinning = false;
+    bool bSkinningUpdatedThisFrame = false;
+    bool bSkinningVisible = false;
+    uint32_t LastSkinnedSlot = UINT32_MAX;
+    uint32_t BoneMatrixCount = 0;
+    FBindlessBuffer BoneMatrixBuffer;
+    uint8_t* BoneMatrixBufferMapped = nullptr;
+    std::vector<FBindlessBuffer> SkinnedPositionBuffers;
+    FBindlessBuffer SkinnedPositionBuffer;
+};
+
+struct FSectionClusterDagData
+{
     uint32_t ClusterDagMeshIndex = GClusterDAGInvalidIndex;
-    uint32_t ClusterDagPrimitiveIndex = GClusterDAGInvalidIndex;
     std::wstring ClusterDagSourceFilePath;
     std::wstring ClusterDagCacheFilePath;
     uint32_t ClusterDagRuntimeClusterOffset = 0;
@@ -79,80 +93,69 @@ struct FSceneModelResource
     bool bUseClusterDagRuntime = false;
     bool bCoveredByClusterDagRuntime = false;
     uint32_t ClusterDagVertexPackingMode = 0;
-    std::vector<uint32_t> ClusterDagSectionModelIndices;
     FRuntimeClusterHierarchy ClusterDagRuntimeHierarchy;
     FClusterDAGPackedVertexData ClusterDagPackedVertexData;
     DirectX::XMFLOAT4 ClusterDagPackedPositionOffset{ 0.0f, 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT4 ClusterDagPackedPositionScale{ 1.0f, 1.0f, 1.0f, 0.0f };
     DirectX::XMFLOAT4 ClusterDagPackedConstantUV{ 0.0f, 0.0f, 0.0f, 0.0f };
     DirectX::XMFLOAT4 ClusterDagPackedConstantColor{ 1.0f, 1.0f, 1.0f, 1.0f };
-    uint32_t BoneMatrixCount = 0;
-    FBindlessBuffer BoneMatrixBuffer;
-    uint8_t* BoneMatrixBufferMapped = nullptr;
     std::array<FBindlessBuffer, kClusterDagVertexStreamCount> ClusterDagVertexBuffers;
     FBindlessBuffer ClusterDagIndexBuffer;
     FBindlessBuffer ClusterDagColorBuffer;
     FBindlessBuffer ClusterDagDebugColorBuffer;
-    std::vector<FBindlessBuffer> SkinnedPositionBuffers;
-    FBindlessBuffer SkinnedPositionBuffer;
-    std::vector<FMesh::FMeshlet> Meshlets;
-    std::vector<FMesh::FMeshletBounds> MeshletBounds;
-    std::vector<uint32_t> MeshletIndices;
+};
+
+struct FSectionRaytracingData
+{
     Microsoft::WRL::ComPtr<ID3D12Resource> BlasScratchBuffer;
     Microsoft::WRL::ComPtr<ID3D12Resource> BlasResultBuffer;
     D3D12_RAYTRACING_GEOMETRY_DESC BlasGeometryDesc{};
     bool bHasRayTracingBlas = false;
+};
+
+struct FMeshSection : public FSectionRenderData, public FSectionSkinningData, public FSectionClusterDagData, public FSectionRaytracingData
+{
+    DirectX::XMFLOAT4X4 WorldMatrix{};
+    DirectX::XMFLOAT4X4 PreviousWorldMatrix{};
+    bool bHasPreviousWorldMatrix = false;
+    DirectX::XMFLOAT3 Center{ 0.0f, 0.0f, 0.0f };
+    float Radius = 1.0f;
+    std::string Name;
+    DirectX::XMFLOAT3 BoundsMin{ 0.0f, 0.0f, 0.0f };
+    DirectX::XMFLOAT3 BoundsMax{ 0.0f, 0.0f, 0.0f };
+    uint32_t ObjectId = 0;
+    bool bVisible = true;
+    int GltfSceneIndex = -1;
+    int GltfNodeIndex = -1;
+    int GltfMeshIndex = -1;
+    int GltfSkinIndex = -1;
+
+    FSectionRenderData& GetRenderData() { return *this; }
+    const FSectionRenderData& GetRenderData() const { return *this; }
 
     bool IsStaticRegularMeshCandidate() const
     {
         return !bUseSkinning
-            && Geometry.VertexBuffers[0].HasSrv()
+            && Geometry.VertexBuffers[kMeshVertexStreamPosition].HasSrv()
             && Geometry.IndexBuffer.HasSrv()
             && Geometry.IndexCount >= 3u
             && DrawIndexCount >= 3u
             && Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Opaque);
     }
 
-	bool IsClusterDagRuntimeAlphaModeAllowed() const
-	{
-		return Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Opaque)
-			|| Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask);
-	}
+    bool IsClusterDagRuntimeAlphaModeAllowed() const
+    {
+        return Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Opaque)
+            || Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Mask);
+    }
 
-	bool IsRuntimeDagModel() const
-	{
-		return bUseClusterDagRuntime
-			&& BoneMatrixBuffer.SrvBindlessIndex == UINT32_MAX
-			&& IsClusterDagRuntimeAlphaModeAllowed()
-			&& ClusterDagRuntimeHierarchy.IsValid()
-			&& !ClusterDagRuntimeHierarchy.Clusters.empty()
-			&& !ClusterDagRuntimeHierarchy.DrawDatas.empty();
-	};
+    bool IsRuntimeDagSection() const
+    {
+        return bUseClusterDagRuntime
+            && BoneMatrixBuffer.SrvBindlessIndex == UINT32_MAX
+            && IsClusterDagRuntimeAlphaModeAllowed()
+            && ClusterDagRuntimeHierarchy.IsValid()
+            && !ClusterDagRuntimeHierarchy.Clusters.empty()
+            && !ClusterDagRuntimeHierarchy.DrawDatas.empty();
+    }
 };
-
-inline bool ComputeSceneModelStats(
-    const std::vector<FSceneModelResource>& Models,
-    const std::vector<bool>& Visibility,
-    size_t& OutTotal,
-    size_t& OutCulled)
-{
-    OutTotal = Models.size();
-    if (Visibility.empty())
-    {
-        OutCulled = 0;
-        return true;
-    }
-
-    const size_t VisibleCountMax = (std::min)(Models.size(), Visibility.size());
-    size_t VisibleCount = 0;
-    for (size_t Index = 0; Index < VisibleCountMax; ++Index)
-    {
-        if (Visibility[Index])
-        {
-            ++VisibleCount;
-        }
-    }
-
-    OutCulled = OutTotal > VisibleCount ? (OutTotal - VisibleCount) : 0;
-    return true;
-}

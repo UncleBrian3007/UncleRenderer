@@ -32,7 +32,7 @@
 
 namespace
 {
-    constexpr uint32_t GVmeshVersion = 19;
+    constexpr uint32_t GVmeshVersion = 22;
     constexpr uint32_t GClusterDAGBuildSemanticVersion = 11;
     constexpr size_t GAttributeFloatCount = 5;
     constexpr uint32_t GClusterDAGMinGroupSize = 8;
@@ -92,7 +92,6 @@ namespace
         uint64_t FileOffset = 0;
         uint32_t PayloadBytes = 0;
         uint32_t MeshIndex = 0;
-        uint32_t DagIndex = 0;
         uint32_t LocalPageIndex = 0;
         uint32_t Flags = 0;
     };
@@ -2736,7 +2735,7 @@ namespace
 
     struct FVmeshMeshPayload
     {
-        std::vector<FVmeshDagPayload> Dags;
+        FVmeshDagPayload Dag;
     };
 
     uint64_t AlignUp(uint64_t Value, uint64_t Alignment)
@@ -3160,9 +3159,9 @@ namespace
         const std::wstring& CacheFilePath,
         const std::wstring& SourceFilePath,
         const FClusterDAGBuildParams& Params,
-        const std::vector<std::vector<FClusterDAG>>& ExpectedMeshClusterDAGs)
+        const std::vector<FClusterDAG>& ExpectedMeshClusterDAGs)
     {
-        std::vector<std::vector<FClusterDAG>> LoadedMeshClusterDAGs;
+        std::vector<FClusterDAG> LoadedMeshClusterDAGs;
         if (!LoadClusterDAGCacheFile(CacheFilePath, SourceFilePath, Params, LoadedMeshClusterDAGs)
             || LoadedMeshClusterDAGs.size() != ExpectedMeshClusterDAGs.size())
         {
@@ -3171,17 +3170,9 @@ namespace
 
         for (size_t MeshIndex = 0; MeshIndex < ExpectedMeshClusterDAGs.size(); ++MeshIndex)
         {
-            if (LoadedMeshClusterDAGs[MeshIndex].size() != ExpectedMeshClusterDAGs[MeshIndex].size())
+            if (!SerializableClusterDAGEqual(ExpectedMeshClusterDAGs[MeshIndex], LoadedMeshClusterDAGs[MeshIndex]))
             {
                 return false;
-            }
-
-            for (size_t DagIndex = 0; DagIndex < ExpectedMeshClusterDAGs[MeshIndex].size(); ++DagIndex)
-            {
-                if (!SerializableClusterDAGEqual(ExpectedMeshClusterDAGs[MeshIndex][DagIndex], LoadedMeshClusterDAGs[MeshIndex][DagIndex]))
-                {
-                    return false;
-                }
             }
         }
 
@@ -3230,23 +3221,26 @@ bool LoadClusterDAGStreamingPageDirectory(
         return false;
     }
 
-    std::vector<uint32_t> DagCounts(Header.MeshCount);
     for (uint32_t MeshIndex = 0; MeshIndex < Header.MeshCount; ++MeshIndex)
     {
-        if (!ReadValue(Stream, DagCounts[MeshIndex]))
+        uint32_t DagCount = 0;
+        if (!ReadValue(Stream, DagCount))
         {
             OutPageDirectory.clear();
             return false;
         }
 
-        for (uint32_t DagIndex = 0; DagIndex < DagCounts[MeshIndex]; ++DagIndex)
+        if (DagCount != 1u)
         {
-            FVmeshDagHeader DagHeader;
-            if (!ReadValue(Stream, DagHeader))
-            {
-                OutPageDirectory.clear();
-                return false;
-            }
+            OutPageDirectory.clear();
+            return false;
+        }
+
+        FVmeshDagHeader DagHeader;
+        if (!ReadValue(Stream, DagHeader))
+        {
+            OutPageDirectory.clear();
+            return false;
         }
     }
 
@@ -3269,7 +3263,6 @@ bool LoadClusterDAGStreamingPageDirectory(
         FVmeshPageDirEntry Entry;
         if (!ReadValue(Stream, Entry)
             || Entry.MeshIndex >= Header.MeshCount
-            || Entry.DagIndex >= DagCounts[Entry.MeshIndex]
             || Entry.PayloadBytes > GVmeshStreamingPageSlotBytes)
         {
             OutPageDirectory.clear();
@@ -3280,7 +3273,6 @@ bool LoadClusterDAGStreamingPageDirectory(
         Desc.FileOffset = Entry.FileOffset;
         Desc.PayloadBytes = Entry.PayloadBytes;
         Desc.MeshIndex = Entry.MeshIndex;
-        Desc.DagIndex = Entry.DagIndex;
         Desc.LocalPageIndex = Entry.LocalPageIndex;
         Desc.Flags = Entry.Flags;
         OutPageDirectory.push_back(Desc);
@@ -3293,7 +3285,7 @@ bool LoadClusterDAGCacheFile(
     const std::wstring& CacheFilePath,
     const std::wstring& SourceFilePath,
     const FClusterDAGBuildParams& Params,
-    std::vector<std::vector<FClusterDAG>>& OutMeshClusterDAGs)
+    std::vector<FClusterDAG>& OutMeshClusterDAGs)
 {
     OutMeshClusterDAGs.clear();
 
@@ -3330,7 +3322,7 @@ bool LoadClusterDAGCacheFile(
     }
 
     OutMeshClusterDAGs.resize(Header.MeshCount);
-    std::vector<std::vector<FVmeshDagHeader>> DagHeaders(Header.MeshCount);
+    std::vector<FVmeshDagHeader> DagHeaders(Header.MeshCount);
     for (uint32_t MeshIndex = 0; MeshIndex < Header.MeshCount; ++MeshIndex)
     {
         uint32_t DagCount = 0;
@@ -3340,16 +3332,16 @@ bool LoadClusterDAGCacheFile(
             return false;
         }
 
-        std::vector<FClusterDAG>& MeshDAGs = OutMeshClusterDAGs[MeshIndex];
-        MeshDAGs.resize(DagCount);
-        DagHeaders[MeshIndex].resize(DagCount);
-        for (uint32_t DagIndex = 0; DagIndex < DagCount; ++DagIndex)
+        if (DagCount != 1u)
         {
-            if (!ReadValue(Stream, DagHeaders[MeshIndex][DagIndex]))
-            {
-                OutMeshClusterDAGs.clear();
-                return false;
-            }
+            OutMeshClusterDAGs.clear();
+            return false;
+        }
+
+        if (!ReadValue(Stream, DagHeaders[MeshIndex]))
+        {
+            OutMeshClusterDAGs.clear();
+            return false;
         }
     }
 
@@ -3371,7 +3363,6 @@ bool LoadClusterDAGCacheFile(
     {
         if (!ReadValue(Stream, Entry)
             || Entry.MeshIndex >= Header.MeshCount
-            || Entry.DagIndex >= DagHeaders[Entry.MeshIndex].size()
             || Entry.PayloadBytes > GVmeshStreamingPageSlotBytes)
         {
             OutMeshClusterDAGs.clear();
@@ -3381,75 +3372,71 @@ bool LoadClusterDAGCacheFile(
 
     for (uint32_t MeshIndex = 0; MeshIndex < Header.MeshCount; ++MeshIndex)
     {
-        for (uint32_t DagIndex = 0; DagIndex < DagHeaders[MeshIndex].size(); ++DagIndex)
+        std::vector<FVmeshPageDirEntry> DagPages;
+        for (const FVmeshPageDirEntry& Entry : PageDirectory)
         {
-            std::vector<FVmeshPageDirEntry> DagPages;
-            for (const FVmeshPageDirEntry& Entry : PageDirectory)
+            if (Entry.MeshIndex == MeshIndex
+                && (Entry.Flags & GVmeshPageFlagRestorePayload) != 0u)
             {
-                if (Entry.MeshIndex == MeshIndex
-                    && Entry.DagIndex == DagIndex
-                    && (Entry.Flags & GVmeshPageFlagRestorePayload) != 0u)
-                {
-                    DagPages.push_back(Entry);
-                }
+                DagPages.push_back(Entry);
             }
+        }
 
-            if (DagPages.empty())
+        if (DagPages.empty())
+        {
+            OutMeshClusterDAGs.clear();
+            return false;
+        }
+
+        std::sort(DagPages.begin(), DagPages.end(), [](const FVmeshPageDirEntry& A, const FVmeshPageDirEntry& B)
+        {
+            return A.LocalPageIndex < B.LocalPageIndex;
+        });
+
+        std::vector<uint8_t> PayloadBytes;
+        for (uint32_t PageOrdinal = 0; PageOrdinal < DagPages.size(); ++PageOrdinal)
+        {
+            const FVmeshPageDirEntry& Page = DagPages[PageOrdinal];
+            if (Page.LocalPageIndex != PageOrdinal)
             {
                 OutMeshClusterDAGs.clear();
                 return false;
             }
 
-            std::sort(DagPages.begin(), DagPages.end(), [](const FVmeshPageDirEntry& A, const FVmeshPageDirEntry& B)
+            const size_t DestOffset = PayloadBytes.size();
+            PayloadBytes.resize(DestOffset + Page.PayloadBytes);
+            if (Page.PayloadBytes > 0u)
             {
-                return A.LocalPageIndex < B.LocalPageIndex;
-            });
-
-            std::vector<uint8_t> PayloadBytes;
-            for (uint32_t PageOrdinal = 0; PageOrdinal < DagPages.size(); ++PageOrdinal)
-            {
-                const FVmeshPageDirEntry& Page = DagPages[PageOrdinal];
-                if (Page.LocalPageIndex != PageOrdinal)
+                Stream.seekg(static_cast<std::streamoff>(Page.FileOffset), std::ios::beg);
+                if (!Stream.good())
                 {
                     OutMeshClusterDAGs.clear();
                     return false;
                 }
 
-                const size_t DestOffset = PayloadBytes.size();
-                PayloadBytes.resize(DestOffset + Page.PayloadBytes);
-                if (Page.PayloadBytes > 0u)
+                Stream.read(
+                    reinterpret_cast<char*>(PayloadBytes.data() + DestOffset),
+                    static_cast<std::streamsize>(Page.PayloadBytes));
+                if (!Stream.good())
                 {
-                    Stream.seekg(static_cast<std::streamoff>(Page.FileOffset), std::ios::beg);
-                    if (!Stream.good())
-                    {
-                        OutMeshClusterDAGs.clear();
-                        return false;
-                    }
-
-                    Stream.read(
-                        reinterpret_cast<char*>(PayloadBytes.data() + DestOffset),
-                        static_cast<std::streamsize>(Page.PayloadBytes));
-                    if (!Stream.good())
-                    {
-                        OutMeshClusterDAGs.clear();
-                        return false;
-                    }
+                    OutMeshClusterDAGs.clear();
+                    return false;
                 }
             }
+        }
 
-            std::string PayloadString;
-            if (!PayloadBytes.empty())
-            {
-                PayloadString.assign(reinterpret_cast<const char*>(PayloadBytes.data()), PayloadBytes.size());
-            }
-            std::istringstream PayloadStream(PayloadString, std::ios::in | std::ios::binary);
-            FClusterDAG& Dag = OutMeshClusterDAGs[MeshIndex][DagIndex];
-            if (!ReadClusterDAGPayload(PayloadStream, DagHeaders[MeshIndex][DagIndex], Dag)
-                || !ValidateLoadedClusterDAG(Dag))
-            {
-                OutMeshClusterDAGs.clear();
-                return false;
-            }
+        std::string PayloadString;
+        if (!PayloadBytes.empty())
+        {
+            PayloadString.assign(reinterpret_cast<const char*>(PayloadBytes.data()), PayloadBytes.size());
+        }
+        std::istringstream PayloadStream(PayloadString, std::ios::in | std::ios::binary);
+        FClusterDAG& Dag = OutMeshClusterDAGs[MeshIndex];
+        if (!ReadClusterDAGPayload(PayloadStream, DagHeaders[MeshIndex], Dag)
+            || !ValidateLoadedClusterDAG(Dag))
+        {
+            OutMeshClusterDAGs.clear();
+            return false;
         }
     }
 
@@ -3467,7 +3454,7 @@ bool SaveClusterDAGCacheFile(
     const std::wstring& CacheFilePath,
     const std::wstring& SourceFilePath,
     const FClusterDAGBuildParams& Params,
-    const std::vector<std::vector<FClusterDAG>>& MeshClusterDAGs)
+    const std::vector<FClusterDAG>& MeshClusterDAGs)
 {
     uint64_t SourceWriteTime = 0;
     uint64_t SourceFileSize = 0;
@@ -3485,18 +3472,16 @@ bool SaveClusterDAGCacheFile(
     std::vector<FVmeshMeshPayload> MeshPayloads(Header.MeshCount);
     for (uint32_t MeshIndex = 0; MeshIndex < Header.MeshCount; ++MeshIndex)
     {
-        const std::vector<FClusterDAG>& MeshDAGs = MeshClusterDAGs[MeshIndex];
+        const FClusterDAG& MeshDAG = MeshClusterDAGs[MeshIndex];
         FVmeshMeshPayload& MeshPayload = MeshPayloads[MeshIndex];
-        MeshPayload.Dags.resize(MeshDAGs.size());
-        for (uint32_t DagIndex = 0; DagIndex < MeshDAGs.size(); ++DagIndex)
+        FVmeshDagPayload& DagPayload = MeshPayload.Dag;
         {
-            if (!BuildVmeshDagPayload(MeshDAGs[DagIndex], MeshPayload.Dags[DagIndex]))
+            if (!BuildVmeshDagPayload(MeshDAG, DagPayload))
             {
                 return false;
             }
 
-            FVmeshDagPayload& DagPayload = MeshPayload.Dags[DagIndex];
-            const FRuntimeClusterHierarchy& Runtime = MeshDAGs[DagIndex].RuntimeHierarchy;
+            const FRuntimeClusterHierarchy& Runtime = MeshDAG.RuntimeHierarchy;
             DagPayload.StreamingPages.resize(Runtime.Groups.size());
             for (uint32_t LocalGroupIndex = 0; LocalGroupIndex < Runtime.Groups.size(); ++LocalGroupIndex)
             {
@@ -3505,7 +3490,7 @@ bool SaveClusterDAGCacheFile(
                     continue;
                 }
 
-                if (!BuildVmeshStreamingPagePayload(MeshDAGs[DagIndex], LocalGroupIndex, DagPayload.StreamingPages[LocalGroupIndex]))
+                if (!BuildVmeshStreamingPagePayload(MeshDAG, LocalGroupIndex, DagPayload.StreamingPages[LocalGroupIndex]))
                 {
                     return false;
                 }
@@ -3521,7 +3506,7 @@ bool SaveClusterDAGCacheFile(
     for (const FVmeshMeshPayload& MeshPayload : MeshPayloads)
     {
         Header.PageDirectoryOffset += sizeof(uint32_t);
-        Header.PageDirectoryOffset += static_cast<uint64_t>(MeshPayload.Dags.size()) * sizeof(FVmeshDagHeader);
+        Header.PageDirectoryOffset += sizeof(FVmeshDagHeader);
     }
 
     struct FVmeshPageWrite
@@ -3540,52 +3525,47 @@ bool SaveClusterDAGCacheFile(
     for (uint32_t MeshIndex = 0; MeshIndex < MeshPayloads.size(); ++MeshIndex)
     {
         const FVmeshMeshPayload& MeshPayload = MeshPayloads[MeshIndex];
-        for (uint32_t DagIndex = 0; DagIndex < MeshPayload.Dags.size(); ++DagIndex)
+        const FVmeshDagPayload& DagPayload = MeshPayload.Dag;
+        const uint32_t RestorePageCount = (std::max)(1u, static_cast<uint32_t>((DagPayload.Bytes.size() + GVmeshStreamingPageSlotBytes - 1ull) / GVmeshStreamingPageSlotBytes));
+        for (uint32_t PageIndex = 0; PageIndex < RestorePageCount; ++PageIndex)
         {
-            const FVmeshDagPayload& DagPayload = MeshPayload.Dags[DagIndex];
-            const uint32_t RestorePageCount = (std::max)(1u, static_cast<uint32_t>((DagPayload.Bytes.size() + GVmeshStreamingPageSlotBytes - 1ull) / GVmeshStreamingPageSlotBytes));
-            for (uint32_t PageIndex = 0; PageIndex < RestorePageCount; ++PageIndex)
+            const uint64_t SourceOffset = static_cast<uint64_t>(PageIndex) * GVmeshStreamingPageSlotBytes;
+            const uint32_t PayloadBytes = SourceOffset < DagPayload.Bytes.size()
+                ? static_cast<uint32_t>(std::min<uint64_t>(GVmeshStreamingPageSlotBytes, DagPayload.Bytes.size() - SourceOffset))
+                : 0u;
+
+            FVmeshPageWrite PageWrite;
+            PageWrite.Entry.FileOffset = NextPayloadOffset;
+            PageWrite.Entry.PayloadBytes = PayloadBytes;
+            PageWrite.Entry.MeshIndex = MeshIndex;
+            PageWrite.Entry.LocalPageIndex = PageIndex;
+            PageWrite.Entry.Flags = GVmeshPageFlagRestorePayload | (PageIndex == 0u ? GVmeshPageFlagRoot | GVmeshPageFlagStreamingPayload : 0u);
+            PageWrite.Bytes = &DagPayload.Bytes;
+            PageWrite.SourceOffset = static_cast<uint32_t>(SourceOffset);
+            PageWrites.push_back(PageWrite);
+
+            NextPayloadOffset = AlignUp(NextPayloadOffset + PayloadBytes, GVmeshPageAlignment);
+        }
+
+        for (uint32_t LocalGroupIndex = 0; LocalGroupIndex < DagPayload.StreamingPages.size(); ++LocalGroupIndex)
+        {
+            if (LocalGroupIndex == DagPayload.Header.RuntimeRootGroupIndex)
             {
-                const uint64_t SourceOffset = static_cast<uint64_t>(PageIndex) * GVmeshStreamingPageSlotBytes;
-                const uint32_t PayloadBytes = SourceOffset < DagPayload.Bytes.size()
-                    ? static_cast<uint32_t>(std::min<uint64_t>(GVmeshStreamingPageSlotBytes, DagPayload.Bytes.size() - SourceOffset))
-                    : 0u;
-
-                FVmeshPageWrite PageWrite;
-                PageWrite.Entry.FileOffset = NextPayloadOffset;
-                PageWrite.Entry.PayloadBytes = PayloadBytes;
-                PageWrite.Entry.MeshIndex = MeshIndex;
-                PageWrite.Entry.DagIndex = DagIndex;
-                PageWrite.Entry.LocalPageIndex = PageIndex;
-                PageWrite.Entry.Flags = GVmeshPageFlagRestorePayload | (PageIndex == 0u ? GVmeshPageFlagRoot | GVmeshPageFlagStreamingPayload : 0u);
-                PageWrite.Bytes = &DagPayload.Bytes;
-                PageWrite.SourceOffset = static_cast<uint32_t>(SourceOffset);
-                PageWrites.push_back(PageWrite);
-
-                NextPayloadOffset = AlignUp(NextPayloadOffset + PayloadBytes, GVmeshPageAlignment);
+                continue;
             }
 
-            for (uint32_t LocalGroupIndex = 0; LocalGroupIndex < DagPayload.StreamingPages.size(); ++LocalGroupIndex)
-            {
-                if (LocalGroupIndex == DagPayload.Header.RuntimeRootGroupIndex)
-                {
-                    continue;
-                }
+            const std::vector<uint8_t>& StreamingPageBytes = DagPayload.StreamingPages[LocalGroupIndex];
+            FVmeshPageWrite PageWrite;
+            PageWrite.Entry.FileOffset = NextPayloadOffset;
+            PageWrite.Entry.PayloadBytes = static_cast<uint32_t>(StreamingPageBytes.size());
+            PageWrite.Entry.MeshIndex = MeshIndex;
+            PageWrite.Entry.LocalPageIndex = LocalGroupIndex + 1u;
+            PageWrite.Entry.Flags = GVmeshPageFlagStreamingPayload;
+            PageWrite.Bytes = &StreamingPageBytes;
+            PageWrite.SourceOffset = 0u;
+            PageWrites.push_back(PageWrite);
 
-                const std::vector<uint8_t>& StreamingPageBytes = DagPayload.StreamingPages[LocalGroupIndex];
-                FVmeshPageWrite PageWrite;
-                PageWrite.Entry.FileOffset = NextPayloadOffset;
-                PageWrite.Entry.PayloadBytes = static_cast<uint32_t>(StreamingPageBytes.size());
-                PageWrite.Entry.MeshIndex = MeshIndex;
-                PageWrite.Entry.DagIndex = DagIndex;
-                PageWrite.Entry.LocalPageIndex = LocalGroupIndex + 1u;
-                PageWrite.Entry.Flags = GVmeshPageFlagStreamingPayload;
-                PageWrite.Bytes = &StreamingPageBytes;
-                PageWrite.SourceOffset = 0u;
-                PageWrites.push_back(PageWrite);
-
-                NextPayloadOffset = AlignUp(NextPayloadOffset + StreamingPageBytes.size(), GVmeshPageAlignment);
-            }
+            NextPayloadOffset = AlignUp(NextPayloadOffset + StreamingPageBytes.size(), GVmeshPageAlignment);
         }
     }
 
@@ -3610,19 +3590,15 @@ bool SaveClusterDAGCacheFile(
 
     for (uint32_t MeshIndex = 0; MeshIndex < MeshClusterDAGs.size(); ++MeshIndex)
     {
-        const std::vector<FClusterDAG>& MeshDAGs = MeshClusterDAGs[MeshIndex];
-        const uint32_t DagCount = static_cast<uint32_t>(MeshDAGs.size());
+        const uint32_t DagCount = 1u;
         if (!WriteValue(Stream, DagCount))
         {
             return false;
         }
 
-        for (const FVmeshDagPayload& DagPayload : MeshPayloads[MeshIndex].Dags)
+        if (!WriteValue(Stream, MeshPayloads[MeshIndex].Dag.Header))
         {
-            if (!WriteValue(Stream, DagPayload.Header))
-            {
-                return false;
-            }
+            return false;
         }
     }
 
@@ -3697,8 +3673,7 @@ bool SaveClusterDAGCacheFile(
 
 void FMesh::BuildClusterDAGs(const FClusterDAGBuildParams& Params)
 {
-    ClusterDAGs.clear();
-    ClusterDAGs.reserve(1);
+    ClusterDAG = {};
 
     FClusterDAG Dag;
     if (!BuildClusterDAGForMesh(Primitives, Params, Dag))
@@ -3706,29 +3681,20 @@ void FMesh::BuildClusterDAGs(const FClusterDAGBuildParams& Params)
         LogWarning("Cluster DAG whole-mesh build skipped; keeping legacy meshlet path only.");
     }
 
-    ClusterDAGs.push_back(std::move(Dag));
+    ClusterDAG = std::move(Dag);
 }
 
-const FClusterDAG* FMesh::GetClusterDAG(size_t Index) const
+const FClusterDAG* FMesh::GetClusterDAG() const
 {
-    if (ClusterDAGs.empty())
+    if (!ClusterDAG.IsValid())
     {
         return nullptr;
     }
 
-    (void)Index;
-    return &ClusterDAGs.front();
+    return &ClusterDAG;
 }
 
 bool FMesh::HasClusterDAGs() const
 {
-    for (const FClusterDAG& Dag : ClusterDAGs)
-    {
-        if (Dag.IsValid())
-        {
-            return true;
-        }
-    }
-
-    return false;
+    return ClusterDAG.IsValid();
 }

@@ -52,6 +52,5 @@ obj
 *.patch
 *.vmesh
 /.claude
-/.vscode
 *.code-workspace
 *.wpix
