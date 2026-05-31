@@ -62,7 +62,7 @@ private:
     };
     static_assert(sizeof(FGroupData) == 52, "FGroupData must match cluster DAG runtime shader layout");
 
-    struct FClusterDta
+    struct FClusterData
     {
         DirectX::XMFLOAT4 Bounds{ 0.0f, 0.0f, 0.0f, 0.0f };
         DirectX::XMFLOAT4 LodBounds{ 0.0f, 0.0f, 0.0f, 0.0f };
@@ -75,7 +75,7 @@ private:
         uint32_t TriangleCount = 0;
         uint32_t MipLevel = 0;
     };
-    static_assert(sizeof(FClusterDta) == 64, "FClusterDta must match cluster DAG runtime shader layout");
+    static_assert(sizeof(FClusterData) == 64, "FClusterData must match cluster DAG runtime shader layout");
 
     // Per-cluster draw data uploaded to GPU and consumed by the cluster DAG runtime shaders.
     // Each cluster may have multiple entries (one per material range).
@@ -108,13 +108,14 @@ private:
     {
         uint32_t ClusterIndex = GClusterDAGInvalidIndex;
         uint32_t PageDataBase = GClusterDAGInvalidIndex;
+        uint32_t PageLocalClusterIndex = GClusterDAGInvalidIndex;
     };
-    static_assert(sizeof(FCandidateClusterEntry) == 8, "FCandidateClusterEntry must match cluster DAG queue shader layout");
+    static_assert(sizeof(FCandidateClusterEntry) == 12, "FCandidateClusterEntry must match cluster DAG queue shader layout");
 
     struct FPreparedData
     {
         std::vector<FGroupData> Groups;
-        std::vector<FClusterDta> Clusters;
+        std::vector<FClusterData> Clusters;
         std::vector<FRuntimeClusterChildRef> ChildRefs;
         std::vector<uint32_t> RootGroups;
         std::vector<FDrawData> DrawDatas;
@@ -133,7 +134,7 @@ private:
     uint32_t GetOrAddRangeForSection(
         const FWorldSectionList& DrawSections,
         uint32_t DrawSectionIndex);
-    void AppendSectionDrawDataRecords(
+    void AppendSectionDrawDatas(
         const FWorldSectionList& DrawSections,
         const FMeshSection& Section,
         uint32_t SortedIndex,

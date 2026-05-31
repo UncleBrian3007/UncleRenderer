@@ -6,7 +6,7 @@
 
 // GPU page payload identity
 #define kClusterDagGpuPagePayloadMagic                              0x47504443u
-#define kClusterDagGpuPagePayloadVersion                            4u
+#define kClusterDagGpuPagePayloadVersion                            5u
 
 // Shared traversal limits
 #define kClusterDagMaxChildRefsPerGroup                             256u
@@ -19,10 +19,10 @@
 #define kClusterDagGpuPageHeaderGroupByteOffsetOffset               16u
 #define kClusterDagGpuPageHeaderChildRefByteOffsetOffset            20u
 #define kClusterDagGpuPageHeaderChildRefCountOffset                 24u
-#define kClusterDagGpuPageHeaderClusterRecordByteOffsetOffset       28u
-#define kClusterDagGpuPageHeaderClusterRecordCountOffset            32u
-#define kClusterDagGpuPageHeaderDrawDataRecordByteOffsetOffset      36u
-#define kClusterDagGpuPageHeaderDrawDataRecordCountOffset           40u
+#define kClusterDagGpuPageHeaderClusterDataByteOffsetOffset         28u
+#define kClusterDagGpuPageHeaderClusterDataCountOffset              32u
+#define kClusterDagGpuPageHeaderDrawDataByteOffsetOffset            36u
+#define kClusterDagGpuPageHeaderDrawDataCountOffset                 40u
 #define kClusterDagGpuPageHeaderPackedIndexByteOffsetOffset         44u
 #define kClusterDagGpuPageHeaderPackedIndexCountOffset              48u
 #define kClusterDagGpuPageHeaderPackedPositionByteOffsetOffset      52u
@@ -48,26 +48,26 @@
 // Child ref record stride
 #define kClusterDagGpuPageChildRefStride                            8u
 
-// Cluster record stride and field byte offsets
-#define kClusterDagGpuPageClusterRecordStride                       80u
-#define kClusterDagGpuPageClusterRecordGlobalClusterIndexOffset     0u
-#define kClusterDagGpuPageClusterRecordBoundsOffset                 16u
-#define kClusterDagGpuPageClusterRecordLodBoundsOffset              32u
-#define kClusterDagGpuPageClusterRecordLODErrorOffset               48u
-#define kClusterDagGpuPageClusterRecordMaxEdgeLengthOffset          52u
-#define kClusterDagGpuPageClusterRecordGroupIndexOffset             56u
-#define kClusterDagGpuPageClusterRecordGeneratingGroupIndexOffset   60u
-#define kClusterDagGpuPageClusterRecordDrawDataStartOffset          64u
-#define kClusterDagGpuPageClusterRecordDrawDataCountOffset          68u
-#define kClusterDagGpuPageClusterRecordTriangleCountOffset          72u
-#define kClusterDagGpuPageClusterRecordMipLevelOffset               76u
+// Cluster data stride and field byte offsets
+#define kClusterDagGpuPageClusterDataStride                         80u
+#define kClusterDagGpuPageClusterDataGlobalClusterIndexOffset       0u
+#define kClusterDagGpuPageClusterDataBoundsOffset                   16u
+#define kClusterDagGpuPageClusterDataLodBoundsOffset                32u
+#define kClusterDagGpuPageClusterDataLODErrorOffset                 48u
+#define kClusterDagGpuPageClusterDataMaxEdgeLengthOffset            52u
+#define kClusterDagGpuPageClusterDataGroupIndexOffset               56u
+#define kClusterDagGpuPageClusterDataGeneratingGroupIndexOffset     60u
+#define kClusterDagGpuPageClusterDataDrawDataStartOffset            64u
+#define kClusterDagGpuPageClusterDataDrawDataCountOffset            68u
+#define kClusterDagGpuPageClusterDataTriangleCountOffset            72u
+#define kClusterDagGpuPageClusterDataMipLevelOffset                 76u
 
-// Draw data record stride and field byte offsets
-#define kClusterDagGpuPageDrawDataRecordStride                      32u
-#define kClusterDagGpuPageDrawDataRecordGlobalDrawDataIndexOffset   0u
-#define kClusterDagGpuPageDrawDataRecordStartIndexOffset            4u
-#define kClusterDagGpuPageDrawDataRecordIndexCountOffset            8u
-#define kClusterDagGpuPageDrawDataRecordRangeIndexOffset            12u
-#define kClusterDagGpuPageDrawDataRecordRangeCommandStartOffset     16u
-#define kClusterDagGpuPageDrawDataRecordRangeCommandCountOffset     20u
-#define kClusterDagGpuPageDrawDataRecordDrawSectionIndexOffset            24u
+// Draw data stride and field byte offsets
+#define kClusterDagGpuPageDrawDataStride                            32u
+#define kClusterDagGpuPageDrawDataGlobalDrawDataIndexOffset         0u
+#define kClusterDagGpuPageDrawDataStartIndexOffset                  4u
+#define kClusterDagGpuPageDrawDataIndexCountOffset                  8u
+#define kClusterDagGpuPageDrawDataRangeIndexOffset                  12u
+#define kClusterDagGpuPageDrawDataRangeCommandStartOffset           16u
+#define kClusterDagGpuPageDrawDataRangeCommandCountOffset           20u
+#define kClusterDagGpuPageDrawDataDrawSectionIndexOffset            24u

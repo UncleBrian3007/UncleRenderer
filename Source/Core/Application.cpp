@@ -15,6 +15,7 @@
 #include "../Render/Renderer.h"
 #include "../Render/DeferredRenderer.h"
 #include "../Render/ForwardRenderer.h"
+#include "../Render/TextureLoader.h"
 #include "../World/SkeletalMesh.h"
 #include "../Render/RenderGraph.h"
 #include "../Render/RendererUtils.h"
@@ -236,17 +237,42 @@ FApplication::FApplication()
 FApplication::~FApplication()
 {
     LogInfo("Application shutdown started");
+    FTaskScheduler::Get().Shutdown();
+    ShutdownGraphics();
+
+    LogInfo("Application shutdown complete");
+}
+
+void FApplication::ShutdownGraphics()
+{
     ShutdownImGui();
 
-    if (Device)
+    if (Device && Device->GetGraphicsQueue())
     {
         Device->GetGraphicsQueue()->Flush();
     }
 
-    // Shutdown task system
-    FTaskScheduler::Get().Shutdown();
+    ActiveRenderer = nullptr;
+    AsyncActiveRenderer = nullptr;
+    AsyncForwardRenderer.reset();
+    AsyncDeferredRenderer.reset();
+    DeferredRenderer.reset();
+    ForwardRenderer.reset();
+    Camera.reset();
+    FrameTimer.Reset();
+    ImGuiDescriptorHeap.Reset();
+    FTextureLoader::ClearGlobalCache();
+    FRenderGraph::ReleaseStaticGpuResources();
 
-    LogInfo("Application shutdown complete");
+    CommandContext.reset();
+    SwapChain.reset();
+    if (Device && Device->GetGraphicsQueue())
+    {
+        Device->GetGraphicsQueue()->Flush();
+    }
+    Device.reset();
+
+    FDX12Device::ReportLiveObjects();
 }
 
 bool FApplication::Initialize(HINSTANCE InstanceHandle)
@@ -1561,6 +1587,11 @@ void FApplication::ShutdownImGui()
     if (ImGuiCtx)
     {
         LogInfo("ImGui shutdown");
+        if (Device && Device->GetGraphicsQueue())
+        {
+            Device->GetGraphicsQueue()->Flush();
+        }
+        ImGui_ImplDX12_InvalidateDeviceObjects();
         ImGui_ImplDX12_Shutdown();
         ImGui_ImplWin32_Shutdown();
         ImGui::DestroyContext(ImGuiCtx);

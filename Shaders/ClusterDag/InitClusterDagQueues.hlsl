@@ -95,6 +95,7 @@ void InitClusterDagQueuesCS(uint3 dispatchThreadId : SV_DispatchThreadID)
         ClusterDagCandidateClusterEntry emptyEntry;
         emptyEntry.ClusterIndex = 0xffffffffu;
         emptyEntry.PageDataBase = 0xffffffffu;
+        emptyEntry.PageLocalClusterIndex = 0xffffffffu;
         CandidateClusterEntry[threadIndex] = emptyEntry;
     }
 #endif

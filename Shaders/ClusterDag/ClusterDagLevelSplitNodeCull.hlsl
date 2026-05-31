@@ -39,6 +39,7 @@ cbuffer ClusterDagLevelSplitNodeCullBindlessConstants : register(b1)
 groupshared uint SharedNextGroups[kClusterDagLevelSplitMaxChildRefsPerGroup];
 groupshared uint SharedCandidateClusters[kClusterDagLevelSplitMaxChildRefsPerGroup];
 groupshared uint SharedCandidatePageBases[kClusterDagLevelSplitMaxChildRefsPerGroup];
+groupshared uint SharedCandidatePageLocalClusters[kClusterDagLevelSplitMaxChildRefsPerGroup];
 groupshared uint SharedNextGroupCount;
 groupshared uint SharedCandidateCount;
 groupshared uint SharedNextGroupOffset;
@@ -87,7 +88,7 @@ void AppendLevelSplitNextGroup(uint groupIndex)
     }
 }
 
-void AppendLevelSplitCandidateCluster(uint clusterIndex, uint pageDataBase)
+void AppendLevelSplitCandidateCluster(uint clusterIndex, uint pageDataBase, uint pageLocalClusterIndex)
 {
     uint localIndex = 0u;
     InterlockedAdd(SharedCandidateCount, 1u, localIndex);
@@ -95,6 +96,7 @@ void AppendLevelSplitCandidateCluster(uint clusterIndex, uint pageDataBase)
     {
         SharedCandidateClusters[localIndex] = clusterIndex;
         SharedCandidatePageBases[localIndex] = pageDataBase;
+        SharedCandidatePageLocalClusters[localIndex] = pageLocalClusterIndex;
     }
 }
 
@@ -176,7 +178,8 @@ void ClusterDagLevelSplitNodeCullCS(uint3 groupId : SV_GroupID, uint groupThread
                 }
 #endif
 
-                const ClusterDagClusterData cluster = LoadClusterDagCluster(childRef.ClusterIndex, usePagedChildRefs, pagedPageBase, Clusters, PageData);
+                const uint pageLocalClusterIndex = usePagedChildRefs ? childRef.InstanceIndex : 0xffffffffu;
+                const ClusterDagClusterData cluster = LoadClusterDagCluster(childRef.ClusterIndex, pageLocalClusterIndex, usePagedChildRefs, pagedPageBase, Clusters, PageData);
                 const bool isLeaf = cluster.GeneratingGroupIndex == 0xffffffffu;
                 const float3 lodCenter = cluster.LodBounds.xyz;
                 const float lodRadius = cluster.LodBounds.w;
@@ -253,7 +256,7 @@ void ClusterDagLevelSplitNodeCullCS(uint3 groupId : SV_GroupID, uint groupThread
 
                 if (!refine)
                 {
-                    AppendLevelSplitCandidateCluster(childRef.ClusterIndex, usePagedChildRefs ? pagedPageBase : 0xffffffffu);
+                    AppendLevelSplitCandidateCluster(childRef.ClusterIndex, usePagedChildRefs ? pagedPageBase : 0xffffffffu, pageLocalClusterIndex);
                 }
             }
         }
@@ -304,6 +307,7 @@ void ClusterDagLevelSplitNodeCullCS(uint3 groupId : SV_GroupID, uint groupThread
         ClusterDagCandidateClusterEntry candidateEntry;
         candidateEntry.ClusterIndex = SharedCandidateClusters[writeIndex];
         candidateEntry.PageDataBase = SharedCandidatePageBases[writeIndex];
+        candidateEntry.PageLocalClusterIndex = SharedCandidatePageLocalClusters[writeIndex];
         CandidateClusterEntry[SharedCandidateOffset + writeIndex] = candidateEntry;
     }
 }

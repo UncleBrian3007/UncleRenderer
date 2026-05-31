@@ -14,6 +14,16 @@ std::vector<FRenderGraph::FPooledTexture> FRenderGraph::TexturePool;
 std::vector<FRenderGraph::FPooledBuffer> FRenderGraph::BufferPool;
 std::unordered_map<uint32, FRenderGraph::FGpuTimingData> FRenderGraph::PendingGpuTimings;
 std::unordered_map<uint32, FRenderGraph::FGpuTimingResources> FRenderGraph::GpuTimingResources;
+
+void FRenderGraph::ReleaseStaticGpuResources()
+{
+    TexturePool.clear();
+    TexturePool.shrink_to_fit();
+    BufferPool.clear();
+    BufferPool.shrink_to_fit();
+    PendingGpuTimings.clear();
+    GpuTimingResources.clear();
+}
 std::unordered_map<std::string, std::deque<FRenderGraph::FGpuTimingSample>> FRenderGraph::GpuTimingSamples;
 std::vector<FRenderGraph::FGpuPassTimingStats> FRenderGraph::CachedGpuTimingStats;
 double FRenderGraph::GpuTimingWindowSeconds = 1.0;
@@ -714,6 +724,8 @@ void FRenderGraph::Execute(FDX12CommandContext& CmdContext)
                     else
                     {
                         Resources.QueryCapacity = HeapDesc.Count;
+                        Resources.QueryHeap->SetName(L"RGGpuTimingQueryHeap");
+                        Resources.ReadbackBuffer->SetName(L"RGGpuTimingReadback");
                     }
                 }
                 else
@@ -1136,6 +1148,10 @@ bool FRenderGraph::AcquireTransientTexture(FRGTextureResource& Texture, D3D12_RE
         std::wstring WName(Texture.Name.begin(), Texture.Name.end());
         NewResource->SetName(WName.c_str());
     }
+    else
+    {
+        NewResource->SetName(L"RGPooledTexture");
+    }
 
     FPooledTexture Pooled;
     Pooled.Desc = Texture.Desc;
@@ -1204,6 +1220,10 @@ bool FRenderGraph::AcquireTransientBuffer(FRGBufferResource& Buffer, D3D12_RESOU
     {
         std::wstring WName(Buffer.Name.begin(), Buffer.Name.end());
         NewResource->SetName(WName.c_str());
+    }
+    else
+    {
+        NewResource->SetName(L"RGPooledBuffer");
     }
 
     FPooledBuffer Pooled;

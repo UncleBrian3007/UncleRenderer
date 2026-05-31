@@ -7,6 +7,7 @@
 #include <cwchar>
 #include <filesystem>
 #include <array>
+#include <dxgidebug.h>
 
 namespace
 {
@@ -75,6 +76,23 @@ FDX12Device::~FDX12Device()
     {
         GraphicsQueue->Flush();
     }
+}
+
+void FDX12Device::ReportLiveObjects()
+{
+    ComPtr<IDXGIDebug1> DxgiDebug;
+    const HRESULT Hr = DXGIGetDebugInterface1(0, IID_PPV_ARGS(DxgiDebug.GetAddressOf()));
+    if (FAILED(Hr))
+    {
+        std::ostringstream Stream;
+        Stream << "DXGI live object report unavailable, hr=0x" << std::hex << static_cast<unsigned long>(Hr);
+        LogInfo(Stream.str());
+        return;
+    }
+
+    LogInfo("DXGI live object report begin");
+    DxgiDebug->ReportLiveObjects(DXGI_DEBUG_ALL, DXGI_DEBUG_RLO_FLAGS(DXGI_DEBUG_RLO_DETAIL | DXGI_DEBUG_RLO_IGNORE_INTERNAL));
+    LogInfo("DXGI live object report complete");
 }
 
 FDX12Device::FBindlessDescriptorStats FDX12Device::GetBindlessDescriptorStats() const
@@ -240,7 +258,7 @@ bool FDX12Device::PickAdapter()
     ComPtr<IDXGIAdapter1> TempAdapter;
     SIZE_T MaxVRAM = 0;
 
-    for (UINT i = 0; Factory->EnumAdapters1(i, TempAdapter.GetAddressOf()) != DXGI_ERROR_NOT_FOUND; ++i)
+    for (UINT i = 0; Factory->EnumAdapters1(i, TempAdapter.ReleaseAndGetAddressOf()) != DXGI_ERROR_NOT_FOUND; ++i)
     {
         DXGI_ADAPTER_DESC1 Desc;
         TempAdapter->GetDesc1(&Desc);

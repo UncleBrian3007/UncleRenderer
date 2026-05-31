@@ -235,6 +235,11 @@ bool FTextureLoader::LoadHdrTexture(const std::wstring& TexturePath, ComPtr<ID3D
 }
 void FTextureLoader::ClearCache()
 {
+    ClearGlobalCache();
+}
+
+void FTextureLoader::ClearGlobalCache()
+{
     std::lock_guard<std::mutex> Lock(GTextureCacheMutex);
     GlobalTextureCache.clear();
 }

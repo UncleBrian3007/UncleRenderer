@@ -35,10 +35,10 @@ namespace
         uint32_t GroupByteOffset = 0u;
         uint32_t ChildRefByteOffset = 0u;
         uint32_t ChildRefCount = 0u;
-        uint32_t ClusterRecordByteOffset = 0u;
-        uint32_t ClusterRecordCount = 0u;
-        uint32_t DrawDataRecordByteOffset = 0u;
-        uint32_t DrawDataRecordCount = 0u;
+        uint32_t ClusterDataByteOffset = 0u;
+        uint32_t ClusterDataCount = 0u;
+        uint32_t DrawDataByteOffset = 0u;
+        uint32_t DrawDataCount = 0u;
         uint32_t PackedIndexByteOffset = 0u;
         uint32_t PackedIndexCount = 0u;
         uint32_t PackedPositionByteOffset = 0u;
@@ -61,10 +61,10 @@ namespace
     static_assert(offsetof(FClusterDagGpuPagePayloadHeader, GroupByteOffset) == kClusterDagGpuPageHeaderGroupByteOffsetOffset);
     static_assert(offsetof(FClusterDagGpuPagePayloadHeader, ChildRefByteOffset) == kClusterDagGpuPageHeaderChildRefByteOffsetOffset);
     static_assert(offsetof(FClusterDagGpuPagePayloadHeader, ChildRefCount) == kClusterDagGpuPageHeaderChildRefCountOffset);
-    static_assert(offsetof(FClusterDagGpuPagePayloadHeader, ClusterRecordByteOffset) == kClusterDagGpuPageHeaderClusterRecordByteOffsetOffset);
-    static_assert(offsetof(FClusterDagGpuPagePayloadHeader, ClusterRecordCount) == kClusterDagGpuPageHeaderClusterRecordCountOffset);
-    static_assert(offsetof(FClusterDagGpuPagePayloadHeader, DrawDataRecordByteOffset) == kClusterDagGpuPageHeaderDrawDataRecordByteOffsetOffset);
-    static_assert(offsetof(FClusterDagGpuPagePayloadHeader, DrawDataRecordCount) == kClusterDagGpuPageHeaderDrawDataRecordCountOffset);
+    static_assert(offsetof(FClusterDagGpuPagePayloadHeader, ClusterDataByteOffset) == kClusterDagGpuPageHeaderClusterDataByteOffsetOffset);
+    static_assert(offsetof(FClusterDagGpuPagePayloadHeader, ClusterDataCount) == kClusterDagGpuPageHeaderClusterDataCountOffset);
+    static_assert(offsetof(FClusterDagGpuPagePayloadHeader, DrawDataByteOffset) == kClusterDagGpuPageHeaderDrawDataByteOffsetOffset);
+    static_assert(offsetof(FClusterDagGpuPagePayloadHeader, DrawDataCount) == kClusterDagGpuPageHeaderDrawDataCountOffset);
     static_assert(offsetof(FClusterDagGpuPagePayloadHeader, PackedIndexByteOffset) == kClusterDagGpuPageHeaderPackedIndexByteOffsetOffset);
     static_assert(offsetof(FClusterDagGpuPagePayloadHeader, PackedIndexCount) == kClusterDagGpuPageHeaderPackedIndexCountOffset);
     static_assert(offsetof(FClusterDagGpuPagePayloadHeader, PackedPositionByteOffset) == kClusterDagGpuPageHeaderPackedPositionByteOffsetOffset);
@@ -97,7 +97,7 @@ namespace
     static_assert(offsetof(FClusterDagGpuPageGroupData, Flags) == kClusterDagGpuPageGroupFlagsOffset);
     static_assert(offsetof(FClusterDagGpuPageGroupData, MipLevel) == kClusterDagGpuPageGroupMipLevelOffset);
 
-    struct FClusterDagGpuPageClusterRecord
+    struct FClusterDagGpuPageClusterData
     {
         uint32_t GlobalClusterIndex = GClusterDAGInvalidIndex;
         uint32_t Reserved0 = 0u;
@@ -114,20 +114,20 @@ namespace
         uint32_t TriangleCount = 0u;
         uint32_t MipLevel = 0u;
     };
-    static_assert(sizeof(FClusterDagGpuPageClusterRecord) == kClusterDagGpuPageClusterRecordStride);
-    static_assert(offsetof(FClusterDagGpuPageClusterRecord, GlobalClusterIndex) == kClusterDagGpuPageClusterRecordGlobalClusterIndexOffset);
-    static_assert(offsetof(FClusterDagGpuPageClusterRecord, Bounds) == kClusterDagGpuPageClusterRecordBoundsOffset);
-    static_assert(offsetof(FClusterDagGpuPageClusterRecord, LodBounds) == kClusterDagGpuPageClusterRecordLodBoundsOffset);
-    static_assert(offsetof(FClusterDagGpuPageClusterRecord, LODError) == kClusterDagGpuPageClusterRecordLODErrorOffset);
-    static_assert(offsetof(FClusterDagGpuPageClusterRecord, MaxEdgeLength) == kClusterDagGpuPageClusterRecordMaxEdgeLengthOffset);
-    static_assert(offsetof(FClusterDagGpuPageClusterRecord, GroupIndex) == kClusterDagGpuPageClusterRecordGroupIndexOffset);
-    static_assert(offsetof(FClusterDagGpuPageClusterRecord, GeneratingGroupIndex) == kClusterDagGpuPageClusterRecordGeneratingGroupIndexOffset);
-    static_assert(offsetof(FClusterDagGpuPageClusterRecord, DrawDataStart) == kClusterDagGpuPageClusterRecordDrawDataStartOffset);
-    static_assert(offsetof(FClusterDagGpuPageClusterRecord, DrawDataCount) == kClusterDagGpuPageClusterRecordDrawDataCountOffset);
-    static_assert(offsetof(FClusterDagGpuPageClusterRecord, TriangleCount) == kClusterDagGpuPageClusterRecordTriangleCountOffset);
-    static_assert(offsetof(FClusterDagGpuPageClusterRecord, MipLevel) == kClusterDagGpuPageClusterRecordMipLevelOffset);
+    static_assert(sizeof(FClusterDagGpuPageClusterData) == kClusterDagGpuPageClusterDataStride);
+    static_assert(offsetof(FClusterDagGpuPageClusterData, GlobalClusterIndex) == kClusterDagGpuPageClusterDataGlobalClusterIndexOffset);
+    static_assert(offsetof(FClusterDagGpuPageClusterData, Bounds) == kClusterDagGpuPageClusterDataBoundsOffset);
+    static_assert(offsetof(FClusterDagGpuPageClusterData, LodBounds) == kClusterDagGpuPageClusterDataLodBoundsOffset);
+    static_assert(offsetof(FClusterDagGpuPageClusterData, LODError) == kClusterDagGpuPageClusterDataLODErrorOffset);
+    static_assert(offsetof(FClusterDagGpuPageClusterData, MaxEdgeLength) == kClusterDagGpuPageClusterDataMaxEdgeLengthOffset);
+    static_assert(offsetof(FClusterDagGpuPageClusterData, GroupIndex) == kClusterDagGpuPageClusterDataGroupIndexOffset);
+    static_assert(offsetof(FClusterDagGpuPageClusterData, GeneratingGroupIndex) == kClusterDagGpuPageClusterDataGeneratingGroupIndexOffset);
+    static_assert(offsetof(FClusterDagGpuPageClusterData, DrawDataStart) == kClusterDagGpuPageClusterDataDrawDataStartOffset);
+    static_assert(offsetof(FClusterDagGpuPageClusterData, DrawDataCount) == kClusterDagGpuPageClusterDataDrawDataCountOffset);
+    static_assert(offsetof(FClusterDagGpuPageClusterData, TriangleCount) == kClusterDagGpuPageClusterDataTriangleCountOffset);
+    static_assert(offsetof(FClusterDagGpuPageClusterData, MipLevel) == kClusterDagGpuPageClusterDataMipLevelOffset);
 
-    struct FClusterDagGpuPageDrawDataRecord
+    struct FClusterDagGpuPageDrawData
     {
         uint32_t GlobalDrawDataIndex = GClusterDAGInvalidIndex;
         uint32_t StartIndex = 0u;
@@ -138,14 +138,14 @@ namespace
         uint32_t DrawSectionIndex = 0u;
         uint32_t Reserved1 = 0u;
     };
-    static_assert(sizeof(FClusterDagGpuPageDrawDataRecord) == kClusterDagGpuPageDrawDataRecordStride);
-    static_assert(offsetof(FClusterDagGpuPageDrawDataRecord, GlobalDrawDataIndex) == kClusterDagGpuPageDrawDataRecordGlobalDrawDataIndexOffset);
-    static_assert(offsetof(FClusterDagGpuPageDrawDataRecord, StartIndex) == kClusterDagGpuPageDrawDataRecordStartIndexOffset);
-    static_assert(offsetof(FClusterDagGpuPageDrawDataRecord, IndexCount) == kClusterDagGpuPageDrawDataRecordIndexCountOffset);
-    static_assert(offsetof(FClusterDagGpuPageDrawDataRecord, RangeIndex) == kClusterDagGpuPageDrawDataRecordRangeIndexOffset);
-    static_assert(offsetof(FClusterDagGpuPageDrawDataRecord, RangeCommandStart) == kClusterDagGpuPageDrawDataRecordRangeCommandStartOffset);
-    static_assert(offsetof(FClusterDagGpuPageDrawDataRecord, RangeCommandCount) == kClusterDagGpuPageDrawDataRecordRangeCommandCountOffset);
-    static_assert(offsetof(FClusterDagGpuPageDrawDataRecord, DrawSectionIndex) == kClusterDagGpuPageDrawDataRecordDrawSectionIndexOffset);
+    static_assert(sizeof(FClusterDagGpuPageDrawData) == kClusterDagGpuPageDrawDataStride);
+    static_assert(offsetof(FClusterDagGpuPageDrawData, GlobalDrawDataIndex) == kClusterDagGpuPageDrawDataGlobalDrawDataIndexOffset);
+    static_assert(offsetof(FClusterDagGpuPageDrawData, StartIndex) == kClusterDagGpuPageDrawDataStartIndexOffset);
+    static_assert(offsetof(FClusterDagGpuPageDrawData, IndexCount) == kClusterDagGpuPageDrawDataIndexCountOffset);
+    static_assert(offsetof(FClusterDagGpuPageDrawData, RangeIndex) == kClusterDagGpuPageDrawDataRangeIndexOffset);
+    static_assert(offsetof(FClusterDagGpuPageDrawData, RangeCommandStart) == kClusterDagGpuPageDrawDataRangeCommandStartOffset);
+    static_assert(offsetof(FClusterDagGpuPageDrawData, RangeCommandCount) == kClusterDagGpuPageDrawDataRangeCommandCountOffset);
+    static_assert(offsetof(FClusterDagGpuPageDrawData, DrawSectionIndex) == kClusterDagGpuPageDrawDataDrawSectionIndexOffset);
 
     uint32_t ClampConfigUint(uint32_t Value, uint32_t MinValue, uint32_t MaxValue)
     {
@@ -190,38 +190,38 @@ bool FClusterDagStreamingManager::BuildGpuPagePayload(
     GroupData.Flags = Source.SceneGroupFlags;
     GroupData.MipLevel = Source.SceneGroupMipLevel;
 
-    std::vector<FClusterDagGpuPageClusterRecord> ClusterRecords;
-    ClusterRecords.reserve(Source.ScenePageClusters.size());
-    for (const FClusterDagStreamingPageSource::FSceneClusterRecord& SourceCluster : Source.ScenePageClusters)
+    std::vector<FClusterDagGpuPageClusterData> ClusterDatas;
+    ClusterDatas.reserve(Source.ScenePageClusters.size());
+    for (const FClusterDagStreamingPageSource::FClusterData& SourceCluster : Source.ScenePageClusters)
     {
-        FClusterDagGpuPageClusterRecord ClusterRecord;
-        ClusterRecord.GlobalClusterIndex = SourceCluster.GlobalClusterIndex;
-        std::memcpy(ClusterRecord.Bounds, SourceCluster.Bounds, sizeof(ClusterRecord.Bounds));
-        std::memcpy(ClusterRecord.LodBounds, SourceCluster.LodBounds, sizeof(ClusterRecord.LodBounds));
-        ClusterRecord.LODError = SourceCluster.LODError;
-        ClusterRecord.MaxEdgeLength = SourceCluster.MaxEdgeLength;
-        ClusterRecord.GroupIndex = SourceCluster.GroupIndex;
-        ClusterRecord.GeneratingGroupIndex = SourceCluster.GeneratingGroupIndex;
-        ClusterRecord.DrawDataStart = SourceCluster.DrawDataStart;
-        ClusterRecord.DrawDataCount = SourceCluster.DrawDataCount;
-        ClusterRecord.TriangleCount = SourceCluster.TriangleCount;
-        ClusterRecord.MipLevel = SourceCluster.MipLevel;
-        ClusterRecords.push_back(ClusterRecord);
+        FClusterDagGpuPageClusterData ClusterData;
+        ClusterData.GlobalClusterIndex = SourceCluster.GlobalClusterIndex;
+        std::memcpy(ClusterData.Bounds, SourceCluster.Bounds, sizeof(ClusterData.Bounds));
+        std::memcpy(ClusterData.LodBounds, SourceCluster.LodBounds, sizeof(ClusterData.LodBounds));
+        ClusterData.LODError = SourceCluster.LODError;
+        ClusterData.MaxEdgeLength = SourceCluster.MaxEdgeLength;
+        ClusterData.GroupIndex = SourceCluster.GroupIndex;
+        ClusterData.GeneratingGroupIndex = SourceCluster.GeneratingGroupIndex;
+        ClusterData.DrawDataStart = SourceCluster.DrawDataStart;
+        ClusterData.DrawDataCount = SourceCluster.DrawDataCount;
+        ClusterData.TriangleCount = SourceCluster.TriangleCount;
+        ClusterData.MipLevel = SourceCluster.MipLevel;
+        ClusterDatas.push_back(ClusterData);
     }
 
-    std::vector<FClusterDagGpuPageDrawDataRecord> DrawDataRecords;
-    DrawDataRecords.reserve(Source.ScenePageDrawDatas.size());
-    for (const FClusterDagStreamingPageSource::FSceneDrawDataRecord& SourceDrawData : Source.ScenePageDrawDatas)
+    std::vector<FClusterDagGpuPageDrawData> DrawDatas;
+    DrawDatas.reserve(Source.ScenePageDrawDatas.size());
+    for (const FClusterDagStreamingPageSource::FDrawData& SourceDrawData : Source.ScenePageDrawDatas)
     {
-        FClusterDagGpuPageDrawDataRecord DrawDataRecord;
-        DrawDataRecord.GlobalDrawDataIndex = SourceDrawData.GlobalDrawDataIndex;
-        DrawDataRecord.StartIndex = SourceDrawData.StartIndex;
-        DrawDataRecord.IndexCount = SourceDrawData.IndexCount;
-        DrawDataRecord.RangeIndex = SourceDrawData.RangeIndex;
-        DrawDataRecord.RangeCommandStart = SourceDrawData.RangeCommandStart;
-        DrawDataRecord.RangeCommandCount = SourceDrawData.RangeCommandCount;
-        DrawDataRecord.DrawSectionIndex = SourceDrawData.DrawSectionIndex;
-        DrawDataRecords.push_back(DrawDataRecord);
+        FClusterDagGpuPageDrawData DrawData;
+        DrawData.GlobalDrawDataIndex = SourceDrawData.GlobalDrawDataIndex;
+        DrawData.StartIndex = SourceDrawData.StartIndex;
+        DrawData.IndexCount = SourceDrawData.IndexCount;
+        DrawData.RangeIndex = SourceDrawData.RangeIndex;
+        DrawData.RangeCommandStart = SourceDrawData.RangeCommandStart;
+        DrawData.RangeCommandCount = SourceDrawData.RangeCommandCount;
+        DrawData.DrawSectionIndex = SourceDrawData.DrawSectionIndex;
+        DrawDatas.push_back(DrawData);
     }
 
     FClusterDagGpuPagePayloadHeader Header;
@@ -230,16 +230,16 @@ bool FClusterDagStreamingManager::BuildGpuPagePayload(
     Header.GroupByteOffset = sizeof(FClusterDagGpuPagePayloadHeader);
     Header.ChildRefByteOffset = AlignUpUint32(Header.GroupByteOffset + sizeof(FClusterDagGpuPageGroupData), 16u);
     Header.ChildRefCount = static_cast<uint32_t>(Source.SceneGroupChildRefs.size());
-    Header.ClusterRecordByteOffset = AlignUpUint32(
+    Header.ClusterDataByteOffset = AlignUpUint32(
         Header.ChildRefByteOffset + Header.ChildRefCount * static_cast<uint32_t>(sizeof(FRuntimeClusterChildRef)),
         16u);
-    Header.ClusterRecordCount = static_cast<uint32_t>(ClusterRecords.size());
-    Header.DrawDataRecordByteOffset = AlignUpUint32(
-        Header.ClusterRecordByteOffset + Header.ClusterRecordCount * static_cast<uint32_t>(sizeof(FClusterDagGpuPageClusterRecord)),
+    Header.ClusterDataCount = static_cast<uint32_t>(ClusterDatas.size());
+    Header.DrawDataByteOffset = AlignUpUint32(
+        Header.ClusterDataByteOffset + Header.ClusterDataCount * static_cast<uint32_t>(sizeof(FClusterDagGpuPageClusterData)),
         16u);
-    Header.DrawDataRecordCount = static_cast<uint32_t>(DrawDataRecords.size());
+    Header.DrawDataCount = static_cast<uint32_t>(DrawDatas.size());
     Header.PackedIndexByteOffset = AlignUpUint32(
-        Header.DrawDataRecordByteOffset + Header.DrawDataRecordCount * static_cast<uint32_t>(sizeof(FClusterDagGpuPageDrawDataRecord)),
+        Header.DrawDataByteOffset + Header.DrawDataCount * static_cast<uint32_t>(sizeof(FClusterDagGpuPageDrawData)),
         16u);
     Header.PackedIndexCount = static_cast<uint32_t>(Source.ScenePagePackedIndices.size());
     Header.PackedPositionByteOffset = AlignUpUint32(
@@ -278,19 +278,19 @@ bool FClusterDagStreamingManager::BuildGpuPagePayload(
         OutPayload.data() + Header.ChildRefByteOffset,
         Source.SceneGroupChildRefs.data(),
         static_cast<size_t>(Header.ChildRefCount) * sizeof(FRuntimeClusterChildRef));
-    if (!ClusterRecords.empty())
+    if (!ClusterDatas.empty())
     {
         std::memcpy(
-            OutPayload.data() + Header.ClusterRecordByteOffset,
-            ClusterRecords.data(),
-            ClusterRecords.size() * sizeof(FClusterDagGpuPageClusterRecord));
+            OutPayload.data() + Header.ClusterDataByteOffset,
+            ClusterDatas.data(),
+            ClusterDatas.size() * sizeof(FClusterDagGpuPageClusterData));
     }
-    if (!DrawDataRecords.empty())
+    if (!DrawDatas.empty())
     {
         std::memcpy(
-            OutPayload.data() + Header.DrawDataRecordByteOffset,
-            DrawDataRecords.data(),
-            DrawDataRecords.size() * sizeof(FClusterDagGpuPageDrawDataRecord));
+            OutPayload.data() + Header.DrawDataByteOffset,
+            DrawDatas.data(),
+            DrawDatas.size() * sizeof(FClusterDagGpuPageDrawData));
     }
     if (!Source.ScenePagePackedIndices.empty())
     {

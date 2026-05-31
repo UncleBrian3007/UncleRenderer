@@ -74,6 +74,7 @@ private:
     // ImGui
     bool InitializeImGui(int32_t Width, int32_t Height);
     void ShutdownImGui();
+    void ShutdownGraphics();
     void RenderUI();
     bool EnsureImGuiFontAtlas();
 

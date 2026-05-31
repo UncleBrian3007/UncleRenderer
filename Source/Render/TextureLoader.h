@@ -42,6 +42,7 @@ public:
      * @return True if all textures loaded successfully
      */
     bool LoadTexturesParallel(std::vector<FTextureLoadRequest>& Requests);
+    static void ClearGlobalCache();
 
 private:
     bool TryGetCachedTexture(const std::wstring& TexturePath, Microsoft::WRL::ComPtr<ID3D12Resource>& OutTexture) const;

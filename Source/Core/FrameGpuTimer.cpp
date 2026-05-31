@@ -57,6 +57,14 @@ void FFrameGpuTimer::OnFenceSignaled(uint32_t BackBufferIndex, uint64_t FenceVal
     }
 }
 
+void FFrameGpuTimer::Reset()
+{
+    QueryHeap.Reset();
+    Readback.Reset();
+    FenceValues.clear();
+    Frequency = 0;
+}
+
 void FFrameGpuTimer::EnsureResources(ID3D12Device* Device, uint32_t BackBufferCount)
 {
     if (!Device || (IsReady() && FenceValues.size() == BackBufferCount))

@@ -60,7 +60,7 @@ void ClusterDagLevelSplitClusterCullCS(uint3 dispatchThreadId : SV_DispatchThrea
     if (clusterIndex < ClusterCount)
 #endif
     {
-        const ClusterDagClusterData cluster = LoadClusterDagCluster(clusterIndex, usePagedCandidate, candidateEntry.PageDataBase, Clusters, PageData);
+        const ClusterDagClusterData cluster = LoadClusterDagCluster(clusterIndex, candidateEntry.PageLocalClusterIndex, usePagedCandidate, candidateEntry.PageDataBase, Clusters, PageData);
         const bool rasterizeSW = ShouldRasterizeClusterSW(cluster);
         TrackLevelSplitVisibleClusterDagCandidate(QueueState);
         RecordVisibleCluster(DebugPrintStatsIndex, cluster.MipLevel);
@@ -69,19 +69,33 @@ void ClusterDagLevelSplitClusterCullCS(uint3 dispatchThreadId : SV_DispatchThrea
         [loop]
         for (uint packetOffset = 0u; packetOffset < cluster.DrawDataCount; ++packetOffset)
         {
-            const uint drawDataIndex = cluster.DrawDataStart + packetOffset;
+            const uint pageLocalDrawDataIndex = cluster.DrawDataStart + packetOffset;
+            uint drawDataIndex = pageLocalDrawDataIndex;
+#if !USE_CLUSTER_DAG_FAST
+            if (!usePagedCandidate && drawDataIndex >= DrawDataCount)
+            {
+                continue;
+            }
+#endif
+
+            uint resolvedDrawDataIndex = 0xffffffffu;
+            const ClusterDagDrawData drawData = LoadClusterDagDrawData(drawDataIndex, pageLocalDrawDataIndex, usePagedCandidate, candidateEntry.PageDataBase, DrawDatas, PageData, resolvedDrawDataIndex);
+            drawDataIndex = resolvedDrawDataIndex;
+            if (drawDataIndex == 0xffffffffu)
+            {
+                continue;
+            }
 #if !USE_CLUSTER_DAG_FAST
             if (drawDataIndex >= DrawDataCount)
             {
                 continue;
             }
 #endif
-
-            const ClusterDagDrawData drawData = LoadClusterDagDrawData(drawDataIndex, usePagedCandidate, candidateEntry.PageDataBase, DrawDatas, PageData);
             ReserveClusterDagVisibleEntry(
                 clusterIndex,
                 drawDataIndex,
                 usePagedCandidate ? candidateEntry.PageDataBase : 0xffffffffu,
+                usePagedCandidate ? pageLocalDrawDataIndex : 0xffffffffu,
                 rasterizeSW,
                 VisibleEntries,
                 VisibleEntryCounters,

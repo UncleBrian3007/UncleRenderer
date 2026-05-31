@@ -883,6 +883,11 @@ bool FGltfLoader::LoadSceneFromFile(const std::wstring& FilePath, FGltfScene& Ou
             {
                 LogInfo("Saved Cluster DAG cache: " + StringUtils::WideToUtf8(ClusterDAGCachePath));
             }
+
+            for (FMesh& Mesh : LoadedMeshes)
+            {
+                Mesh.ReleaseClusterDAGAuthoringData();
+            }
         }
     }
     else

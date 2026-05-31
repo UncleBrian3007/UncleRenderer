@@ -638,9 +638,8 @@ namespace
         ClusterDagCachePath.replace_extension(L".vmesh");
         InOutMeshSection.ClusterDagCacheFilePath = ClusterDagCachePath.wstring();
         InOutMeshSection.bUseClusterDagRuntime =
-            ClusterDAG->HasRuntimeHierarchy()
-            && Inputs.bWholeMeshClusterDagRuntimeAllowed
-            && !ClusterDAG->RuntimeHierarchy.PackedIndices.empty();
+            ClusterDAG->HasRuntimePayload()
+            && Inputs.bWholeMeshClusterDagRuntimeAllowed;
         InOutMeshSection.ClusterDagRuntimeHierarchy = ClusterDAG->RuntimeHierarchy;
 
         if (!InOutMeshSection.bUseClusterDagRuntime)
@@ -946,9 +945,8 @@ bool SceneWorldBuilder::LoadWorldFromSceneFile(
             const FClusterDAG* WholeMeshClusterDAG = Mesh.GetClusterDAG();
             bool bWholeMeshClusterDagRuntimeAllowed =
                 WholeMeshClusterDAG
-                && WholeMeshClusterDAG->HasRuntimeHierarchy()
-                && LoadedNode.SkinIndex < 0
-                && !WholeMeshClusterDAG->RuntimeHierarchy.PackedIndices.empty();
+                && WholeMeshClusterDAG->HasRuntimePayload()
+                && LoadedNode.SkinIndex < 0;
             for (const FGltfPrimitiveSection& Section : *PrimitiveSections)
             {
                 if (Section.Material.bAlphaBlend)

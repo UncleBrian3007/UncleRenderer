@@ -65,6 +65,7 @@ struct ClusterDagCandidateClusterEntry
 {
     uint ClusterIndex;
     uint PageDataBase;
+    uint PageLocalClusterIndex;
 };
 
 struct ClusterDagStreamingRequest
@@ -178,20 +179,20 @@ bool TryLoadClusterDagVisibleEntryDrawData(
         return false;
     }
 
-    const uint drawDataRecordBase = PageData.Load(visibleEntry.PageDataBase + kClusterDagGpuPageHeaderDrawDataRecordByteOffsetOffset);
-    const uint drawDataRecordCount = PageData.Load(visibleEntry.PageDataBase + kClusterDagGpuPageHeaderDrawDataRecordCountOffset);
-    [loop]
-    for (uint recordIndex = 0u; recordIndex < drawDataRecordCount; ++recordIndex)
+    const uint drawDataBase = PageData.Load(visibleEntry.PageDataBase + kClusterDagGpuPageHeaderDrawDataByteOffsetOffset);
+    const uint drawDataCount = PageData.Load(visibleEntry.PageDataBase + kClusterDagGpuPageHeaderDrawDataCountOffset);
+    const uint dataIndex = visibleEntry.Reserved;
+    if (dataIndex < drawDataCount)
     {
-        const uint recordBase = visibleEntry.PageDataBase + drawDataRecordBase + recordIndex * kClusterDagGpuPageDrawDataRecordStride;
-        if (PageData.Load(recordBase + kClusterDagGpuPageDrawDataRecordGlobalDrawDataIndexOffset) == drawDataIndex)
+        const uint dataBase = visibleEntry.PageDataBase + drawDataBase + dataIndex * kClusterDagGpuPageDrawDataStride;
+        if (PageData.Load(dataBase + kClusterDagGpuPageDrawDataGlobalDrawDataIndexOffset) == drawDataIndex)
         {
-            drawData.StartIndex = PageData.Load(recordBase + kClusterDagGpuPageDrawDataRecordStartIndexOffset);
-            drawData.IndexCount = PageData.Load(recordBase + kClusterDagGpuPageDrawDataRecordIndexCountOffset);
-            drawData.RangeIndex = PageData.Load(recordBase + kClusterDagGpuPageDrawDataRecordRangeIndexOffset);
-            drawData.RangeCommandStart = PageData.Load(recordBase + kClusterDagGpuPageDrawDataRecordRangeCommandStartOffset);
-            drawData.RangeCommandCount = PageData.Load(recordBase + kClusterDagGpuPageDrawDataRecordRangeCommandCountOffset);
-            drawData.DrawSectionIndex = PageData.Load(recordBase + kClusterDagGpuPageDrawDataRecordDrawSectionIndexOffset);
+            drawData.StartIndex = PageData.Load(dataBase + kClusterDagGpuPageDrawDataStartIndexOffset);
+            drawData.IndexCount = PageData.Load(dataBase + kClusterDagGpuPageDrawDataIndexCountOffset);
+            drawData.RangeIndex = PageData.Load(dataBase + kClusterDagGpuPageDrawDataRangeIndexOffset);
+            drawData.RangeCommandStart = PageData.Load(dataBase + kClusterDagGpuPageDrawDataRangeCommandStartOffset);
+            drawData.RangeCommandCount = PageData.Load(dataBase + kClusterDagGpuPageDrawDataRangeCommandCountOffset);
+            drawData.DrawSectionIndex = PageData.Load(dataBase + kClusterDagGpuPageDrawDataDrawSectionIndexOffset);
             return true;
         }
     }

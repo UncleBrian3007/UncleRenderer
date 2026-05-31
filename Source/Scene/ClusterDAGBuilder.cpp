@@ -32,8 +32,8 @@
 
 namespace
 {
-    constexpr uint32_t GVmeshVersion = 23;
-    constexpr uint32_t GClusterDAGBuildSemanticVersion = 12;
+    constexpr uint32_t GVmeshVersion = 26;
+    constexpr uint32_t GClusterDAGBuildSemanticVersion = 15;
     constexpr size_t GAttributeFloatCount = 5;
     constexpr uint32_t GClusterDAGMinGroupSize = 8;
     constexpr uint32_t GClusterDAGMaxGroupSize = 32;
@@ -58,17 +58,6 @@ namespace
 
     struct FVmeshDagHeader
     {
-        uint32_t ClusterCount = 0;
-        uint32_t GroupCount = 0;
-        uint32_t PositionCount = 0;
-        uint32_t NormalCount = 0;
-        uint32_t UVCount = 0;
-        uint32_t TangentCount = 0;
-        uint32_t ColorCount = 0;
-        uint32_t VertexSectionIndexCount = 0;
-        uint32_t TriangleIndexCount = 0;
-        uint32_t ExternalEdgeCount = 0;
-        uint32_t ClusterVertexCount = 0;
         uint32_t RuntimeGroupCount = 0;
         uint32_t RuntimeClusterCount = 0;
         uint32_t RuntimeChildRefCount = 0;
@@ -80,7 +69,6 @@ namespace
         uint32_t PackedTangentCount = 0;
         uint32_t PackedColorCount = 0;
         uint32_t RuntimeRootGroupIndex = GClusterDAGInvalidIndex;
-        uint32_t RootGroupIndex = GClusterDAGInvalidIndex;
         FFloat4 PackedPositionOffset{ 0.0f, 0.0f, 0.0f, 0.0f };
         FFloat4 PackedPositionScale{ 1.0f, 1.0f, 1.0f, 0.0f };
         FFloat4 PackedConstantUV{ 0.0f, 0.0f, 0.0f, 0.0f };
@@ -880,6 +868,67 @@ namespace
         return true;
     }
 
+    void LogRuntimeClusterHierarchyDiagnostics(const FRuntimeClusterHierarchy& Runtime)
+    {
+        uint64_t ChildRefTotal = 0;
+        uint64_t ParentRefTotal = 0;
+        for (const FRuntimeClusterGroup& Group : Runtime.Groups)
+        {
+            ChildRefTotal += Group.ChildRefCount;
+            ParentRefTotal += Group.ParentRefCount;
+        }
+
+        uint64_t DrawDataTotal = 0;
+        uint64_t TriangleTotal = 0;
+        uint32_t MaxClusterMip = 0;
+        for (const FRuntimeCluster& Cluster : Runtime.Clusters)
+        {
+            DrawDataTotal += Cluster.DrawDataCount;
+            TriangleTotal += Cluster.TriangleCount;
+            MaxClusterMip = (std::max)(MaxClusterMip, Cluster.MipLevel);
+        }
+
+        uint64_t IndexTotal = 0;
+        for (const FRuntimeClusterDrawData& DrawData : Runtime.DrawDatas)
+        {
+            IndexTotal += DrawData.IndexCount;
+        }
+
+        std::vector<uint32_t> ClustersPerMip(MaxClusterMip + 1u, 0u);
+        for (const FRuntimeCluster& Cluster : Runtime.Clusters)
+        {
+            ++ClustersPerMip[Cluster.MipLevel];
+        }
+
+        LogInfo("ClusterDAG runtime hierarchy: groups=" + std::to_string(Runtime.Groups.size())
+            + ", clusters=" + std::to_string(Runtime.Clusters.size())
+            + ", childRefs=" + std::to_string(Runtime.ChildRefs.size())
+            + " (child=" + std::to_string(ChildRefTotal) + ", parent=" + std::to_string(ParentRefTotal) + ")"
+            + ", drawDatas=" + std::to_string(Runtime.DrawDatas.size())
+            + ", packedIndices=" + std::to_string(Runtime.PackedIndices.size())
+            + " (triangles=" + std::to_string(TriangleTotal) + ")");
+
+        std::string MipHistogram;
+        for (uint32_t Mip = 0; Mip <= MaxClusterMip; ++Mip)
+        {
+            MipHistogram += (Mip == 0 ? "" : ", ") + ("mip" + std::to_string(Mip) + "=" + std::to_string(ClustersPerMip[Mip]));
+        }
+        LogInfo("ClusterDAG runtime clusters per mip: " + MipHistogram);
+
+        const bool bRefsOk = (ChildRefTotal + ParentRefTotal) == Runtime.ChildRefs.size();
+        const bool bDrawOk = DrawDataTotal == Runtime.DrawDatas.size();
+        const bool bIndexOk = IndexTotal == Runtime.PackedIndices.size();
+        const bool bTriOk = (TriangleTotal * 3u) == Runtime.PackedIndices.size();
+        if (!bRefsOk || !bDrawOk || !bIndexOk || !bTriOk)
+        {
+            LogWarning(std::string("ClusterDAG runtime hierarchy invariant mismatch:")
+                + (bRefsOk ? "" : " childRefs!=child+parent")
+                + (bDrawOk ? "" : " drawDatas!=sum(DrawDataCount)")
+                + (bIndexOk ? "" : " packedIndices!=sum(IndexCount)")
+                + (bTriOk ? "" : " packedIndices!=3*triangles"));
+        }
+    }
+
     void EncodeRuntimeClusterHierarchy(FClusterDAG& Dag)
     {
         Dag.RuntimeHierarchy = {};
@@ -948,7 +997,10 @@ namespace
         if (!RebuildRuntimeClusterDrawData(Dag))
         {
             Dag.RuntimeHierarchy = {};
+            return;
         }
+
+        LogRuntimeClusterHierarchyDiagnostics(Runtime);
     }
 
     uint64_t MakeUndirectedEdgeKey(uint32_t A, uint32_t B)
@@ -1938,6 +1990,87 @@ namespace
             << ", worstClusterIndex=" << WorstClusterIndex);
     }
 
+    bool FinalizeRootDAG(
+        size_t PrimitiveIndex,
+        const char* CompletionReason,
+        const std::vector<uint32_t>& CurrentClusters,
+        size_t CurrentTriangleCount,
+        FBuildState& State,
+        FClusterDAG& OutDag)
+    {
+        if (CurrentClusters.empty())
+        {
+            CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "no root clusters remained after reduction.");
+            return false;
+        }
+
+        if (CurrentClusters.size() > GClusterDAGMaxRootChildRefs)
+        {
+            CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "failed to close root group" << ", reason=root_child_ref_budget_exceeded" << ", remainingClusters=" << CurrentClusters.size() << ", maxRootChildRefs=" << GClusterDAGMaxRootChildRefs << ", completionReason=" << CompletionReason);
+            return false;
+        }
+
+        if (CurrentClusters.size() != 1)
+        {
+            CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "closing multi-child root" << ", reason=" << CompletionReason << ", rootChildren=" << CurrentClusters.size() << ", maxRootChildRefs=" << GClusterDAGMaxRootChildRefs << ", currentTriangles=" << CurrentTriangleCount);
+        }
+
+        FClusterGroup RootGroup;
+        const FGroupSphere RootBoundsSphere = BuildGroupSphere(State.Dag, CurrentClusters, false);
+        const FGroupSphere RootSphere = BuildGroupSphere(State.Dag, CurrentClusters, true);
+        RootGroup.ChildRefs = MakeClusterRefs(CurrentClusters);
+        RootGroup.BoundsCenter = RootBoundsSphere.Center;
+        RootGroup.BoundsRadius = RootBoundsSphere.Radius;
+        RootGroup.LodBoundsCenter = RootSphere.Center;
+        RootGroup.LodBoundsRadius = RootSphere.Radius;
+        RootGroup.ParentLODError = 1e10f;
+        RootGroup.MipLevel = 0;
+        RootGroup.bRoot = true;
+
+        for (uint32_t ClusterIndex : CurrentClusters)
+        {
+            RootGroup.MipLevel = (std::max)(RootGroup.MipLevel, State.Dag.Clusters[ClusterIndex].MipLevel);
+        }
+
+        const uint32_t RootGroupIndex = static_cast<uint32_t>(State.Dag.Groups.size());
+        State.Dag.Groups.push_back(std::move(RootGroup));
+        for (uint32_t ClusterIndex : CurrentClusters)
+        {
+            State.Dag.Clusters[ClusterIndex].GroupIndex = RootGroupIndex;
+        }
+
+        OutDag = std::move(State.Dag);
+        OutDag.RootGroupIndex = RootGroupIndex;
+
+        if (!ValidateMonotonicErrors(OutDag))
+        {
+            CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "ValidateMonotonicErrors failed; discarding DAG.");
+            OutDag = {};
+            return false;
+        }
+
+        if (!ValidateGroupSphereCoverage(PrimitiveIndex, OutDag))
+        {
+            CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "ValidateGroupSphereCoverage failed; discarding DAG.");
+            OutDag = {};
+            return false;
+        }
+
+        LogLeafLodBoundsDiagnostics(PrimitiveIndex, OutDag);
+
+        EncodeRuntimeClusterHierarchy(OutDag);
+        if (!OutDag.HasRuntimeHierarchy())
+        {
+            CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "EncodeRuntimeClusterHierarchy failed; discarding DAG.");
+            OutDag = {};
+            return false;
+        }
+
+        CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "completed" << ", reason=" << CompletionReason << ", rootGroupIndex=" << OutDag.RootGroupIndex << ", rootChildren=" << OutDag.Groups[OutDag.RootGroupIndex].ChildRefs.size() << ", clusters=" << OutDag.Clusters.size() << ", groups=" << OutDag.Groups.size() << ", runtimeClusters=" << OutDag.RuntimeHierarchy.Clusters.size() << ", runtimeGroups=" << OutDag.RuntimeHierarchy.Groups.size() << ", sharedVertices=" << OutDag.Positions.size() << ", sharedTriangles=" << (OutDag.TriangleIndices.size() / 3));
+
+        return OutDag.IsValid();
+    }
+
     bool BuildClusterDAGForGeometry(size_t PrimitiveIndex, const FBuilderVertexStreams& InputStreams, const std::vector<uint32_t>& InputIndices, const FClusterDAGBuildParams& Params, FClusterDAG& OutDag)
     {
 
@@ -2025,80 +2158,6 @@ namespace
         }
 
         size_t CurrentTriangleCount = BaseIndices.size() / 3;
-        auto FinalizeRootDAG = [&](const char* CompletionReason) -> bool
-        {
-            if (CurrentClusters.empty())
-            {
-                CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "no root clusters remained after reduction.");
-                return false;
-            }
-
-            if (CurrentClusters.size() > GClusterDAGMaxRootChildRefs)
-            {
-                CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "failed to close root group" << ", reason=root_child_ref_budget_exceeded" << ", remainingClusters=" << CurrentClusters.size() << ", maxRootChildRefs=" << GClusterDAGMaxRootChildRefs << ", completionReason=" << CompletionReason);
-                return false;
-            }
-
-            if (CurrentClusters.size() != 1)
-            {
-                CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "closing multi-child root" << ", reason=" << CompletionReason << ", rootChildren=" << CurrentClusters.size() << ", maxRootChildRefs=" << GClusterDAGMaxRootChildRefs << ", currentTriangles=" << CurrentTriangleCount);
-            }
-
-            FClusterGroup RootGroup;
-            const FGroupSphere RootBoundsSphere = BuildGroupSphere(State.Dag, CurrentClusters, false);
-            const FGroupSphere RootSphere = BuildGroupSphere(State.Dag, CurrentClusters, true);
-            RootGroup.ChildRefs = MakeClusterRefs(CurrentClusters);
-            RootGroup.BoundsCenter = RootBoundsSphere.Center;
-            RootGroup.BoundsRadius = RootBoundsSphere.Radius;
-            RootGroup.LodBoundsCenter = RootSphere.Center;
-            RootGroup.LodBoundsRadius = RootSphere.Radius;
-            RootGroup.ParentLODError = 1e10f;
-            RootGroup.MipLevel = 0;
-            RootGroup.bRoot = true;
-
-            for (uint32_t ClusterIndex : CurrentClusters)
-            {
-                RootGroup.MipLevel = (std::max)(RootGroup.MipLevel, State.Dag.Clusters[ClusterIndex].MipLevel);
-            }
-
-            const uint32_t RootGroupIndex = static_cast<uint32_t>(State.Dag.Groups.size());
-            State.Dag.Groups.push_back(std::move(RootGroup));
-            for (uint32_t ClusterIndex : CurrentClusters)
-            {
-                State.Dag.Clusters[ClusterIndex].GroupIndex = RootGroupIndex;
-            }
-
-            OutDag = std::move(State.Dag);
-            OutDag.RootGroupIndex = RootGroupIndex;
-
-            if (!ValidateMonotonicErrors(OutDag))
-            {
-                CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "ValidateMonotonicErrors failed; discarding DAG.");
-                OutDag = {};
-                return false;
-            }
-
-            if (!ValidateGroupSphereCoverage(PrimitiveIndex, OutDag))
-            {
-                CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "ValidateGroupSphereCoverage failed; discarding DAG.");
-                OutDag = {};
-                return false;
-            }
-
-            LogLeafLodBoundsDiagnostics(PrimitiveIndex, OutDag);
-
-            EncodeRuntimeClusterHierarchy(OutDag);
-            if (!OutDag.HasRuntimeHierarchy())
-            {
-                CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "EncodeRuntimeClusterHierarchy failed; discarding DAG.");
-                OutDag = {};
-                return false;
-            }
-
-            CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "completed" << ", reason=" << CompletionReason << ", rootGroupIndex=" << OutDag.RootGroupIndex << ", rootChildren=" << OutDag.Groups[OutDag.RootGroupIndex].ChildRefs.size() << ", clusters=" << OutDag.Clusters.size() << ", groups=" << OutDag.Groups.size() << ", runtimeClusters=" << OutDag.RuntimeHierarchy.Clusters.size() << ", runtimeGroups=" << OutDag.RuntimeHierarchy.Groups.size() << ", sharedVertices=" << OutDag.Positions.size() << ", sharedTriangles=" << (OutDag.TriangleIndices.size() / 3));
-
-            return OutDag.IsValid();
-        };
 
         for (uint32_t Level = 1; Level < Params.MaxLevels && CurrentClusters.size() > 1; ++Level)
         {
@@ -2267,7 +2326,7 @@ namespace
                 }
 
                 CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "Level " << Level << " closing multi-child root before committing level" << ", reason=" << RootCloseReason << ", closeInputClusters=" << CurrentClusters.size() << ", maxRootChildRefs=" << GClusterDAGMaxRootChildRefs << ", triggerGroup=" << RootCloseTriggerGroup << ", sourceTriangles=" << RootCloseSourceTriangleCount << ", desiredParents=" << RootCloseDesiredParentCount << ", predictedParents=" << RootClosePredictedParentCount << ", relativeError=" << FormatFloat(RootCloseRelativeError) << ", simplifyError=" << FormatFloat(RootCloseSimplifyError));
-                return FinalizeRootDAG(RootCloseReason);
+                return FinalizeRootDAG(PrimitiveIndex, RootCloseReason, CurrentClusters, CurrentTriangleCount, State, OutDag);
             }
 
             std::vector<uint32_t> NextClusters;
@@ -2361,7 +2420,13 @@ namespace
             CLUSTER_DAG_LOG_INFO(PrimitiveIndex, "Level " << Level << " complete" << ", outputClusters=" << CurrentClusters.size() << ", outputTriangles=" << CurrentTriangleCount << ", totalDagClusters=" << State.Dag.Clusters.size() << ", totalDagGroups=" << State.Dag.Groups.size());
         }
 
-        return FinalizeRootDAG(CurrentClusters.size() == 1 ? "single_root_converged" : "max_levels_or_convergence_floor");
+        return FinalizeRootDAG(
+            PrimitiveIndex,
+            CurrentClusters.size() == 1 ? "single_root_converged" : "max_levels_or_convergence_floor",
+            CurrentClusters,
+            CurrentTriangleCount,
+            State,
+            OutDag);
 #else
         CLUSTER_DAG_LOG_WARNING(PrimitiveIndex, "meshoptimizer is unavailable; builder is disabled.");
         (void)InputStreams;
@@ -2762,29 +2827,17 @@ namespace
     void FillVmeshDagHeader(const FClusterDAG& Dag, const FClusterDAGPackedVertexData& PackedVertexData, FVmeshDagHeader& OutHeader)
     {
         OutHeader = {};
-        OutHeader.ClusterCount = static_cast<uint32_t>(Dag.Clusters.size());
-        OutHeader.GroupCount = static_cast<uint32_t>(Dag.Groups.size());
-        OutHeader.PositionCount = 0;
-        OutHeader.NormalCount = 0;
-        OutHeader.UVCount = 0;
-        OutHeader.TangentCount = 0;
-        OutHeader.ColorCount = 0;
-        OutHeader.VertexSectionIndexCount = static_cast<uint32_t>(Dag.VertexSectionIndices.size());
-        OutHeader.TriangleIndexCount = static_cast<uint32_t>(Dag.TriangleIndices.size());
-        OutHeader.ExternalEdgeCount = static_cast<uint32_t>(Dag.ExternalEdges.size());
-        OutHeader.ClusterVertexCount = static_cast<uint32_t>(Dag.ClusterVertices.size());
         OutHeader.RuntimeGroupCount = static_cast<uint32_t>(Dag.RuntimeHierarchy.Groups.size());
         OutHeader.RuntimeClusterCount = static_cast<uint32_t>(Dag.RuntimeHierarchy.Clusters.size());
         OutHeader.RuntimeChildRefCount = static_cast<uint32_t>(Dag.RuntimeHierarchy.ChildRefs.size());
         OutHeader.RuntimeDrawDataCount = static_cast<uint32_t>(Dag.RuntimeHierarchy.DrawDatas.size());
-        OutHeader.RuntimePackedIndexCount = 0;
+        OutHeader.RuntimePackedIndexCount = static_cast<uint32_t>(Dag.RuntimeHierarchy.PackedIndices.size());
         OutHeader.PackedPositionCount = static_cast<uint32_t>(PackedVertexData.Positions.size());
         OutHeader.PackedNormalCount = static_cast<uint32_t>(PackedVertexData.Normals.size());
         OutHeader.PackedUVCount = static_cast<uint32_t>(PackedVertexData.UVs.size());
         OutHeader.PackedTangentCount = static_cast<uint32_t>(PackedVertexData.Tangents.size());
         OutHeader.PackedColorCount = static_cast<uint32_t>(PackedVertexData.Colors.size());
         OutHeader.RuntimeRootGroupIndex = Dag.RuntimeHierarchy.RootGroupIndex;
-        OutHeader.RootGroupIndex = Dag.RootGroupIndex;
         OutHeader.PackedPositionOffset = PackedVertexData.PositionOffset;
         OutHeader.PackedPositionScale = PackedVertexData.PositionScale;
         OutHeader.PackedConstantUV = FFloat4(PackedVertexData.ConstantUV.x, PackedVertexData.ConstantUV.y, 0.0f, 0.0f);
@@ -2793,24 +2846,11 @@ namespace
 
     bool WriteClusterDAGPayload(std::ostream& Stream, const FClusterDAG& Dag, const FClusterDAGPackedVertexData& PackedVertexData)
     {
-        static const std::vector<FFloat3> EmptyFloat3s;
-        static const std::vector<FFloat2> EmptyFloat2s;
-        static const std::vector<FFloat4> EmptyFloat4s;
-
-        if (!WritePodVector(Stream, Dag.Clusters)
-            || !WritePodVector(Stream, EmptyFloat3s)
-            || !WritePodVector(Stream, EmptyFloat3s)
-            || !WritePodVector(Stream, EmptyFloat2s)
-            || !WritePodVector(Stream, EmptyFloat4s)
-            || !WritePodVector(Stream, EmptyFloat4s)
-            || !WritePodVector(Stream, Dag.VertexSectionIndices)
-            || !WritePodVector(Stream, Dag.TriangleIndices)
-            || !WritePodVector(Stream, Dag.ExternalEdges)
-            || !WritePodVector(Stream, Dag.ClusterVertices)
-            || !WritePodVector(Stream, Dag.RuntimeHierarchy.Groups)
+        if (!WritePodVector(Stream, Dag.RuntimeHierarchy.Groups)
             || !WritePodVector(Stream, Dag.RuntimeHierarchy.Clusters)
             || !WritePodVector(Stream, Dag.RuntimeHierarchy.ChildRefs)
             || !WritePodVector(Stream, Dag.RuntimeHierarchy.DrawDatas)
+            || !WritePodVector(Stream, Dag.RuntimeHierarchy.PackedIndices)
             || !WritePodVector(Stream, PackedVertexData.Positions)
             || !WritePodVector(Stream, PackedVertexData.Normals)
             || !WritePodVector(Stream, PackedVertexData.UVs)
@@ -2820,43 +2860,17 @@ namespace
             return false;
         }
 
-        for (const FClusterGroup& Group : Dag.Groups)
-        {
-            const uint32_t ChildCount = static_cast<uint32_t>(Group.ChildRefs.size());
-            if (!WriteValue(Stream, Group.BoundsCenter)
-                || !WriteValue(Stream, Group.BoundsRadius)
-                || !WriteValue(Stream, Group.LodBoundsCenter)
-                || !WriteValue(Stream, Group.LodBoundsRadius)
-                || !WriteValue(Stream, Group.ParentLODError)
-                || !WriteValue(Stream, Group.MipLevel)
-                || !WriteValue(Stream, Group.bRoot)
-                || !WriteValue(Stream, ChildCount)
-                || !WritePodVector(Stream, Group.ChildRefs))
-            {
-                return false;
-            }
-        }
-
         return Stream.good();
     }
 
     bool ReadClusterDAGPayload(std::istream& Stream, const FVmeshDagHeader& DagHeader, FClusterDAG& Dag)
     {
-        Dag.RootGroupIndex = DagHeader.RootGroupIndex;
-        if (!ReadPodVector(Stream, Dag.Clusters, DagHeader.ClusterCount)
-            || !ReadPodVector(Stream, Dag.Positions, DagHeader.PositionCount)
-            || !ReadPodVector(Stream, Dag.Normals, DagHeader.NormalCount)
-            || !ReadPodVector(Stream, Dag.UVs, DagHeader.UVCount)
-            || !ReadPodVector(Stream, Dag.Tangents, DagHeader.TangentCount)
-            || !ReadPodVector(Stream, Dag.Colors, DagHeader.ColorCount)
-            || !ReadPodVector(Stream, Dag.VertexSectionIndices, DagHeader.VertexSectionIndexCount)
-            || !ReadPodVector(Stream, Dag.TriangleIndices, DagHeader.TriangleIndexCount)
-            || !ReadPodVector(Stream, Dag.ExternalEdges, DagHeader.ExternalEdgeCount)
-            || !ReadPodVector(Stream, Dag.ClusterVertices, DagHeader.ClusterVertexCount)
-            || !ReadPodVector(Stream, Dag.RuntimeHierarchy.Groups, DagHeader.RuntimeGroupCount)
+        Dag.RootGroupIndex = GClusterDAGInvalidIndex;
+        if (!ReadPodVector(Stream, Dag.RuntimeHierarchy.Groups, DagHeader.RuntimeGroupCount)
             || !ReadPodVector(Stream, Dag.RuntimeHierarchy.Clusters, DagHeader.RuntimeClusterCount)
             || !ReadPodVector(Stream, Dag.RuntimeHierarchy.ChildRefs, DagHeader.RuntimeChildRefCount)
             || !ReadPodVector(Stream, Dag.RuntimeHierarchy.DrawDatas, DagHeader.RuntimeDrawDataCount)
+            || !ReadPodVector(Stream, Dag.RuntimeHierarchy.PackedIndices, DagHeader.RuntimePackedIndexCount)
             || !ReadPodVector(Stream, Dag.PackedVertexData.Positions, DagHeader.PackedPositionCount)
             || !ReadPodVector(Stream, Dag.PackedVertexData.Normals, DagHeader.PackedNormalCount)
             || !ReadPodVector(Stream, Dag.PackedVertexData.UVs, DagHeader.PackedUVCount)
@@ -2871,33 +2885,6 @@ namespace
         Dag.PackedVertexData.PositionScale = DagHeader.PackedPositionScale;
         Dag.PackedVertexData.ConstantUV = FFloat2(DagHeader.PackedConstantUV.x, DagHeader.PackedConstantUV.y);
         Dag.PackedVertexData.ConstantColor = DagHeader.PackedConstantColor;
-        if (!Dag.PackedVertexData.IsValid() && !Dag.Positions.empty())
-        {
-            BuildClusterDAGPackedVertexData(Dag, Dag.PackedVertexData);
-        }
-        if (!RebuildRuntimeClusterDrawData(Dag))
-        {
-            return false;
-        }
-
-        Dag.Groups.resize(DagHeader.GroupCount);
-        for (uint32_t GroupIndex = 0; GroupIndex < DagHeader.GroupCount; ++GroupIndex)
-        {
-            FClusterGroup& Group = Dag.Groups[GroupIndex];
-            uint32_t ChildCount = 0;
-            if (!ReadValue(Stream, Group.BoundsCenter)
-                || !ReadValue(Stream, Group.BoundsRadius)
-                || !ReadValue(Stream, Group.LodBoundsCenter)
-                || !ReadValue(Stream, Group.LodBoundsRadius)
-                || !ReadValue(Stream, Group.ParentLODError)
-                || !ReadValue(Stream, Group.MipLevel)
-                || !ReadValue(Stream, Group.bRoot)
-                || !ReadValue(Stream, ChildCount)
-                || !ReadPodVector(Stream, Group.ChildRefs, ChildCount))
-            {
-                return false;
-            }
-        }
 
         return Stream.good();
     }
@@ -2915,12 +2902,46 @@ namespace
             && Dag.TriangleIndices.empty()
             && Dag.ExternalEdges.empty()
             && Dag.ClusterVertices.empty()
-            && Dag.RootGroupIndex == GClusterDAGInvalidIndex;
+            && Dag.RootGroupIndex == GClusterDAGInvalidIndex
+            && !Dag.HasRuntimeHierarchy()
+            && !Dag.HasPackedVertexData();
     }
 
     bool ValidateLoadedClusterDAG(const FClusterDAG& Dag)
     {
-        return IsEmptyClusterDAG(Dag) || (Dag.IsValid() && Dag.HasRuntimeHierarchy());
+        return IsEmptyClusterDAG(Dag) || Dag.HasRuntimePayload();
+    }
+
+    template <typename T>
+    void ReleaseVector(std::vector<T>& Values)
+    {
+        std::vector<T>().swap(Values);
+    }
+
+    void ReleaseClusterDAGAuthoringArrays(FClusterDAG& Dag)
+    {
+        if (!Dag.PackedVertexData.IsValid() && !Dag.Positions.empty())
+        {
+            BuildClusterDAGPackedVertexData(Dag, Dag.PackedVertexData);
+        }
+
+        if (!Dag.HasRuntimePayload())
+        {
+            return;
+        }
+
+        ReleaseVector(Dag.Clusters);
+        ReleaseVector(Dag.Groups);
+        ReleaseVector(Dag.Positions);
+        ReleaseVector(Dag.Normals);
+        ReleaseVector(Dag.UVs);
+        ReleaseVector(Dag.Tangents);
+        ReleaseVector(Dag.Colors);
+        ReleaseVector(Dag.VertexSectionIndices);
+        ReleaseVector(Dag.TriangleIndices);
+        ReleaseVector(Dag.ExternalEdges);
+        ReleaseVector(Dag.ClusterVertices);
+        Dag.RootGroupIndex = GClusterDAGInvalidIndex;
     }
 
     template <typename T>
@@ -2939,33 +2960,6 @@ namespace
             return false;
         }
         return A.empty() || std::memcmp(A.data(), B.data(), A.size() * sizeof(T)) == 0;
-    }
-
-    bool ClusterGroupsEqual(const std::vector<FClusterGroup>& A, const std::vector<FClusterGroup>& B)
-    {
-        if (A.size() != B.size())
-        {
-            return false;
-        }
-
-        for (size_t GroupIndex = 0; GroupIndex < A.size(); ++GroupIndex)
-        {
-            const FClusterGroup& GroupA = A[GroupIndex];
-            const FClusterGroup& GroupB = B[GroupIndex];
-            if (!PodEqual(GroupA.BoundsCenter, GroupB.BoundsCenter)
-                || GroupA.BoundsRadius != GroupB.BoundsRadius
-                || !PodEqual(GroupA.LodBoundsCenter, GroupB.LodBoundsCenter)
-                || GroupA.LodBoundsRadius != GroupB.LodBoundsRadius
-                || GroupA.ParentLODError != GroupB.ParentLODError
-                || GroupA.MipLevel != GroupB.MipLevel
-                || GroupA.bRoot != GroupB.bRoot
-                || !PodVectorEqual(GroupA.ChildRefs, GroupB.ChildRefs))
-            {
-                return false;
-            }
-        }
-
-        return true;
     }
 
     bool PackedVertexDataEqual(const FClusterDAGPackedVertexData& A, const FClusterDAGPackedVertexData& B)
@@ -3003,7 +2997,7 @@ namespace
             return false;
         }
 
-        return RebuildRuntimeClusterDrawData(Dag);
+        return true;
     }
 
     bool SerializableClusterDAGEqual(FClusterDAG Expected, FClusterDAG Actual)
@@ -3018,14 +3012,7 @@ namespace
             return IsEmptyClusterDAG(Expected) && IsEmptyClusterDAG(Actual);
         }
 
-        return Expected.RootGroupIndex == Actual.RootGroupIndex
-            && PodVectorEqual(Expected.Clusters, Actual.Clusters)
-            && ClusterGroupsEqual(Expected.Groups, Actual.Groups)
-            && PodVectorEqual(Expected.TriangleIndices, Actual.TriangleIndices)
-            && PodVectorEqual(Expected.ExternalEdges, Actual.ExternalEdges)
-            && PodVectorEqual(Expected.ClusterVertices, Actual.ClusterVertices)
-            && PodVectorEqual(Expected.VertexSectionIndices, Actual.VertexSectionIndices)
-            && RuntimeHierarchyEqual(Expected.RuntimeHierarchy, Actual.RuntimeHierarchy)
+        return RuntimeHierarchyEqual(Expected.RuntimeHierarchy, Actual.RuntimeHierarchy)
             && PackedVertexDataEqual(Expected.PackedVertexData, Actual.PackedVertexData);
     }
 
@@ -3034,7 +3021,15 @@ namespace
         FClusterDAGPackedVertexData PackedVertexData = Dag.PackedVertexData;
         if (!PackedVertexData.IsValid())
         {
-            BuildClusterDAGPackedVertexData(Dag, PackedVertexData);
+            if (!BuildClusterDAGPackedVertexData(Dag, PackedVertexData))
+            {
+                return false;
+            }
+        }
+
+        if (!Dag.HasRuntimeHierarchy() || Dag.RuntimeHierarchy.PackedIndices.empty() || !PackedVertexData.IsValid())
+        {
+            return false;
         }
 
         FillVmeshDagHeader(Dag, PackedVertexData, OutPayload.Header);
@@ -3091,23 +3086,48 @@ namespace
         std::sort(ClusterIndices.begin(), ClusterIndices.end());
         ClusterIndices.erase(std::unique(ClusterIndices.begin(), ClusterIndices.end()), ClusterIndices.end());
 
+        std::unordered_map<uint32_t, uint32_t> PageClusterLocalIndices;
+        PageClusterLocalIndices.reserve(ClusterIndices.size());
+        for (uint32_t LocalIndex = 0; LocalIndex < static_cast<uint32_t>(ClusterIndices.size()); ++LocalIndex)
+        {
+            PageClusterLocalIndices.emplace(ClusterIndices[LocalIndex], LocalIndex);
+        }
+
+        for (FRuntimeClusterChildRef& ChildRef : PageChildRefs)
+        {
+            if (ChildRef.ClusterIndex == GClusterDAGInvalidIndex)
+            {
+                ChildRef.InstanceIndex = GClusterDAGInvalidIndex;
+                continue;
+            }
+
+            const auto LocalIt = PageClusterLocalIndices.find(ChildRef.ClusterIndex);
+            if (LocalIt == PageClusterLocalIndices.end())
+            {
+                return false;
+            }
+            ChildRef.InstanceIndex = LocalIt->second;
+        }
+
         std::vector<FRuntimeCluster> PageClusters;
         std::vector<FRuntimeClusterDrawData> PageDrawDatas;
         std::vector<uint32_t> PagePackedIndices;
         PageClusters.reserve(ClusterIndices.size());
         for (uint32_t ClusterIndex : ClusterIndices)
         {
-            const FRuntimeCluster& Cluster = Runtime.Clusters[ClusterIndex];
-            PageClusters.push_back(Cluster);
+            FRuntimeCluster Cluster = Runtime.Clusters[ClusterIndex];
             if (Cluster.DrawDataStart > Runtime.DrawDatas.size()
                 || Cluster.DrawDataCount > Runtime.DrawDatas.size() - Cluster.DrawDataStart)
             {
                 return false;
             }
 
+            Cluster.DrawDataStart = static_cast<uint32_t>(PageDrawDatas.size());
+            PageClusters.push_back(Cluster);
+
             for (uint32_t DrawDataOffset = 0; DrawDataOffset < Cluster.DrawDataCount; ++DrawDataOffset)
             {
-                const FRuntimeClusterDrawData& DrawData = Runtime.DrawDatas[Cluster.DrawDataStart + DrawDataOffset];
+                const FRuntimeClusterDrawData& DrawData = Runtime.DrawDatas[Runtime.Clusters[ClusterIndex].DrawDataStart + DrawDataOffset];
                 PageDrawDatas.push_back(DrawData);
                 if (DrawData.IndexStart > Runtime.PackedIndices.size()
                     || DrawData.IndexCount > Runtime.PackedIndices.size() - DrawData.IndexStart)
@@ -3679,7 +3699,7 @@ void FMesh::BuildClusterDAGs(const FClusterDAGBuildParams& Params)
 
 const FClusterDAG* FMesh::GetClusterDAG() const
 {
-    if (!ClusterDAG.IsValid())
+    if (!ClusterDAG.IsValid() && !ClusterDAG.HasRuntimePayload())
     {
         return nullptr;
     }
@@ -3689,5 +3709,10 @@ const FClusterDAG* FMesh::GetClusterDAG() const
 
 bool FMesh::HasClusterDAGs() const
 {
-    return ClusterDAG.IsValid();
+    return ClusterDAG.IsValid() || ClusterDAG.HasRuntimePayload();
+}
+
+void FMesh::ReleaseClusterDAGAuthoringData()
+{
+    ReleaseClusterDAGAuthoringArrays(ClusterDAG);
 }

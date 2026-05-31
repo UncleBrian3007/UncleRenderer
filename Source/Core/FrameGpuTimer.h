@@ -30,6 +30,7 @@ public:
     // Stores the fence value for the given back-buffer slot so BeginFrame can
     // determine when the readback data is safe to read.
     void OnFenceSignaled(uint32_t BackBufferIndex, uint64_t FenceValue);
+    void Reset();
 
     bool IsReady() const { return QueryHeap && Readback; }
 

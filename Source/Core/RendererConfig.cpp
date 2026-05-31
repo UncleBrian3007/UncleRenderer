@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
+#include <initializer_list>
+#include <limits>
 #include <string_view>
 
 namespace
@@ -21,6 +23,143 @@ namespace
             return static_cast<char>(std::tolower(Ch));
         });
         return Result;
+    }
+
+    bool MatchesKey(const std::string& LowerKey, std::initializer_list<const char*> Keys)
+    {
+        return std::any_of(Keys.begin(), Keys.end(), [&](const char* Key)
+        {
+            return LowerKey == ToLowerCopy(Key);
+        });
+    }
+
+    bool ParseBoolValue(const std::string& LowerValue)
+    {
+        return LowerValue == "1" || LowerValue == "true" || LowerValue == "yes";
+    }
+
+    void ApplyStringKey(
+        const std::string& LowerKey,
+        const std::string& Value,
+        FRendererConfig& OutConfig,
+        std::wstring FRendererConfig::* Member,
+        std::initializer_list<const char*> Keys)
+    {
+        if (MatchesKey(LowerKey, Keys))
+        {
+            OutConfig.*Member = ToWide(Value);
+        }
+    }
+
+    void ApplyBoolKey(
+        const std::string& LowerKey,
+        const std::string& LowerValue,
+        FRendererConfig& OutConfig,
+        bool FRendererConfig::* Member,
+        std::initializer_list<const char*> Keys)
+    {
+        if (MatchesKey(LowerKey, Keys))
+        {
+            OutConfig.*Member = ParseBoolValue(LowerValue);
+        }
+    }
+
+    void ApplyClampedUintKey(
+        const std::string& LowerKey,
+        const std::string& Value,
+        FRendererConfig& OutConfig,
+        uint32_t FRendererConfig::* Member,
+        uint32_t MinValue,
+        uint32_t MaxValue,
+        std::initializer_list<const char*> Keys)
+    {
+        if (!MatchesKey(LowerKey, Keys))
+        {
+            return;
+        }
+
+        try
+        {
+            const int64_t ParsedValue = std::stoll(Value);
+            const int64_t ClampedValue = std::clamp(
+                ParsedValue,
+                static_cast<int64_t>(MinValue),
+                static_cast<int64_t>(MaxValue));
+            OutConfig.*Member = static_cast<uint32_t>(ClampedValue);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid renderer config value: " + Value);
+        }
+    }
+
+    void ApplyFloatKey(
+        const std::string& LowerKey,
+        const std::string& Value,
+        FRendererConfig& OutConfig,
+        float FRendererConfig::* Member,
+        std::initializer_list<const char*> Keys)
+    {
+        if (!MatchesKey(LowerKey, Keys))
+        {
+            return;
+        }
+
+        try
+        {
+            OutConfig.*Member = std::stof(Value);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid renderer config value: " + Value);
+        }
+    }
+
+    void ApplyMinFloatKey(
+        const std::string& LowerKey,
+        const std::string& Value,
+        FRendererConfig& OutConfig,
+        float FRendererConfig::* Member,
+        float MinValue,
+        std::initializer_list<const char*> Keys)
+    {
+        if (!MatchesKey(LowerKey, Keys))
+        {
+            return;
+        }
+
+        try
+        {
+            OutConfig.*Member = (std::max)(MinValue, std::stof(Value));
+        }
+        catch (...)
+        {
+            LogWarning("Invalid renderer config value: " + Value);
+        }
+    }
+
+    void ApplyClampedFloatKey(
+        const std::string& LowerKey,
+        const std::string& Value,
+        FRendererConfig& OutConfig,
+        float FRendererConfig::* Member,
+        float MinValue,
+        float MaxValue,
+        std::initializer_list<const char*> Keys)
+    {
+        if (!MatchesKey(LowerKey, Keys))
+        {
+            return;
+        }
+
+        try
+        {
+            OutConfig.*Member = std::clamp(std::stof(Value), MinValue, MaxValue);
+        }
+        catch (...)
+        {
+            LogWarning("Invalid renderer config value: " + Value);
+        }
     }
 }
 
@@ -75,7 +214,7 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     const std::string LowerKey = ToLowerCopy(Key);
     const std::string LowerValue = ToLowerCopy(Value);
 
-    if (LowerKey == "type" || LowerKey == "renderer")
+    if (MatchesKey(LowerKey, { "Type", "Renderer" }))
     {
         if (LowerValue == "forward")
         {
@@ -88,420 +227,70 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
         return;
     }
 
-    if (LowerKey == "scene" || LowerKey == "scenefile")
+    if (MatchesKey(LowerKey, { "Scene", "SceneFile" }))
     {
         OutConfig.SceneFile = ToWide(Value);
         return;
     }
 
-    if (LowerKey == "usedepthprepass" || LowerKey == "depthprepass")
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bUseDepthPrepass, { "UseDepthPrepass", "DepthPrepass" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableFrameOverlap, { "FrameOverlap", "UseFrameOverlap" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableVSync, { "VSync", "EnableVSync" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::FramesInFlight, 1u, 8u, { "FramesInFlight", "SwapChainBufferCount" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableShadows, { "EnableShadows", "Shadows" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableRayTracedShadows, { "EnableRayTracedShadows", "RayTracedShadows" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnablePathTracing, { "EnablePathTracing", "PathTracing" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnablePathTracingAccumulation, { "EnablePathTracingAccumulation", "PathTracingAccumulation" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnablePathTracingVndf, { "EnablePathTracingVndf", "PathTracingVndf" });
+    ApplyStringKey(LowerKey, Value, OutConfig, &FRendererConfig::EnvironmentEquirectPath, { "EnvironmentEquirect", "EnvironmentMap" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::EnvironmentCubeResolution, 16u, 2048u, { "EnvironmentCubeSize", "EnvironmentCubeResolution" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::EnvironmentSpecularSampleCount, 1u, 4096u, { "EnvironmentSpecSamples", "EnvironmentSpecularSamples" });
+    ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::ShadowBias, { "ShadowBias" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableTonemap, { "EnableTonemap", "Tonemap" });
+    ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::TonemapExposure, { "TonemapExposure" });
+    ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::TonemapWhitePoint, { "TonemapWhitePoint" });
+    ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::TonemapGamma, { "TonemapGamma" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableCas, { "EnableCas", "Cas" });
+    ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::CasSharpness, { "CasSharpness" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableAutoExposure, { "EnableAutoExposure", "AutoExposure" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableSparseSdfGI, { "EnableSparseSdfGI", "SparseSdfGI" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIDebugMode, 0u, 5u, { "SparseSdfGIDebugMode" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGICascadeCount, 1u, 1u, { "SparseSdfGICascadeCount" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIMaxBrickTriangleReferences, 1024u * 1024u, 32u * 1024u * 1024u, { "SparseSdfGIMaxBrickTriangleReferences" });
+    ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIBaseVoxelSize, { "SparseSdfGIBaseVoxelSize" });
+    ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGICascadeScale, 1.01f, { "SparseSdfGICascadeScale" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGITraceHalfResolution, { "SparseSdfGITraceHalfResolution" });
+    ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIIntensity, 0.0f, { "SparseSdfGIIntensity" });
+    ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIBounceStrength, 0.0f, { "SparseSdfGIBounceStrength" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIUseHitLightingVisibility, { "SparseSdfGIUseHitLightingVisibility" });
+    ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::AutoExposureKey, { "AutoExposureKey" });
+    ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::AutoExposureMin, { "AutoExposureMin" });
+    ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::AutoExposureMax, { "AutoExposureMax" });
+    ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::AutoExposureSpeedUp, { "AutoExposureSpeedUp" });
+    ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::AutoExposureSpeedDown, { "AutoExposureSpeedDown" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableTAA, { "EnableTAA", "TAA" });
+    ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::TaaHistoryWeight, { "TaaHistoryWeight", "TaaWeight" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableTaskSystem, { "EnableTaskSystem", "TaskSystem" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bLogResourceBarriers, { "LogResourceBarriers", "LogBarriers" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bLogMeshOptimizationStats, { "LogMeshOptimizationStats", "MeshOptimizationStats" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableGraphDump, { "EnableGraphDump", "DumpGraph" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableGpuTiming, { "EnableGpuTiming", "RecordGpuTiming" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableHZB, { "HZB", "EnableHZB" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableHzbTwoPass, { "HzbTwoPass", "EnableHzbTwoPass" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableGtao, { "GTAO", "EnableGTAO" });
+    if (MatchesKey(LowerKey, { "SSR", "EnableSSR" }))
     {
-        OutConfig.bUseDepthPrepass = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-    if (LowerKey == "frameoverlap" || LowerKey == "useframeoverlap")
-    {
-        OutConfig.bEnableFrameOverlap = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-    if (LowerKey == "vsync" || LowerKey == "enablevsync")
-    {
-        OutConfig.bEnableVSync = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-    if (LowerKey == "framesinflight" || LowerKey == "inflightframes" || LowerKey == "swapchainbuffercount")
-    {
-        try
-        {
-            const int32_t ParsedValue = std::stoi(Value);
-            const int32_t ClampedValue = std::clamp(ParsedValue, 1, 8);
-            OutConfig.FramesInFlight = static_cast<uint32_t>(ClampedValue);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid frames in flight value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "enableshadows" || LowerKey == "shadows")
-    {
-        OutConfig.bEnableShadows = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-    if (LowerKey == "enableraytracedshadows" || LowerKey == "raytracedshadows" || LowerKey == "raytraceshadows")
-    {
-        OutConfig.bEnableRayTracedShadows = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-    if (LowerKey == "enablepathtracing" || LowerKey == "pathtracing")
-    {
-        OutConfig.bEnablePathTracing = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-    if (LowerKey == "enablepathtracingaccumulation" || LowerKey == "pathtracingaccumulation")
-    {
-        OutConfig.bEnablePathTracingAccumulation = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-    if (LowerKey == "enablepathtracingvndf" || LowerKey == "pathtracingvndf" || LowerKey == "pathtracingusevndf")
-    {
-        OutConfig.bEnablePathTracingVndf = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-    if (LowerKey == "envequirect" || LowerKey == "environmentequirect" || LowerKey == "environmentmap")
-    {
-        OutConfig.EnvironmentEquirectPath = ToWide(Value);
-    }
-
-    if (LowerKey == "envcubesize" || LowerKey == "environmentcuberesolution")
-    {
-        try
-        {
-            const int32_t ParsedValue = std::stoi(Value);
-            const int32_t ClampedValue = std::clamp(ParsedValue, 16, 2048);
-            OutConfig.EnvironmentCubeResolution = static_cast<uint32_t>(ClampedValue);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid environment cube resolution value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "envspecsamples" || LowerKey == "environmentspecularsamples")
-    {
-        try
-        {
-            const int32_t ParsedValue = std::stoi(Value);
-            const int32_t ClampedValue = std::clamp(ParsedValue, 1, 4096);
-            OutConfig.EnvironmentSpecularSampleCount = static_cast<uint32_t>(ClampedValue);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid environment specular sample count value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "shadowbias")
-    {
-        try
-        {
-            OutConfig.ShadowBias = std::stof(Value);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid shadow bias value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "enabletonemap" || LowerKey == "tonemap")
-    {
-        OutConfig.bEnableTonemap = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-    if (LowerKey == "tonemapexposure")
-    {
-        try
-        {
-            OutConfig.TonemapExposure = std::stof(Value);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid tonemap exposure value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "tonemapwhitepoint")
-    {
-        try
-        {
-            OutConfig.TonemapWhitePoint = std::stof(Value);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid tonemap white point value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "tonemapgamma")
-    {
-        try
-        {
-            OutConfig.TonemapGamma = std::stof(Value);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid tonemap gamma value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "enablecas" || LowerKey == "cas")
-    {
-        OutConfig.bEnableCas = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-    if (LowerKey == "cassharpness")
-    {
-        try
-        {
-            OutConfig.CasSharpness = std::stof(Value);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid CAS sharpness value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "enableautoexposure" || LowerKey == "autoexposure")
-    {
-        OutConfig.bEnableAutoExposure = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-    if (LowerKey == "enablesparsesdfgi" || LowerKey == "sparsesdfgi")
-    {
-        OutConfig.bEnableSparseSdfGI = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-    if (LowerKey == "sparsesdfgidebugmode")
-    {
-        try
-        {
-            OutConfig.SparseSdfGIDebugMode = static_cast<uint32_t>(std::clamp(std::stoi(Value), 0, 5));
-        }
-        catch (...)
-        {
-            LogWarning("Invalid SparseSdfGI debug mode value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "sparsesdfgicascadecount")
-    {
-        try
-        {
-            OutConfig.SparseSdfGICascadeCount = static_cast<uint32_t>(std::clamp(std::stoi(Value), 1, 1));
-        }
-        catch (...)
-        {
-            LogWarning("Invalid SparseSdfGI cascade count value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "sparsesdfgimaxbricktrianglereferences")
-    {
-        try
-        {
-            OutConfig.SparseSdfGIMaxBrickTriangleReferences = static_cast<uint32_t>(std::clamp(std::stoull(Value), 1024ull * 1024ull, 32ull * 1024ull * 1024ull));
-        }
-        catch (...)
-        {
-            LogWarning("Invalid SparseSdfGI max brick triangle references value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "sparsesdfgibasevoxelsize")
-    {
-        try
-        {
-            OutConfig.SparseSdfGIBaseVoxelSize = std::stof(Value);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid SparseSdfGI base voxel size value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "sparsesdfgicascadescale")
-    {
-        try
-        {
-            OutConfig.SparseSdfGICascadeScale = (std::max)(std::stof(Value), 1.01f);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid SparseSdfGI cascade scale value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "sparsesdfgitracehalfresolution")
-    {
-        OutConfig.bSparseSdfGITraceHalfResolution = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-    if (LowerKey == "sparsesdfgiintensity")
-    {
-        try
-        {
-            OutConfig.SparseSdfGIIntensity = (std::max)(std::stof(Value), 0.0f);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid SparseSdfGI intensity value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "sparsesdfgibouncestrength")
-    {
-        try
-        {
-            OutConfig.SparseSdfGIBounceStrength = (std::max)(std::stof(Value), 0.0f);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid SparseSdfGI bounce strength value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "sparsesdfgiusehitlightingvisibility")
-    {
-        OutConfig.bSparseSdfGIUseHitLightingVisibility = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-    if (LowerKey == "autoexposurekey")
-    {
-        try
-        {
-            OutConfig.AutoExposureKey = std::stof(Value);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid auto exposure key value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "autoexposuremin")
-    {
-        try
-        {
-            OutConfig.AutoExposureMin = std::stof(Value);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid auto exposure min value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "autoexposuremax")
-    {
-        try
-        {
-            OutConfig.AutoExposureMax = std::stof(Value);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid auto exposure max value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "autoexposurespeedup")
-    {
-        try
-        {
-            OutConfig.AutoExposureSpeedUp = std::stof(Value);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid auto exposure speed up value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "autoexposurespeeddown")
-    {
-        try
-        {
-            OutConfig.AutoExposureSpeedDown = std::stof(Value);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid auto exposure speed down value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "enabletaa" || LowerKey == "taa" || LowerKey == "temporalaa")
-    {
-        OutConfig.bEnableTAA = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-    if (LowerKey == "taahistoryweight" || LowerKey == "taaweight")
-    {
-        try
-        {
-            OutConfig.TaaHistoryWeight = std::stof(Value);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid TAA history weight value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "usetasksystem" || LowerKey == "enabletasksystem" || LowerKey == "tasksystem")
-    {
-        OutConfig.bEnableTaskSystem = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-    if (LowerKey == "logresourcebarriers" || LowerKey == "logbarriers" || LowerKey == "barrierlogging")
-    {
-        OutConfig.bLogResourceBarriers = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-    if (LowerKey == "logmeshoptimizationstats" || LowerKey == "meshoptimizationstats" || LowerKey == "logmeshoptimizerstats")
-    {
-        OutConfig.bLogMeshOptimizationStats = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-    if (LowerKey == "graphdump" || LowerKey == "enablegraphdump" || LowerKey == "dumpgraph")
-    {
-        OutConfig.bEnableGraphDump = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-    if (LowerKey == "gputiming" || LowerKey == "enablegputiming" || LowerKey == "recordgputiming")
-    {
-        OutConfig.bEnableGpuTiming = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-    if (LowerKey == "hzb" || LowerKey == "enablehzb")
-    {
-        OutConfig.bEnableHZB = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-	if (LowerKey == "hzbtwopass" || LowerKey == "enablehzbtwopass")
-	{
-		OutConfig.bEnableHzbTwoPass = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-	}
-
-    if (LowerKey == "gtao" || LowerKey == "enablegtao")
-    {
-        OutConfig.bEnableGtao = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-    if (LowerKey == "ssr" || LowerKey == "enablessr" || LowerKey == "enablescreenspacereflections")
-    {
-        const bool bEnable = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
+        const bool bEnable = ParseBoolValue(LowerValue);
         OutConfig.bEnableSsrSw = bEnable;
         OutConfig.bEnableSsrHw = bEnable;
     }
-    if (LowerKey == "ssrsw" || LowerKey == "enablessrsw" || LowerKey == "ssr_sw")
-    {
-        OutConfig.bEnableSsrSw = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-    if (LowerKey == "ssrhw" || LowerKey == "enablessrhw" || LowerKey == "ssr_hw")
-    {
-        OutConfig.bEnableSsrHw = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-    if (LowerKey == "ssrhzb" || LowerKey == "enablessrhzb" || LowerKey == "ssr_hzb")
-    {
-        OutConfig.bEnableSsrHzb = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-    if (LowerKey == "ssrhzbfullresdepth" || LowerKey == "enablessrhzbfullresdepth" || LowerKey == "ssr_hzb_full_res_depth" || LowerKey == "ssrfullresdepth")
-    {
-        OutConfig.bEnableSsrHzbFullResDepth = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-    if (LowerKey == "ssrrefine" || LowerKey == "enablessrrefine" || LowerKey == "ssr_refine")
-    {
-        OutConfig.bEnableSsrRefine = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-    if (LowerKey == "ssrdenoise" || LowerKey == "enablessrdenoise" || LowerKey == "ssr_denoise")
-    {
-        OutConfig.bEnableSsrDenoise = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-    if (LowerKey == "deferredlightingvisualizationmode" || LowerKey == "lightingdebugview")
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableSsrSw, { "SsrSw", "EnableSsrSw" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableSsrHw, { "SsrHw", "EnableSsrHw" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableSsrHzb, { "SsrHzb", "EnableSsrHzb" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableSsrHzbFullResDepth, { "EnableSsrHzbFullResDepth", "SsrFullResDepth" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableSsrRefine, { "EnableSsrRefine", "SsrRefine" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableSsrDenoise, { "EnableSsrDenoise", "SsrDenoise" });
+    if (MatchesKey(LowerKey, { "DeferredLightingVisualizationMode", "LightingDebugView" }))
     {
         if (LowerValue == "off")
         {
@@ -523,11 +312,11 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
         {
             OutConfig.DeferredLightingVisualizationMode = EDeferredLightingVisualizationMode::SpecularIndirect;
         }
-        else if (LowerValue == "clusterdagclusters" || LowerValue == "clusterdagcluster" || LowerValue == "clusterdag")
+        else if (LowerValue == "clusterdagclusters")
         {
             OutConfig.DeferredLightingVisualizationMode = EDeferredLightingVisualizationMode::ClusterDagClusters;
         }
-        else if (LowerValue == "clusterdagmip" || LowerValue == "clusterdagmips" || LowerValue == "clustermip")
+        else if (LowerValue == "clusterdagmip")
         {
             OutConfig.DeferredLightingVisualizationMode = EDeferredLightingVisualizationMode::ClusterDagMip;
         }
@@ -536,150 +325,26 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
             OutConfig.DeferredLightingVisualizationMode = EDeferredLightingVisualizationMode::IndirectIrradiance;
         }
     }
-    if (LowerKey == "restirgi" || LowerKey == "enablerestirgi")
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableRestirGI, { "RestirGI", "EnableRestirGI" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableRestirGIDenoiser, { "RestirGIDenoiser", "EnableRestirGIDenoiser" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::RestirGISamplesPerPixel, 1u, 32u, { "RestirGISamplesPerPixel" });
+    ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::RestirGIIntensity, 0.0f, { "RestirGIIntensity" });
+    ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::RestirGIRayLength, 0.1f, { "RestirGIRayLength" });
+    ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::RestirGIClamp, 0.1f, { "RestirGIClamp" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableRestirGITemporalReuse, { "EnableRestirGITemporalReuse", "RestirGITemporalReuse" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableRestirGISpatialReuse, { "EnableRestirGISpatialReuse", "RestirGISpatialReuse" });
+    ApplyClampedFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::RestirGITemporalAdditionalScale, 0.0f, 1.0f, { "RestirGITemporalAdditionalScale" });
+    ApplyClampedFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::RestirGISpatialAdditionalScale, 0.0f, 1.0f, { "RestirGISpatialAdditionalScale" });
+    ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::RestirGIResolveMinDenominator, 1e-6f, { "RestirGIResolveMinDenominator" });
+    ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::RestirGIResolveMaxNormalization, 1.0f, { "RestirGIResolveMaxNormalization" });
+    ApplyClampedFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::RestirGIResolveLowSampleBoostGuard, 0.0f, 1.0f, { "RestirGIResolveLowSampleBoostGuard" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bRestirGIResolveUseConfidence, { "RestirGIResolveUseConfidence" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bRestirGIUseVisibility, { "RestirGIUseVisibility" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bRestirGIUseBrdf, { "RestirGIUseBrdf" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bRestirGIUseHistoryIndirect, { "RestirGIUseHistoryIndirect" });
+    if (MatchesKey(LowerKey, { "RestirGIRandomMode" }))
     {
-        OutConfig.bEnableRestirGI = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-    if (LowerKey == "restirgidenoiser" || LowerKey == "enablerestirgidenoiser")
-    {
-        OutConfig.bEnableRestirGIDenoiser = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-    if (LowerKey == "restirgisamplesperpixel")
-    {
-        try
-        {
-            const int32_t ParsedValue = std::stoi(Value);
-            const int32_t ClampedValue = std::clamp(ParsedValue, 1, 32);
-            OutConfig.RestirGISamplesPerPixel = static_cast<uint32_t>(ClampedValue);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid ReSTIR GI samples per pixel in renderer config: " + Value);
-        }
-    }
-    if (LowerKey == "restirgiintensity")
-    {
-        try
-        {
-            const float ParsedValue = std::stof(Value);
-            OutConfig.RestirGIIntensity = (std::max)(0.0f, ParsedValue);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid ReSTIR GI intensity in renderer config: " + Value);
-        }
-    }
-    if (LowerKey == "restirgiraylength")
-    {
-        try
-        {
-            const float ParsedValue = std::stof(Value);
-            OutConfig.RestirGIRayLength = (std::max)(0.1f, ParsedValue);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid ReSTIR GI ray length in renderer config: " + Value);
-        }
-    }
-    if (LowerKey == "restirgiclamp")
-    {
-        try
-        {
-            const float ParsedValue = std::stof(Value);
-            OutConfig.RestirGIClamp = (std::max)(0.1f, ParsedValue);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid ReSTIR GI clamp in renderer config: " + Value);
-        }
-    }
-    if (LowerKey == "restirgitemporalreuse" || LowerKey == "enablerestirgitemporalreuse")
-    {
-        OutConfig.bEnableRestirGITemporalReuse = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-    if (LowerKey == "restirgispatialreuse" || LowerKey == "enablerestirgispatialreuse")
-    {
-        OutConfig.bEnableRestirGISpatialReuse = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-    if (LowerKey == "restirgitemporaladditionalscale")
-    {
-        try
-        {
-            const float ParsedValue = std::stof(Value);
-            OutConfig.RestirGITemporalAdditionalScale = std::clamp(ParsedValue, 0.0f, 1.0f);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid ReSTIR GI temporal additional scale in renderer config: " + Value);
-        }
-    }
-    if (LowerKey == "restirgispatialadditionalscale")
-    {
-        try
-        {
-            const float ParsedValue = std::stof(Value);
-            OutConfig.RestirGISpatialAdditionalScale = std::clamp(ParsedValue, 0.0f, 1.0f);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid ReSTIR GI spatial additional scale in renderer config: " + Value);
-        }
-    }
-    if (LowerKey == "restirgiresolvemindenominator")
-    {
-        try
-        {
-            const float ParsedValue = std::stof(Value);
-            OutConfig.RestirGIResolveMinDenominator = (std::max)(ParsedValue, 1e-6f);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid ReSTIR GI resolve min denominator in renderer config: " + Value);
-        }
-    }
-    if (LowerKey == "restirgiresolvemaxnormalization")
-    {
-        try
-        {
-            const float ParsedValue = std::stof(Value);
-            OutConfig.RestirGIResolveMaxNormalization = (std::max)(ParsedValue, 1.0f);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid ReSTIR GI resolve max normalization in renderer config: " + Value);
-        }
-    }
-    if (LowerKey == "restirgiresolvelowsampleboostguard")
-    {
-        try
-        {
-            const float ParsedValue = std::stof(Value);
-            OutConfig.RestirGIResolveLowSampleBoostGuard = std::clamp(ParsedValue, 0.0f, 1.0f);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid ReSTIR GI resolve low-sample boost guard in renderer config: " + Value);
-        }
-    }
-    if (LowerKey == "restirgiresolveuseconfidence")
-    {
-        OutConfig.bRestirGIResolveUseConfidence = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-    if (LowerKey == "restirgiusevisibility")
-    {
-        OutConfig.bRestirGIUseVisibility = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-    if (LowerKey == "restirgiusebrdf")
-    {
-        OutConfig.bRestirGIUseBrdf = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-    if (LowerKey == "restirgiusehistoryindirect")
-    {
-        OutConfig.bRestirGIUseHistoryIndirect = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-    if (LowerKey == "restirgirandommode")
-    {
-        if (LowerValue == "bluenoisesobol" || LowerValue == "blue_noise_sobol" || LowerValue == "blue_noise" || LowerValue == "bnds")
+        if (LowerValue == "bluenoisesobol")
         {
             OutConfig.RestirGIRandomMode = ERestirGIRandomMode::BlueNoiseSobol;
         }
@@ -688,20 +353,8 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
             OutConfig.RestirGIRandomMode = ERestirGIRandomMode::Hash;
         }
     }
-    if (LowerKey == "restirgimaxhistoryframes")
-    {
-        try
-        {
-            const int32_t ParsedValue = std::stoi(Value);
-            const int32_t ClampedValue = std::clamp(ParsedValue, 1, 16);
-            OutConfig.RestirGIMaxHistoryFrames = static_cast<uint32_t>(ClampedValue);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid ReSTIR GI max history frames in renderer config: " + Value);
-        }
-    }
-    if (LowerKey == "ssrmode")
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::RestirGIMaxHistoryFrames, 1u, 16u, { "RestirGIMaxHistoryFrames" });
+    if (MatchesKey(LowerKey, { "SsrMode" }))
     {
         if (LowerValue == "cs")
         {
@@ -712,429 +365,59 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
             OutConfig.SsrMode = ESSRMode::PS;
         }
     }
-    if (LowerKey == "ssrsamplesperquad")
-    {
-        try
-        {
-            const int32_t ParsedValue = std::stoi(Value);
-            const int32_t ClampedValue = std::clamp(ParsedValue, 1, 4);
-            OutConfig.SsrSamplesPerQuad = static_cast<uint32_t>(ClampedValue);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid SSR samples per quad value in renderer config: " + Value);
-        }
-    }
-    if (LowerKey == "gtaojitter" || LowerKey == "enablegtaojitter")
-    {
-        OutConfig.bEnableGtaoJitter = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SsrSamplesPerQuad, 1u, 4u, { "SsrSamplesPerQuad" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableGtaoJitter, { "EnableGtaoJitter", "GtaoJitter" });
+    ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::GtaoRadius, { "GtaoRadius" });
+    ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::GtaoIntensity, { "GtaoIntensity" });
+    ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::GtaoPower, { "GtaoPower" });
+    ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::GtaoThickness, { "GtaoThickness" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SsrMaxSteps, 1u, std::numeric_limits<uint32_t>::max(), { "SsrMaxSteps" });
+    ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SsrMaxDistance, { "SsrMaxDistance" });
+    ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SsrThickness, { "SsrThickness" });
+    ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SsrStride, { "SsrStride" });
+    ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SsrRoughnessCutoff, { "SsrRoughnessCutoff" });
+    ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SsrIntensity, { "SsrIntensity" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::GtaoDirectionCount, 1u, 16u, { "GtaoDirectionCount" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::GtaoStepCount, 1u, 8u, { "GtaoStepCount" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableGpuDebugPrint, { "EnableGpuDebugPrint", "GpuDebugPrint" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableIndirectDraw, { "EnableIndirectDraw", "IndirectDraw" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableClusterDAGRuntime, { "EnableClusterDAGRuntime", "ClusterDAGRuntime" });
 
-    if (LowerKey == "gtaoradius")
+    if (MatchesKey(LowerKey, { "ClusterDAGTraversalMode" }))
     {
-        try
-        {
-            OutConfig.GtaoRadius = std::stof(Value);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid GTAO radius value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "gtaointensity")
-    {
-        try
-        {
-            OutConfig.GtaoIntensity = std::stof(Value);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid GTAO intensity value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "gtaopower")
-    {
-        try
-        {
-            OutConfig.GtaoPower = std::stof(Value);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid GTAO power value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "gtaothickness")
-    {
-        try
-        {
-            OutConfig.GtaoThickness = std::stof(Value);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid GTAO thickness value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "ssrmaxsteps")
-    {
-        try
-        {
-            OutConfig.SsrMaxSteps = static_cast<uint32_t>(std::stoul(Value));
-        }
-        catch (...)
-        {
-            LogWarning("Invalid SSR max steps value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "ssrmaxdistance")
-    {
-        try
-        {
-            OutConfig.SsrMaxDistance = std::stof(Value);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid SSR max distance value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "ssrthickness")
-    {
-        try
-        {
-            OutConfig.SsrThickness = std::stof(Value);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid SSR thickness value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "ssrstride")
-    {
-        try
-        {
-            OutConfig.SsrStride = std::stof(Value);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid SSR stride value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "ssrroughnesscutoff")
-    {
-        try
-        {
-            OutConfig.SsrRoughnessCutoff = std::stof(Value);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid SSR roughness cutoff value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "ssrintensity")
-    {
-        try
-        {
-            OutConfig.SsrIntensity = std::stof(Value);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid SSR intensity value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "gtaodirectioncount")
-    {
-        try
-        {
-            const int32_t ParsedValue = std::stoi(Value);
-            const int32_t ClampedValue = std::clamp(ParsedValue, 1, 16);
-            OutConfig.GtaoDirectionCount = static_cast<uint32_t>(ClampedValue);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid GTAO direction count value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "gtaostepcount")
-    {
-        try
-        {
-            const int32_t ParsedValue = std::stoi(Value);
-            const int32_t ClampedValue = std::clamp(ParsedValue, 1, 8);
-            OutConfig.GtaoStepCount = static_cast<uint32_t>(ClampedValue);
-        }
-        catch (...)
-        {
-            LogWarning("Invalid GTAO step count value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "gpudebugprint" || LowerKey == "enablegpudebugprint")
-    {
-        OutConfig.bEnableGpuDebugPrint = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-    if (LowerKey == "indirectdraw" || LowerKey == "enableindirectdraw")
-    {
-        OutConfig.bEnableIndirectDraw = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-    if (LowerKey == "clusterdagruntime" || LowerKey == "enableclusterdagruntime")
-    {
-        OutConfig.bEnableClusterDAGRuntime = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-    if (LowerKey == "clusterdagtraversalmode"
-        || LowerKey == "clusterdagtraversal"
-        || LowerKey == "clusterdagmode")
-    {
-        if (LowerValue == "persistentqueue" || LowerValue == "persistent_queue" || LowerValue == "persistent")
+        if (LowerValue == "persistentqueue")
         {
             OutConfig.ClusterDAGTraversalMode = EClusterDAGTraversalMode::PersistentQueue;
         }
-        else if (LowerValue == "levelsplitqueue"
-            || LowerValue == "level_split_queue"
-            || LowerValue == "levelsplit"
-            || LowerValue == "level_split")
-        {
-            OutConfig.ClusterDAGTraversalMode = EClusterDAGTraversalMode::LevelSplitQueue;
-        }
-        else
+        else if (LowerValue == "levelsplitqueue")
         {
             OutConfig.ClusterDAGTraversalMode = EClusterDAGTraversalMode::LevelSplitQueue;
         }
     }
 
-    if (LowerKey == "clusterdagfastshader"
-        || LowerKey == "enableclusterdagfastshader"
-        || LowerKey == "clusterdagtrusteddata"
-        || LowerKey == "enableclusterdagtrusteddata")
-    {
-        OutConfig.bEnableClusterDAGFastShader = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableClusterDAGFastShader, { "ClusterDAGFastShader", "EnableClusterDAGFastShader" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bForceRebuildClusterDAGCache, { "ForceRebuildClusterDAGCache", "ForceClusterDAGCacheBuild" });
+    ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::ClusterDAGTargetErrorPixels, 0.0f, { "ClusterDAGTargetErrorPixels" });
+    ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::ClusterDAGSwRasterThresholdPixels, 0.0f, { "ClusterDAGSwRasterThresholdPixels", "ClusterDAGSoftwareRasterThresholdPixels" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableClusterDAGSwRasterHzbReject, { "ClusterDAGSwRasterHzbReject", "EnableClusterDAGSwRasterHzb" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableClusterDAGStreaming, { "ClusterDAGStreaming", "EnableClusterDAGStreaming" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::ClusterDAGStreamingPoolMB, 1u, 4096u, { "ClusterDAGStreamingPoolMB" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::ClusterDAGStreamingRequestBufferCapacity, 64u, 1048576u, { "ClusterDAGStreamingRequestBufferCapacity" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::ClusterDAGStreamingMaxPendingPages, 1u, 65536u, { "ClusterDAGStreamingMaxPendingPages" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::ClusterDAGStreamingMaxPageInstallsPerFrame, 1u, 1024u, { "ClusterDAGStreamingMaxPageInstallsPerFrame" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::ClusterDAGStreamingPageSlotBytes, 4096u, 16u * 1024u * 1024u, { "ClusterDAGStreamingPageSlotBytes" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::ClusterDAGStreamingMaxIoInFlight, 1u, 1024u, { "ClusterDAGStreamingMaxIoInFlight" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::ClusterDAGStreamingMaxPageUploadBytesPerFrame, 4096u, 1024u * 1024u * 1024u, { "ClusterDAGStreamingMaxPageUploadBytesPerFrame" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableClusterDAGForceMip, { "ClusterDAGForceMip", "EnableClusterDAGForceMip" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::ClusterDAGForceMipLevel, 0u, std::numeric_limits<uint32_t>::max(), { "ClusterDAGForceMipLevel" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableClusterDAGForceSoftwareRaster, { "ClusterDAGForceSoftwareRaster", "EnableClusterDAGForceSoftwareRaster" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableClusterDAGDebug, { "EnableClusterDAGDebug", "ClusterDAGDebug" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableSkinningIndirectDraw, { "SkinningIndirectDraw", "EnableSkinningIndirectDraw" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnablePbrResearch, { "PbrResearch", "EnablePbrResearch" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::WindowWidth, 1u, std::numeric_limits<uint32_t>::max(), { "Width", "WindowWidth" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::WindowHeight, 1u, std::numeric_limits<uint32_t>::max(), { "Height", "WindowHeight" });
 
-    if (LowerKey == "forcerebuildclusterdagcache"
-        || LowerKey == "forceclusterdagcachebuild"
-        || LowerKey == "ignoreclusterdagcache"
-        || LowerKey == "forcevmeshrebuild"
-        || LowerKey == "ignorevmeshcache")
-    {
-        OutConfig.bForceRebuildClusterDAGCache = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-    if (LowerKey == "clusterdagtargeterrorpixels")
-    {
-        try
-        {
-            OutConfig.ClusterDAGTargetErrorPixels = (std::max)(0.0f, std::stof(Value));
-        }
-        catch (...)
-        {
-            LogWarning("Invalid Cluster DAG target error pixels in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "clusterdagswrasterthresholdpixels"
-        || LowerKey == "clusterdagsoftwarerasterthresholdpixels"
-        || LowerKey == "clusterdagminpixelsperedgesw")
-    {
-        try
-        {
-            OutConfig.ClusterDAGSwRasterThresholdPixels = (std::max)(0.0f, std::stof(Value));
-        }
-        catch (...)
-        {
-            LogWarning("Invalid Cluster DAG SW raster threshold pixels in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "clusterdagswrasterhzb"
-        || LowerKey == "clusterdagswrasterhzbreject"
-        || LowerKey == "clusterdagswrasterhzbocclusion"
-        || LowerKey == "enableclusterdagswrasterhzb"
-        || LowerKey == "enableclusterdagswrasterhzbreject"
-        || LowerKey == "enableclusterdagswrasterhzbocclusion")
-    {
-        OutConfig.bEnableClusterDAGSwRasterHzbReject = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-    if (LowerKey == "clusterdagstreaming"
-        || LowerKey == "enableclusterdagstreaming")
-    {
-        OutConfig.bEnableClusterDAGStreaming = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-    if (LowerKey == "clusterdagstreamingpoolmb")
-    {
-        try
-        {
-            const int32_t ParsedValue = std::stoi(Value);
-            OutConfig.ClusterDAGStreamingPoolMB = static_cast<uint32_t>(std::clamp(ParsedValue, 1, 4096));
-        }
-        catch (...)
-        {
-            LogWarning("Invalid Cluster DAG streaming pool MB in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "clusterdagstreamingrequestbuffercapacity")
-    {
-        try
-        {
-            const int32_t ParsedValue = std::stoi(Value);
-            OutConfig.ClusterDAGStreamingRequestBufferCapacity = static_cast<uint32_t>(std::clamp(ParsedValue, 64, 1048576));
-        }
-        catch (...)
-        {
-            LogWarning("Invalid Cluster DAG streaming request buffer capacity in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "clusterdagstreamingmaxpendingpages")
-    {
-        try
-        {
-            const int32_t ParsedValue = std::stoi(Value);
-            OutConfig.ClusterDAGStreamingMaxPendingPages = static_cast<uint32_t>(std::clamp(ParsedValue, 1, 65536));
-        }
-        catch (...)
-        {
-            LogWarning("Invalid Cluster DAG streaming max pending pages in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "clusterdagstreamingmaxpageinstallsperframe")
-    {
-        try
-        {
-            const int32_t ParsedValue = std::stoi(Value);
-            OutConfig.ClusterDAGStreamingMaxPageInstallsPerFrame = static_cast<uint32_t>(std::clamp(ParsedValue, 1, 1024));
-        }
-        catch (...)
-        {
-            LogWarning("Invalid Cluster DAG streaming max page installs per frame in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "clusterdagstreamingpageslotbytes")
-    {
-        try
-        {
-            const int32_t ParsedValue = std::stoi(Value);
-            OutConfig.ClusterDAGStreamingPageSlotBytes = static_cast<uint32_t>(std::clamp(ParsedValue, 4096, 16 * 1024 * 1024));
-        }
-        catch (...)
-        {
-            LogWarning("Invalid Cluster DAG streaming page slot bytes in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "clusterdagstreamingmaxioinflight")
-    {
-        try
-        {
-            const int32_t ParsedValue = std::stoi(Value);
-            OutConfig.ClusterDAGStreamingMaxIoInFlight = static_cast<uint32_t>(std::clamp(ParsedValue, 1, 1024));
-        }
-        catch (...)
-        {
-            LogWarning("Invalid Cluster DAG streaming max IO in flight in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "clusterdagstreamingmaxpageuploadbytesperframe")
-    {
-        try
-        {
-            const int32_t ParsedValue = std::stoi(Value);
-            OutConfig.ClusterDAGStreamingMaxPageUploadBytesPerFrame = static_cast<uint32_t>(std::clamp(ParsedValue, 4096, 1024 * 1024 * 1024));
-        }
-        catch (...)
-        {
-            LogWarning("Invalid Cluster DAG streaming max page upload bytes per frame in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "clusterdagforcemip" || LowerKey == "enableclusterdagforcemip")
-    {
-        OutConfig.bEnableClusterDAGForceMip = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-    if (LowerKey == "clusterdagforcemiplevel")
-    {
-        try
-        {
-            OutConfig.ClusterDAGForceMipLevel = static_cast<uint32_t>((std::max)(0, std::stoi(Value)));
-        }
-        catch (...)
-        {
-            LogWarning("Invalid Cluster DAG force mip level in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "clusterdagforcesoftwareraster"
-        || LowerKey == "enableclusterdagforcesoftwareraster"
-        || LowerKey == "clusterdagforceswraster"
-        || LowerKey == "enableclusterdagforceswraster"
-        || LowerKey == "clusterdagswrasteronly")
-    {
-        OutConfig.bEnableClusterDAGForceSoftwareRaster = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-    if (LowerKey == "clusterdagdebug"
-        || LowerKey == "enableclusterdagdebug"
-        || LowerKey == "clusterdagselectdebug"
-        || LowerKey == "enableclusterdagselectdebug")
-    {
-        OutConfig.bEnableClusterDAGDebug = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-    if (LowerKey == "skinningindirectdraw" || LowerKey == "enableskinningindirectdraw")
-    {
-        OutConfig.bEnableSkinningIndirectDraw = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-    if (LowerKey == "pbrresearch" || LowerKey == "enablepbrresearch")
-    {
-        OutConfig.bEnablePbrResearch = (LowerValue == "1" || LowerValue == "true" || LowerValue == "yes");
-    }
-
-    if (LowerKey == "width" || LowerKey == "windowwidth")
-    {
-        try
-        {
-            const int32_t ParsedValue = std::stoi(Value);
-            OutConfig.WindowWidth = static_cast<uint32_t>((std::max)(1, ParsedValue));
-        }
-        catch (...)
-        {
-            LogWarning("Invalid window width value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "height" || LowerKey == "windowheight")
-    {
-        try
-        {
-            const int32_t ParsedValue = std::stoi(Value);
-            OutConfig.WindowHeight = static_cast<uint32_t>((std::max)(1, ParsedValue));
-        }
-        catch (...)
-        {
-            LogWarning("Invalid window height value in renderer config: " + Value);
-        }
-    }
-
-    if (LowerKey == "resolution")
+    if (MatchesKey(LowerKey, { "Resolution" }))
     {
         const size_t Separator = Value.find_first_of("xX");
         if (Separator != std::string::npos)

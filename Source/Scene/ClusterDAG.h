@@ -226,6 +226,12 @@ struct FClusterDAG
     void FindCut(std::vector<FClusterRef>& OutSelectedClusters, const FClusterCutParams& Params) const;
     bool HasRuntimeHierarchy() const { return RuntimeHierarchy.IsValid(); }
     bool HasPackedVertexData() const { return PackedVertexData.IsValid(); }
+    bool HasRuntimePayload() const
+    {
+        return HasRuntimeHierarchy()
+            && HasPackedVertexData()
+            && !RuntimeHierarchy.PackedIndices.empty();
+    }
 };
 
 struct FClusterDAGBuildParams

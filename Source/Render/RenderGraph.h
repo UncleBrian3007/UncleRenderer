@@ -151,6 +151,12 @@ public:
     static const std::vector<FGpuPassTimingStats>& GetGpuTimingStats();
     static void AddExternalGpuTimingSample(const std::string& Name, double Milliseconds);
 
+    // Releases every static GPU-resource holder (transient texture/buffer pools
+    // and the GPU-timing query heaps/readback buffers). Call during graphics
+    // shutdown, after the GPU is idle and renderers are destroyed, so these
+    // ID3D12 objects do not survive into the DXGI process-termination report.
+    static void ReleaseStaticGpuResources();
+
 private:
     template <typename HandleType>
     struct TRGUsage

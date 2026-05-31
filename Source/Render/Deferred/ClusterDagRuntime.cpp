@@ -475,7 +475,7 @@ bool FClusterDagRuntime::ValidatePreparedRuntimeData(const FPreparedData& Data) 
 
     for (uint32_t ClusterIndex = 0; ClusterIndex < static_cast<uint32_t>(Data.Clusters.size()); ++ClusterIndex)
     {
-        const FClusterDta& Cluster = Data.Clusters[ClusterIndex];
+        const FClusterData& Cluster = Data.Clusters[ClusterIndex];
         if (Cluster.GroupIndex != GClusterDAGInvalidIndex && Cluster.GroupIndex >= Data.Groups.size())
         {
             return Fail("cluster group index is out of range; clusterIndex=" + std::to_string(ClusterIndex)
@@ -549,7 +549,7 @@ bool FClusterDagRuntime::ValidatePreparedRuntimeData(const FPreparedData& Data) 
         VisitState[ClusterIndex] = 1u;
         VisitedClusterCount += 1u;
 
-        const FClusterDta& Cluster = Data.Clusters[ClusterIndex];
+        const FClusterData& Cluster = Data.Clusters[ClusterIndex];
         if (Cluster.GeneratingGroupIndex != GClusterDAGInvalidIndex)
         {
             const FGroupData& Group = Data.Groups[Cluster.GeneratingGroupIndex];
@@ -562,7 +562,7 @@ bool FClusterDagRuntime::ValidatePreparedRuntimeData(const FPreparedData& Data) 
                     continue;
                 }
 
-                const FClusterDta& ChildCluster = Data.Clusters[ChildRef.ClusterIndex];
+                const FClusterData& ChildCluster = Data.Clusters[ChildRef.ClusterIndex];
                 if (ChildCluster.MipLevel >= Cluster.MipLevel)
                 {
                     return Fail("non-decreasing mip traversal detected; parentCluster=" + std::to_string(ClusterIndex)
@@ -663,7 +663,7 @@ uint32_t FClusterDagRuntime::GetOrAddRangeForSection(
     return static_cast<uint32_t>(IndirectDrawRanges.size() - 1);
 }
 
-void FClusterDagRuntime::AppendSectionDrawDataRecords(
+void FClusterDagRuntime::AppendSectionDrawDatas(
     const FWorldSectionList& DrawSections,
     const FMeshSection& Section,
     uint32_t SortedIndex,
@@ -770,12 +770,37 @@ void FClusterDagRuntime::BuildStreamingPageClusterPayload(
     PageClusterIndices.erase(std::unique(PageClusterIndices.begin(), PageClusterIndices.end()), PageClusterIndices.end());
 
     PageSource.ResetScenePagePayload(PageClusterIndices.size());
+    std::unordered_map<uint32_t, uint32_t> PageClusterLocalIndices;
+    PageClusterLocalIndices.reserve(PageClusterIndices.size());
+    for (uint32_t PageLocalClusterIndex = 0u; PageLocalClusterIndex < static_cast<uint32_t>(PageClusterIndices.size()); ++PageLocalClusterIndex)
+    {
+        PageClusterLocalIndices.emplace(BaseClusterIndex + PageClusterIndices[PageLocalClusterIndex], PageLocalClusterIndex);
+    }
+
+    for (FRuntimeClusterChildRef& ChildRef : PageSource.SceneGroupChildRefs)
+    {
+        if (ChildRef.ClusterIndex == GClusterDAGInvalidIndex)
+        {
+            ChildRef.InstanceIndex = GClusterDAGInvalidIndex;
+            continue;
+        }
+
+        const auto PageLocalIt = PageClusterLocalIndices.find(ChildRef.ClusterIndex);
+        if (PageLocalIt == PageClusterLocalIndices.end())
+        {
+            PageSource.bValid = false;
+            ChildRef.InstanceIndex = GClusterDAGInvalidIndex;
+            continue;
+        }
+        ChildRef.InstanceIndex = PageLocalIt->second;
+    }
+
     std::unordered_map<uint32_t, uint32_t> PageVertexRemap;
     for (uint32_t LocalClusterIndex : PageClusterIndices)
     {
         const FRuntimeCluster& RuntimeCluster = RuntimeHierarchy.Clusters[LocalClusterIndex];
-        FClusterDagStreamingPageSource::FSceneClusterRecord ClusterRecord;
-        ClusterRecord.GlobalClusterIndex = BaseClusterIndex + LocalClusterIndex;
+        FClusterDagStreamingPageSource::FClusterData ClusterData;
+        ClusterData.GlobalClusterIndex = BaseClusterIndex + LocalClusterIndex;
 
         const DirectX::XMFLOAT4 SceneBounds = TransformBoundingSphere(
             DirectX::XMFLOAT4(RuntimeCluster.Bounds.Center.x, RuntimeCluster.Bounds.Center.y, RuntimeCluster.Bounds.Center.z, RuntimeCluster.Bounds.Radius),
@@ -785,16 +810,16 @@ void FClusterDagRuntime::BuildStreamingPageClusterPayload(
             DirectX::XMFLOAT4(RuntimeCluster.LodBoundsCenter.x, RuntimeCluster.LodBoundsCenter.y, RuntimeCluster.LodBoundsCenter.z, RuntimeCluster.LodBoundsRadius),
             World,
             SectionScale);
-        ClusterRecord.SetBounds(SceneBounds, SceneLodBounds);
-        ClusterRecord.LODError = RuntimeCluster.LODError * SectionScale;
-        ClusterRecord.MaxEdgeLength = RuntimeCluster.MaxEdgeLength * SectionScale;
-        ClusterRecord.GroupIndex = RuntimeCluster.GroupIndex != GClusterDAGInvalidIndex ? BaseGroupIndex + RuntimeCluster.GroupIndex : GClusterDAGInvalidIndex;
-        ClusterRecord.GeneratingGroupIndex = RuntimeCluster.GeneratingGroupIndex != GClusterDAGInvalidIndex ? BaseGroupIndex + RuntimeCluster.GeneratingGroupIndex : GClusterDAGInvalidIndex;
-        ClusterRecord.DrawDataStart = BaseDrawDataIndex + RuntimeCluster.DrawDataStart;
-        ClusterRecord.DrawDataCount = RuntimeCluster.DrawDataCount;
-        ClusterRecord.TriangleCount = RuntimeCluster.TriangleCount;
-        ClusterRecord.MipLevel = RuntimeCluster.MipLevel;
-        PageSource.ScenePageClusters.push_back(ClusterRecord);
+        ClusterData.SetBounds(SceneBounds, SceneLodBounds);
+        ClusterData.LODError = RuntimeCluster.LODError * SectionScale;
+        ClusterData.MaxEdgeLength = RuntimeCluster.MaxEdgeLength * SectionScale;
+        ClusterData.GroupIndex = RuntimeCluster.GroupIndex != GClusterDAGInvalidIndex ? BaseGroupIndex + RuntimeCluster.GroupIndex : GClusterDAGInvalidIndex;
+        ClusterData.GeneratingGroupIndex = RuntimeCluster.GeneratingGroupIndex != GClusterDAGInvalidIndex ? BaseGroupIndex + RuntimeCluster.GeneratingGroupIndex : GClusterDAGInvalidIndex;
+        ClusterData.DrawDataStart = static_cast<uint32_t>(PageSource.ScenePageDrawDatas.size());
+        ClusterData.DrawDataCount = RuntimeCluster.DrawDataCount;
+        ClusterData.TriangleCount = RuntimeCluster.TriangleCount;
+        ClusterData.MipLevel = RuntimeCluster.MipLevel;
+        PageSource.ScenePageClusters.push_back(ClusterData);
 
         if (RuntimeCluster.DrawDataStart > RuntimeHierarchy.DrawDatas.size()
             || RuntimeCluster.DrawDataCount > RuntimeHierarchy.DrawDatas.size() - RuntimeCluster.DrawDataStart)
@@ -808,15 +833,15 @@ void FClusterDagRuntime::BuildStreamingPageClusterPayload(
             const uint32_t LocalDrawDataIndex = RuntimeCluster.DrawDataStart + DrawDataOffset;
             const FRuntimeClusterDrawData& RuntimeDrawData = RuntimeHierarchy.DrawDatas[LocalDrawDataIndex];
             const uint32_t PageLocalIndexStart = static_cast<uint32_t>(PageSource.ScenePagePackedIndices.size());
-            FClusterDagStreamingPageSource::FSceneDrawDataRecord DrawRecord;
-            DrawRecord.GlobalDrawDataIndex = BaseDrawDataIndex + LocalDrawDataIndex;
-            DrawRecord.StartIndex = PageLocalIndexStart;
-            DrawRecord.IndexCount = RuntimeDrawData.IndexCount;
+            FClusterDagStreamingPageSource::FDrawData DrawData;
+            DrawData.GlobalDrawDataIndex = BaseDrawDataIndex + LocalDrawDataIndex;
+            DrawData.StartIndex = PageLocalIndexStart;
+            DrawData.IndexCount = RuntimeDrawData.IndexCount;
             const uint32_t DrawRangeIndex = LocalDrawDataIndex < LocalDrawDataRangeIndices.size() ? LocalDrawDataRangeIndices[LocalDrawDataIndex] : 0u;
             const uint32_t DrawSectionIndex = LocalDrawDataIndex < LocalDrawDataSectionIndices.size() ? LocalDrawDataSectionIndices[LocalDrawDataIndex] : SortedIndex;
-            DrawRecord.RangeIndex = DrawRangeIndex;
-            DrawRecord.DrawSectionIndex = DrawSectionIndex;
-            PageSource.ScenePageDrawDatas.push_back(DrawRecord);
+            DrawData.RangeIndex = DrawRangeIndex;
+            DrawData.DrawSectionIndex = DrawSectionIndex;
+            PageSource.ScenePageDrawDatas.push_back(DrawData);
 
             const size_t PackedIndexCount = RuntimeHierarchy.PackedIndices.size();
             const bool bValidPackedIndexRange = RuntimeDrawData.IndexStart <= PackedIndexCount
@@ -951,7 +976,7 @@ void FClusterDagRuntime::AppendSectionClusters(
 {
     for (const FRuntimeCluster& RuntimeCluster : RuntimeHierarchy.Clusters)
     {
-        FClusterDta ClusterData;
+        FClusterData ClusterData;
         ClusterData.Bounds = TransformBoundingSphere(
             DirectX::XMFLOAT4(RuntimeCluster.Bounds.Center.x, RuntimeCluster.Bounds.Center.y, RuntimeCluster.Bounds.Center.z, RuntimeCluster.Bounds.Radius),
             World,
@@ -1073,7 +1098,7 @@ bool FClusterDagRuntime::PrepareRuntimeData(FDeferredRenderer& Owner, FPreparedD
 
         std::vector<uint32_t> LocalDrawDataSectionIndices;
         std::vector<uint32_t> LocalDrawDataRangeIndices;
-        AppendSectionDrawDataRecords(
+        AppendSectionDrawDatas(
             DrawSections,
             Section,
             SortedIndex,
@@ -1129,7 +1154,7 @@ bool FClusterDagRuntime::PrepareRuntimeData(FDeferredRenderer& Owner, FPreparedD
 
     for (FClusterDagStreamingPageSource& PageSource : OutData.StreamingPageSources)
     {
-        for (FClusterDagStreamingPageSource::FSceneDrawDataRecord& DrawData : PageSource.ScenePageDrawDatas)
+        for (FClusterDagStreamingPageSource::FDrawData& DrawData : PageSource.ScenePageDrawDatas)
         {
             if (DrawData.RangeIndex < IndirectDrawRanges.size())
             {
@@ -1170,7 +1195,7 @@ bool FClusterDagRuntime::CreateRuntimeResources(FDeferredRenderer& Owner, FDX12D
     {
         RuntimeMaxTraversalLevels = (std::max)(RuntimeMaxTraversalLevels, Group.MipLevel + 2u);
     }
-    for (const FClusterDta& Cluster : Data.Clusters)
+    for (const FClusterData& Cluster : Data.Clusters)
     {
         RuntimeMaxTraversalLevels = (std::max)(RuntimeMaxTraversalLevels, Cluster.MipLevel + 2u);
     }
@@ -1424,7 +1449,7 @@ bool FClusterDagRuntime::UploadRuntimeResources(FDeferredRenderer& Owner, FDX12D
     std::vector<FUploadBuffer> IndirectTemplateUploads(Frames);
 
     CreateUploadBuffer(Device, L"ClusterDagGroupBufferUpload", sizeof(FGroupData) * Data.Groups.size(), GroupUpload, Data.Groups.data());
-    CreateUploadBuffer(Device, L"ClusterDagClusterBufferUpload", sizeof(FClusterDta) * Data.Clusters.size(), ClusterUpload, Data.Clusters.data());
+    CreateUploadBuffer(Device, L"ClusterDagClusterBufferUpload", sizeof(FClusterData) * Data.Clusters.size(), ClusterUpload, Data.Clusters.data());
     CreateUploadBuffer(Device, L"ClusterDagChildRefBufferUpload", sizeof(FRuntimeClusterChildRef) * Data.ChildRefs.size(), ChildRefUpload, Data.ChildRefs.data());
     CreateUploadBuffer(Device, L"ClusterDagRootGroupBufferUpload", sizeof(uint32_t) * Data.RootGroups.size(), RootGroupUpload, Data.RootGroups.data());
     CreateUploadBuffer(Device, L"ClusterDagDrawDataBufferUpload", sizeof(FDrawData) * Data.DrawDatas.size(), DrawDataUpload, Data.DrawDatas.data());
@@ -1475,7 +1500,7 @@ bool FClusterDagRuntime::UploadRuntimeResources(FDeferredRenderer& Owner, FDX12D
 
     UploadList->ResourceBarrier(static_cast<UINT>(PreCopyBarriers.size()), PreCopyBarriers.data());
     UploadList->CopyBufferRegion(GroupBuffer.Get(), 0, GroupUpload.Get(), 0, sizeof(FGroupData) * Data.Groups.size());
-    UploadList->CopyBufferRegion(ClusterBuffer.Get(), 0, ClusterUpload.Get(), 0, sizeof(FClusterDta) * Data.Clusters.size());
+    UploadList->CopyBufferRegion(ClusterBuffer.Get(), 0, ClusterUpload.Get(), 0, sizeof(FClusterData) * Data.Clusters.size());
     UploadList->CopyBufferRegion(ChildRefBuffer.Get(), 0, ChildRefUpload.Get(), 0, sizeof(FRuntimeClusterChildRef) * Data.ChildRefs.size());
     UploadList->CopyBufferRegion(RootGroupBuffer.Get(), 0, RootGroupUpload.Get(), 0, sizeof(uint32_t) * Data.RootGroups.size());
     UploadList->CopyBufferRegion(DrawDataBuffer.Get(), 0, DrawDataUpload.Get(), 0, sizeof(FDrawData) * Data.DrawDatas.size());

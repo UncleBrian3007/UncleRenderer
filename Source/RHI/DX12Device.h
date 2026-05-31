@@ -45,6 +45,7 @@ public:
     ~FDX12Device();
 
     bool Initialize();
+    static void ReportLiveObjects();
 
     D3D_SHADER_MODEL    GetShaderModel() const { return ShaderModel; }
 

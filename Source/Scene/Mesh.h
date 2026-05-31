@@ -80,6 +80,7 @@ public:
     void BuildMeshlets(uint32_t MaxVertices = 64, uint32_t MaxTriangles = 124, float ConeWeight = 0.0f);
     void BuildMeshletGroups(const std::vector<size_t>& PrimitiveIndices, uint32_t MaxVertices = 64, uint32_t MaxTriangles = 124, float ConeWeight = 0.0f);
     void BuildClusterDAGs(const FClusterDAGBuildParams& Params = {});
+    void ReleaseClusterDAGAuthoringData();
 
 private:
     std::vector<FPrimitive> Primitives;

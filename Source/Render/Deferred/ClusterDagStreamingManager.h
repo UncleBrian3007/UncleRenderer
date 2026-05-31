@@ -41,7 +41,7 @@ static_assert(sizeof(FClusterDagPageTableEntry) == 16, "FClusterDagPageTableEntr
 
 struct FClusterDagStreamingPageSource
 {
-    struct FSceneClusterRecord
+    struct FClusterData
     {
         uint32_t GlobalClusterIndex = GClusterDAGInvalidIndex;
         float Bounds[4] = {};
@@ -68,7 +68,7 @@ struct FClusterDagStreamingPageSource
         }
     };
 
-    struct FSceneDrawDataRecord
+    struct FDrawData
     {
         uint32_t GlobalDrawDataIndex = GClusterDAGInvalidIndex;
         uint32_t StartIndex = 0u;
@@ -91,8 +91,8 @@ struct FClusterDagStreamingPageSource
     uint32_t SceneGroupFlags = 0u;
     uint32_t SceneGroupMipLevel = 0u;
     std::vector<FRuntimeClusterChildRef> SceneGroupChildRefs;
-    std::vector<FSceneClusterRecord> ScenePageClusters;
-    std::vector<FSceneDrawDataRecord> ScenePageDrawDatas;
+    std::vector<FClusterData> ScenePageClusters;
+    std::vector<FDrawData> ScenePageDrawDatas;
     std::vector<uint32_t> ScenePagePackedIndices;
     std::vector<FClusterDagPackedPosition> ScenePagePackedPositions;
     std::vector<uint32_t> ScenePagePackedNormals;
