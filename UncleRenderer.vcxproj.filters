@@ -212,6 +212,9 @@
     <ClCompile Include="Source\World\SkeletalMesh.cpp">
       <Filter>Source Files\World</Filter>
     </ClCompile>
+    <ClCompile Include="Source\World\World.cpp">
+      <Filter>Source Files\World</Filter>
+    </ClCompile>
     <ClCompile Include="Source\Render\EnvironmentMap.cpp">
       <Filter>Source Files\Render</Filter>
     </ClCompile>

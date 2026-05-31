@@ -15,7 +15,6 @@
 #include "SkyAtmosphere.h"
 #include "TextureLoader.h"
 #include "RenderGraph.h"
-#include "../Scene/GltfAnimation.h"
 
 class FDX12Device;
 class FDX12CommandContext;
@@ -63,7 +62,7 @@ private:
     void ConfigureFrameGraph(FRenderGraph& Graph) const;
     void ImportFrameResources(FRenderGraph& Graph, FForwardFrameResources& OutResources);
     void UpdateCullingVisibility(const FCamera& Camera);
-    void UpdateSceneConstants(const FCamera& Camera, const FMeshSection& Section, uint64_t ConstantBufferOffset, const DirectX::XMMATRIX& LightViewProjection);
+    void UpdateSceneConstants(const FCamera& Camera, const FObject& Object, const FMeshSection& Section, uint64_t ConstantBufferOffset, const DirectX::XMMATRIX& LightViewProjection);
 
     // Render passes
     void AddGpuCullingPass(FRenderGraph& Graph, const FCamera& Camera, FRGResourceHandle DepthHandle);
@@ -97,6 +96,4 @@ private:
     // Scene resources
     std::unique_ptr<FSkyAtmosphere>                              SkyAtmosphere;
     Microsoft::WRL::ComPtr<ID3D12Resource>                       SceneTexture;
-    // Scene and animation data
-    std::vector<FGltfScene> GltfScenes;
 };

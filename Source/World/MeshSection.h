@@ -87,8 +87,6 @@ struct FSectionClusterDagData
     uint32_t ClusterDagMeshIndex = GClusterDAGInvalidIndex;
     std::wstring ClusterDagSourceFilePath;
     std::wstring ClusterDagCacheFilePath;
-    uint32_t ClusterDagRuntimeClusterOffset = 0;
-    uint32_t ClusterDagRuntimeClusterCount = 0;
     uint32_t ClusterDagIndexCount = 0;
     bool bUseClusterDagRuntime = false;
     bool bCoveredByClusterDagRuntime = false;
@@ -115,9 +113,6 @@ struct FSectionRaytracingData
 
 struct FMeshSection : public FSectionRenderData, public FSectionSkinningData, public FSectionClusterDagData, public FSectionRaytracingData
 {
-    DirectX::XMFLOAT4X4 WorldMatrix{};
-    DirectX::XMFLOAT4X4 PreviousWorldMatrix{};
-    bool bHasPreviousWorldMatrix = false;
     DirectX::XMFLOAT3 Center{ 0.0f, 0.0f, 0.0f };
     float Radius = 1.0f;
     std::string Name;
@@ -125,10 +120,6 @@ struct FMeshSection : public FSectionRenderData, public FSectionSkinningData, pu
     DirectX::XMFLOAT3 BoundsMax{ 0.0f, 0.0f, 0.0f };
     uint32_t ObjectId = 0;
     bool bVisible = true;
-    int GltfSceneIndex = -1;
-    int GltfNodeIndex = -1;
-    int GltfMeshIndex = -1;
-    int GltfSkinIndex = -1;
 
     FSectionRenderData& GetRenderData() { return *this; }
     const FSectionRenderData& GetRenderData() const { return *this; }

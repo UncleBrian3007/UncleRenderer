@@ -620,7 +620,7 @@ bool FDeferredRenderer::InitializeSceneResources(FDX12Device* Device, DXGI_FORMA
 bool FDeferredRenderer::InitializeSceneModelResources(FDX12Device* Device, const FRendererConfig& Config)
 {
     const std::wstring SceneFilePath = Config.SceneFile.empty() ? L"Assets/Scenes/Scene.json" : Config.SceneFile;
-    if (!SceneWorldBuilder::LoadWorldFromSceneFile(Device, SceneFilePath, World, SceneCenter, SceneRadius, &GltfScenes))
+    if (!SceneWorldBuilder::LoadWorldFromSceneFile(Device, SceneFilePath, World, SceneCenter, SceneRadius))
     {
         LogError("scene JSON could not be loaded.");
         return false;
@@ -633,12 +633,13 @@ bool FDeferredRenderer::InitializeSceneModelResources(FDX12Device* Device, const
     }
 
     const std::vector<FDrawSectionView>& DrawSections = GetWorld().GetDrawSectionViews();
-    SceneWorldMatrix = DrawSections.empty() ? DirectX::XMFLOAT4X4{} : DrawSections.front().Section->WorldMatrix;
-    for (const FDrawSectionView& DrawSection : DrawSections)
+    SceneWorldMatrix = DrawSections.empty() ? DirectX::XMFLOAT4X4{} : DrawSections.front().Object->GetWorldMatrix();
+    for (const std::unique_ptr<FObject>& Object : GetWorld().GetObjects())
     {
-        FMeshSection& Section = *DrawSection.Section;
-        Section.PreviousWorldMatrix = Section.WorldMatrix;
-        Section.bHasPreviousWorldMatrix = false;
+        if (Object)
+        {
+            Object->ResetPreviousWorldMatrix();
+        }
     }
 
     SceneConstantBufferStride = (sizeof(FSceneConstants) + 255ULL) & ~255ULL;
@@ -825,7 +826,7 @@ void FDeferredRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12
     GetWorld().Tick(DeltaTime);
     ClusterDagSceneConstantsPreparedFrame = UINT32_MAX;
 
-    const bool bAnySkinningUpdated = RendererUtils::UpdateGltfSceneAnimation(World, GltfScenes, DeltaTime);
+    const bool bAnySkinningUpdated = World.WasAnySkinningUpdatedLastTick();
 
     GpuDebugState.PreparePrint(CmdContext);
     GpuDebugState.PrepareLine(CmdContext);
@@ -986,11 +987,12 @@ void FDeferredRenderer::FinalizeFrameState(const FDeferredFrameState& FrameState
     RestirGI->FinalizeFrame(*this);
     RestirGIDenoiser->FinalizeFrame(*this);
 
-    for (const FDrawSectionView& DrawSection : GetWorld().GetDrawSectionViews())
+    for (const std::unique_ptr<FObject>& Object : GetWorld().GetObjects())
     {
-        FMeshSection& Section = *DrawSection.Section;
-        Section.PreviousWorldMatrix = Section.WorldMatrix;
-        Section.bHasPreviousWorldMatrix = true;
+        if (Object)
+        {
+            Object->SetPreviousWorldMatrix(Object->GetWorldMatrix());
+        }
     }
 }
 
@@ -1034,7 +1036,7 @@ bool FDeferredRenderer::CreateSceneTextures(FDX12Device* Device, FWorld& World)
 }
 
 
-void FDeferredRenderer::WriteSceneConstants(const FCamera& Camera, const FMeshSection& Section, uint64_t ConstantBufferOffset, uint8_t* ConstantBufferMapped, bool bUseClusterDagIndexBuffer)
+void FDeferredRenderer::WriteSceneConstants(const FCamera& Camera, const FObject& Object, const FMeshSection& Section, uint64_t ConstantBufferOffset, uint8_t* ConstantBufferMapped, bool bUseClusterDagIndexBuffer)
 {
     if (ConstantBufferMapped == nullptr)
     {
@@ -1050,10 +1052,10 @@ void FDeferredRenderer::WriteSceneConstants(const FCamera& Camera, const FMeshSe
     const uint32_t TaaSampleIndex = Taa->GetSampleIndex();
     const uint32_t GtaoTemporalIndex = (Gtao->IsEnabled() && Gtao->IsJitterEnabled()) ? TaaSampleIndex : 0u;
 
-    const DirectX::XMMATRIX PreviousWorld = Section.bHasPreviousWorldMatrix
-        ? DirectX::XMLoadFloat4x4(&Section.PreviousWorldMatrix)
+    const DirectX::XMMATRIX PreviousWorld = Object.HasPreviousWorldMatrix()
+        ? DirectX::XMLoadFloat4x4(&Object.GetPreviousWorldMatrix())
         : DirectX::XMMatrixIdentity();
-    const bool bHasPreviousWorld = Section.bHasPreviousWorldMatrix;
+    const bool bHasPreviousWorld = Object.HasPreviousWorldMatrix();
 
     uint32_t PreviousSkinnedPositionBindlessIndex = UINT32_MAX;
     bool bHasPreviousSkinning = false;
@@ -1076,6 +1078,7 @@ void FDeferredRenderer::WriteSceneConstants(const FCamera& Camera, const FMeshSe
 
     RendererUtils::FUpdateSceneConstantsParams Params;
     Params.Camera = &Camera;
+    Params.Object = &Object;
     Params.Section = &Section;
     Params.LightIntensity = LightIntensity;
     Params.LightDirection = LightDir;
@@ -1174,24 +1177,26 @@ void FDeferredRenderer::EnsureClusterDagDebugColorBuffers()
     }
 }
 
-void FDeferredRenderer::UpdateSceneConstants(const FCamera& Camera, const FMeshSection& Section, size_t DrawSectionIndex, uint64_t ConstantBufferOffset, bool bUseClusterDagIndexBuffer)
+void FDeferredRenderer::UpdateSceneConstants(const FCamera& Camera, const FObject& Object, const FMeshSection& Section, size_t DrawSectionIndex, uint64_t ConstantBufferOffset, bool bUseClusterDagIndexBuffer)
 {
     (void)DrawSectionIndex;
 
     WriteSceneConstants(
         Camera,
+        Object,
         Section,
         ConstantBufferOffset,
         GetSceneConstantBufferMapped(),
         bUseClusterDagIndexBuffer);
 }
 
-void FDeferredRenderer::UpdateClusterDagSceneConstants(const FCamera& Camera, const FMeshSection& Section, size_t DrawSectionIndex, uint64_t ConstantBufferOffset)
+void FDeferredRenderer::UpdateClusterDagSceneConstants(const FCamera& Camera, const FObject& Object, const FMeshSection& Section, size_t DrawSectionIndex, uint64_t ConstantBufferOffset)
 {
     (void)DrawSectionIndex;
 
     WriteSceneConstants(
         Camera,
+        Object,
         Section,
         ConstantBufferOffset,
         GetClusterDagSceneConstantBufferMapped(),
@@ -1223,7 +1228,7 @@ void FDeferredRenderer::EnsureClusterDagSceneConstantsPrepared(const FCamera& Ca
         }
 
         const uint64_t ConstantBufferOffset = SceneConstantBufferStride * DrawSection.DrawSectionIndex;
-        UpdateClusterDagSceneConstants(Camera, Section, DrawSection.DrawSectionIndex, ConstantBufferOffset);
+        UpdateClusterDagSceneConstants(Camera, *DrawSection.Object, Section, DrawSection.DrawSectionIndex, ConstantBufferOffset);
     }
 
     ClusterDagSceneConstantsPreparedFrame = GetFrameIndex();

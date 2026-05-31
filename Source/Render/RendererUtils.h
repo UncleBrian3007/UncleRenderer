@@ -13,12 +13,12 @@
 #include "../../Shaders/PipelineKeyShared.h"
 #include "GpuResource.h"
 #include "../World/MeshSection.h"
-#include "../Scene/GltfAnimation.h"
 
 class FDX12Device;
 class FCamera;
 class FShaderCompiler;
 class FWorld;
+class FObject;
 struct FGltfMaterialTextures;
 
 struct FSceneConstants
@@ -161,6 +161,7 @@ namespace RendererUtils
     struct FUpdateSceneConstantsParams
     {
         const FCamera* Camera = nullptr;
+        const FObject* Object = nullptr;
         const FMeshSection* Section = nullptr;
         float LightIntensity = 1.0f;
         DirectX::XMVECTOR LightDirection = DirectX::XMVectorZero();
@@ -243,10 +244,6 @@ namespace RendererUtils
     void UpdateSceneConstants(const FUpdateSceneConstantsParams& Params);
     FMaterialBindlessIndices BuildMaterialBindlessIndices(const FMeshSection& Section);
     FMaterialBindlessIndices BuildMaterialBindlessIndices(const FSectionRenderData& RenderData);
-    bool UpdateGltfSceneAnimation(
-        FWorld& World,
-        std::vector<FGltfScene>& Scenes,
-        float DeltaTime);
     DirectX::XMMATRIX BuildDirectionalLightViewProjection(
         const DirectX::XMFLOAT3& SceneCenter,
         float SceneRadius,

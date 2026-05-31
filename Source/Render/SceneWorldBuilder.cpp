@@ -489,12 +489,7 @@ namespace
         OutMeshSection.DrawIndexCount = Section.IndexCount;
         OutMeshSection.BaseIndexCount = Section.IndexCount;
 
-        XMStoreFloat4x4(&OutMeshSection.WorldMatrix, Inputs.World);
         XMStoreFloat4x4(&OutMeshSection.ModelTransform, Inputs.ModelTransform);
-        OutMeshSection.GltfSceneIndex = Inputs.SceneIndex;
-        OutMeshSection.GltfNodeIndex = Inputs.Node.NodeIndex;
-        OutMeshSection.GltfMeshIndex = static_cast<int>(Inputs.MeshIndex);
-        OutMeshSection.GltfSkinIndex = Inputs.Node.SkinIndex;
 
         const XMVECTOR CenterVec = XMVector3TransformCoord(
             XMVectorSet(Inputs.MeshCenter.x, Inputs.MeshCenter.y, Inputs.MeshCenter.z, 1.0f),
@@ -704,19 +699,19 @@ namespace
         }
     }
 
-    void InitializeSkinningForMeshSection(FDX12Device* Device, const FGltfScene& LoadedScene, FMeshSection& InOutMeshSection)
+    void InitializeSkinningForMeshSection(FDX12Device* Device, int SkinIndex, const FGltfScene& LoadedScene, FMeshSection& InOutMeshSection)
     {
-        if (!(Device && InOutMeshSection.GltfSkinIndex >= 0))
+        if (!(Device && SkinIndex >= 0))
         {
             return;
         }
 
-        if (static_cast<size_t>(InOutMeshSection.GltfSkinIndex) >= LoadedScene.Skins.size())
+        if (static_cast<size_t>(SkinIndex) >= LoadedScene.Skins.size())
         {
             return;
         }
 
-        const FGltfSkin& Skin = LoadedScene.Skins[static_cast<size_t>(InOutMeshSection.GltfSkinIndex)];
+        const FGltfSkin& Skin = LoadedScene.Skins[static_cast<size_t>(SkinIndex)];
         InOutMeshSection.BoneMatrixCount = static_cast<uint32_t>(Skin.Joints.size());
         if (InOutMeshSection.BoneMatrixCount == 0)
         {
@@ -792,10 +787,10 @@ bool SceneWorldBuilder::LoadWorldFromSceneFile(
     const std::wstring& SceneFilePath,
     FWorld& OutWorld,
     DirectX::XMFLOAT3& OutSceneCenter,
-    float& OutSceneRadius,
-    std::vector<FGltfScene>* OutGltfScenes)
+    float& OutSceneRadius)
 {
     OutWorld.Clear();
+    std::vector<FGltfAnimationRuntime>& OutAnimationRuntimes = OutWorld.GetGltfAnimationRuntimes();
 
     uint32_t NextObjectId = 1;
 
@@ -830,7 +825,7 @@ bool SceneWorldBuilder::LoadWorldFromSceneFile(
             continue;
         }
 
-        const int SceneIndex = OutGltfScenes ? static_cast<int>(OutGltfScenes->size()) : -1;
+        const int SceneIndex = static_cast<int>(OutAnimationRuntimes.size());
 
         if (LoadedScene.Meshes.empty())
         {
@@ -991,6 +986,7 @@ bool SceneWorldBuilder::LoadWorldFromSceneFile(
             {
                 auto Skeletal = std::make_unique<FSkeletalMesh>();
                 Skeletal->SetGltfSkinIndex(LoadedNode.SkinIndex);
+                Skeletal->SetGltfIndices(SceneIndex, LoadedNode.NodeIndex, static_cast<int>(MeshIndex));
                 Object = std::move(Skeletal);
             }
             else
@@ -999,7 +995,6 @@ bool SceneWorldBuilder::LoadWorldFromSceneFile(
             }
 
             Object->SetName(BaseName);
-            Object->SetGltfIndices(SceneIndex, LoadedNode.NodeIndex, static_cast<int>(MeshIndex));
             std::vector<FMeshSection>& Sections = Object->GetSections();
             Sections.clear();
             Sections.reserve(SectionCount);
@@ -1018,7 +1013,7 @@ bool SceneWorldBuilder::LoadWorldFromSceneFile(
                 }
 
                 ConfigureWholeMeshClusterDagRuntimeForSection(Device, SectionInputs, SectionIndex, UploadBatch, MeshSection);
-                InitializeSkinningForMeshSection(Device, LoadedScene, MeshSection);
+                InitializeSkinningForMeshSection(Device, SectionInputs.Node.SkinIndex, LoadedScene, MeshSection);
 
                 MeshSection.PipelineKey = RendererUtils::BuildPipelineKey(MeshSection);
                 UpdateSceneBounds(MeshSection.Center, MeshSection.Radius, SceneMin, SceneMax);
@@ -1058,10 +1053,16 @@ bool SceneWorldBuilder::LoadWorldFromSceneFile(
             }
         }
 
-        if (OutGltfScenes)
-        {
-            OutGltfScenes->push_back(std::move(LoadedScene));
-        }
+        // Move only the animation-relevant subset and let LoadedScene drop its
+        // heavy Meshes / MeshPrimitiveSections at end of scope.
+        FGltfAnimationRuntime AnimationRuntime;
+        AnimationRuntime.Nodes = std::move(LoadedScene.Nodes);
+        AnimationRuntime.NodeTransforms = std::move(LoadedScene.NodeTransforms);
+        AnimationRuntime.Skins = std::move(LoadedScene.Skins);
+        AnimationRuntime.Animations = std::move(LoadedScene.Animations);
+        AnimationRuntime.Pose = std::move(LoadedScene.Pose);
+        AnimationRuntime.AnimationTime = LoadedScene.AnimationTime;
+        OutAnimationRuntimes.push_back(std::move(AnimationRuntime));
 
     }
 

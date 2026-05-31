@@ -8,6 +8,18 @@
 
 #include "MeshSection.h"
 
+struct FGltfAnimationRuntime;
+
+// Per-Tick context the FWorld passes to every object. Carries the immutable
+// snapshot of animation runtimes for this frame and a mutable output flag
+// that skinning-updating objects flip when they touch their bone matrices.
+struct FWorldTickContext
+{
+    const std::vector<FGltfAnimationRuntime>* AnimationRuntimes = nullptr;
+    bool bAnimationTimeAdvanced = false;
+    bool bAnySkinningUpdated = false;
+};
+
 // Kind of world object. Used instead of RTTI to branch on concrete type.
 enum class EObjectType : uint32_t
 {
@@ -29,7 +41,11 @@ public:
     virtual ~FObject() = default;
 
     virtual EObjectType GetType() const = 0;
-    virtual void Tick(float DeltaTime) { (void)DeltaTime; }
+    virtual void Tick(float DeltaTime, FWorldTickContext& Ctx)
+    {
+        (void)DeltaTime;
+        (void)Ctx;
+    }
 
     const std::string& GetName() const { return Name; }
     void SetName(const std::string& InName) { Name = InName; }
@@ -66,20 +82,4 @@ protected:
     bool bHasPreviousWorldMatrix = false;
     FObjectBounds Bounds{};
     std::vector<FMeshSection> Sections;
-
-    // Link back to the source glTF data.
-    int GltfSceneIndex = -1;
-    int GltfNodeIndex = -1;
-    int GltfMeshIndex = -1;
-
-public:
-    int GetGltfSceneIndex() const { return GltfSceneIndex; }
-    int GetGltfNodeIndex() const { return GltfNodeIndex; }
-    int GetGltfMeshIndex() const { return GltfMeshIndex; }
-    void SetGltfIndices(int SceneIndex, int NodeIndex, int MeshIndex)
-    {
-        GltfSceneIndex = SceneIndex;
-        GltfNodeIndex = NodeIndex;
-        GltfMeshIndex = MeshIndex;
-    }
 };

@@ -7,6 +7,7 @@
 #include <vector>
 #include <wrl.h>
 #include <d3d12.h>
+#include <DirectXMath.h>
 
 #include "../GpuResource.h"
 #include "../../Scene/ClusterDAG.h"
@@ -53,6 +54,18 @@ struct FClusterDagStreamingPageSource
         uint32_t DrawDataCount = 0u;
         uint32_t TriangleCount = 0u;
         uint32_t MipLevel = 0u;
+
+        void SetBounds(const DirectX::XMFLOAT4& InBounds, const DirectX::XMFLOAT4& InLodBounds)
+        {
+            Bounds[0] = InBounds.x;
+            Bounds[1] = InBounds.y;
+            Bounds[2] = InBounds.z;
+            Bounds[3] = InBounds.w;
+            LodBounds[0] = InLodBounds.x;
+            LodBounds[1] = InLodBounds.y;
+            LodBounds[2] = InLodBounds.z;
+            LodBounds[3] = InLodBounds.w;
+        }
     };
 
     struct FSceneDrawDataRecord
@@ -88,6 +101,55 @@ struct FClusterDagStreamingPageSource
     std::vector<uint32_t> ScenePagePackedColors;
     std::wstring SourceFilePath;
     std::wstring CacheFilePath;
+
+    void SetSceneGroupBounds(const DirectX::XMFLOAT4& InBounds, const DirectX::XMFLOAT4& InLodBounds)
+    {
+        SceneGroupBounds[0] = InBounds.x;
+        SceneGroupBounds[1] = InBounds.y;
+        SceneGroupBounds[2] = InBounds.z;
+        SceneGroupBounds[3] = InBounds.w;
+        SceneGroupLodBounds[0] = InLodBounds.x;
+        SceneGroupLodBounds[1] = InLodBounds.y;
+        SceneGroupLodBounds[2] = InLodBounds.z;
+        SceneGroupLodBounds[3] = InLodBounds.w;
+    }
+
+    void ResetScenePagePayload(size_t ClusterReserve)
+    {
+        ScenePageClusters.clear();
+        ScenePageClusters.reserve(ClusterReserve);
+        ScenePageDrawDatas.clear();
+        ScenePagePackedIndices.clear();
+        ScenePagePackedPositions.clear();
+        ScenePagePackedNormals.clear();
+        ScenePagePackedUVs.clear();
+        ScenePagePackedTangents.clear();
+        ScenePagePackedColors.clear();
+    }
+
+    bool AppendPackedVertex(uint32_t SourceVertexIndex, const FClusterDAGPackedVertexData& PackedVertexData)
+    {
+        if (SourceVertexIndex >= PackedVertexData.Positions.size())
+        {
+            return false;
+        }
+
+        ScenePagePackedPositions.push_back(PackedVertexData.Positions[SourceVertexIndex]);
+        ScenePagePackedNormals.push_back(PackedVertexData.Normals[SourceVertexIndex]);
+        if (!PackedVertexData.UVs.empty())
+        {
+            ScenePagePackedUVs.push_back(PackedVertexData.UVs[SourceVertexIndex]);
+        }
+        if (!PackedVertexData.Tangents.empty())
+        {
+            ScenePagePackedTangents.push_back(PackedVertexData.Tangents[SourceVertexIndex]);
+        }
+        if (!PackedVertexData.Colors.empty())
+        {
+            ScenePagePackedColors.push_back(PackedVertexData.Colors[SourceVertexIndex]);
+        }
+        return true;
+    }
 };
 
 class FClusterDagStreamingManager

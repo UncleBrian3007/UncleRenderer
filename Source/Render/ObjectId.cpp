@@ -165,7 +165,7 @@ void FObjectId::AddPass(FDeferredPassContext& Context) const
             const uint32_t DrawSectionIndex = DrawSection.DrawSectionIndex;
             const FMeshSection& Section = *DrawSection.Section;
             const uint64_t ConstantBufferOffset = Owner.SceneConstantBufferStride * DrawSectionIndex;
-            Owner.UpdateSceneConstants(*Data.Camera, Section, DrawSectionIndex, ConstantBufferOffset);
+            Owner.UpdateSceneConstants(*Data.Camera, *DrawSection.Object, Section, DrawSectionIndex, ConstantBufferOffset);
         }
 
         for (const FDrawSectionView& DrawSection : DrawSections)

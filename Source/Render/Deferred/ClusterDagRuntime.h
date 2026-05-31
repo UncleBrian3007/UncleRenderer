@@ -49,7 +49,8 @@ public:
     const std::vector<FClusterDagStreamingPageSource>& GetStreamingPageSources() const { return StreamingPageSources; }
 
 private:
-    struct FSceneGroupData
+    // ClusterDagCommon.hlsl-aligned data structures for CPU/GPU shared data
+    struct FGroupData
     {
         DirectX::XMFLOAT4 Bounds{ 0.0f, 0.0f, 0.0f, 0.0f };
         DirectX::XMFLOAT4 LodBounds{ 0.0f, 0.0f, 0.0f, 0.0f };
@@ -59,9 +60,9 @@ private:
         uint32_t Flags = 0;
         uint32_t MipLevel = 0;
     };
-    static_assert(sizeof(FSceneGroupData) == 52, "FSceneGroupData must match cluster DAG runtime shader layout");
+    static_assert(sizeof(FGroupData) == 52, "FGroupData must match cluster DAG runtime shader layout");
 
-    struct FSceneClusterData
+    struct FClusterDta
     {
         DirectX::XMFLOAT4 Bounds{ 0.0f, 0.0f, 0.0f, 0.0f };
         DirectX::XMFLOAT4 LodBounds{ 0.0f, 0.0f, 0.0f, 0.0f };
@@ -74,11 +75,11 @@ private:
         uint32_t TriangleCount = 0;
         uint32_t MipLevel = 0;
     };
-    static_assert(sizeof(FSceneClusterData) == 64, "FSceneClusterData must match cluster DAG runtime shader layout");
+    static_assert(sizeof(FClusterDta) == 64, "FClusterDta must match cluster DAG runtime shader layout");
 
     // Per-cluster draw data uploaded to GPU and consumed by the cluster DAG runtime shaders.
     // Each cluster may have multiple entries (one per material range).
-    struct FClusterDrawData
+    struct FDrawData
     {
         uint32_t StartIndex = 0;        // Byte offset into the shared index buffer where this cluster's triangles begin
         uint32_t IndexCount = 0;        // Number of indices (= triangles * 3) to draw for this cluster
@@ -87,12 +88,12 @@ private:
         uint32_t RangeCommandCount = 0; // IndirectDrawRanges[RangeIndex].Count; capacity guard for GPU command appends
         uint32_t DrawSectionIndex = 0;        // Draw-section index used by the visibility resolve path to recover per-section shading data
 
-        static FClusterDrawData Make(uint32_t InStartIndex, uint32_t InIndexCount, uint32_t InRangeIndex, uint32_t InRangeCommandStart, uint32_t InRangeCommandCount, uint32_t InDrawSectionIndex)
+        static FDrawData Make(uint32_t InStartIndex, uint32_t InIndexCount, uint32_t InRangeIndex, uint32_t InRangeCommandStart, uint32_t InRangeCommandCount, uint32_t InDrawSectionIndex)
         {
             return { InStartIndex, InIndexCount, InRangeIndex, InRangeCommandStart, InRangeCommandCount, InDrawSectionIndex };
         }
     };
-    static_assert(sizeof(FClusterDrawData) == 24, "FClusterDrawData must match cluster DAG runtime shader layout");
+    static_assert(sizeof(FDrawData) == 24, "FDrawData must match cluster DAG runtime shader layout");
 
     struct FVisibleEntry
     {
@@ -112,11 +113,11 @@ private:
 
     struct FPreparedData
     {
-        std::vector<FSceneGroupData> Groups;
-        std::vector<FSceneClusterData> Clusters;
+        std::vector<FGroupData> Groups;
+        std::vector<FClusterDta> Clusters;
         std::vector<FRuntimeClusterChildRef> ChildRefs;
         std::vector<uint32_t> RootGroups;
-        std::vector<FClusterDrawData> DrawDatas;
+        std::vector<FDrawData> DrawDatas;
         std::vector<FIndirectDrawCommand> CommandTemplates;
         std::vector<uint32_t> RangeOffsets;
         std::vector<FClusterDagStreamingPageSource> StreamingPageSources;
@@ -131,8 +132,7 @@ private:
         const FRuntimeClusterDrawData& RuntimeDrawData) const;
     uint32_t GetOrAddRangeForSection(
         const FWorldSectionList& DrawSections,
-        uint32_t DrawSectionIndex,
-        FPreparedData& OutData);
+        uint32_t DrawSectionIndex);
     void AppendSectionDrawDataRecords(
         const FWorldSectionList& DrawSections,
         const FMeshSection& Section,
@@ -156,6 +156,29 @@ private:
         const std::vector<uint32_t>& LocalDrawDataSectionIndices,
         const std::vector<uint32_t>& LocalDrawDataRangeIndices,
         FPreparedData& OutData);
+    void InitializeStreamingPageSource(
+        const FMeshSection& Section,
+        const FRuntimeClusterHierarchy& RuntimeHierarchy,
+        const FRuntimeClusterGroup& RuntimeGroup,
+        uint32_t LocalGroupIndex,
+        uint32_t PageIndex,
+        uint32_t BaseGroupIndex,
+        uint32_t BaseClusterIndex,
+        const FGroupData& GroupData,
+        FPreparedData& OutData) const;
+    void BuildStreamingPageClusterPayload(
+        const FMeshSection& Section,
+        uint32_t SortedIndex,
+        const FRuntimeClusterHierarchy& RuntimeHierarchy,
+        const FRuntimeClusterGroup& RuntimeGroup,
+        uint32_t BaseGroupIndex,
+        uint32_t BaseClusterIndex,
+        uint32_t BaseDrawDataIndex,
+        const DirectX::XMMATRIX& World,
+        float SectionScale,
+        const std::vector<uint32_t>& LocalDrawDataSectionIndices,
+        const std::vector<uint32_t>& LocalDrawDataRangeIndices,
+        FClusterDagStreamingPageSource& PageSource) const;
     void AppendSectionChildRefs(
         const FRuntimeClusterHierarchy& RuntimeHierarchy,
         uint32_t BaseClusterIndex,

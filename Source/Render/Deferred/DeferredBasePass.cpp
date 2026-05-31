@@ -685,7 +685,7 @@ void FDeferredBasePass::AddShadowPass(FDeferredPassContext& Context) const
                 continue;
             }
             const uint64_t ConstantBufferOffset = Owner.SceneConstantBufferStride * DrawSectionIndex;
-            Owner.UpdateSceneConstants(*Data.Camera, Section, DrawSectionIndex, ConstantBufferOffset);
+            Owner.UpdateSceneConstants(*Data.Camera, *DrawSection.Object, Section, DrawSectionIndex, ConstantBufferOffset);
         }
 
         for (const FDrawSectionView& DrawSection : DrawSections)
@@ -764,7 +764,7 @@ void FDeferredBasePass::AddDepthPrepass(FDeferredPassContext& Context) const
             const bool bUseClusterDagIndexBuffer = bClusterDagRuntimePathReady && Owner.ClusterDagRuntime->UsesRuntimeSection(Section);
             if (!bUseClusterDagIndexBuffer)
             {
-                Owner.UpdateSceneConstants(*Data.Camera, Section, DrawSectionIndex, ConstantBufferOffset);
+                Owner.UpdateSceneConstants(*Data.Camera, *DrawSection.Object, Section, DrawSectionIndex, ConstantBufferOffset);
             }
         }
 
@@ -887,7 +887,7 @@ void FDeferredBasePass::AddBasePass(FDeferredPassContext& Context, bool bClearTa
             const bool bUseClusterDagIndexBuffer = bClusterDagRuntimePathReady && Owner.ClusterDagRuntime->UsesRuntimeSection(Section);
             if (!bUseClusterDagIndexBuffer)
             {
-                Owner.UpdateSceneConstants(*Data.Camera, Section, DrawSectionIndex, ConstantBufferOffset);
+                Owner.UpdateSceneConstants(*Data.Camera, *DrawSection.Object, Section, DrawSectionIndex, ConstantBufferOffset);
             }
         }
 
@@ -1071,7 +1071,7 @@ void FDeferredBasePass::AddVelocityPass(FDeferredPassContext& Context) const
             const uint32_t DrawSectionIndex = DrawSection.DrawSectionIndex;
             const FMeshSection& Section = *DrawSection.Section;
             const uint64_t ConstantBufferOffset = Owner.SceneConstantBufferStride * DrawSectionIndex;
-            Owner.UpdateSceneConstants(*Data.Camera, Section, DrawSectionIndex, ConstantBufferOffset);
+            Owner.UpdateSceneConstants(*Data.Camera, *DrawSection.Object, Section, DrawSectionIndex, ConstantBufferOffset);
         }
 
         const auto IsWorldTransformChanged = [](const DirectX::XMFLOAT4X4& Current, const DirectX::XMFLOAT4X4& Previous)
@@ -1109,7 +1109,8 @@ void FDeferredBasePass::AddVelocityPass(FDeferredPassContext& Context) const
             if (!bNeedsVelocity)
             {
                 const bool bUseSkinning = IsValidBindlessIndex(Section.BoneMatrixBuffer.SrvBindlessIndex) && Section.BoneMatrixCount > 0;
-                const bool bWorldMoved = Section.bHasPreviousWorldMatrix && IsWorldTransformChanged(Section.WorldMatrix, Section.PreviousWorldMatrix);
+                const FObject& Object = *DrawSection.Object;
+                const bool bWorldMoved = Object.HasPreviousWorldMatrix() && IsWorldTransformChanged(Object.GetWorldMatrix(), Object.GetPreviousWorldMatrix());
                 const bool bSkinningMoved = bUseSkinning && Data.bAnySkinningUpdated && Section.bSkinningUpdatedThisFrame;
                 bNeedsVelocity = bWorldMoved || bSkinningMoved;
             }

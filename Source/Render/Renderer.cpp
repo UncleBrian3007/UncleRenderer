@@ -81,10 +81,10 @@ D3D12_GPU_DESCRIPTOR_HANDLE FRenderer::GetBindlessGpuHandle(uint32_t Index) cons
 
 bool FRenderer::GetSceneSectionStats(size_t& OutTotal, size_t& OutCulled) const
 {
-    const std::vector<FConstDrawSectionView>& DrawSections = World.GetDrawSectionViews();
+    const std::vector<FDrawSectionView>& DrawSections = World.GetDrawSectionViews();
     OutTotal = DrawSections.size();
     OutCulled = 0;
-    for (const FConstDrawSectionView& DrawSection : DrawSections)
+    for (const FDrawSectionView& DrawSection : DrawSections)
     {
         if (DrawSection.Section && !DrawSection.Section->bVisible)
         {
@@ -561,7 +561,7 @@ bool FRenderer::CreateSkinnedPositionBuffers()
         {
             CreateBindlessBuffer(Device,
                 L"SkinnedPositionBuffer_" + std::to_wstring(FrameIndex),
-                CreateStructuredBufferDesc<FFloat3>(VertexCount),
+                CreateRWStructuredBufferDesc<FFloat3>(VertexCount),
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                 Section.SkinnedPositionBuffers[FrameIndex],
                 true, true);
@@ -796,11 +796,12 @@ bool FRenderer::PrepareGpuDrivenDrawData(FGpuDrivenPreparedData& OutData)
         }
 
         const uint32_t RangeIndex = static_cast<uint32_t>(IndirectDrawRanges.size() - 1);
-        const DirectX::XMMATRIX World = DirectX::XMLoadFloat4x4(&Section.WorldMatrix);
+        const DirectX::XMFLOAT4X4& WorldMatrixRef = DrawSection.Object->GetWorldMatrix();
+        const DirectX::XMMATRIX World = DirectX::XMLoadFloat4x4(&WorldMatrixRef);
         const DirectX::XMMATRIX NormalMatrix = DirectX::XMMatrixTranspose(DirectX::XMMatrixInverse(nullptr, World));
-        const float ScaleX = std::sqrt(Section.WorldMatrix._11 * Section.WorldMatrix._11 + Section.WorldMatrix._21 * Section.WorldMatrix._21 + Section.WorldMatrix._31 * Section.WorldMatrix._31);
-        const float ScaleY = std::sqrt(Section.WorldMatrix._12 * Section.WorldMatrix._12 + Section.WorldMatrix._22 * Section.WorldMatrix._22 + Section.WorldMatrix._32 * Section.WorldMatrix._32);
-        const float ScaleZ = std::sqrt(Section.WorldMatrix._13 * Section.WorldMatrix._13 + Section.WorldMatrix._23 * Section.WorldMatrix._23 + Section.WorldMatrix._33 * Section.WorldMatrix._33);
+        const float ScaleX = std::sqrt(WorldMatrixRef._11 * WorldMatrixRef._11 + WorldMatrixRef._21 * WorldMatrixRef._21 + WorldMatrixRef._31 * WorldMatrixRef._31);
+        const float ScaleY = std::sqrt(WorldMatrixRef._12 * WorldMatrixRef._12 + WorldMatrixRef._22 * WorldMatrixRef._22 + WorldMatrixRef._32 * WorldMatrixRef._32);
+        const float ScaleZ = std::sqrt(WorldMatrixRef._13 * WorldMatrixRef._13 + WorldMatrixRef._23 * WorldMatrixRef._23 + WorldMatrixRef._33 * WorldMatrixRef._33);
         const float SectionScale = (std::max)((std::max)(ScaleX, ScaleY), ScaleZ);
 
         const size_t MeshletCount = (std::min)(Section.Meshlets.size(), Section.MeshletBounds.size());

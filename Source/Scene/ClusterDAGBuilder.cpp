@@ -32,8 +32,8 @@
 
 namespace
 {
-    constexpr uint32_t GVmeshVersion = 22;
-    constexpr uint32_t GClusterDAGBuildSemanticVersion = 11;
+    constexpr uint32_t GVmeshVersion = 23;
+    constexpr uint32_t GClusterDAGBuildSemanticVersion = 12;
     constexpr size_t GAttributeFloatCount = 5;
     constexpr uint32_t GClusterDAGMinGroupSize = 8;
     constexpr uint32_t GClusterDAGMaxGroupSize = 32;
@@ -2823,7 +2823,6 @@ namespace
         for (const FClusterGroup& Group : Dag.Groups)
         {
             const uint32_t ChildCount = static_cast<uint32_t>(Group.ChildRefs.size());
-            const uint32_t ParentCount = static_cast<uint32_t>(Group.ParentRefs.size());
             if (!WriteValue(Stream, Group.BoundsCenter)
                 || !WriteValue(Stream, Group.BoundsRadius)
                 || !WriteValue(Stream, Group.LodBoundsCenter)
@@ -2832,9 +2831,7 @@ namespace
                 || !WriteValue(Stream, Group.MipLevel)
                 || !WriteValue(Stream, Group.bRoot)
                 || !WriteValue(Stream, ChildCount)
-                || !WriteValue(Stream, ParentCount)
-                || !WritePodVector(Stream, Group.ChildRefs)
-                || !WritePodVector(Stream, Group.ParentRefs))
+                || !WritePodVector(Stream, Group.ChildRefs))
             {
                 return false;
             }
@@ -2888,7 +2885,6 @@ namespace
         {
             FClusterGroup& Group = Dag.Groups[GroupIndex];
             uint32_t ChildCount = 0;
-            uint32_t ParentCount = 0;
             if (!ReadValue(Stream, Group.BoundsCenter)
                 || !ReadValue(Stream, Group.BoundsRadius)
                 || !ReadValue(Stream, Group.LodBoundsCenter)
@@ -2897,9 +2893,7 @@ namespace
                 || !ReadValue(Stream, Group.MipLevel)
                 || !ReadValue(Stream, Group.bRoot)
                 || !ReadValue(Stream, ChildCount)
-                || !ReadValue(Stream, ParentCount)
-                || !ReadPodVector(Stream, Group.ChildRefs, ChildCount)
-                || !ReadPodVector(Stream, Group.ParentRefs, ParentCount))
+                || !ReadPodVector(Stream, Group.ChildRefs, ChildCount))
             {
                 return false;
             }
@@ -2965,8 +2959,7 @@ namespace
                 || GroupA.ParentLODError != GroupB.ParentLODError
                 || GroupA.MipLevel != GroupB.MipLevel
                 || GroupA.bRoot != GroupB.bRoot
-                || !PodVectorEqual(GroupA.ChildRefs, GroupB.ChildRefs)
-                || !PodVectorEqual(GroupA.ParentRefs, GroupB.ParentRefs))
+                || !PodVectorEqual(GroupA.ChildRefs, GroupB.ChildRefs))
             {
                 return false;
             }

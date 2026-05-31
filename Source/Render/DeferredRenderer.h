@@ -31,7 +31,6 @@
 #include "Deferred/Taa.h"
 #include "Deferred/Tonemap.h"
 #include "../Core/RendererConfig.h"
-#include "../Scene/GltfAnimation.h"
 
 class FDX12Device;
 class FDX12CommandContext;
@@ -178,9 +177,9 @@ private:
     void UpdateCullingVisibility(const FCamera& Camera);
 
     // Scene constants
-    void WriteSceneConstants(const FCamera& Camera, const FMeshSection& Section, uint64_t ConstantBufferOffset, uint8_t* ConstantBufferMapped, bool bUseClusterDagIndexBuffer);
-    void UpdateSceneConstants(const FCamera& Camera, const FMeshSection& Section, size_t DrawSectionIndex, uint64_t ConstantBufferOffset, bool bUseClusterDagIndexBuffer = false);
-    void UpdateClusterDagSceneConstants(const FCamera& Camera, const FMeshSection& Section, size_t DrawSectionIndex, uint64_t ConstantBufferOffset);
+    void WriteSceneConstants(const FCamera& Camera, const FObject& Object, const FMeshSection& Section, uint64_t ConstantBufferOffset, uint8_t* ConstantBufferMapped, bool bUseClusterDagIndexBuffer);
+    void UpdateSceneConstants(const FCamera& Camera, const FObject& Object, const FMeshSection& Section, size_t DrawSectionIndex, uint64_t ConstantBufferOffset, bool bUseClusterDagIndexBuffer = false);
+    void UpdateClusterDagSceneConstants(const FCamera& Camera, const FObject& Object, const FMeshSection& Section, size_t DrawSectionIndex, uint64_t ConstantBufferOffset);
     void EnsureClusterDagSceneConstantsPrepared(const FCamera& Camera);
     void EnsureClusterDagDebugColorBuffers();
     uint8_t* GetClusterDagSceneConstantBufferMapped() const;
@@ -278,7 +277,6 @@ private:
     uint32_t                                            ClusterDagSceneConstantsPreparedFrame = UINT32_MAX;
 
     // Scene and animation data
-    std::vector<FGltfScene> GltfScenes;
     DirectX::XMFLOAT4X4 SceneWorldMatrix{};
 
     // Camera and view matrices

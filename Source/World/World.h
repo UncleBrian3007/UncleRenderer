@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "Object.h"
+#include "../Scene/GltfLoader.h"
 
 struct FDrawSectionView
 {
@@ -16,21 +17,12 @@ struct FDrawSectionView
     FMeshSection* Section = nullptr;
 };
 
-struct FConstDrawSectionView
-{
-    uint32_t DrawSectionIndex = UINT32_MAX;
-    uint32_t ObjectSectionIndex = UINT32_MAX;
-    const FObject* Object = nullptr;
-    const FMeshSection* Section = nullptr;
-};
-
-template <typename TView, typename TSection>
-class TWorldSectionList
+class FWorldSectionList
 {
 public:
-    using reference = TSection&;
+    using reference = FMeshSection&;
 
-    explicit TWorldSectionList(const std::vector<TView>& InViews)
+    explicit FWorldSectionList(const std::vector<FDrawSectionView>& InViews)
         : Views(&InViews)
     {
     }
@@ -38,42 +30,39 @@ public:
     class iterator
     {
     public:
-        using value_type = TSection;
+        using value_type = FMeshSection;
         using difference_type = std::ptrdiff_t;
-        using pointer = TSection*;
-        using reference = TSection&;
+        using pointer = FMeshSection*;
+        using reference = FMeshSection&;
         using iterator_category = std::forward_iterator_tag;
 
-        explicit iterator(typename std::vector<TView>::const_iterator InIt) : It(InIt) {}
+        explicit iterator(std::vector<FDrawSectionView>::const_iterator InIt) : It(InIt) {}
         reference operator*() const { return *It->Section; }
         pointer operator->() const { return It->Section; }
         iterator& operator++() { ++It; return *this; }
         bool operator!=(const iterator& Other) const { return It != Other.It; }
 
     private:
-        typename std::vector<TView>::const_iterator It;
+        std::vector<FDrawSectionView>::const_iterator It;
     };
 
     size_t size() const { return Views ? Views->size() : 0u; }
     bool empty() const { return size() == 0u; }
     reference operator[](size_t Index) const { return *(*Views)[Index].Section; }
     reference front() const { return *Views->front().Section; }
-    const TView& GetView(size_t Index) const { return (*Views)[Index]; }
+    const FDrawSectionView& GetView(size_t Index) const { return (*Views)[Index]; }
     iterator begin() const { return iterator(Views ? Views->begin() : EmptyViews().begin()); }
     iterator end() const { return iterator(Views ? Views->end() : EmptyViews().end()); }
 
 private:
-    static const std::vector<TView>& EmptyViews()
+    static const std::vector<FDrawSectionView>& EmptyViews()
     {
-        static const std::vector<TView> Empty;
+        static const std::vector<FDrawSectionView> Empty;
         return Empty;
     }
 
-    const std::vector<TView>* Views = nullptr;
+    const std::vector<FDrawSectionView>* Views = nullptr;
 };
-
-using FWorldSectionList = TWorldSectionList<FDrawSectionView, FMeshSection>;
-using FConstWorldSectionList = TWorldSectionList<FConstDrawSectionView, const FMeshSection>;
 
 // Owns the logical scene objects (StaticMesh / SkeletalMesh) produced by the glTF loader.
 class FWorld
@@ -91,26 +80,15 @@ public:
     const std::vector<std::unique_ptr<FObject>>& GetObjects() const { return Objects; }
     std::vector<std::unique_ptr<FObject>>& GetObjects() { return Objects; }
 
-    const std::vector<FDrawSectionView>& GetDrawSectionViews()
+    const std::vector<FDrawSectionView>& GetDrawSectionViews() const
     {
         EnsureDrawSectionViews();
         return DrawSectionViews;
     }
 
-    FWorldSectionList BuildSectionList()
+    FWorldSectionList BuildSectionList() const
     {
         return FWorldSectionList(GetDrawSectionViews());
-    }
-
-    const std::vector<FConstDrawSectionView>& GetDrawSectionViews() const
-    {
-        EnsureConstDrawSectionViews();
-        return ConstDrawSectionViews;
-    }
-
-    FConstWorldSectionList BuildSectionList() const
-    {
-        return FConstWorldSectionList(GetDrawSectionViews());
     }
 
     size_t GetDrawSectionCount() const
@@ -118,99 +96,30 @@ public:
         return GetDrawSectionViews().size();
     }
 
-    void Tick(float DeltaTime)
-    {
-        for (const std::unique_ptr<FObject>& Object : Objects)
-        {
-            if (Object)
-            {
-                Object->Tick(DeltaTime);
-            }
-        }
-    }
+    void Tick(float DeltaTime);
+
+    bool WasAnySkinningUpdatedLastTick() const { return bAnySkinningUpdatedLastTick; }
+
+    std::vector<FGltfAnimationRuntime>& GetGltfAnimationRuntimes() { return GltfAnimationRuntimes; }
+    const std::vector<FGltfAnimationRuntime>& GetGltfAnimationRuntimes() const { return GltfAnimationRuntimes; }
 
     size_t GetObjectCount() const { return Objects.size(); }
 
     void Clear()
     {
         Objects.clear();
+        GltfAnimationRuntimes.clear();
+        bAnySkinningUpdatedLastTick = false;
         MarkDrawSectionViewsDirty();
     }
 
 private:
-    void MarkDrawSectionViewsDirty() const
-    {
-        bDrawSectionViewsDirty = true;
-        bConstDrawSectionViewsDirty = true;
-    }
-
-    void EnsureDrawSectionViews()
-    {
-        if (!bDrawSectionViewsDirty)
-        {
-            return;
-        }
-
-        DrawSectionViews.clear();
-        uint32_t DrawSectionIndex = 0;
-        for (std::unique_ptr<FObject>& Object : Objects)
-        {
-            if (!Object)
-            {
-                continue;
-            }
-
-            std::vector<FMeshSection>& Sections = Object->GetSections();
-            DrawSectionViews.reserve(DrawSectionViews.size() + Sections.size());
-            for (uint32_t SectionIndex = 0; SectionIndex < static_cast<uint32_t>(Sections.size()); ++SectionIndex)
-            {
-                FDrawSectionView View;
-                View.DrawSectionIndex = DrawSectionIndex++;
-                View.ObjectSectionIndex = SectionIndex;
-                View.Object = Object.get();
-                View.Section = &Sections[SectionIndex];
-                DrawSectionViews.push_back(View);
-            }
-        }
-
-        bDrawSectionViewsDirty = false;
-    }
-
-    void EnsureConstDrawSectionViews() const
-    {
-        if (!bConstDrawSectionViewsDirty)
-        {
-            return;
-        }
-
-        ConstDrawSectionViews.clear();
-        uint32_t DrawSectionIndex = 0;
-        for (const std::unique_ptr<FObject>& Object : Objects)
-        {
-            if (!Object)
-            {
-                continue;
-            }
-
-            const std::vector<FMeshSection>& Sections = Object->GetSections();
-            ConstDrawSectionViews.reserve(ConstDrawSectionViews.size() + Sections.size());
-            for (uint32_t SectionIndex = 0; SectionIndex < static_cast<uint32_t>(Sections.size()); ++SectionIndex)
-            {
-                FConstDrawSectionView View;
-                View.DrawSectionIndex = DrawSectionIndex++;
-                View.ObjectSectionIndex = SectionIndex;
-                View.Object = Object.get();
-                View.Section = &Sections[SectionIndex];
-                ConstDrawSectionViews.push_back(View);
-            }
-        }
-
-        bConstDrawSectionViewsDirty = false;
-    }
+    void MarkDrawSectionViewsDirty() const { bDrawSectionViewsDirty = true; }
+    void EnsureDrawSectionViews() const;
 
     std::vector<std::unique_ptr<FObject>> Objects;
+    std::vector<FGltfAnimationRuntime> GltfAnimationRuntimes;
+    bool bAnySkinningUpdatedLastTick = false;
     mutable bool bDrawSectionViewsDirty = true;
-    mutable bool bConstDrawSectionViewsDirty = true;
-    std::vector<FDrawSectionView> DrawSectionViews;
-    mutable std::vector<FConstDrawSectionView> ConstDrawSectionViews;
+    mutable std::vector<FDrawSectionView> DrawSectionViews;
 };

@@ -327,7 +327,7 @@ void FSparseSdfGI::AddSdfUpdatePasses(FDeferredPassContext& Context) const
     {
         if (Section.IsStaticRegularMeshCandidate())
         {
-            AddSectionReferenceEmitPass(Context, Section, DrawSectionIndex);
+            AddSectionReferenceEmitPass(Context, *DrawSections.GetView(DrawSectionIndex).Object, Section, DrawSectionIndex);
         }
         ++DrawSectionIndex;
     }
@@ -645,7 +645,7 @@ uint64_t FSparseSdfGI::ComputeStaticSceneSignature(const FDeferredRenderer& Owne
         HashValue(Hash, Section.Geometry.IndexCount);
         HashValue(Hash, Section.Geometry.VertexBuffers[kMeshVertexStreamPosition].SrvBindlessIndex);
         HashValue(Hash, Section.Geometry.IndexBuffer.SrvBindlessIndex);
-        HashFloat4x4(Hash, Section.WorldMatrix);
+        HashFloat4x4(Hash, Sections.GetView(static_cast<size_t>(DrawSectionIndex)).Object->GetWorldMatrix());
     }
 
     HashValue(Hash, OutStaticCandidateCount);
@@ -788,7 +788,7 @@ void FSparseSdfGI::AddReferenceBuildInitPass(FDeferredPassContext& Context) cons
     });
 }
 
-void FSparseSdfGI::AddSectionReferenceEmitPass(FDeferredPassContext& Context, FMeshSection& Section, uint32_t DrawSectionIndex) const
+void FSparseSdfGI::AddSectionReferenceEmitPass(FDeferredPassContext& Context, const FObject& Object, FMeshSection& Section, uint32_t DrawSectionIndex) const
 {
     FDeferredRenderer& Owner = Context.Owner;
     FRenderGraph& Graph = Context.Graph;
@@ -802,7 +802,7 @@ void FSparseSdfGI::AddSectionReferenceEmitPass(FDeferredPassContext& Context, FM
     const FRGBufferHandle ReferenceCountersHandle = Context.Resources.SparseSdfGI.ReferenceCountersHandle;
     const FRGBufferHandle OccupiedBrickListHandle = Context.Resources.SparseSdfGI.OccupiedBrickListHandle;
 
-    const float SectionScale = MatrixMath::ComputeMaxScale(Section.WorldMatrix);
+    const float SectionScale = MatrixMath::ComputeMaxScale(Object.GetWorldMatrix());
     const FCascadeBounds Bounds = ComputeCascadeBounds(Owner);
 
     struct FReferenceEmitPassData
@@ -857,7 +857,7 @@ void FSparseSdfGI::AddSectionReferenceEmitPass(FDeferredPassContext& Context, FM
         Data.VoxelSize = Bounds.VoxelSize;
         Data.CascadeMin = Bounds.Min;
         Data.CascadeExtent = Bounds.Extent;
-        Data.World = Section.WorldMatrix;
+        Data.World = Object.GetWorldMatrix();
         Data.PositionBufferIndex = Section.Geometry.VertexBuffers[kMeshVertexStreamPosition].SrvBindlessIndex;
         Data.IndexBufferIndex = Section.Geometry.IndexBuffer.SrvBindlessIndex;
         Data.bEnabled = Data.bEnabled

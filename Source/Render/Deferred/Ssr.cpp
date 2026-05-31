@@ -1315,7 +1315,7 @@ void FSsr::AddSsrHwTracePass(FDeferredPassContext& Context)
         LocalCommandList->SetComputeRootSignature(Owner.GetRayTracingRuntime().RayQueryRootSignature.Get());
         LocalCommandList->SetComputeRootShaderResourceView(0, Owner.GetRayTracingRuntime().TlasResultBuffers[LocalFrameIndex]->GetGPUVirtualAddress());
         const uint64_t ConstantBufferOffset = 0;
-        Owner.UpdateSceneConstants(*Data.Camera, DrawSections.front(), 0u, ConstantBufferOffset);
+        Owner.UpdateSceneConstants(*Data.Camera, *DrawSections.GetView(0).Object, DrawSections.front(), 0u, ConstantBufferOffset);
         const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = Owner.GetSceneConstantBufferAddress();
         LocalCommandList->SetComputeRootConstantBufferView(1, ConstantBufferAddress + ConstantBufferOffset);
 
@@ -1735,7 +1735,7 @@ void FSsr::AddSsrFallbackPass(FDeferredPassContext& Context)
         LocalCommandList->SetComputeRootSignature(Owner.GetRayTracingRuntime().RayQueryRootSignature.Get());
         LocalCommandList->SetComputeRootShaderResourceView(0, Owner.GetRayTracingRuntime().TlasResultBuffers[LocalFrameIndex]->GetGPUVirtualAddress());
         const uint64_t ConstantBufferOffset = 0;
-        Owner.UpdateSceneConstants(*Data.Camera, DrawSections.front(), 0u, ConstantBufferOffset);
+        Owner.UpdateSceneConstants(*Data.Camera, *DrawSections.GetView(0).Object, DrawSections.front(), 0u, ConstantBufferOffset);
         const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = Owner.GetSceneConstantBufferAddress();
         LocalCommandList->SetComputeRootConstantBufferView(1, ConstantBufferAddress + ConstantBufferOffset);
 

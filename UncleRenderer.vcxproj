@@ -169,6 +169,7 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <ClCompile Include="Source\World\MeshMaterial.cpp" />
     <ClCompile Include="Source\World\StaticMesh.cpp" />
     <ClCompile Include="Source\World\SkeletalMesh.cpp" />
+    <ClCompile Include="Source\World\World.cpp" />
     <ClCompile Include="Source\Render\Renderer.cpp" />
     <ClCompile Include="Source\Render\RendererUtils.cpp" />
     <ClCompile Include="Source\Render\SkyAtmosphere.cpp">

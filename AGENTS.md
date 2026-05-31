@@ -73,7 +73,8 @@ Before adding a new variable to `Renderer.h` or `FRenderer`, check whether it be
 - Before adding a local lambda or member function, verify whether a similar function already exists in the common headers. (GpuResource.h, MathTypes.h ..)
 - Before writing new shader utility code, check `Shaders/Common.hlsli` and `Shaders/PBRCommon.hlsl` for an existing implementation of the same functionality. Do not duplicate helpers that are already provided there.
 - Never add or reorder `float`, `float2`, `float3`, or matrix fields in a shared C++/HLSL constants block without verifying HLSL 16-byte cbuffer packing and adding/updating `offsetof` static asserts.
-- Keep code dry
+- Keep code dry.
+- Keep comments minimal. Prefer clear naming and structure over explanatory comments, and avoid multi-line comments unless they document non-obvious constraints or design decisions.
 
 ## Documentation
 - Add doc/FeatureName.md for all significant features; see doc/ClusterDAG-Streaming-v1.md for reference.

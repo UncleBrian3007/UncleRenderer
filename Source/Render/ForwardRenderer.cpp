@@ -216,7 +216,7 @@ bool FForwardRenderer::Initialize(FDX12Device* Device, uint32_t Width, uint32_t 
     }
 
     const std::wstring SceneFilePath = Config.SceneFile.empty() ? L"Assets/Scenes/Scene.json" : Config.SceneFile;
-    if (!SceneWorldBuilder::LoadWorldFromSceneFile(Device, SceneFilePath, World, SceneCenter, SceneRadius, &GltfScenes))
+    if (!SceneWorldBuilder::LoadWorldFromSceneFile(Device, SceneFilePath, World, SceneCenter, SceneRadius))
     {
         LogError("scene JSON could not be loaded.");
         return false;
@@ -297,7 +297,6 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
     }
 
     GetWorld().Tick(DeltaTime);
-    RendererUtils::UpdateGltfSceneAnimation(World, GltfScenes, DeltaTime);
 
     GpuDebugState.PreparePrint(CmdContext);
     GpuDebugState.PrepareLine(CmdContext);
@@ -476,7 +475,7 @@ void FForwardRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCamer
         CommandList4->SetComputeRootShaderResourceView(0, GetRayTracingRuntime().TlasResultBuffers[FrameIndex]->GetGPUVirtualAddress());
         const uint64_t ConstantBufferOffset = 0;
         const DirectX::XMMATRIX LightViewProjection = RendererUtils::BuildDirectionalLightViewProjection(SceneCenter, SceneRadius, LightDirection);
-        UpdateSceneConstants(*Data.Camera, *DrawSections.front().Section, ConstantBufferOffset, LightViewProjection);
+        UpdateSceneConstants(*Data.Camera, *DrawSections.front().Object, *DrawSections.front().Section, ConstantBufferOffset, LightViewProjection);
         const D3D12_GPU_VIRTUAL_ADDRESS ConstantBufferAddress = GetSceneConstantBufferAddress();
         CommandList4->SetComputeRootConstantBufferView(1, ConstantBufferAddress + ConstantBufferOffset);
         const uint32_t BindlessIndices[FRayTracingRuntime::RayQueryRootConstantDwordCount] =
@@ -604,7 +603,7 @@ void FForwardRenderer::AddShadowPass(FRenderGraph& Graph, const FCamera& Camera,
                 continue;
             }
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * DrawSectionIndex;
-            UpdateSceneConstants(*Data.Camera, Section, ConstantBufferOffset, Data.LightViewProjection);
+            UpdateSceneConstants(*Data.Camera, *DrawSection.Object, Section, ConstantBufferOffset, Data.LightViewProjection);
         }
 
         for (const FDrawSectionView& DrawSection : DrawSections)
@@ -722,7 +721,7 @@ void FForwardRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Camer
             }
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * DrawSectionIndex;
 
-            UpdateSceneConstants(*Data.Camera, Section, ConstantBufferOffset, Data.LightViewProjection);
+            UpdateSceneConstants(*Data.Camera, *DrawSection.Object, Section, ConstantBufferOffset, Data.LightViewProjection);
 
             const bool bUseSkinning = IsValidBindlessIndex(Section.BoneMatrixBuffer.SrvBindlessIndex) && Section.BoneMatrixCount > 0;
             ID3D12PipelineState* DesiredPipeline = bUseSkinning ? DepthPrepassPipelinesSkinned[RenderData.Material.bDoubleSided ? 1u : 0u].Get() : DepthPrepassPipelines[RenderData.Material.bDoubleSided ? 1u : 0u].Get();
@@ -865,7 +864,7 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
                 continue;
             }
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * DrawSectionIndex;
-            UpdateSceneConstants(*Data.Camera, Section, ConstantBufferOffset, Data.LightViewProjection);
+            UpdateSceneConstants(*Data.Camera, *DrawSection.Object, Section, ConstantBufferOffset, Data.LightViewProjection);
         }
 
         ID3D12Resource* IndirectBuffer = GetIndirectCommandBuffer();
@@ -1066,7 +1065,7 @@ void FForwardRenderer::AddObjectIdPass(FRenderGraph& Graph, const FCamera& Camer
             const uint32_t DrawSectionIndex = DrawSection.DrawSectionIndex;
             const FMeshSection& Section = *DrawSection.Section;
             const uint64_t ConstantBufferOffset = SceneConstantBufferStride * DrawSectionIndex;
-            UpdateSceneConstants(*Data.Camera, Section, ConstantBufferOffset, Data.LightViewProjection);
+            UpdateSceneConstants(*Data.Camera, *DrawSection.Object, Section, ConstantBufferOffset, Data.LightViewProjection);
         }
 
         for (const FDrawSectionView& DrawSection : DrawSections)
@@ -1565,12 +1564,13 @@ bool FForwardRenderer::CreateGpuDrivenResources(FDX12Device* Device)
     return true;
 }
 
-void FForwardRenderer::UpdateSceneConstants(const FCamera& Camera, const FMeshSection& Section, uint64_t ConstantBufferOffset, const DirectX::XMMATRIX& LightViewProjection)
+void FForwardRenderer::UpdateSceneConstants(const FCamera& Camera, const FObject& Object, const FMeshSection& Section, uint64_t ConstantBufferOffset, const DirectX::XMMATRIX& LightViewProjection)
 {
     const DirectX::XMVECTOR LightDir = DirectX::XMLoadFloat3(&LightDirection);
 
     RendererUtils::FUpdateSceneConstantsParams Params;
     Params.Camera = &Camera;
+    Params.Object = &Object;
     Params.Section = &Section;
     Params.LightIntensity = LightIntensity;
     Params.LightDirection = LightDir;

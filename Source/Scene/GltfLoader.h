@@ -150,6 +150,16 @@ struct FGltfScene
     float AnimationTime = 0.0f;
 };
 
+struct FGltfAnimationRuntime
+{
+    std::vector<FGltfNode> Nodes;
+    std::vector<FGltfNodeTransform> NodeTransforms;
+    std::vector<FGltfSkin> Skins;
+    std::vector<FGltfAnimation> Animations;
+    FGltfAnimationPose Pose;
+    float AnimationTime = 0.0f;
+};
+
 class FGltfLoader
 {
 public:

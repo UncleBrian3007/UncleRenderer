@@ -13,6 +13,7 @@ struct FDeferredPassContext;
 class FDX12CommandContext;
 class FDX12Device;
 struct FMeshSection;
+class FObject;
 
 enum class ESparseSdfGIDebugMode : uint32_t
 {
@@ -72,7 +73,7 @@ private:
     uint64_t ComputeStaticSceneSignature(const FDeferredRenderer& Owner, uint32_t& OutStaticCandidateCount) const;
     void InvalidateCache() const;
     void AddReferenceBuildInitPass(FDeferredPassContext& Context) const;
-    void AddSectionReferenceEmitPass(FDeferredPassContext& Context, FMeshSection& Section, uint32_t DrawSectionIndex) const;
+    void AddSectionReferenceEmitPass(FDeferredPassContext& Context, const FObject& Object, FMeshSection& Section, uint32_t DrawSectionIndex) const;
     void AddPrepareSolveBrickReferencesArgsPass(FDeferredPassContext& Context) const;
     void AddSolveBrickReferencesPass(FDeferredPassContext& Context) const;
     void DispatchOutputPass(FDeferredPassContext& Context, FDX12CommandContext& Cmd, ID3D12PipelineState* PipelineState, bool bPassEnabled) const;

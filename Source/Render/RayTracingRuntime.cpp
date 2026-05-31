@@ -743,7 +743,8 @@ void FRayTracingRuntime::BuildTlas(FRenderer& Owner, FDX12CommandContext& CmdCon
         InstanceDesc.AccelerationStructure = Section.BlasResultBuffer->GetGPUVirtualAddress();
 
         DirectX::XMFLOAT4X4 World = {};
-        DirectX::XMStoreFloat4x4(&World, DirectX::XMMatrixTranspose(DirectX::XMLoadFloat4x4(&Section.WorldMatrix)));
+        const DirectX::XMFLOAT4X4& SectionObjectWorld = DrawSections.GetView(DrawSectionIndex).Object->GetWorldMatrix();
+        DirectX::XMStoreFloat4x4(&World, DirectX::XMMatrixTranspose(DirectX::XMLoadFloat4x4(&SectionObjectWorld)));
         InstanceDesc.Transform[0][0] = World._11;
         InstanceDesc.Transform[0][1] = World._12;
         InstanceDesc.Transform[0][2] = World._13;
@@ -784,7 +785,7 @@ void FRayTracingRuntime::BuildTlas(FRenderer& Owner, FDX12CommandContext& CmdCon
             Section.Material.RoughnessFactor,
             Section.Material.AlphaCutoff,
             0.0f);
-        DirectX::XMMATRIX WorldMatrix = DirectX::XMLoadFloat4x4(&Section.WorldMatrix);
+        DirectX::XMMATRIX WorldMatrix = DirectX::XMLoadFloat4x4(&SectionObjectWorld);
         DirectX::XMMATRIX WorldInverseTranspose = DirectX::XMMatrixTranspose(DirectX::XMMatrixInverse(nullptr, WorldMatrix));
         DirectX::XMStoreFloat4x4(&InstData.WorldInverseTranspose, WorldInverseTranspose);
 

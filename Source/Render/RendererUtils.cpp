@@ -468,104 +468,6 @@ void RendererUtils::UpdateCullingVisibility(
     }
 }
 
-bool RendererUtils::UpdateGltfSceneAnimation(
-    FWorld& World,
-    std::vector<FGltfScene>& Scenes,
-    float DeltaTime)
-{
-    const std::vector<FDrawSectionView>& DrawSections = World.GetDrawSectionViews();
-    for (const FDrawSectionView& DrawSection : DrawSections)
-    {
-        DrawSection.Section->bSkinningUpdatedThisFrame = false;
-    }
-
-    if (Scenes.empty() || DrawSections.empty())
-    {
-        return false;
-    }
-
-    const bool bHasSkinning = std::any_of(DrawSections.begin(), DrawSections.end(), [](const FDrawSectionView& DrawSection)
-    {
-        const FMeshSection& Section = *DrawSection.Section;
-        return Section.GltfSkinIndex >= 0 && Section.BoneMatrixBufferMapped != nullptr;
-    });
-    if (!bHasSkinning)
-    {
-        return false;
-    }
-
-    const bool bAnimationTimeAdvanced = std::abs(DeltaTime) > 1e-6f;
-    for (FGltfScene& Scene : Scenes)
-    {
-        if (Scene.Pose.LocalMatrices.empty())
-        {
-            InitializeGltfAnimationPose(Scene, Scene.Pose);
-        }
-        Scene.AnimationTime += DeltaTime;
-        UpdateGltfAnimationPose(Scene, Scene.AnimationTime, Scene.Pose);
-    }
-
-    bool bAnySkinningUpdated = false;
-    for (const FDrawSectionView& DrawSection : DrawSections)
-    {
-        FMeshSection& Section = *DrawSection.Section;
-        if (Section.GltfSceneIndex < 0 || Section.GltfNodeIndex < 0)
-        {
-            continue;
-        }
-
-        const size_t SceneIndex = static_cast<size_t>(Section.GltfSceneIndex);
-        if (SceneIndex >= Scenes.size())
-        {
-            continue;
-        }
-
-        const FGltfScene& Scene = Scenes[SceneIndex];
-        const std::vector<DirectX::XMFLOAT4X4>& WorldMatrices = Scene.Pose.WorldMatrices;
-        const size_t NodeIndex = static_cast<size_t>(Section.GltfNodeIndex);
-        if (NodeIndex >= WorldMatrices.size())
-        {
-            continue;
-        }
-
-        using namespace DirectX;
-        const XMMATRIX NodeWorld = XMLoadFloat4x4(&WorldMatrices[NodeIndex]);
-
-        if (Section.GltfSkinIndex >= 0 && Section.BoneMatrixBufferMapped)
-        {
-            const size_t SkinIndex = static_cast<size_t>(Section.GltfSkinIndex);
-            if (SkinIndex < Scene.Skins.size()
-                && SkinIndex < Scene.Pose.SkinMatrices.size())
-            {
-                const FGltfSkin& Skin = Scene.Skins[SkinIndex];
-                const std::vector<DirectX::XMFLOAT4X4>& SkinMatrices = Scene.Pose.SkinMatrices[SkinIndex];
-                const size_t MatrixCount = std::min(SkinMatrices.size(), static_cast<size_t>(Section.BoneMatrixCount));
-
-                const XMMATRIX NodeWorldInv = XMMatrixInverse(nullptr, NodeWorld);
-
-                std::vector<DirectX::XMFLOAT4X4> FinalMatrices(MatrixCount);
-                for (size_t JointIndex = 0; JointIndex < MatrixCount; ++JointIndex)
-                {
-                    const XMMATRIX SkinMatrix = XMLoadFloat4x4(&SkinMatrices[JointIndex]);
-					const XMMATRIX FinalMatrix = XMMatrixMultiply(SkinMatrix, NodeWorldInv); // To Node Local Space
-                    XMStoreFloat4x4(&FinalMatrices[JointIndex], FinalMatrix);
-                }
-
-                const size_t CopyBytes = MatrixCount * sizeof(DirectX::XMFLOAT4X4);
-                std::memcpy(Section.BoneMatrixBufferMapped, FinalMatrices.data(), CopyBytes);
-
-                if (bAnimationTimeAdvanced && !Scene.Animations.empty() && MatrixCount > 0)
-                {
-                    Section.bSkinningUpdatedThisFrame = true;
-                    bAnySkinningUpdated = true;
-                }
-            }
-        }
-    }
-
-    return bAnySkinningUpdated;
-}
-
 void RendererUtils::UpdateSceneConstants(const FUpdateSceneConstantsParams& Params)
 {
     if (Params.ConstantBufferMapped == nullptr)
@@ -576,11 +478,12 @@ void RendererUtils::UpdateSceneConstants(const FUpdateSceneConstantsParams& Para
     using namespace DirectX;
 
     const FCamera& Camera = *Params.Camera;
+    const FObject& Object = *Params.Object;
     const FMeshSection& Section = *Params.Section;
 
     const XMMATRIX View = Camera.GetViewMatrix();
     const XMMATRIX ViewInverse = XMMatrixInverse(nullptr, View);
-    const XMMATRIX WorldMatrix = XMLoadFloat4x4(&Section.WorldMatrix);
+    const XMMATRIX WorldMatrix = XMLoadFloat4x4(&Object.GetWorldMatrix());
 
     const bool bHasEmissiveTexture = !Section.Material.EmissiveTexturePath.empty();
     const XMFLOAT3 BaseColorFactor = Section.Material.BaseColorFactor;

@@ -45,12 +45,12 @@ struct ClusterChildRef
 
 struct ClusterDagDrawData
 {
-    uint StartIndex;
-    uint IndexCount;
-    uint RangeIndex;
-    uint RangeCommandStart;
-    uint RangeCommandCount;
-    uint DrawSectionIndex;
+    uint StartIndex;         // First index in the shared PackedIndices buffer for this draw data.
+    uint IndexCount;         // Number of indices (triangles * 3) this draw data covers.
+    uint RangeIndex;         // Index into IndirectDrawRanges; used to atomic-increment the per-range RunCount.
+    uint RangeCommandStart;  // Base slot in OutputCommands for this range; final slot = RangeCommandStart + per-range atomic offset.
+    uint RangeCommandCount;  // Capacity of this range in OutputCommands; guards the atomic offset against overflow.
+    uint DrawSectionIndex;   // Source section (= primitive index in whole-mesh DAG); maps to per-section scene model for material resolve.
 };
 
 struct ClusterDagVisibleEntry

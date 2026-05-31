@@ -129,7 +129,7 @@ namespace
     }
 }
 
-void InitializeGltfAnimationPose(const FGltfScene& Scene, FGltfAnimationPose& OutPose)
+void InitializeGltfAnimationPose(const FGltfAnimationRuntime& Scene, FGltfAnimationPose& OutPose)
 {
     const size_t NodeCount = Scene.NodeTransforms.size();
     OutPose.LocalMatrices.resize(NodeCount);
@@ -149,7 +149,7 @@ void InitializeGltfAnimationPose(const FGltfScene& Scene, FGltfAnimationPose& Ou
     }
 }
 
-void UpdateGltfAnimationPose(const FGltfScene& Scene, float TimeSeconds, FGltfAnimationPose& InOutPose)
+void UpdateGltfAnimationPose(const FGltfAnimationRuntime& Scene, float TimeSeconds, FGltfAnimationPose& InOutPose)
 {
     const size_t NodeCount = Scene.NodeTransforms.size();
     if (NodeCount == 0)
@@ -171,8 +171,8 @@ void UpdateGltfAnimationPose(const FGltfScene& Scene, float TimeSeconds, FGltfAn
         NodePoses[NodeIndex].Scale = Transform.Scale;
     }
 
-	// Sampler: '시간에 따른 값'이라는 순수 데이터고,
-	// Channel: '그 값을 어디에 연결할지'라는 배선 정보다.
+    // Sampler holds the time->value samples; Channel is the wiring that says
+    // which sampler drives which node and which TRS path.
     if (!Scene.Animations.empty())
     {
         const FGltfAnimation& Animation = Scene.Animations.front();
@@ -263,8 +263,8 @@ void UpdateGltfAnimationPose(const FGltfScene& Scene, float TimeSeconds, FGltfAn
 
             using namespace DirectX;
             const XMMATRIX JointWorld = XMLoadFloat4x4(&InOutPose.WorldMatrices[static_cast<size_t>(NodeIndex)]);
-            const XMMATRIX InvBind = XMLoadFloat4x4(&Skin.InverseBindMatrices[JointIndex]); // Bone 기준 좌표계(Joint Space)로 되돌리기
-			const XMMATRIX SkinMatrix = XMMatrixMultiply(InvBind, JointWorld); // 애니메이션된 좌표계로 변환
+            const XMMATRIX InvBind = XMLoadFloat4x4(&Skin.InverseBindMatrices[JointIndex]); // back to joint-local space
+            const XMMATRIX SkinMatrix = XMMatrixMultiply(InvBind, JointWorld);              // then into the animated pose space
             XMStoreFloat4x4(&SkinMatrices[JointIndex], SkinMatrix);
         }
     }
