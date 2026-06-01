@@ -130,3 +130,20 @@ Techniques and papers that informed this renderer's implementation:
 * **Sparse SDF GI** – build pipeline modeled after AMD [FidelityFX Brixelizer / Brixelizer GI](https://gpuopen.com/fidelityfx-brixelizer-gi/)
 * **GTAO** – [Jiménez et al., "Practical Realtime Strategies for Accurate Indirect Occlusion"](https://www.activision.com/cdn/research/Practical_Real_Time_Strategies_for_Accurate_Indirect_Occlusion_NEW%20VERSION_COLOR.pdf), via Intel's [XeGTAO](https://github.com/GameTechDev/XeGTAO)
 * **Single-Pass Downsampler (SPD)** – AMD FidelityFX SPD for HZB / mip-chain generation
+
+## GPU Compute Course
+[`Course/`](Course/) is a standalone HLSL (cs_6_6) compute framework for learning GPU algorithm building blocks, independent from the main renderer. Each lesson is a self-contained compute shader plus a host runner:
+
+1. Parallel Reduction
+2. Prefix Scan
+3. Enqueue
+4. Bottom-Up Traversal
+5. Waterfall Scheme
+6. Persistent Threads
+7. Pool Allocator
+8. Linear Probing (hash table)
+9. Radix Sort
+
+These wave-intrinsic patterns underpin several systems in the renderer (e.g. GPU-driven culling and Cluster DAG traversal). Build the separate `Course` project to run them.
+
+Ported from AMD's [Orochi GPU course](https://github.com/amdadvtech/Orochi/tree/course/Course) (HIP/CUDA) to HLSL compute. The original work is MIT-licensed (© 2022 Advanced Micro Devices, Inc.); see [`Course/THIRD_PARTY_LICENSES.txt`](Course/THIRD_PARTY_LICENSES.txt).
