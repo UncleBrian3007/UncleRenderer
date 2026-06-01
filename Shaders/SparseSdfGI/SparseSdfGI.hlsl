@@ -63,6 +63,36 @@ cbuffer SparseSdfGIReferenceSolveBindlessConstants : register(b2)
     uint ReferenceCountersSrvIndex;
     uint OccupiedBrickListSrvIndex;
 };
+#elif defined(SPARSE_SDF_GI_RADIANCE_CLEAR_SHADER)
+cbuffer SparseSdfGIRadianceClearBindlessConstants : register(b2)
+{
+    uint BrickRadianceAccumUavIndex;
+};
+#elif defined(SPARSE_SDF_GI_RADIANCE_INJECT_SHADER)
+cbuffer SparseSdfGIRadianceInjectBindlessConstants : register(b2)
+{
+    uint DepthIndex;
+    uint GBufferAIndex;
+    uint GBufferBIndex;
+    uint GBufferCIndex;
+    uint BrickRadianceAccumUavIndex;
+    uint ShadowMaskIndex;
+    uint ShadowMaskEnabled;
+};
+#elif defined(SPARSE_SDF_GI_RADIANCE_RESOLVE_SHADER)
+cbuffer SparseSdfGIRadianceResolveBindlessConstants : register(b2)
+{
+    uint BrickRadianceAccumSrvIndex;
+    uint BrickRadianceHistorySrvIndex;
+    uint BrickRadianceUavIndex;
+    uint RadianceHistoryValid;
+};
+#elif defined(SPARSE_SDF_GI_RADIANCE_COPY_SHADER)
+cbuffer SparseSdfGIRadianceCopyBindlessConstants : register(b2)
+{
+    uint BrickRadianceSrvIndex;
+    uint BrickRadianceHistoryUavIndex;
+};
 #elif defined(SPARSE_SDF_GI_TRACE_SHADER)
 cbuffer SparseSdfGITraceBindlessConstants : register(b2)
 {
@@ -74,6 +104,7 @@ cbuffer SparseSdfGITraceBindlessConstants : register(b2)
     uint GBufferAIndex;
     uint EnvironmentCubeIndex;
     uint LinearClampSamplerIndex;
+    uint BrickRadianceSrvIndex;
 };
 #else
 #error SparseSdfGI shader entry wrapper must define a bindless layout macro.
@@ -107,6 +138,10 @@ static const float SPARSE_SDF_GI_BRICK_AABB_MARGIN_VOXELS = 1.0f;
 // and brick-metadata occupied classification, which MUST agree for AABB skip to stay conservative.
 static const float SPARSE_SDF_GI_SURFACE_HIT_VOXELS = 0.75f;
 static const uint SPARSE_SDF_GI_MAX_TRIANGLE_BRICK_REFERENCES = 4096u;
+static const float SPARSE_SDF_GI_RADIANCE_ACCUM_SCALE = 16.0f;
+static const float SPARSE_SDF_GI_RADIANCE_MAX_SAMPLE = 32.0f;
+static const float SPARSE_SDF_GI_RADIANCE_HISTORY_DECAY = 0.985f;
+static const float SPARSE_SDF_GI_RADIANCE_CONFIDENCE_THRESHOLD = 0.05f;
 
 groupshared float gs_EikonalA[SPARSE_SDF_GI_EIKONAL_LDS_COUNT];
 groupshared float gs_EikonalB[SPARSE_SDF_GI_EIKONAL_LDS_COUNT];
@@ -417,6 +452,19 @@ bool TryGetBrickCoordFromWorld(float3 worldPosition, out uint3 brickCoord)
 
     brickCoord = (uint3)floor(atlasFloat) / BrickVoxelResolution;
     return all(brickCoord < BrickGridResolution.xxx);
+}
+
+bool TryGetBrickIndexFromWorld(float3 worldPosition, out uint brickIndex)
+{
+    uint3 brickCoord = uint3(0u, 0u, 0u);
+    if (!TryGetBrickCoordFromWorld(worldPosition, brickCoord))
+    {
+        brickIndex = 0u;
+        return false;
+    }
+
+    brickIndex = LinearizeBrickCoord(brickCoord);
+    return brickIndex < GetSparseSdfGIBrickCapacity();
 }
 
 float3 GetSafeRayDirection(float3 rayDirection)
@@ -886,6 +934,125 @@ void CSSolveBrickReferences(uint3 groupId : SV_GroupID, uint groupThreadIndex : 
 }
 #endif
 
+#if defined(SPARSE_SDF_GI_RADIANCE_CLEAR_SHADER)
+[numthreads(64, 1, 1)]
+void CSClearBrickRadianceAccum(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    const uint brickIndex = dispatchThreadId.x;
+    if (brickIndex >= GetSparseSdfGIBrickCapacity())
+    {
+        return;
+    }
+
+    RWStructuredBuffer<uint4> brickRadianceAccum = ResourceDescriptorHeap[BrickRadianceAccumUavIndex];
+    brickRadianceAccum[brickIndex] = uint4(0u, 0u, 0u, 0u);
+}
+#endif
+
+#if defined(SPARSE_SDF_GI_RADIANCE_INJECT_SHADER)
+[numthreads(8, 8, 1)]
+void CSInjectBrickRadiance(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    if (dispatchThreadId.x >= OutputWidth || dispatchThreadId.y >= OutputHeight)
+    {
+        return;
+    }
+
+    Texture2D depthTexture = ResourceDescriptorHeap[DepthIndex];
+    Texture2D gbufferA = ResourceDescriptorHeap[GBufferAIndex];
+    Texture2D gbufferB = ResourceDescriptorHeap[GBufferBIndex];
+    Texture2D gbufferC = ResourceDescriptorHeap[GBufferCIndex];
+    RWStructuredBuffer<uint4> brickRadianceAccum = ResourceDescriptorHeap[BrickRadianceAccumUavIndex];
+
+    const uint2 pixel = dispatchThreadId.xy;
+    const float depth = depthTexture.Load(int3(pixel, 0)).r;
+    if (depth <= 0.0f)
+    {
+        return;
+    }
+
+    const float2 uv = (float2(pixel) + 0.5f.xx) / float2(max(OutputWidth, 1u), max(OutputHeight, 1u));
+    const float3 viewPosition = ReconstructViewPositionFromDepth(uv, depth, Projection);
+    const float3 worldPosition = mul(float4(viewPosition, 1.0f), ViewInverse).xyz;
+
+    uint brickIndex = 0u;
+    if (!TryGetBrickIndexFromWorld(worldPosition, brickIndex))
+    {
+        return;
+    }
+
+    const float3 normal = normalize(gbufferA.Load(int3(pixel, 0)).xyz * 2.0f - 1.0f);
+    const float4 smr = gbufferB.Load(int3(pixel, 0));
+    const float3 albedo = gbufferC.Load(int3(pixel, 0)).rgb;
+    const float metallic = saturate(smr.y);
+    const float3 lightDirection = normalize(LightDirection);
+    const float directNdotL = saturate(dot(normal, lightDirection));
+    float shadowVisibility = 1.0f;
+    if (ShadowMaskEnabled != 0u)
+    {
+        Texture2D shadowMaskTexture = ResourceDescriptorHeap[ShadowMaskIndex];
+        shadowVisibility = shadowMaskTexture.Load(int3(pixel, 0)).r;
+    }
+    const float3 sourceRadiance = saturate(albedo) * (1.0f - metallic) * LightColor * LightIntensity * directNdotL * saturate(shadowVisibility);
+    const float3 clampedRadiance = min(sourceRadiance, SPARSE_SDF_GI_RADIANCE_MAX_SAMPLE.xxx);
+    const uint3 quantizedRadiance = (uint3)round(clampedRadiance * SPARSE_SDF_GI_RADIANCE_ACCUM_SCALE);
+
+    InterlockedAdd(brickRadianceAccum[brickIndex].x, quantizedRadiance.x);
+    InterlockedAdd(brickRadianceAccum[brickIndex].y, quantizedRadiance.y);
+    InterlockedAdd(brickRadianceAccum[brickIndex].z, quantizedRadiance.z);
+    InterlockedAdd(brickRadianceAccum[brickIndex].w, 1u);
+}
+#endif
+
+#if defined(SPARSE_SDF_GI_RADIANCE_RESOLVE_SHADER)
+[numthreads(64, 1, 1)]
+void CSResolveBrickRadianceTemporal(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    const uint brickIndex = dispatchThreadId.x;
+    if (brickIndex >= GetSparseSdfGIBrickCapacity())
+    {
+        return;
+    }
+
+    StructuredBuffer<uint4> brickRadianceAccum = ResourceDescriptorHeap[BrickRadianceAccumSrvIndex];
+    StructuredBuffer<float4> brickRadianceHistory = ResourceDescriptorHeap[BrickRadianceHistorySrvIndex];
+    RWStructuredBuffer<float4> brickRadiance = ResourceDescriptorHeap[BrickRadianceUavIndex];
+    const uint4 accum = brickRadianceAccum[brickIndex];
+    if (accum.w == 0u)
+    {
+        const float4 history = brickRadianceHistory[brickIndex];
+        if (RadianceHistoryValid != 0u && history.a >= SPARSE_SDF_GI_RADIANCE_CONFIDENCE_THRESHOLD)
+        {
+            brickRadiance[brickIndex] = float4(history.rgb * SPARSE_SDF_GI_RADIANCE_HISTORY_DECAY, history.a * SPARSE_SDF_GI_RADIANCE_HISTORY_DECAY);
+        }
+        else
+        {
+            brickRadiance[brickIndex] = 0.0f.xxxx;
+        }
+        return;
+    }
+
+    const float invWeight = 1.0f / (SPARSE_SDF_GI_RADIANCE_ACCUM_SCALE * (float)accum.w);
+    brickRadiance[brickIndex] = float4(float3(accum.x, accum.y, accum.z) * invWeight, 1.0f);
+}
+#endif
+
+#if defined(SPARSE_SDF_GI_RADIANCE_COPY_SHADER)
+[numthreads(64, 1, 1)]
+void CSCopyBrickRadianceToHistory(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    const uint brickIndex = dispatchThreadId.x;
+    if (brickIndex >= GetSparseSdfGIBrickCapacity())
+    {
+        return;
+    }
+
+    StructuredBuffer<float4> brickRadiance = ResourceDescriptorHeap[BrickRadianceSrvIndex];
+    RWStructuredBuffer<float4> brickRadianceHistory = ResourceDescriptorHeap[BrickRadianceHistoryUavIndex];
+    brickRadianceHistory[brickIndex] = brickRadiance[brickIndex];
+}
+#endif
+
 float3 GetWorldRayDirection(uint2 pixel)
 {
     const float2 uv = (float2(pixel) + 0.5f.xx) / float2(max(OutputWidth, 1u), max(OutputHeight, 1u));
@@ -1044,6 +1211,25 @@ float3 ComputeSdfNormal(Texture3D<float> sdfAtlas, StructuredBuffer<uint> cascad
     return (gradientLengthSq > 1e-8f) ? gradient * rsqrt(gradientLengthSq) : 0.0f.xxx;
 }
 
+bool TrySampleBrickRadiance(StructuredBuffer<float4> brickRadiance, float3 worldPosition, out float3 radiance)
+{
+    radiance = 0.0f.xxx;
+    uint brickIndex = 0u;
+    if (!TryGetBrickIndexFromWorld(worldPosition, brickIndex))
+    {
+        return false;
+    }
+
+    const float4 sample = brickRadiance[brickIndex];
+    if (sample.a < SPARSE_SDF_GI_RADIANCE_CONFIDENCE_THRESHOLD)
+    {
+        return false;
+    }
+
+    radiance = sample.rgb;
+    return true;
+}
+
 float3 DebugBrickLocalSdfSurface(Texture3D<float> sdfAtlas, StructuredBuffer<uint> cascadeBrickMap, StructuredBuffer<uint4> brickMetadata, uint2 pixel)
 {
     const float3 rayDirection = GetWorldRayDirection(pixel);
@@ -1173,6 +1359,7 @@ void CSDiffuseTrace(uint3 dispatchThreadId : SV_DispatchThreadID)
     Texture3D<float> sdfAtlas = ResourceDescriptorHeap[SdfAtlasSrvIndex];
     StructuredBuffer<uint> cascadeBrickMap = ResourceDescriptorHeap[CascadeBrickMapSrvIndex];
     StructuredBuffer<uint4> brickMetadata = ResourceDescriptorHeap[BrickMetadataSrvIndex];
+    StructuredBuffer<float4> brickRadiance = ResourceDescriptorHeap[BrickRadianceSrvIndex];
     RWTexture2D<float4> outputTexture = ResourceDescriptorHeap[DiffuseGIUavIndex];
 
     const uint2 pixel = dispatchThreadId.xy;
@@ -1219,9 +1406,9 @@ void CSDiffuseTrace(uint3 dispatchThreadId : SV_DispatchThreadID)
             lightVisibility = TraceSdfVisibility(lightRayOrigin, lightDirection, sdfAtlas, cascadeBrickMap, brickMetadata, lightStepCount, lightTravel) ? 0.0f : 1.0f;
         }
 
-        const float3 skyBounce = EvaluateSparseSdfGISky(hitNormal);
         const float3 directBounce = LightColor * LightIntensity * saturate(dot(hitNormal, lightDirection)) * lightVisibility;
-        irradiance = skyBounce + directBounce;
+        float3 cachedRadiance = 0.0f.xxx;
+        irradiance = TrySampleBrickRadiance(brickRadiance, hitPosition, cachedRadiance) ? cachedRadiance : directBounce;
     }
 
     outputTexture[pixel] = float4(irradiance * Intensity * BounceStrength, 1.0f);

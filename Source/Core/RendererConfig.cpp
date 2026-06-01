@@ -265,6 +265,7 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIIntensity, 0.0f, { "SparseSdfGIIntensity" });
     ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIBounceStrength, 0.0f, { "SparseSdfGIBounceStrength" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIUseHitLightingVisibility, { "SparseSdfGIUseHitLightingVisibility" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIEnableRadianceTemporalReuse, { "SparseSdfGIRadianceTemporalReuse", "SparseSdfGIEnableRadianceTemporalReuse" });
     ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::AutoExposureKey, { "AutoExposureKey" });
     ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::AutoExposureMin, { "AutoExposureMin" });
     ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::AutoExposureMax, { "AutoExposureMax" });

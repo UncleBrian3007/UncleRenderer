@@ -35,6 +35,9 @@ struct FSparseSdfGIFrameResources
     FRGBufferHandle BrickReferencesHandle{};
     FRGBufferHandle ReferenceCountersHandle{};
     FRGBufferHandle OccupiedBrickListHandle{};
+    FRGBufferHandle BrickRadianceHandle{};
+    FRGBufferHandle BrickRadianceHistoryHandle{};
+    FRGBufferHandle BrickRadianceAccumHandle{};
     FRGResourceHandle DiffuseGIHandle{};
 };
 
@@ -74,6 +77,7 @@ private:
     void AddReferenceBuildInitPass(FDeferredPassContext& Context) const;
     void AddSectionReferenceEmitPass(FDeferredPassContext& Context, const FObject& Object, FMeshSection& Section, uint32_t DrawSectionIndex) const;
     void AddSolveBrickReferencesPass(FDeferredPassContext& Context) const;
+    void AddRadianceCachePasses(FDeferredPassContext& Context) const;
     void DispatchOutputPass(FDeferredPassContext& Context, FDX12CommandContext& Cmd, ID3D12PipelineState* PipelineState, bool bPassEnabled) const;
 
 private:
@@ -86,6 +90,7 @@ private:
     float Intensity = 1.0f;
     float BounceStrength = 1.0f;
     bool bUseHitLightingVisibility = false;
+    bool bEnableRadianceTemporalReuse = true;
     uint32_t MaxBrickTriangleReferences = 8u * 1024u * 1024u;
     uint32_t DebugSolveGroupBudget = 0xFFFFFFFFu;
     uint32_t DebugEmitTriangleBudget = 0xFFFFFFFFu;
@@ -95,16 +100,23 @@ private:
     mutable uint64_t CachedBuildSettingsSignature = 0;
     mutable FCascadeBounds CachedCascadeBounds{};
     mutable uint32_t CachedStaticCandidateCount = 0;
+    mutable bool bBrickRadianceHistoryValid = false;
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ReferenceBuildInitPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ReferenceEmitPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> SolveBrickReferencesPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> RadianceClearPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> RadianceInjectPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> RadianceResolvePipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> RadianceCopyHistoryPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> DebugTracePipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> DiffuseTracePipeline;
 
     FBindlessTexture SdfAtlas;
     FBindlessBuffer CascadeBrickMap;
     FBindlessBuffer BrickMetadata;
+    FBindlessBuffer BrickRadiance;
+    FBindlessBuffer BrickRadianceHistory;
     FBindlessTexture DiffuseGI;
 };

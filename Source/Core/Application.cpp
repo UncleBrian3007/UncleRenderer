@@ -2113,6 +2113,12 @@ void FApplication::RenderUI()
                 SyncDeferredSparseSdfGIConfig();
             }
 
+            if (ImGui::Checkbox("SDF GI Temporal Reuse", &RendererConfig.bSparseSdfGIEnableRadianceTemporalReuse))
+            {
+                UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIRadianceTemporalReuse", RendererConfig.bSparseSdfGIEnableRadianceTemporalReuse ? "true" : "false");
+                SyncDeferredSparseSdfGIConfig();
+            }
+
             if (ImGui::Button("Force Rebuild SDF"))
             {
                 if (DeferredRenderer && DeferredRenderer->GetSparseSdfGI())

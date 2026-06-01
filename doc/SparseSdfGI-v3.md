@@ -33,25 +33,9 @@ V3.2 시점에서 빌드는 정적 씬 기준 빠르고 완전합니다. 홀이 
 
 사용자 관점의 가장 큰 공백은 빌드 파이프라인이 아니라 GI 품질입니다. 확산 트레이스가 여전히 실제 반사 복사휘도가 아닌 오클루전/AO 플레이스홀더이기 때문입니다. 이 작업(히트 복사휘도, 복사휘도 캐시)은 V3 빌드 백본과 별도로 추적되며 독립적으로 진행할 수 있습니다.
 
-## Radiance v1 Diffuse Irradiance
+## Radiance (라이팅 트랙)
 
-Radiance v1은 기존 AO 형태 확산 트레이스를 첫 바운스 조사도(irradiance) 신호로 교체합니다. `CSDiffuseTrace`는 이제 SparseSdfGI 출력 텍스처에 조사도를 저장하며, 수신 표면 알베도를 곱하지 않습니다. 지연 합성 경로는 공통 확산 계약을 적용합니다.
-
-```text
-indirect diffuse = irradiance * albedo * (1 - metallic)
-```
-
-이는 환경광 및 ReSTIR 확산 GI 경로와 일치하므로 `Diffuse Indirect` 시각화는 사전 곱된 트레이스 출력이 아니라 보이는 표면 알베도에 의해 착색된 SparseSdfGI를 보여야 합니다.
-
-v1 히트 라이팅 모델은 의도적으로 단순합니다.
-
-- 미스 레이는 렌더러 환경 큐브를 직접 샘플링하여 레이 트레이싱 스카이 경로와 맞춘다.
-- 히트 레이는 SDF 이동 거리로 히트 지점을 계산하고 SDF 그래디언트로 히트 노멀을 추정한다.
-- 히트 조사도는 SDF 노멀 방향 환경 큐브 스카이 조명과 방향광 확산 바운스 근사를 결합한다.
-- `SparseSdfGIBounceStrength`는 SparseSdfGI 조사도 기여를 스케일한다.
-- `bSparseSdfGIUseHitLightingVisibility`는 히트 지점에서 방향광 쪽 가시성 레이를 선택적으로 쏜다. 기본값은 비활성으로, 광 누수 거동과 가시성 비용을 분리 관찰할 수 있다.
-
-제약은 여전히 큽니다. 히트 표면 머티리얼 조회가 없고, 복사휘도 캐시도 없으며, 시공간 디노이즈도 없고, 픽셀당 단일 확률적 확산 레이를 여전히 사용합니다. Radiance v1은 신호 형태 마일스톤이지 프로덕션 품질 GI가 아닙니다.
+확산 트레이스의 라이팅/복사휘도 작업(Radiance v1 및 향후 로드맵)은 빌드 백본과 분리되어 [SparseSdfGI-Radiance-v1.md](SparseSdfGI-Radiance-v1.md)에서 다룹니다. V3 빌드 작업과 독립적으로 진행할 수 있습니다.
 
 ## V3.1 분할 참조 바이닝
 
@@ -75,12 +59,19 @@ V3.2는 재빌드 프레임의 조밀 `64^3` solve 디스패치를 제거합니�
 CSInitReferenceBuild
   -> SDF 아틀라스, 브릭 메타데이터, 조밀 브릭 맵, 참조 헤드, 카운터 클리어
   -> 정적 일반 메시별 CSEmitTriangleReferences
-  -> CSPrepareSolveBrickReferencesArgs
-  -> OccupiedBrickList에 대해 ExecuteIndirect CSSolveBrickReferences
+  -> OccupiedBrickList에 대해 직접 청크 디스패치 CSSolveBrickReferences
   -> trace/debug는 SdfAtlas + CascadeBrickMap + BrickMetadata 읽음
 ```
 
 이것은 처음부터 다시 빌드할 때의 최적화입니다. 빈 브릭은 init 패스가 기록한 `SdfAtlas = 1.0`, `BrickMetadata = 0` 값을 유지하고, 점유 브릭만 V3.1과 동일한 gather, Eikonal 완화, 메타데이터 축소를 수행합니다. 또한 Brixelizer 스타일 dirty-brick 디스패치로 가는 첫 단계이지만, 진짜 증분 dirty 추적은 향후 작업입니다.
+
+### Solve 디스패치와 LDS 참조 캐싱
+
+solve는 별도의 indirect-args 준비 패스(`CSPrepareSolveBrickReferencesArgs`)와 `ExecuteIndirect`를 사용하지 않고 **직접 청크 디스패치**합니다. CPU는 보수적으로 전체 브릭 수만큼 그룹을 `kSparseSdfGISolveDispatchChunkGroups` 청크 단위로 디스패치하며 청크마다 `BuildWorkOffset`를 전달합니다. 셰이더는 `ReferenceCounters`에서 점유 브릭 수를 읽어 `BuildWorkOffset + groupId.x >= occupiedBrickCount`이면 즉시 반환하므로, 실제 작업은 `OccupiedBrickList`의 점유 브릭에만 발생합니다. 이로써 GPU에서 인자를 채우는 추가 패스와 indirect 디스패치 의존을 제거했습니다.
+
+solve 패스의 GPU 행은 LDS 참조 캐싱으로 해결했습니다. 이전에는 512개 복셀 스레드가 각자 브릭의 참조 연결 리스트를 walk하며 삼각형을 전역 메모리에서 반복 fetch했고, 긴 참조 리스트에서 행이 발생했습니다. 현재는 lane 0이 리스트를 한 번 walk해 삼각형 위치(`P0/P1/P2`)를 LDS 캐시(`SPARSE_SDF_GI_SOLVE_TRIANGLE_CACHE = 256`)에 적재하고, 512개 복셀 스레드가 그 배치를 공유해 점-삼각형 거리를 계산합니다. 리스트가 캐시 용량을 넘으면 lane 0이 다음 배치를 다시 채우는 식으로 반복해 LDS 예산 안에서 모든 참조를 처리합니다.
+
+reference-build 경로는 vertex/index fetch, draw range, 캐스케이드 밖 삼각형, 브릭 span, solve 카운터, 할당, bindless 바인딩에 대한 경계 검사로 강화되었습니다. 진단용으로 `SparseSdfGIDebugSolveGroupBudget` / `SparseSdfGIDebugEmitTriangleBudget`(기본 무제한)로 solve 그룹과 emit 삼각형 작업량을 제한하거나 스킵해 행/디바이스 제거 원인을 분리할 수 있습니다.
 
 ## 리소스
 
@@ -88,8 +79,7 @@ CSInitReferenceBuild
 - `BrickReferenceHeads`: 조밀 브릭마다 연결 리스트 head 1개.
 - `BrickReferences`: triangle id와 next 포인터를 담는 경량 노드.
 - `ReferenceCounters`: triangle 수, reference 수, triangle 오버플로, reference 오버플로, occupied brick 수.
-- `OccupiedBrickList`: 현재 재빌드에서 최소 1개 유효 참조를 가진 일시적 조밀 브릭 인덱스 목록.
-- `SolveIndirectArgs`: 점유 브릭 수로 생성한 일시적 디스패치 인자.
+- `OccupiedBrickList`: 현재 재빌드에서 최소 1개 유효 참조를 가진 일시적 조밀 브릭 인덱스 목록. solve는 이 목록을 직접 청크 디스패치로 순회하며, 점유 브릭 수는 `ReferenceCounters`에서 읽어 셰이더에서 경계 검사한다.
 
 V3.1/V3.2는 단순성을 위해 연결 리스트를 사용합니다. 압축 참조 레이아웃, 삼각형 압축, 진짜 증분 dirty-brick 디스패치는 이후 V3 작업으로 미룹니다.
 

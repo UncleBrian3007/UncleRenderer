@@ -113,7 +113,7 @@ struct FRendererConfig
     bool bRestirGIUseHistoryIndirect = true;
     ERestirGIRandomMode RestirGIRandomMode = ERestirGIRandomMode::BlueNoiseSobol;
     bool bEnableSparseSdfGI = false;
-    uint32_t SparseSdfGIDebugMode = 1;
+    uint32_t SparseSdfGIDebugMode = 0;
     uint32_t SparseSdfGICascadeCount = 1;
     uint32_t SparseSdfGIMaxBrickTriangleReferences = 8u * 1024u * 1024u;
     float SparseSdfGIBaseVoxelSize = 0.0f;
@@ -122,6 +122,7 @@ struct FRendererConfig
     float SparseSdfGIIntensity = 1.0f;
     float SparseSdfGIBounceStrength = 1.0f;
     bool bSparseSdfGIUseHitLightingVisibility = false;
+    bool bSparseSdfGIEnableRadianceTemporalReuse = true;
     // Debug work caps to isolate the SparseSdfGI device-removed crash without rebuilding: lower these
     // to shrink GPU work. 0 disables the pass entirely. Default 0xFFFFFFFF = no cap (normal behavior).
     uint32_t SparseSdfGIDebugSolveGroupBudget = 0xFFFFFFFFu;
