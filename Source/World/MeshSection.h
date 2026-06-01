@@ -127,10 +127,16 @@ struct FMeshSection : public FSectionRenderData, public FSectionSkinningData, pu
     bool IsStaticRegularMeshCandidate() const
     {
         return !bUseSkinning
+            && Geometry.VertexBuffers[kMeshVertexStreamPosition].IsValid()
             && Geometry.VertexBuffers[kMeshVertexStreamPosition].HasSrv()
+            && Geometry.IndexBuffer.IsValid()
             && Geometry.IndexBuffer.HasSrv()
             && Geometry.IndexCount >= 3u
             && DrawIndexCount >= 3u
+            && Geometry.VertexBuffers[kMeshVertexStreamPosition].Desc.NumElements > 0u
+            && Geometry.IndexBuffer.Desc.NumElements >= Geometry.IndexCount
+            && DrawIndexStart <= Geometry.IndexCount
+            && DrawIndexCount <= Geometry.IndexCount - DrawIndexStart
             && Material.AlphaMode == static_cast<uint32_t>(EAlphaMode::Opaque);
     }
 

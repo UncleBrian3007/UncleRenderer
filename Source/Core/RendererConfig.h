@@ -83,7 +83,7 @@ struct FRendererConfig
     float LightIntensity = 1.0f;
     DirectX::XMFLOAT3 LightColor{ 1.0f, 1.0f, 1.0f };
     bool bEnableHZB = true;
-    bool bEnableHzbTwoPass = true;
+    bool bEnableHzbTwoPass = false;
     bool bEnableGtao = true;
     bool bEnableGtaoJitter = true;
     bool bEnableSsrSw = true;
@@ -122,6 +122,10 @@ struct FRendererConfig
     float SparseSdfGIIntensity = 1.0f;
     float SparseSdfGIBounceStrength = 1.0f;
     bool bSparseSdfGIUseHitLightingVisibility = false;
+    // Debug work caps to isolate the SparseSdfGI device-removed crash without rebuilding: lower these
+    // to shrink GPU work. 0 disables the pass entirely. Default 0xFFFFFFFF = no cap (normal behavior).
+    uint32_t SparseSdfGIDebugSolveGroupBudget = 0xFFFFFFFFu;
+    uint32_t SparseSdfGIDebugEmitTriangleBudget = 0xFFFFFFFFu;
     bool bEnableIndirectDraw = true;
     bool bEnableClusterDAGRuntime = false;
     bool bForceRebuildClusterDAGCache = false;

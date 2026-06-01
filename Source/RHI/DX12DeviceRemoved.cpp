@@ -10,6 +10,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace
 {
@@ -232,11 +233,62 @@ void ConfigureDredSettingsBeforeDeviceCreation()
     LogWarning("DRED settings unavailable");
 }
 
+void DrainD3D12DebugMessages(ID3D12Device* Device)
+{
+    if (!Device)
+    {
+        return;
+    }
+
+    ComPtr<ID3D12InfoQueue> InfoQueue;
+    if (FAILED(Device->QueryInterface(IID_PPV_ARGS(InfoQueue.GetAddressOf()))))
+    {
+        return;
+    }
+
+    const UINT64 MessageCount = InfoQueue->GetNumStoredMessages();
+    for (UINT64 Index = 0; Index < MessageCount; ++Index)
+    {
+        SIZE_T MessageLength = 0;
+        if (FAILED(InfoQueue->GetMessage(Index, nullptr, &MessageLength)) || MessageLength == 0)
+        {
+            continue;
+        }
+
+        std::vector<uint8_t> Storage(MessageLength);
+        D3D12_MESSAGE* Message = reinterpret_cast<D3D12_MESSAGE*>(Storage.data());
+        if (FAILED(InfoQueue->GetMessage(Index, Message, &MessageLength)) || Message->pDescription == nullptr)
+        {
+            continue;
+        }
+
+        std::ostringstream Oss;
+        Oss << "[D3D12] " << Message->pDescription;
+        switch (Message->Severity)
+        {
+        case D3D12_MESSAGE_SEVERITY_CORRUPTION:
+        case D3D12_MESSAGE_SEVERITY_ERROR:
+            LogError(Oss.str());
+            break;
+        case D3D12_MESSAGE_SEVERITY_WARNING:
+            LogWarning(Oss.str());
+            break;
+        default:
+            // Skip INFO/MESSAGE severities: they are very chatty and would drown out real violations.
+            break;
+        }
+    }
+
+    InfoQueue->ClearStoredMessages();
+}
+
 void HandleDeviceRemoved(ID3D12Device* Device, HRESULT Hr, const wchar_t* Where)
 {
     std::ostringstream Oss;
     Oss << "Device removed path entered at " << ToUtf8(Where, nullptr) << ", hr=" << HrToHex(Hr);
     LogError(Oss.str());
+
+    DrainD3D12DebugMessages(Device);
 
     bool Expected = false;
     if (!GDredDumped.compare_exchange_strong(Expected, true))

@@ -22,7 +22,7 @@ cbuffer SparseSdfGIConstants : register(b1)
     float Intensity;
     float MaxTraceDistance;
     uint TrianglePoolCapacity;
-    uint SparseSdfGIPadding1;
+    uint BuildWorkOffset;
     float3 CascadeMin;
     float VoxelSize;
     float3 CascadeExtent;
@@ -51,12 +51,6 @@ cbuffer SparseSdfGIReferenceEmitBindlessConstants : register(b2)
     uint ReferenceNodesUavIndex;
     uint ReferenceCountersUavIndex;
     uint OccupiedBrickListUavIndex;
-};
-#elif defined(SPARSE_SDF_GI_PREPARE_SOLVE_ARGS_SHADER)
-cbuffer SparseSdfGIPrepareSolveArgsBindlessConstants : register(b2)
-{
-    uint ReferenceCountersSrvIndex;
-    uint SolveIndirectArgsUavIndex;
 };
 #elif defined(SPARSE_SDF_GI_REFERENCE_SOLVE_SHADER)
 cbuffer SparseSdfGIReferenceSolveBindlessConstants : register(b2)
@@ -112,6 +106,7 @@ static const float SPARSE_SDF_GI_BRICK_AABB_MARGIN_VOXELS = 1.0f;
 // Surface hit threshold in voxels. Shared by visibility trace, debug surface trace,
 // and brick-metadata occupied classification, which MUST agree for AABB skip to stay conservative.
 static const float SPARSE_SDF_GI_SURFACE_HIT_VOXELS = 0.75f;
+static const uint SPARSE_SDF_GI_MAX_TRIANGLE_BRICK_REFERENCES = 4096u;
 
 groupshared float gs_EikonalA[SPARSE_SDF_GI_EIKONAL_LDS_COUNT];
 groupshared float gs_EikonalB[SPARSE_SDF_GI_EIKONAL_LDS_COUNT];
@@ -122,6 +117,18 @@ groupshared uint gs_MetadataMaxX[SPARSE_SDF_GI_EIKONAL_LDS_COUNT];
 groupshared uint gs_MetadataMaxY[SPARSE_SDF_GI_EIKONAL_LDS_COUNT];
 groupshared uint gs_MetadataMaxZ[SPARSE_SDF_GI_EIKONAL_LDS_COUNT];
 groupshared uint gs_MetadataOccupied[SPARSE_SDF_GI_EIKONAL_LDS_COUNT];
+
+// Cooperative triangle cache for the brick solve. The per-brick reference list is gathered into LDS
+// once (by lane 0) and then consumed by all 512 voxel threads, instead of every thread independently
+// pointer-chasing the same list through global memory (the previous 512xR global-load cost that
+// tripped the GPU TDR watchdog). Gathered in batches so arbitrarily long lists stay fully covered
+// within a fixed LDS budget.
+static const uint SPARSE_SDF_GI_SOLVE_TRIANGLE_CACHE = 256u;
+groupshared float3 gs_SolveTriP0[SPARSE_SDF_GI_SOLVE_TRIANGLE_CACHE];
+groupshared float3 gs_SolveTriP1[SPARSE_SDF_GI_SOLVE_TRIANGLE_CACHE];
+groupshared float3 gs_SolveTriP2[SPARSE_SDF_GI_SOLVE_TRIANGLE_CACHE];
+groupshared uint gs_SolveWalkCursor;
+groupshared uint gs_SolveBatchCount;
 
 uint FlattenBrickLocalCoord(uint3 coord)
 {
@@ -283,6 +290,11 @@ uint3 BrickIdToBrickCoord(uint brickId)
         brickId % BrickGridResolution,
         (brickId / BrickGridResolution) % BrickGridResolution,
         brickId / (BrickGridResolution * BrickGridResolution));
+}
+
+uint GetSparseSdfGIBrickCapacity()
+{
+    return BrickGridResolution * BrickGridResolution * BrickGridResolution;
 }
 
 uint PackBrickLocalAabb(uint3 localMin, uint3 localMax)
@@ -626,6 +638,12 @@ void CSEmitTriangleReferences(uint3 dispatchThreadId : SV_DispatchThreadID)
     const uint i0 = indices[triBase + 0u];
     const uint i1 = indices[triBase + 1u];
     const uint i2 = indices[triBase + 2u];
+    if (max(i0, max(i1, i2)) >= BuildWorkOffset)
+    {
+        InterlockedAdd(referenceCounters[SPARSE_SDF_GI_REF_COUNTER_TRIANGLE_OVERFLOW], 1u);
+        return;
+    }
+
     const float3 p0 = mul(float4(positions[i0], 1.0f), ModelWorld).xyz;
     const float3 p1 = mul(float4(positions[i1], 1.0f), ModelWorld).xyz;
     const float3 p2 = mul(float4(positions[i2], 1.0f), ModelWorld).xyz;
@@ -645,10 +663,24 @@ void CSEmitTriangleReferences(uint3 dispatchThreadId : SV_DispatchThreadID)
     const float surfaceBand = VoxelSize * SurfaceThicknessVoxels;
     const float3 triMinWorld = min(p0, min(p1, p2)) - surfaceBand.xxx;
     const float3 triMaxWorld = max(p0, max(p1, p2)) + surfaceBand.xxx;
+    const float3 cascadeMax = CascadeMin + CascadeExtent;
+    if (any(triMaxWorld < CascadeMin) || any(triMinWorld > cascadeMax))
+    {
+        return;
+    }
+
     const int3 minBrick = clamp((int3)floor((triMinWorld - CascadeMin) / max(VoxelSize * (float)BrickVoxelResolution, 1e-5f)), 0, (int)BrickGridResolution - 1);
     const int3 maxBrick = clamp((int3)floor((triMaxWorld - CascadeMin) / max(VoxelSize * (float)BrickVoxelResolution, 1e-5f)), 0, (int)BrickGridResolution - 1);
     if (any(maxBrick < minBrick))
     {
+        return;
+    }
+
+    const uint3 brickSpan = (uint3)(maxBrick - minBrick + 1);
+    const uint brickReferenceCount = brickSpan.x * brickSpan.y * brickSpan.z;
+    if (brickReferenceCount > SPARSE_SDF_GI_MAX_TRIANGLE_BRICK_REFERENCES)
+    {
+        InterlockedAdd(referenceCounters[SPARSE_SDF_GI_REF_COUNTER_REFERENCE_OVERFLOW], brickReferenceCount);
         return;
     }
 
@@ -691,20 +723,6 @@ void CSEmitTriangleReferences(uint3 dispatchThreadId : SV_DispatchThreadID)
 }
 #endif
 
-#if defined(SPARSE_SDF_GI_PREPARE_SOLVE_ARGS_SHADER)
-[numthreads(1, 1, 1)]
-void CSPrepareSolveBrickReferencesArgs(uint3 dispatchThreadId : SV_DispatchThreadID)
-{
-    StructuredBuffer<uint> referenceCounters = ResourceDescriptorHeap[ReferenceCountersSrvIndex];
-    RWByteAddressBuffer solveIndirectArgs = ResourceDescriptorHeap[SolveIndirectArgsUavIndex];
-
-    const uint occupiedBrickCount = referenceCounters[SPARSE_SDF_GI_REF_COUNTER_OCCUPIED_BRICK];
-    solveIndirectArgs.Store(0u, max(occupiedBrickCount, 1u));
-    solveIndirectArgs.Store(4u, 1u);
-    solveIndirectArgs.Store(8u, 1u);
-}
-#endif
-
 #if defined(SPARSE_SDF_GI_REFERENCE_SOLVE_SHADER)
 [numthreads(512, 1, 1)]
 void CSSolveBrickReferences(uint3 groupId : SV_GroupID, uint groupThreadIndex : SV_GroupIndex)
@@ -722,13 +740,14 @@ void CSSolveBrickReferences(uint3 groupId : SV_GroupID, uint groupThreadIndex : 
     RWTexture3D<float> sdfAtlas = ResourceDescriptorHeap[SdfAtlasUavIndex];
     RWStructuredBuffer<uint4> brickMetadata = ResourceDescriptorHeap[BrickMetadataUavIndex];
 
-    const uint occupiedBrickCount = referenceCounters[SPARSE_SDF_GI_REF_COUNTER_OCCUPIED_BRICK];
-    if (groupId.x >= occupiedBrickCount)
+    const uint solveListIndex = BuildWorkOffset + groupId.x;
+    const uint occupiedBrickCount = min(referenceCounters[SPARSE_SDF_GI_REF_COUNTER_OCCUPIED_BRICK], GetSparseSdfGIBrickCapacity());
+    if (solveListIndex >= occupiedBrickCount)
     {
         return;
     }
 
-    const uint brickIndex = occupiedBrickList[groupId.x];
+    const uint brickIndex = occupiedBrickList[solveListIndex];
     if (brickIndex >= BrickGridResolution * BrickGridResolution * BrickGridResolution)
     {
         return;
@@ -740,25 +759,63 @@ void CSSolveBrickReferences(uint3 groupId : SV_GroupID, uint groupThreadIndex : 
     const uint3 atlasCoord = brickCoord * BrickVoxelResolution + localCoord;
     const float3 voxelCenter = CascadeMin + ((float3(atlasCoord) + 0.5f.xxx) * VoxelSize);
     const float surfaceBand = max(VoxelSize * SurfaceThicknessVoxels, 1e-5f);
-    const uint triangleCount = referenceCounters[SPARSE_SDF_GI_REF_COUNTER_TRIANGLE];
-    const uint referenceCount = referenceCounters[SPARSE_SDF_GI_REF_COUNTER_REFERENCE];
+    const uint triangleCount = min(referenceCounters[SPARSE_SDF_GI_REF_COUNTER_TRIANGLE], TrianglePoolCapacity);
+    const uint referenceCount = min(referenceCounters[SPARSE_SDF_GI_REF_COUNTER_REFERENCE], MaxBrickTriangleReferences);
 
     float seedValue = 1.0f;
-    uint referenceId = head;
-    [loop]
-    while (referenceId != SPARSE_SDF_GI_INVALID_REFERENCE && referenceId < referenceCount)
+    if (groupThreadIndex == 0u)
     {
-        const FSparseSdfGIBrickReference reference = references[referenceId];
-        if (reference.TriangleId < triangleCount)
+        gs_SolveWalkCursor = head;
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    [loop]
+    while (true)
+    {
+        // Lane 0 walks the next slice of the brick's reference list into the LDS triangle cache.
+        if (groupThreadIndex == 0u)
         {
-            const FSparseSdfGITrianglePoolEntry triEntry = trianglePool[reference.TriangleId];
-            const float distanceToTriangle = PointTriangleDistance(voxelCenter, triEntry.P0.xyz, triEntry.P1.xyz, triEntry.P2.xyz);
+            uint cachedCount = 0u;
+            uint referenceId = gs_SolveWalkCursor;
+            [loop]
+            while (referenceId != SPARSE_SDF_GI_INVALID_REFERENCE
+                && referenceId < referenceCount
+                && cachedCount < SPARSE_SDF_GI_SOLVE_TRIANGLE_CACHE)
+            {
+                const FSparseSdfGIBrickReference reference = references[referenceId];
+                referenceId = reference.Next;
+                if (reference.TriangleId < triangleCount)
+                {
+                    const FSparseSdfGITrianglePoolEntry triEntry = trianglePool[reference.TriangleId];
+                    gs_SolveTriP0[cachedCount] = triEntry.P0.xyz;
+                    gs_SolveTriP1[cachedCount] = triEntry.P1.xyz;
+                    gs_SolveTriP2[cachedCount] = triEntry.P2.xyz;
+                    ++cachedCount;
+                }
+            }
+            gs_SolveWalkCursor = referenceId;
+            gs_SolveBatchCount = cachedCount;
+        }
+        GroupMemoryBarrierWithGroupSync();
+
+        const uint batchCount = gs_SolveBatchCount;
+        if (batchCount == 0u)
+        {
+            break;
+        }
+
+        [loop]
+        for (uint i = 0u; i < batchCount; ++i)
+        {
+            const float distanceToTriangle = PointTriangleDistance(voxelCenter, gs_SolveTriP0[i], gs_SolveTriP1[i], gs_SolveTriP2[i]);
             if (distanceToTriangle <= surfaceBand)
             {
                 seedValue = min(seedValue, EncodeSdfWorldDistance(distanceToTriangle));
             }
         }
-        referenceId = reference.Next;
+
+        // All voxel threads must finish reading this batch before lane 0 refills the LDS cache.
+        GroupMemoryBarrierWithGroupSync();
     }
 
     gs_EikonalA[groupThreadIndex] = seedValue;

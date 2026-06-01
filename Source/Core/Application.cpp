@@ -578,6 +578,8 @@ bool FApplication::RenderFrame()
     UpdateBindlessDescriptorStatsSnapshot();
 #endif
 
+    DrainD3D12DebugMessages(Device ? Device->GetDevice() : nullptr);
+
     LogVerbose("Frame completed: " + std::to_string(FrameIndex));
 
     return true;

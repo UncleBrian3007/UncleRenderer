@@ -43,7 +43,8 @@ void ClusterDagLevelSplitClusterCullCS(uint3 dispatchThreadId : SV_DispatchThrea
     RWStructuredBuffer<uint> HwVisibleEntryIndices = ResourceDescriptorHeap[HwVisibleEntryIndicesIndex];
     RWStructuredBuffer<uint> SwVisibleEntryIndices = ResourceDescriptorHeap[SwVisibleEntryIndicesIndex];
     RWStructuredBuffer<uint> DrawDataVisibleEntryIndices = ResourceDescriptorHeap[DrawDataVisibleEntryIndicesIndex];
-    ByteAddressBuffer PageData = ResourceDescriptorHeap[PageDataBufferIndex];
+    const bool pagedFetchEnabled = PageDataBufferIndex != 0xffffffffu;
+    ByteAddressBuffer PageData = ResourceDescriptorHeap[pagedFetchEnabled ? PageDataBufferIndex : CommandTemplatesIndex];
 
     const uint candidateCount = QueueState.Load(kLevelSplitQueueStateCandidateWriteOffset);
     if (candidateIndex >= candidateCount)
@@ -53,7 +54,7 @@ void ClusterDagLevelSplitClusterCullCS(uint3 dispatchThreadId : SV_DispatchThrea
 
     const ClusterDagCandidateClusterEntry candidateEntry = CandidateClusterEntry[candidateIndex];
     const uint clusterIndex = candidateEntry.ClusterIndex;
-    const bool usePagedCandidate = candidateEntry.PageDataBase != 0xffffffffu;
+    const bool usePagedCandidate = pagedFetchEnabled && candidateEntry.PageDataBase != 0xffffffffu;
 #if USE_CLUSTER_DAG_FAST
     if (true)
 #else

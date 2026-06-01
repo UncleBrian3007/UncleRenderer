@@ -257,6 +257,8 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIDebugMode, 0u, 5u, { "SparseSdfGIDebugMode" });
     ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGICascadeCount, 1u, 1u, { "SparseSdfGICascadeCount" });
     ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIMaxBrickTriangleReferences, 1024u * 1024u, 32u * 1024u * 1024u, { "SparseSdfGIMaxBrickTriangleReferences" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIDebugSolveGroupBudget, 0u, 0xFFFFFFFFu, { "SparseSdfGIDebugSolveGroupBudget" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIDebugEmitTriangleBudget, 0u, 0xFFFFFFFFu, { "SparseSdfGIDebugEmitTriangleBudget" });
     ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIBaseVoxelSize, { "SparseSdfGIBaseVoxelSize" });
     ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGICascadeScale, 1.01f, { "SparseSdfGICascadeScale" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGITraceHalfResolution, { "SparseSdfGITraceHalfResolution" });
@@ -274,7 +276,7 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bLogResourceBarriers, { "LogResourceBarriers", "LogBarriers" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bLogMeshOptimizationStats, { "LogMeshOptimizationStats", "MeshOptimizationStats" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableGraphDump, { "EnableGraphDump", "DumpGraph" });
-    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableGpuTiming, { "EnableGpuTiming", "RecordGpuTiming" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableGpuTiming, { "EnableGpuTiming", "GpuTiming" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableHZB, { "HZB", "EnableHZB" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableHzbTwoPass, { "HzbTwoPass", "EnableHzbTwoPass" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableGtao, { "GTAO", "EnableGTAO" });

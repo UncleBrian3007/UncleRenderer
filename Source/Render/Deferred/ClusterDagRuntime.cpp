@@ -1951,6 +1951,11 @@ void FClusterDagRuntime::AddLevelSplitClusterCullPass(FDeferredPassContext& Cont
             Builder.UavBarrier(HwVisibleEntryHandle);
             Builder.UavBarrier(SwVisibleEntryHandle);
             Builder.UavBarrier(DrawDataVisibleEntryHandle);
+            if (FClusterDagStreamingManager* StreamingManager = Context.Owner.GetClusterDagStreamingManager(); StreamingManager && StreamingManager->IsEnabled())
+            {
+                FRGBufferHandle PageDataHandle = ImportBindlessBuffer(Context.Graph, "ClusterDAG_StreamingPageDataLevelCluster", StreamingManager->PageDataBuffer);
+                Builder.ReadBuffer(PageDataHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            }
             Builder.KeepAlive();
         }
     }, [this, &Owner, PassName](const FPassData& Data, FDX12CommandContext& Cmd)

@@ -35,7 +35,6 @@ struct FSparseSdfGIFrameResources
     FRGBufferHandle BrickReferencesHandle{};
     FRGBufferHandle ReferenceCountersHandle{};
     FRGBufferHandle OccupiedBrickListHandle{};
-    FRGBufferHandle SolveIndirectArgsHandle{};
     FRGResourceHandle DiffuseGIHandle{};
 };
 
@@ -74,10 +73,8 @@ private:
     void InvalidateCache() const;
     void AddReferenceBuildInitPass(FDeferredPassContext& Context) const;
     void AddSectionReferenceEmitPass(FDeferredPassContext& Context, const FObject& Object, FMeshSection& Section, uint32_t DrawSectionIndex) const;
-    void AddPrepareSolveBrickReferencesArgsPass(FDeferredPassContext& Context) const;
     void AddSolveBrickReferencesPass(FDeferredPassContext& Context) const;
     void DispatchOutputPass(FDeferredPassContext& Context, FDX12CommandContext& Cmd, ID3D12PipelineState* PipelineState, bool bPassEnabled) const;
-    bool CreateDispatchCommandSignature(FDX12Device* Device);
 
 private:
     bool bEnabled = false;
@@ -90,6 +87,8 @@ private:
     float BounceStrength = 1.0f;
     bool bUseHitLightingVisibility = false;
     uint32_t MaxBrickTriangleReferences = 8u * 1024u * 1024u;
+    uint32_t DebugSolveGroupBudget = 0xFFFFFFFFu;
+    uint32_t DebugEmitTriangleBudget = 0xFFFFFFFFu;
     bool bPersistentInputsValid = false;
     mutable bool bSdfCacheValid = false;
     mutable uint64_t CachedSceneSignature = 0;
@@ -100,11 +99,9 @@ private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ReferenceBuildInitPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ReferenceEmitPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> PrepareSolveArgsPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> SolveBrickReferencesPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> DebugTracePipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> DiffuseTracePipeline;
-    Microsoft::WRL::ComPtr<ID3D12CommandSignature> DispatchCommandSignature;
 
     FBindlessTexture SdfAtlas;
     FBindlessBuffer CascadeBrickMap;

@@ -1,129 +1,129 @@
 # SparseSdfGI v2
 
-SparseSdfGI v2 moves the experiment from a triangle narrow-band shell toward a traceable scene-space distance field. It is still an original UncleRenderer implementation inspired by AMD FidelityFX Brixelizer and Brixelizer GI, without copying SDK source, shader code, or data tables.
+SparseSdfGI v2는 실험의 중심을 삼각형 협대역 셸에서 추적 가능한 씬 공간 거리장으로 이동합니다. 이 또한 AMD FidelityFX Brixelizer 및 Brixelizer GI에서 영감을 받은 UncleRenderer의 독자 구현이며, SDK 소스, 셰이더 코드, 데이터 테이블을 복사하지 않습니다.
 
-## Current v2.0 Scope
+## 현재 v2.0 범위
 
-- Fit the dense single cascade to the loaded scene instead of using a fixed world-space voxel size by default.
-- Treat `SparseSdfGIBaseVoxelSize <= 0` as auto mode.
-- Compute auto voxel size from scene radius:
+- 기본값으로 고정 월드 공간 복셀 크기를 쓰는 대신, 조밀 단일 캐스케이드를 로드된 씬에 맞춘다.
+- `SparseSdfGIBaseVoxelSize <= 0`를 자동 모드로 취급한다.
+- 씬 반경으로 자동 복셀 크기를 계산한다:
 
 ```text
 voxelSize = max((2 * SceneRadius * 1.10) / 512, 0.001)
 ```
 
-- Keep positive `SparseSdfGIBaseVoxelSize` values as manual voxel-size overrides.
-- Feed the effective voxel size consistently to clear, voxelize, trace, debug, and diffuse passes.
+- 양수 `SparseSdfGIBaseVoxelSize` 값은 수동 복셀 크기 오버라이드로 유지한다.
+- 유효 복셀 크기를 clear, voxelize, trace, debug, diffuse 패스에 일관되게 전달한다.
 
-This fixes the v1 failure mode where small scenes occupied only a few voxels inside a very large 512^3 cascade.
+이 변경은 작은 씬이 매우 큰 512^3 캐스케이드 안에서 몇 개 복셀만 차지하던 v1 실패 모드를 해결합니다.
 
-## Current v2.1 Scope
+## 현재 v2.1 범위
 
-- Add a `R32_UINT` seed distance atlas beside the existing filterable SDF atlas.
-- Clear seed voxels to `0xffffffff` and use `InterlockedMin` during triangle voxelization.
-- Quantize the narrow-band unsigned triangle distance to 16 bits before storing it in the seed atlas.
-- Resolve seed distances back into the existing normalized `R16_UNORM` SDF atlas so debug visualization and trace code can keep sampling the same filterable resource.
+- 기존 필터 가능한 SDF 아틀라스 옆에 `R32_UINT` 시드 거리 아틀라스를 추가한다.
+- 시드 복셀을 `0xffffffff`로 클리어하고 삼각형 복셀화 중 `InterlockedMin`을 사용한다.
+- 협대역 부호 없는 삼각형 거리를 16비트로 양자화한 뒤 시드 아틀라스에 저장한다.
+- 시드 거리를 기존 정규화 `R16_UNORM` SDF 아틀라스로 다시 해석(resolve)하여 디버그 시각화와 트레이스 코드가 동일한 필터 가능한 리소스를 계속 샘플링하도록 한다.
 
-V2.1 fixes the v1 last-writer-wins problem when multiple triangles touch the same voxel. It does not yet propagate distances through empty space, so the field is still a surface seed band rather than a full global SDF.
+V2.1은 여러 삼각형이 같은 복셀을 건드릴 때 발생하던 v1의 마지막 작성자 우선(last-writer-wins) 문제를 해결합니다. 다만 아직 빈 공간으로 거리를 전파하지 않으므로, 필드는 완전한 글로벌 SDF가 아니라 표면 시드 밴드에 머뭅니다.
 
-## Current v2.2 Scope
+## 현재 v2.2 범위
 
-- Move the `R32_UINT` seed distance atlas to a transient RenderGraph 3D texture used only during SDF build.
-- Store seed distances in brick-scale normalized units: `1.0 == 8 * voxelSize`.
-- Replace the seed resolve pass with a Brixelizer-style brick-local Eikonal pass.
-- Solve every dense single-cascade brick each frame: one compute group per `8^3` brick, one thread per brixel.
-- Write the full `R16_UNORM` SDF atlas every frame, including empty bricks as `1.0`.
+- `R32_UINT` 시드 거리 아틀라스를 SDF 빌드 중에만 사용하는 일시적(RenderGraph) 3D 텍스처로 옮긴다.
+- 시드 거리를 브릭 스케일 정규화 단위로 저장한다: `1.0 == 8 * voxelSize`.
+- 시드 resolve 패스를 Brixelizer 스타일 브릭 로컬 Eikonal 패스로 교체한다.
+- 프레임마다 모든 조밀 단일 캐스케이드 브릭을 푼다: `8^3` 브릭당 1개 컴퓨트 그룹, 브릭셀당 1개 스레드.
+- 매 프레임 전체 `R16_UNORM` SDF 아틀라스를 기록하며, 빈 브릭도 `1.0`으로 쓴다.
 
-V2.2 improves the distance field inside each brick. It does not propagate across brick boundaries, so 8^3 brick seams can still appear until brick-aware traversal, AABB skipping, or an optional GlobalSDF-style propagation path is added.
+V2.2는 각 브릭 내부 거리장을 개선합니다. 브릭 경계를 넘어 전파하지는 않으므로, 브릭 인지 순회, AABB 스킵, 또는 선택적 GlobalSDF 스타일 전파 경로를 추가하기 전까지 8^3 브릭 경계 이음(seam)이 나타날 수 있습니다.
 
-## Long-Term v2 Backbone
+## 장기 v2 백본
 
 ```text
-V2.0  SceneRadius-based cascade / voxel-size auto fit
-V2.1  R32_UINT atomic-min seed distance atlas
-V2.2  Transient seeds + brick-scale brick-local Eikonal
-V2.3  Brick-aware distance / step-count debug views
-V2.4  Use cascade brick-map indirection in sampling and traversal
-V2.5  Static SDF cache / rebuild skip
-V2.6  Trace brick metadata / AABB skip
-V2.7  Occupied-brick Eikonal dispatch skip
-Optional  GlobalSDF-style inter-brick propagation or packed JFA debug path
+V2.0  SceneRadius 기반 캐스케이드 / 복셀 크기 자동 맞춤
+V2.1  R32_UINT atomic-min 시드 거리 아틀라스
+V2.2  일시적 시드 + 브릭 스케일 브릭 로컬 Eikonal
+V2.3  브릭 인지 거리 / step-count 디버그 뷰
+V2.4  샘플링과 순회에서 캐스케이드 브릭 맵 간접 참조 사용
+V2.5  정적 SDF 캐시 / 재빌드 스킵
+V2.6  트레이스 브릭 메타데이터 / AABB 스킵
+V2.7  점유 브릭 Eikonal 디스패치 스킵
+선택사항  GlobalSDF 스타일 브릭 간 전파 또는 packed JFA 디버그 경로
 ```
 
-V2 stays a dense single-cascade prototype. V2.4 is the first hard prerequisite for going Brixelizer-shaped: sampling must route through the brick map instead of the flat world->atlas mapping. V2.5 prioritizes measured cost: static scenes reuse the persistent SDF atlas instead of rebuilding it every frame. After V2.5, steady-state static scenes are dominated by trace cost, so V2.6 targets traversal before rebuild-frame-only Eikonal dispatch reduction.
+V2는 조밀 단일 캐스케이드 프로토타입을 유지합니다. V2.4는 Brixelizer 형태로 가기 위한 첫 필수 조건입니다. 샘플링이 평면 world->atlas 매핑이 아니라 브릭 맵을 반드시 통과해야 합니다. V2.5는 측정 가능한 비용 절감을 우선합니다. 정적 씬은 매 프레임 재빌드 대신 지속 리소스인 SDF 아틀라스를 재사용합니다. V2.5 이후 정적 씬의 정상 상태 비용은 트레이스가 지배하므로, V2.6은 재빌드 프레임 전용 Eikonal 디스패치 감소보다 순회 최적화를 먼저 다룹니다.
 
-The sparse allocator and the rest of the Brixelizer build pipeline are grouped into V3 because they are mutually dependent and only pay off together.
+희소 할당기와 나머지 Brixelizer 빌드 파이프라인은 상호 의존성이 높고 함께 적용할 때 효과가 커서 V3로 묶습니다.
 
-### V2.1 Atomic-Min Seeds
+### V2.1 Atomic-Min 시드
 
-The v1 atlas is `RWTexture3D<float>` and accepts last-writer-wins results when multiple triangles touch the same voxel. V2.1 adds a seed distance atlas using `R32_UINT` and clears it to `0xffffffff`. Voxelization quantizes world-space triangle distance and uses `InterlockedMin` so the nearest triangle wins.
+v1 아틀라스는 `RWTexture3D<float>`이며 여러 삼각형이 같은 복셀을 건드리면 마지막 작성자 우선 결과를 허용합니다. V2.1은 `R32_UINT` 시드 거리 아틀라스를 추가하고 `0xffffffff`로 클리어합니다. 복셀화는 월드 공간 삼각형 거리를 양자화하고 `InterlockedMin`을 사용해 가장 가까운 삼각형이 이기도록 합니다.
 
-The seed pass remains unsigned. Inside/outside classification is outside v2 scope.
+시드 패스는 계속 부호 없음(unsigned)입니다. 내부/외부 분류는 v2 범위 밖입니다.
 
-The resolved atlas uses `R16_UNORM` instead of `R8_UNORM` so the 16-bit seed quantization survives into the filterable SDF atlas. This matters more once tracing steps directly from decoded distance values.
+resolve된 아틀라스는 `R8_UNORM` 대신 `R16_UNORM`을 사용해 16비트 시드 양자화 정밀도가 필터 가능한 SDF 아틀라스까지 유지되도록 합니다. 이는 트레이스가 디코드된 거리값으로 직접 스텝할수록 더 중요해집니다.
 
-### V2.2 Brick-Local Eikonal
+### V2.2 브릭 로컬 Eikonal
 
-Voxelization seeds only a small surface band controlled by `SurfaceThicknessVoxels`. The stored value is normalized by brick width, not by seed band width:
+복셀화는 `SurfaceThicknessVoxels`로 제어되는 작은 표면 밴드만 시드합니다. 저장값은 시드 밴드 폭이 아니라 브릭 폭으로 정규화합니다:
 
 ```text
 sdf = distanceToTriangle / (8 * voxelSize)
 ```
 
-The Eikonal pass loads one `8^3` brick into LDS, uses deterministic ping-pong relaxation with offsets `4, 2, 1`, and writes the final brick-local unsigned field to the filterable SDF atlas. Empty seeds remain `1.0`.
+Eikonal 패스는 `8^3` 브릭 하나를 LDS로 로드하고, 오프셋 `4, 2, 1`의 결정론적 ping-pong 완화를 사용해 최종 브릭 로컬 부호 없는 필드를 필터 가능한 SDF 아틀라스에 씁니다. 빈 시드는 `1.0`으로 유지됩니다.
 
-The earlier "narrow seed band" milestone is folded into V2.2: voxelization still emits a narrow surface seed band, but distance expansion inside each brick is handled by the brick-local Eikonal pass.
+이전의 "협대역 시드 밴드" 마일스톤은 V2.2에 통합되었습니다. 복셀화는 여전히 협대역 표면 시드를 내보내지만, 각 브릭 내부 거리 확장은 브릭 로컬 Eikonal 패스가 담당합니다.
 
-### V2.3 Brick-Aware Debug
+### V2.3 브릭 인지 디버그
 
-`Voxel Projection` remains a raw occupancy/debug view. The old `Global SDF Surface` debug mode is renamed to `Brick SDF Surface` because the current field is a dense cascade of brick-local Eikonal solves, not a continuous UE-style GlobalSDF.
+`Voxel Projection`은 원시 점유/디버그 뷰로 유지됩니다. 기존 `Global SDF Surface` 디버그 모드는 현재 필드가 연속적인 UE 스타일 GlobalSDF가 아니라 브릭 로컬 Eikonal 해의 조밀 캐스케이드이므로 `Brick SDF Surface`로 이름을 바꿉니다.
 
-V2.3 adds a `Step Count` debug mode that reuses the brick surface trace path and visualizes traversal cost. Hit pixels are shown in grayscale, with brighter values meaning more steps. Miss pixels stay dark, with subtle color differences for cascade miss, max-distance stop, cascade exit, and atlas-boundary escape. This mode is intended to reveal brick seams, conservative step clamps, empty-brick behavior, and trace-cost hot spots before adding brick-map indirection or AABB skipping.
+V2.3은 `Step Count` 디버그 모드를 추가합니다. 브릭 표면 트레이스 경로를 재사용해 순회 비용을 시각화합니다. 히트 픽셀은 그레이스케일로 표시되며, 밝을수록 스텝 수가 많음을 뜻합니다. 미스 픽셀은 어둡게 유지하고, 캐스케이드 미스, 최대 거리 종료, 캐스케이드 이탈, 아틀라스 경계 탈출을 미묘한 색 차이로 구분합니다. 이 모드는 브릭 맵 간접 참조나 AABB 스킵을 넣기 전에 브릭 이음, 보수적 스텝 클램프, 빈 브릭 동작, 트레이스 비용 핫스팟을 드러내기 위한 것입니다.
 
-### V2.4 Brick-Map Indirection
+### V2.4 브릭 맵 간접 참조
 
-V2.4 routes all SDF sampling and tracing through the cascade brick map before reading the SDF atlas. Dense mode still initializes `cascadeBrickMap[linearBrick] = linearBrick`, so visual output should stay close to V2.3 while proving that the Brixelizer-style indirection path is correct.
+V2.4는 SDF 아틀라스를 읽기 전에 모든 SDF 샘플링과 트레이스를 캐스케이드 브릭 맵으로 라우팅합니다. 조밀 모드는 여전히 `cascadeBrickMap[linearBrick] = linearBrick`로 초기화하므로, 시각 출력은 V2.3과 유사하게 유지되면서도 Brixelizer 스타일 간접 참조 경로의 정확성을 검증할 수 있어야 합니다.
 
-Filtered SDF reads use manual trilinear sampling: each of the eight neighbor voxels is resolved through `CascadeBrickMap -> brickId -> atlas brick base`. This is intentionally more expensive than hardware `SampleLevel`, but it makes invalid/sparse bricks observable and gives V2.5 a clear Step Count baseline. Cascade outside, invalid brick ids, and atlas outside all return `1.0` empty distance instead of clamp-to-edge.
+필터된 SDF 읽기는 수동 삼선형 보간을 사용합니다. 8개 이웃 복셀 각각을 `CascadeBrickMap -> brickId -> atlas brick base`로 해석합니다. 이는 하드웨어 `SampleLevel`보다 의도적으로 비싸지만, 무효/희소 브릭을 관측 가능하게 만들고 V2.5의 명확한 Step Count 기준선을 제공합니다. 캐스케이드 바깥, 무효 브릭 id, 아틀라스 바깥은 clamp-to-edge 대신 모두 빈 거리 `1.0`을 반환합니다.
 
-### V2.5 Static SDF Cache
+### V2.5 정적 SDF 캐시
 
-V2.5 skips `Seed Atlas Init`, per-model voxelize, and `Brick Eikonal` on frames where the static scene and build settings are unchanged. `SdfAtlas` and `CascadeBrickMap` are persistent resources, so cache-valid frames keep importing them and trace/debug/diffuse still read the previous build output.
+V2.5는 정적 씬과 빌드 설정이 변하지 않은 프레임에서 `Seed Atlas Init`, 모델별 voxelize, `Brick Eikonal`을 건너뜁니다. `SdfAtlas`와 `CascadeBrickMap`은 지속 리소스이므로, 캐시 유효 프레임은 이를 계속 import하고 trace/debug/diffuse는 이전 빌드 결과를 그대로 읽습니다.
 
-The cache signature includes the actual cascade bounds, build-affecting config, static regular mesh candidate count, draw ranges, vertex/index SRV bindless indices, and world matrices. Debug mode, intensity, camera movement, and trace half-resolution do not invalidate the cache. Vertex/index buffer contents are assumed immutable for a given SRV bindless index; in-place streaming or morph updates are outside V2.5.
+캐시 시그니처에는 실제 캐스케이드 경계, 빌드 영향 설정, 정적 일반 메시 후보 개수, 드로우 범위, 버텍스/인덱스 SRV 바인드리스 인덱스, 월드 행렬이 포함됩니다. 디버그 모드, 강도, 카메라 이동, 트레이스 하프 해상도는 캐시를 무효화하지 않습니다. 버텍스/인덱스 버퍼 내용은 특정 SRV 바인드리스 인덱스에 대해 불변이라 가정하며, 제자리 스트리밍이나 모프 업데이트는 V2.5 범위 밖입니다.
 
-A `Force Rebuild SDF` ImGui button invalidates the cache without writing config. Runtime validation should confirm that Sponza shows build passes on the first frame or after forced invalidation, then only `SparseSdfGI Trace` on steady-state frames.
+`Force Rebuild SDF` ImGui 버튼은 설정 파일을 쓰지 않고 캐시를 무효화합니다. 런타임 검증에서는 첫 프레임 또는 강제 무효화 후에 Sponza에서 빌드 패스가 보이고, 정상 상태 프레임에서는 `SparseSdfGI Trace`만 보이는지 확인해야 합니다.
 
-### V2.6 Trace Brick Metadata / AABB Skip
+### V2.6 트레이스 브릭 메타데이터 / AABB 스킵
 
-V2.6 adds a persistent `BrickMetadata` buffer with one `uint4` per dense cascade brick. Metadata is rebuilt after brick-local Eikonal on cache-miss frames and reused with the static SDF cache on cache-hit frames. `x` stores a packed local surface AABB, `y` stores flags, and bit 0 means the brick contains surface-distance voxels using the same `0.75 * voxelSize` threshold as tracing.
+V2.6은 조밀 캐스케이드 브릭마다 `uint4` 하나를 갖는 지속 `BrickMetadata` 버퍼를 추가합니다. 메타데이터는 캐시 미스 프레임에서는 브릭 로컬 Eikonal 이후 재생성하고, 캐시 히트 프레임에서는 정적 SDF 캐시와 함께 재사용합니다. `x`에는 패킹된 로컬 표면 AABB를 저장하고 `y`에는 플래그를 저장하며, 비트 0은 트레이스와 동일한 `0.75 * voxelSize` 임계값 기준의 표면 거리 복셀이 브릭에 포함됨을 의미합니다.
 
-Trace keeps the existing single sphere-march loop. At each iteration it checks the current brick metadata. Invalid bricks, empty bricks, or occupied bricks whose expanded surface AABB does not intersect the ray are skipped by jumping to the current brick exit plus a small epsilon. The AABB is expanded by one voxel to cover cross-brick manual-trilinear bleed. If metadata is ambiguous, trace falls back to the normal SDF sample step.
+트레이스는 기존 단일 sphere-march 루프를 유지합니다. 각 반복에서 현재 브릭 메타데이터를 검사합니다. 무효 브릭, 빈 브릭, 또는 확장된 표면 AABB가 레이와 교차하지 않는 점유 브릭은 현재 브릭 출구 지점에 작은 epsilon을 더해 점프하며 건너뜁니다. AABB는 브릭 간 수동 삼선형 블리드를 커버하기 위해 1복셀 확장합니다. 메타데이터가 모호하면 트레이스는 일반 SDF 샘플 스텝으로 폴백합니다.
 
-`Step Count` remains the validation view for this phase. DebugMode 4 silhouettes should match V2.5; if holes appear at brick boundaries, the conservative AABB margin should be increased before optimizing further.
+`Step Count`는 이 단계의 검증 뷰로 유지됩니다. DebugMode 4 실루엣은 V2.5와 일치해야 하며, 브릭 경계에 구멍이 보이면 추가 최적화 전에 보수적 AABB 마진을 늘려야 합니다.
 
-### V2.7 Occupied-Brick Eikonal Dispatch (realized in V3.2)
+### V2.7 점유 브릭 Eikonal 디스패치 (V3.2에서 실현)
 
-This planned optimization — dispatch the brick solve only for bricks touched by voxelization, instead of the full dense grid — was implemented as part of the V3 reference-binning pipeline rather than on top of the V2 voxelizer. See V3.2 occupied-brick indirect solve in `doc/SparseSdfGI-v3.md`.
+이 계획된 최적화는 조밀 전체 그리드 대신 복셀화가 닿은 브릭만 풀도록 디스패치하는 것이었는데, V2 복셀라이저 위가 아니라 V3 참조-바이닝 파이프라인의 일부로 구현되었습니다. 자세한 내용은 `doc/SparseSdfGI-v3.md`의 V3.2 occupied-brick indirect solve를 참고하세요.
 
-### Optional GlobalSDF-Style Propagation
+### 선택 사항: GlobalSDF 스타일 전파
 
-Packed Jump Flooding or another inter-brick propagation path remains useful if the goal shifts toward GlobalSDF visualization. It is optional for the Brixelizer-style path and should be treated as a debug/alternate mode because packed seed volumes can cost about 512 MB each at 512^3.
+목표가 GlobalSDF 시각화로 이동한다면 Packed Jump Flooding 또는 다른 브릭 간 전파 경로는 여전히 유용합니다. 하지만 Brixelizer 스타일 경로에서는 선택 사항이며, packed seed 볼륨이 512^3에서 약 512 MB씩 비용이 들 수 있으므로 디버그/대체 모드로 취급해야 합니다.
 
-## V3 - Sparse / Multi-Cascade Generation
+## V3 - 희소 / 다중 캐스케이드 생성
 
-V3 turns the dense prototype into a Brixelizer-shaped sparse build pipeline: reference-binning voxelizer (replacing the `MaxTriangleVoxelSpan` drop path), occupied/dirty-brick dispatch, sparse brick allocation, and multi-cascade. It is tracked in its own document to keep a single source of truth — see `doc/SparseSdfGI-v3.md` for the full backbone, per-milestone detail, and current status.
+V3는 조밀 프로토타입을 Brixelizer 형태의 희소 빌드 파이프라인으로 전환합니다. 핵심 요소는 reference-binning voxelizer(`MaxTriangleVoxelSpan` 드롭 경로 대체), occupied/dirty-brick 디스패치, 희소 브릭 할당, 다중 캐스케이드입니다. 단일 진실 소스를 유지하기 위해 별도 문서에서 추적하며, 전체 백본, 마일스톤별 상세, 현재 상태는 `doc/SparseSdfGI-v3.md`를 참고하세요.
 
-## Deferred Work
+## 연기된 작업
 
-- Signed SDF / inside-outside classification.
-- Global Eikonal, Fast Sweeping, or Fast Marching quality solve.
-- Radiance cache, specular GI, and production GI denoising.
+- Signed SDF / 내부-외부 분류.
+- Global Eikonal, Fast Sweeping, 또는 Fast Marching 품질 해법.
+- 복사휘도 캐시, 스페큘러 GI, 프로덕션 GI 디노이징.
 
-## References / Attribution
+## 참고 / 출처
 
 - AMD FidelityFX SDK, Brixelizer / Brixelizer GI
 - Copyright (C) 2024 Advanced Micro Devices, Inc.
-- Licensed under the MIT License
+- MIT 라이선스 적용
 
-If SDK code, HLSL, constants, or substantial portions are copied later, add a `ThirdPartyNotices.md` entry with the full MIT license text and the copied scope.
+향후 SDK 코드, HLSL, 상수 또는 실질적인 코드 조각을 복사하는 경우, `ThirdPartyNotices.md`에 MIT 전문과 복사 범위를 포함한 항목을 추가하세요.

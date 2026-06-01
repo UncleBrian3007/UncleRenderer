@@ -299,6 +299,7 @@ bool FDX12Device::CreateDevice()
         {
             InfoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, FALSE);
             InfoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, FALSE);
+            InfoQueue->SetMessageCountLimit(8192);
             LogInfo("D3D12 InfoQueue break-on-error disabled to allow DRED logging");
         }
     }

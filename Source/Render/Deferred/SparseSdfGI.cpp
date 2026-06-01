@@ -31,6 +31,8 @@ namespace
     constexpr uint32_t kSparseSdfGIGroupSize2D = 8u;
     constexpr uint32_t kSparseSdfGIGroupSize3D = 8u;
     constexpr uint32_t kSparseSdfGIReferenceEmitGroupSize = 64u;
+    constexpr uint32_t kSparseSdfGIReferenceEmitChunkTriangles = 16u * 1024u;
+    constexpr uint32_t kSparseSdfGISolveDispatchChunkGroups = 1024u;
     constexpr float kSparseSdfGICascadeSceneRadiusMargin = 1.10f;
     constexpr float kSparseSdfGIMinVoxelSize = 0.001f;
     constexpr float kSparseSdfGISurfaceThicknessVoxels = 1.5f;
@@ -43,6 +45,26 @@ namespace
     uint32_t GetBrickMapElementCount()
     {
         return kSparseSdfGIBrickGridResolution * kSparseSdfGIBrickGridResolution * kSparseSdfGIBrickGridResolution;
+    }
+
+    DXGI_FORMAT SelectSparseSdfGIAtlasFormat(FDX12Device* Device)
+    {
+        constexpr D3D12_FORMAT_SUPPORT1 RequiredFlags = static_cast<D3D12_FORMAT_SUPPORT1>(
+            D3D12_FORMAT_SUPPORT1_TEXTURE3D | D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW);
+        if (CheckFormatSupport(Device, DXGI_FORMAT_R16_UNORM, RequiredFlags))
+        {
+            LogInfo("SparseSdfGI atlas format selected: DXGI_FORMAT_R16_UNORM (typed UAV supported)");
+            return DXGI_FORMAT_R16_UNORM;
+        }
+
+        if (CheckFormatSupport(Device, DXGI_FORMAT_R32_FLOAT, RequiredFlags))
+        {
+            LogWarning("SparseSdfGI atlas format fallback: DXGI_FORMAT_R16_UNORM typed UAV unsupported; using DXGI_FORMAT_R32_FLOAT");
+            return DXGI_FORMAT_R32_FLOAT;
+        }
+
+        LogError("SparseSdfGI requires a Texture3D typed UAV format for the SDF atlas.");
+        return DXGI_FORMAT_UNKNOWN;
     }
 
     void HashBytes(uint64_t& Hash, const void* Data, size_t Size)
@@ -113,11 +135,6 @@ namespace
         return CreateRWStructuredBufferDesc<uint32_t>(GetBrickMapElementCount());
     }
 
-    FRGBufferDesc CreateSolveIndirectArgsDesc()
-    {
-        return CreateRawBufferDesc(sizeof(D3D12_DISPATCH_ARGUMENTS), D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-    }
-
     struct FSparseSdfGIConstants
     {
         uint32_t OutputWidth = 0;
@@ -139,7 +156,7 @@ namespace
         float Intensity = 1.0f;
         float MaxTraceDistance = 64.0f;
         uint32_t TrianglePoolCapacity = 0;
-        uint32_t Padding1 = 0;
+        uint32_t BuildWorkOffset = 0u;
         DirectX::XMFLOAT3 CascadeMin{ 0.0f, 0.0f, 0.0f };
         float VoxelSize = 0.25f;
         DirectX::XMFLOAT3 CascadeExtent{ 1.0f, 1.0f, 1.0f };
@@ -171,12 +188,6 @@ namespace
         uint32_t ReferenceNodesUavIndex = UINT32_MAX;
         uint32_t ReferenceCountersUavIndex = UINT32_MAX;
         uint32_t OccupiedBrickListUavIndex = UINT32_MAX;
-    };
-
-    struct FSparseSdfGIPrepareSolveArgsBindlessConstants
-    {
-        uint32_t ReferenceCountersSrvIndex = UINT32_MAX;
-        uint32_t SolveIndirectArgsUavIndex = UINT32_MAX;
     };
 
     struct FSparseSdfGIReferenceSolveBindlessConstants
@@ -215,18 +226,16 @@ bool FSparseSdfGI::InitializePipelines(FDeferredRenderer& Owner, FDX12Device* De
 {
     (void)Owner;
     bPersistentInputsValid = false;
-    if (!CreateRootSignature(Device) || !CreatePipelines(Device) || !CreateDispatchCommandSignature(Device))
+    if (!CreateRootSignature(Device) || !CreatePipelines(Device))
     {
         LogWarning("Deferred renderer: SparseSdfGI pipeline creation failed; feature disabled.");
         bEnabled = false;
         RootSignature.Reset();
         ReferenceBuildInitPipeline.Reset();
         ReferenceEmitPipeline.Reset();
-        PrepareSolveArgsPipeline.Reset();
         SolveBrickReferencesPipeline.Reset();
         DebugTracePipeline.Reset();
         DiffuseTracePipeline.Reset();
-        DispatchCommandSignature.Reset();
         return true;
     }
 
@@ -259,7 +268,9 @@ void FSparseSdfGI::ApplyConfig(const FRendererConfig& Config)
         CascadeCount != NewCascadeCount ||
         BaseVoxelSize != NewBaseVoxelSize ||
         CascadeScale != NewCascadeScale ||
-        MaxBrickTriangleReferences != NewMaxBrickTriangleReferences;
+        MaxBrickTriangleReferences != NewMaxBrickTriangleReferences ||
+        DebugSolveGroupBudget != Config.SparseSdfGIDebugSolveGroupBudget ||
+        DebugEmitTriangleBudget != Config.SparseSdfGIDebugEmitTriangleBudget;
 
     bEnabled = Config.bEnableSparseSdfGI;
     DebugMode = static_cast<ESparseSdfGIDebugMode>(std::clamp(Config.SparseSdfGIDebugMode, 0u, 5u));
@@ -271,6 +282,8 @@ void FSparseSdfGI::ApplyConfig(const FRendererConfig& Config)
     BounceStrength = (std::max)(0.0f, Config.SparseSdfGIBounceStrength);
     bUseHitLightingVisibility = Config.bSparseSdfGIUseHitLightingVisibility;
     MaxBrickTriangleReferences = NewMaxBrickTriangleReferences;
+    DebugSolveGroupBudget = Config.SparseSdfGIDebugSolveGroupBudget;
+    DebugEmitTriangleBudget = Config.SparseSdfGIDebugEmitTriangleBudget;
 
     if ((!bPreviousEnabled && bEnabled) || bBuildSettingsChanged)
     {
@@ -294,7 +307,6 @@ void FSparseSdfGI::ImportPersistentResources(FDeferredPassContext& Context)
     Resources.BrickReferencesHandle = {};
     Resources.ReferenceCountersHandle = {};
     Resources.OccupiedBrickListHandle = {};
-    Resources.SolveIndirectArgsHandle = {};
     Resources.CascadeBrickMapHandle = ImportBindlessBuffer(Graph, "SparseSdfGI Cascade Brick Map", CascadeBrickMap);
     Resources.BrickMetadataHandle = ImportBindlessBuffer(Graph, "SparseSdfGI Brick Metadata", BrickMetadata);
     Resources.DiffuseGIHandle = ImportBindlessTexture(Graph, "SparseSdfGI Diffuse", DiffuseGI);
@@ -332,7 +344,6 @@ void FSparseSdfGI::AddSdfUpdatePasses(FDeferredPassContext& Context) const
         ++DrawSectionIndex;
     }
 
-    AddPrepareSolveBrickReferencesArgsPass(Context);
     AddSolveBrickReferencesPass(Context);
 
     bSdfCacheValid = true;
@@ -427,7 +438,6 @@ bool FSparseSdfGI::CreatePipelines(FDX12Device* Device)
     FShaderCompiler Compiler;
     std::vector<uint8_t> ReferenceBuildInitByteCode;
     std::vector<uint8_t> ReferenceEmitByteCode;
-    std::vector<uint8_t> PrepareSolveArgsByteCode;
     std::vector<uint8_t> SolveBrickReferencesByteCode;
     std::vector<uint8_t> DebugTraceByteCode;
     std::vector<uint8_t> DiffuseTraceByteCode;
@@ -438,10 +448,6 @@ bool FSparseSdfGI::CreatePipelines(FDX12Device* Device)
         return false;
     }
     if (!RendererUtils::CompileComputeShader(Compiler, Device, ShaderPath, L"CSEmitTriangleReferences", ReferenceEmitByteCode, { L"SPARSE_SDF_GI_REFERENCE_EMIT_SHADER=1" }))
-    {
-        return false;
-    }
-    if (!RendererUtils::CompileComputeShader(Compiler, Device, ShaderPath, L"CSPrepareSolveBrickReferencesArgs", PrepareSolveArgsByteCode, { L"SPARSE_SDF_GI_PREPARE_SOLVE_ARGS_SHADER=1" }))
     {
         return false;
     }
@@ -477,29 +483,9 @@ bool FSparseSdfGI::CreatePipelines(FDX12Device* Device)
 
     return CreateComputePso(ReferenceBuildInitByteCode, ReferenceBuildInitPipeline, "CSInitReferenceBuild")
         && CreateComputePso(ReferenceEmitByteCode, ReferenceEmitPipeline, "CSEmitTriangleReferences")
-        && CreateComputePso(PrepareSolveArgsByteCode, PrepareSolveArgsPipeline, "CSPrepareSolveBrickReferencesArgs")
         && CreateComputePso(SolveBrickReferencesByteCode, SolveBrickReferencesPipeline, "CSSolveBrickReferences")
         && CreateComputePso(DebugTraceByteCode, DebugTracePipeline, "CSDebugTrace")
         && CreateComputePso(DiffuseTraceByteCode, DiffuseTracePipeline, "CSDiffuseTrace");
-}
-
-bool FSparseSdfGI::CreateDispatchCommandSignature(FDX12Device* Device)
-{
-    if (!Device)
-    {
-        return false;
-    }
-
-    D3D12_INDIRECT_ARGUMENT_DESC ArgumentDesc = {};
-    ArgumentDesc.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
-
-    D3D12_COMMAND_SIGNATURE_DESC CommandDesc = {};
-    CommandDesc.ByteStride = sizeof(D3D12_DISPATCH_ARGUMENTS);
-    CommandDesc.NumArgumentDescs = 1;
-    CommandDesc.pArgumentDescs = &ArgumentDesc;
-
-    HR_CHECK(Device->GetDevice()->CreateCommandSignature(&CommandDesc, nullptr, IID_PPV_ARGS(DispatchCommandSignature.ReleaseAndGetAddressOf())));
-    return true;
 }
 
 bool FSparseSdfGI::CreateResources(FDX12Device* Device, uint32_t Width, uint32_t Height)
@@ -509,11 +495,17 @@ bool FSparseSdfGI::CreateResources(FDX12Device* Device, uint32_t Width, uint32_t
         return false;
     }
 
+    const DXGI_FORMAT SdfAtlasFormat = SelectSparseSdfGIAtlasFormat(Device);
+    if (SdfAtlasFormat == DXGI_FORMAT_UNKNOWN)
+    {
+        return false;
+    }
+
     const FRGTextureDesc SdfAtlasDesc =
     {
         kSparseSdfGIAtlasResolution,
         kSparseSdfGIAtlasResolution,
-        DXGI_FORMAT_R16_UNORM,
+        SdfAtlasFormat,
         1,
         static_cast<uint16_t>(kSparseSdfGIAtlasResolution),
         D3D12_RESOURCE_DIMENSION_TEXTURE3D
@@ -567,11 +559,9 @@ bool FSparseSdfGI::RefreshPersistentInputValidation()
         RootSignature &&
         ReferenceBuildInitPipeline &&
         ReferenceEmitPipeline &&
-        PrepareSolveArgsPipeline &&
         SolveBrickReferencesPipeline &&
         DebugTracePipeline &&
         DiffuseTracePipeline &&
-        DispatchCommandSignature &&
         SdfAtlas.IsFullyBound() &&
         CascadeBrickMap.IsFullyBound() &&
         BrickMetadata.IsFullyBound() &&
@@ -812,6 +802,7 @@ void FSparseSdfGI::AddSectionReferenceEmitPass(FDeferredPassContext& Context, co
         uint32_t DrawIndexStart = 0;
         uint32_t DrawIndexCount = 0;
         uint32_t TrianglePoolCapacity = 0;
+        uint32_t PositionCount = 0;
         float VoxelSize = 0.0f;
         DirectX::XMFLOAT3 CascadeMin{ 0.0f, 0.0f, 0.0f };
         DirectX::XMFLOAT3 CascadeExtent{ 0.0f, 0.0f, 0.0f };
@@ -854,6 +845,7 @@ void FSparseSdfGI::AddSectionReferenceEmitPass(FDeferredPassContext& Context, co
         }
         Data.DrawIndexStart = Section.DrawIndexStart;
         Data.DrawIndexCount = Section.DrawIndexCount;
+        Data.PositionCount = Section.Geometry.VertexBuffers[kMeshVertexStreamPosition].Desc.NumElements;
         Data.VoxelSize = Bounds.VoxelSize;
         Data.CascadeMin = Bounds.Min;
         Data.CascadeExtent = Bounds.Extent;
@@ -862,6 +854,7 @@ void FSparseSdfGI::AddSectionReferenceEmitPass(FDeferredPassContext& Context, co
         Data.IndexBufferIndex = Section.Geometry.IndexBuffer.SrvBindlessIndex;
         Data.bEnabled = Data.bEnabled
             && Data.TriangleCount > 0u
+            && Data.PositionCount > 0u
             && SectionScale > 0.0f
             && static_cast<bool>(Data.TrianglePoolHandle)
             && static_cast<bool>(Data.BrickReferenceHeadsHandle)
@@ -910,11 +903,9 @@ void FSparseSdfGI::AddSectionReferenceEmitPass(FDeferredPassContext& Context, co
         Constants.DebugMode = static_cast<uint32_t>(DebugMode);
         Constants.Enabled = bEnabled ? 1u : 0u;
         Constants.TraceHalfResolution = bTraceHalfResolution ? 1u : 0u;
-        Constants.ModelTriangleCount = Data.TriangleCount;
-        Constants.ModelDrawIndexStart = Data.DrawIndexStart;
-        Constants.ModelDrawIndexCount = Data.DrawIndexCount;
         Constants.MaxBrickTriangleReferences = MaxBrickTriangleReferences;
         Constants.TrianglePoolCapacity = Data.TrianglePoolCapacity;
+        Constants.BuildWorkOffset = Data.PositionCount;
         Constants.BaseVoxelSize = Data.VoxelSize;
         Constants.CascadeScale = CascadeScale;
         Constants.Intensity = Intensity;
@@ -935,6 +926,14 @@ void FSparseSdfGI::AddSectionReferenceEmitPass(FDeferredPassContext& Context, co
         const uint32_t OccupiedBrickListUavIndex = Context.Graph.GetBufferUavBindlessIndex(Data.OccupiedBrickListHandle);
         if (!AreAllBindlessIndicesValid(TrianglePoolUavIndex, BrickReferenceHeadsUavIndex, BrickReferencesUavIndex, ReferenceCountersUavIndex, OccupiedBrickListUavIndex))
         {
+            // First point where every reference buffer (incl. OccupiedBrickList) is live; an invalid
+            // index here means the dispatch would bind a null descriptor and page fault (DRED VA=0x0).
+            std::ostringstream Oss;
+            Oss << "SparseSdfGI emit references skipped: invalid UAV bindless index (TrianglePool="
+                << TrianglePoolUavIndex << ", Heads=" << BrickReferenceHeadsUavIndex
+                << ", References=" << BrickReferencesUavIndex << ", Counters=" << ReferenceCountersUavIndex
+                << ", OccupiedBrickList=" << OccupiedBrickListUavIndex << ").";
+            LogError(Oss.str());
             return;
         }
 
@@ -950,92 +949,17 @@ void FSparseSdfGI::AddSectionReferenceEmitPass(FDeferredPassContext& Context, co
         };
         static_assert(sizeof(FSparseSdfGIReferenceEmitBindlessConstants) / sizeof(uint32_t) <= kSparseSdfGIMaxBindlessDwordCount);
         CommandList->SetComputeRoot32BitConstants(2, sizeof(FSparseSdfGIReferenceEmitBindlessConstants) / sizeof(uint32_t), &Bindless, 0);
-        CommandList->Dispatch(AlignDispatch(Data.TriangleCount, kSparseSdfGIReferenceEmitGroupSize), 1u, 1u);
-    });
-}
-
-void FSparseSdfGI::AddPrepareSolveBrickReferencesArgsPass(FDeferredPassContext& Context) const
-{
-    FRenderGraph& Graph = Context.Graph;
-    const FRGBufferHandle ReferenceCountersHandle = Context.Resources.SparseSdfGI.ReferenceCountersHandle;
-
-    struct FPrepareSolveArgsPassData
-    {
-        bool bEnabled = false;
-        FRGBufferHandle ReferenceCountersHandle{};
-        FRGBufferHandle SolveIndirectArgsHandle{};
-    };
-
-    Graph.AddPass<FPrepareSolveArgsPassData>("SparseSdfGI Prepare Solve Args", [&, ReferenceCountersHandle](FPrepareSolveArgsPassData& Data, FRGPassBuilder& Builder)
-    {
-        Builder.SetPixGroup("SparseSdfGI");
-        Data.ReferenceCountersHandle = ReferenceCountersHandle;
-        Data.bEnabled = bEnabled
-            && bPersistentInputsValid
-            && static_cast<bool>(Data.ReferenceCountersHandle);
-        if (!Data.bEnabled)
+        // Debug work cap (DebugEmitTriangleBudget): shrink/skip emit to isolate the device-removed crash.
+        const uint32_t EmitTriangleCount = (std::min)(Data.TriangleCount, DebugEmitTriangleBudget);
+        for (uint32_t TriangleOffset = 0u; TriangleOffset < EmitTriangleCount; TriangleOffset += kSparseSdfGIReferenceEmitChunkTriangles)
         {
-            return;
+            const uint32_t ChunkTriangleCount = (std::min)(kSparseSdfGIReferenceEmitChunkTriangles, EmitTriangleCount - TriangleOffset);
+            Constants.ModelTriangleCount = ChunkTriangleCount;
+            Constants.ModelDrawIndexStart = Data.DrawIndexStart + TriangleOffset * 3u;
+            Constants.ModelDrawIndexCount = ChunkTriangleCount * 3u;
+            CommandList->SetComputeRoot32BitConstants(1, sizeof(FSparseSdfGIConstants) / sizeof(uint32_t), &Constants, 0);
+            CommandList->Dispatch(AlignDispatch(ChunkTriangleCount, kSparseSdfGIReferenceEmitGroupSize), 1u, 1u);
         }
-
-        Data.SolveIndirectArgsHandle = Builder.CreateBuffer("SparseSdfGI Solve Indirect Args", CreateSolveIndirectArgsDesc());
-        Context.Resources.SparseSdfGI.SolveIndirectArgsHandle = Data.SolveIndirectArgsHandle;
-
-        Builder.ReadBuffer(Data.ReferenceCountersHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        Builder.WriteBuffer(Data.SolveIndirectArgsHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        Builder.UavBarrier(Data.SolveIndirectArgsHandle);
-    }, [this, &Context](const FPrepareSolveArgsPassData& Data, FDX12CommandContext& Cmd)
-    {
-        if (!Data.bEnabled)
-        {
-            return;
-        }
-
-        FDeferredRenderer& Owner = Context.Owner;
-        ID3D12GraphicsCommandList* CommandList = Cmd.GetCommandList();
-        ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
-        CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
-        CommandList->SetComputeRootSignature(RootSignature.Get());
-        CommandList->SetPipelineState(PrepareSolveArgsPipeline.Get());
-        CommandList->SetComputeRootConstantBufferView(0, Owner.GetSceneConstantBufferAddress());
-
-        FSparseSdfGIConstants Constants = {};
-        Constants.OutputWidth = static_cast<uint32_t>(Owner.Viewport.Width);
-        Constants.OutputHeight = static_cast<uint32_t>(Owner.Viewport.Height);
-        Constants.CascadeCount = CascadeCount;
-        Constants.FrameIndex = static_cast<uint32_t>(Owner.GetFrameNumber());
-        Constants.DebugMode = static_cast<uint32_t>(DebugMode);
-        Constants.Enabled = bEnabled ? 1u : 0u;
-        Constants.TraceHalfResolution = bTraceHalfResolution ? 1u : 0u;
-        const FCascadeBounds Bounds = ComputeCascadeBounds(Owner);
-        Constants.BaseVoxelSize = Bounds.VoxelSize;
-        Constants.CascadeScale = CascadeScale;
-        Constants.Intensity = Intensity;
-        Constants.BounceStrength = BounceStrength;
-        Constants.UseHitLightingVisibility = bUseHitLightingVisibility ? 1u : 0u;
-        Constants.MaxTraceDistance = Bounds.VoxelSize * static_cast<float>(kSparseSdfGIAtlasResolution);
-        Constants.MaxBrickTriangleReferences = MaxBrickTriangleReferences;
-        Constants.CascadeMin = Bounds.Min;
-        Constants.VoxelSize = Bounds.VoxelSize;
-        Constants.CascadeExtent = Bounds.Extent;
-        Constants.SurfaceThicknessVoxels = kSparseSdfGISurfaceThicknessVoxels;
-        CommandList->SetComputeRoot32BitConstants(1, sizeof(FSparseSdfGIConstants) / sizeof(uint32_t), &Constants, 0);
-
-        const uint32_t ReferenceCountersSrvIndex = Context.Graph.GetBufferSrvBindlessIndex(Data.ReferenceCountersHandle);
-        const uint32_t SolveIndirectArgsUavIndex = Context.Graph.GetBufferUavBindlessIndex(Data.SolveIndirectArgsHandle);
-        if (!AreAllBindlessIndicesValid(ReferenceCountersSrvIndex, SolveIndirectArgsUavIndex))
-        {
-            return;
-        }
-
-        const FSparseSdfGIPrepareSolveArgsBindlessConstants Bindless =
-        {
-            ReferenceCountersSrvIndex,
-            SolveIndirectArgsUavIndex
-        };
-        static_assert(sizeof(FSparseSdfGIPrepareSolveArgsBindlessConstants) / sizeof(uint32_t) <= kSparseSdfGIMaxBindlessDwordCount);
-        CommandList->SetComputeRoot32BitConstants(2, sizeof(FSparseSdfGIPrepareSolveArgsBindlessConstants) / sizeof(uint32_t), &Bindless, 0);
-        CommandList->Dispatch(1u, 1u, 1u);
     });
 }
 
@@ -1049,36 +973,47 @@ void FSparseSdfGI::AddSolveBrickReferencesPass(FDeferredPassContext& Context) co
     const FRGBufferHandle BrickReferencesHandle = Context.Resources.SparseSdfGI.BrickReferencesHandle;
     const FRGBufferHandle ReferenceCountersHandle = Context.Resources.SparseSdfGI.ReferenceCountersHandle;
     const FRGBufferHandle OccupiedBrickListHandle = Context.Resources.SparseSdfGI.OccupiedBrickListHandle;
-    const FRGBufferHandle SolveIndirectArgsHandle = Context.Resources.SparseSdfGI.SolveIndirectArgsHandle;
-
     struct FSolveBrickReferencesPassData
     {
         bool bEnabled = false;
+        FRGResourceHandle SdfAtlasHandle{};
+        FRGBufferHandle BrickMetadataHandle{};
         FRGBufferHandle TrianglePoolHandle{};
         FRGBufferHandle BrickReferenceHeadsHandle{};
         FRGBufferHandle BrickReferencesHandle{};
         FRGBufferHandle ReferenceCountersHandle{};
         FRGBufferHandle OccupiedBrickListHandle{};
-        FRGBufferHandle SolveIndirectArgsHandle{};
+        uint32_t TrianglePoolCapacity = 0;
     };
 
-    Graph.AddPass<FSolveBrickReferencesPassData>("SparseSdfGI Solve Brick References", [&, SdfAtlasHandle, BrickMetadataHandle, TrianglePoolHandle, BrickReferenceHeadsHandle, BrickReferencesHandle, ReferenceCountersHandle, OccupiedBrickListHandle, SolveIndirectArgsHandle](FSolveBrickReferencesPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FSolveBrickReferencesPassData>("SparseSdfGI Solve Brick References", [&, SdfAtlasHandle, BrickMetadataHandle, TrianglePoolHandle, BrickReferenceHeadsHandle, BrickReferencesHandle, ReferenceCountersHandle, OccupiedBrickListHandle](FSolveBrickReferencesPassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("SparseSdfGI");
+        Data.SdfAtlasHandle = SdfAtlasHandle;
+        Data.BrickMetadataHandle = BrickMetadataHandle;
         Data.TrianglePoolHandle = TrianglePoolHandle;
         Data.BrickReferenceHeadsHandle = BrickReferenceHeadsHandle;
         Data.BrickReferencesHandle = BrickReferencesHandle;
         Data.ReferenceCountersHandle = ReferenceCountersHandle;
         Data.OccupiedBrickListHandle = OccupiedBrickListHandle;
-        Data.SolveIndirectArgsHandle = SolveIndirectArgsHandle;
+        auto Sections = Context.Owner.GetWorld().BuildSectionList();
+        for (const FMeshSection& Section : Sections)
+        {
+            if (Section.IsStaticRegularMeshCandidate())
+            {
+                Data.TrianglePoolCapacity += Section.DrawIndexCount / 3u;
+            }
+        }
         Data.bEnabled = bEnabled
             && bPersistentInputsValid
+            && Data.TrianglePoolCapacity > 0u
+            && static_cast<bool>(Data.SdfAtlasHandle)
+            && static_cast<bool>(Data.BrickMetadataHandle)
             && static_cast<bool>(Data.TrianglePoolHandle)
             && static_cast<bool>(Data.BrickReferenceHeadsHandle)
             && static_cast<bool>(Data.BrickReferencesHandle)
             && static_cast<bool>(Data.ReferenceCountersHandle)
-            && static_cast<bool>(Data.OccupiedBrickListHandle)
-            && static_cast<bool>(Data.SolveIndirectArgsHandle);
+            && static_cast<bool>(Data.OccupiedBrickListHandle);
         if (!Data.bEnabled)
         {
             return;
@@ -1089,11 +1024,10 @@ void FSparseSdfGI::AddSolveBrickReferencesPass(FDeferredPassContext& Context) co
         Builder.ReadBuffer(Data.BrickReferencesHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadBuffer(Data.ReferenceCountersHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadBuffer(Data.OccupiedBrickListHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        Builder.ReadBuffer(Data.SolveIndirectArgsHandle, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
-        Builder.WriteTexture(SdfAtlasHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        Builder.WriteBuffer(BrickMetadataHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        Builder.UavBarrier(SdfAtlasHandle);
-        Builder.UavBarrier(BrickMetadataHandle);
+        Builder.WriteTexture(Data.SdfAtlasHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.WriteBuffer(Data.BrickMetadataHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.UavBarrier(Data.SdfAtlasHandle);
+        Builder.UavBarrier(Data.BrickMetadataHandle);
     }, [this, &Context](const FSolveBrickReferencesPassData& Data, FDX12CommandContext& Cmd)
     {
         if (!Data.bEnabled)
@@ -1126,6 +1060,7 @@ void FSparseSdfGI::AddSolveBrickReferencesPass(FDeferredPassContext& Context) co
         Constants.UseHitLightingVisibility = bUseHitLightingVisibility ? 1u : 0u;
         Constants.MaxTraceDistance = Bounds.VoxelSize * static_cast<float>(kSparseSdfGIAtlasResolution);
         Constants.MaxBrickTriangleReferences = MaxBrickTriangleReferences;
+        Constants.TrianglePoolCapacity = Data.TrianglePoolCapacity;
         Constants.CascadeMin = Bounds.Min;
         Constants.VoxelSize = Bounds.VoxelSize;
         Constants.CascadeExtent = Bounds.Extent;
@@ -1137,15 +1072,23 @@ void FSparseSdfGI::AddSolveBrickReferencesPass(FDeferredPassContext& Context) co
         const uint32_t BrickReferencesSrvIndex = Context.Graph.GetBufferSrvBindlessIndex(Data.BrickReferencesHandle);
         const uint32_t ReferenceCountersSrvIndex = Context.Graph.GetBufferSrvBindlessIndex(Data.ReferenceCountersHandle);
         const uint32_t OccupiedBrickListSrvIndex = Context.Graph.GetBufferSrvBindlessIndex(Data.OccupiedBrickListHandle);
-        if (!AreAllBindlessIndicesValid(TrianglePoolSrvIndex, BrickReferenceHeadsSrvIndex, BrickReferencesSrvIndex, ReferenceCountersSrvIndex, OccupiedBrickListSrvIndex))
+        const uint32_t SdfAtlasUavIndex = Context.Graph.GetTextureUavBindlessIndex(Data.SdfAtlasHandle);
+        const uint32_t BrickMetadataUavIndex = Context.Graph.GetBufferUavBindlessIndex(Data.BrickMetadataHandle);
+        if (!AreAllBindlessIndicesValid(SdfAtlasUavIndex, BrickMetadataUavIndex, TrianglePoolSrvIndex, BrickReferenceHeadsSrvIndex, BrickReferencesSrvIndex, ReferenceCountersSrvIndex, OccupiedBrickListSrvIndex))
         {
+            std::ostringstream Oss;
+            Oss << "SparseSdfGI solve skipped: invalid bindless index (SdfAtlasUav=" << SdfAtlasUavIndex
+                << ", BrickMetadataUav=" << BrickMetadataUavIndex << ", TrianglePoolSrv=" << TrianglePoolSrvIndex
+                << ", HeadsSrv=" << BrickReferenceHeadsSrvIndex << ", ReferencesSrv=" << BrickReferencesSrvIndex
+                << ", CountersSrv=" << ReferenceCountersSrvIndex << ", OccupiedBrickListSrv=" << OccupiedBrickListSrvIndex << ").";
+            LogError(Oss.str());
             return;
         }
 
         const FSparseSdfGIReferenceSolveBindlessConstants Bindless =
         {
-            SdfAtlas.UavBindlessIndex,
-            BrickMetadata.UavBindlessIndex,
+            SdfAtlasUavIndex,
+            BrickMetadataUavIndex,
             TrianglePoolSrvIndex,
             BrickReferenceHeadsSrvIndex,
             BrickReferencesSrvIndex,
@@ -1154,12 +1097,15 @@ void FSparseSdfGI::AddSolveBrickReferencesPass(FDeferredPassContext& Context) co
         };
         static_assert(sizeof(FSparseSdfGIReferenceSolveBindlessConstants) / sizeof(uint32_t) <= kSparseSdfGIMaxBindlessDwordCount);
         CommandList->SetComputeRoot32BitConstants(2, sizeof(FSparseSdfGIReferenceSolveBindlessConstants) / sizeof(uint32_t), &Bindless, 0);
-        ID3D12Resource* SolveIndirectArgsBuffer = Context.Graph.GetBufferResource(Data.SolveIndirectArgsHandle);
-        if (!SolveIndirectArgsBuffer)
+        // Debug work cap (DebugSolveGroupBudget): shrink/skip solve to isolate the device-removed crash.
+        const uint32_t SolveGroupBudget = (std::min)(GetBrickMapElementCount(), DebugSolveGroupBudget);
+        for (uint32_t SolveDispatchOffset = 0u; SolveDispatchOffset < SolveGroupBudget; SolveDispatchOffset += kSparseSdfGISolveDispatchChunkGroups)
         {
-            return;
+            Constants.BuildWorkOffset = SolveDispatchOffset;
+            CommandList->SetComputeRoot32BitConstants(1, sizeof(FSparseSdfGIConstants) / sizeof(uint32_t), &Constants, 0);
+            const uint32_t ChunkGroupCount = (std::min)(kSparseSdfGISolveDispatchChunkGroups, SolveGroupBudget - SolveDispatchOffset);
+            CommandList->Dispatch(ChunkGroupCount, 1u, 1u);
         }
-        CommandList->ExecuteIndirect(DispatchCommandSignature.Get(), 1, SolveIndirectArgsBuffer, 0u, nullptr, 0u);
     });
 }
 
