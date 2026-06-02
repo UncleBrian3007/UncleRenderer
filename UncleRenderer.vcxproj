@@ -154,7 +154,7 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <ClCompile Include="Source\Render\Deferred\SparseSdfGI.cpp" />
     <ClCompile Include="Source\Render\Deferred\RayTracingShadow.cpp" />
     <ClCompile Include="Source\Render\Deferred\PathTracing.cpp" />
-    <ClCompile Include="Source\Render\Deferred\RestirGIDenoiser.cpp" />
+    <ClCompile Include="Source\Render\Deferred\DiffuseGIDenoiser.cpp" />
     <ClCompile Include="Source\Render\Deferred\ClusterDagRuntime.cpp" />
     <ClCompile Include="Source\Render\Deferred\ClusterDagStreamingManager.cpp" />
     <ClCompile Include="Source\Render\Deferred\Tonemap.cpp" />
@@ -219,6 +219,7 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <None Include="Shaders\ClusterDagDepthExport.hlsl" />
     <None Include="Shaders\ClusterDagResolve.hlsl" />
     <None Include="Shaders\ClusterDagVisibility.hlsl" />
+    <None Include="Shaders\CommonSH.hlsli" />
     <None Include="Shaders\PipelineKeyShared.h" />
     <None Include="Shaders\ffx_a.h" />
     <None Include="Shaders\ffx_spd.h" />
@@ -263,7 +264,7 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     <ClInclude Include="Source\Render\Deferred\Ssr.h" />
     <ClInclude Include="Source\Render\Deferred\RestirGI.h" />
     <ClInclude Include="Source\Render\Deferred\SparseSdfGI.h" />
-    <ClInclude Include="Source\Render\Deferred\RestirGIDenoiser.h" />
+    <ClInclude Include="Source\Render\Deferred\DiffuseGIDenoiser.h" />
     <ClInclude Include="Source\Render\Deferred\PathTracing.h" />
     <ClInclude Include="Source\Render\Deferred\Tonemap.h" />
     <ClInclude Include="Source\Render\DebugPrintFont.h" />
@@ -503,7 +504,7 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
     </None>
   </ItemGroup>
   <ItemGroup>
-    <None Include="Shaders\RestirGI\RestirGIDenoiser.hlsl">
+    <None Include="Shaders\GIDenoiser\DiffuseGIDenoiser.hlsl">
       <FileType>Document</FileType>
     </None>
   </ItemGroup>

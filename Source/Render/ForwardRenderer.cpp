@@ -323,7 +323,7 @@ void FForwardRenderer::RenderFrame(FDX12CommandContext& CmdContext, const D3D12_
     AddDepthPrepass(Graph, Camera, FrameState, Resources.DepthHandle, Resources.ShadowHandle);
     AddRayTracingShadowPass(Graph, Camera, Resources.DepthHandle, FRGResourceHandle{}, Resources.ShadowMaskHandle);
     AddSkyPass(Graph, Camera, FrameState, Resources.DepthHandle, RtvHandle);
-    AddForwardPass(Graph, Camera, FrameState, Resources.DepthHandle, Resources.ShadowHandle, RtvHandle);
+    AddForwardPass(Graph, Camera, FrameState, Resources.DepthHandle, Resources.ShadowHandle, Resources.ShadowMaskHandle, RtvHandle);
     AddObjectIdPass(Graph, Camera, FrameState, Resources.ObjectIdHandle, Resources.DepthHandle);
     AddDebugPrintPass(Graph, RtvHandle);
 
@@ -444,10 +444,9 @@ void FForwardRenderer::AddRayTracingShadowPass(FRenderGraph& Graph, const FCamer
         FRayTracingRuntime& RayTracing = GetRayTracingRuntime();
         const uint32_t DepthBindlessIndex = RayTracing.UpdateDepthSrv(*this, FrameIndex, DepthBuffer);
         const uint32_t GBufferABindlessIndex = RayTracing.UpdateGBufferSrv(*this, FRayTracingRuntime::EGBufferSlot::A, GBufferA);
-        const uint32_t ShadowMaskUavBindlessIndex = RayTracing.UpdateShadowMaskUav(*this, ShadowMask);
-        const uint32_t ShadowMaskSrvBindlessIndex = RayTracing.UpdateShadowMaskSrv(*this, ShadowMask);
+        const uint32_t ShadowMaskUavBindlessIndex = Graph.GetTextureUavBindlessIndex(Data.ShadowMaskHandle);
 
-        if (DepthBindlessIndex == UINT32_MAX || GBufferABindlessIndex == UINT32_MAX || ShadowMaskUavBindlessIndex == UINT32_MAX || ShadowMaskSrvBindlessIndex == UINT32_MAX)
+        if (DepthBindlessIndex == UINT32_MAX || GBufferABindlessIndex == UINT32_MAX || ShadowMaskUavBindlessIndex == UINT32_MAX)
         {
             return;
         }
@@ -699,8 +698,8 @@ void FForwardRenderer::AddDepthPrepass(FRenderGraph& Graph, const FCamera& Camer
         ID3D12PipelineState* CurrentPipeline = nullptr;
         const FForwardBindlessFrameIndices BindlessFrameIndices = BuildForwardBindlessFrameIndices(
             ShadowMap.SrvBindlessIndex,
-            ShadowMaskBindlessIndex,
-            bRayTracedShadowsEnabled,
+            UINT32_MAX,
+            false,
             GetEnvironmentCubeSrvIndex(),
             GetBrdfLutSrvIndex());
 
@@ -795,21 +794,23 @@ void FForwardRenderer::AddSkyPass(FRenderGraph& Graph, const FCamera& Camera, co
     });
 }
 
-void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera, const FForwardFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle ShadowHandle, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle)
+void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera, const FForwardFrameState& FrameState, FRGResourceHandle DepthHandle, FRGResourceHandle ShadowHandle, FRGResourceHandle ShadowMaskHandle, const D3D12_CPU_DESCRIPTOR_HANDLE& RtvHandle)
 {
     struct FForwardPassData
     {
         D3D12_CPU_DESCRIPTOR_HANDLE OutputHandle{};
         const FCamera* Camera = nullptr;
+        FRGResourceHandle ShadowMaskHandle{};
         bool bRenderShadows = false;
         DirectX::XMMATRIX LightViewProjection = DirectX::XMMatrixIdentity();
         bool bClearDepth = false;
     };
 
-    Graph.AddPass<FForwardPassData>("Forward", [&, FrameState, DepthHandle, ShadowHandle](FForwardPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FForwardPassData>("Forward", [&, FrameState, DepthHandle, ShadowHandle, ShadowMaskHandle](FForwardPassData& Data, FRGPassBuilder& Builder)
     {
         Data.OutputHandle = RtvHandle;
         Data.Camera = &Camera;
+        Data.ShadowMaskHandle = ShadowMaskHandle;
         Data.bRenderShadows = FrameState.bRenderShadows;
         Data.LightViewProjection = FrameState.LightViewProjection;
         Data.bClearDepth = !FrameState.bDoDepthPrepass && !(SkyAtmosphere && SkyAtmosphere->IsReady());
@@ -819,7 +820,11 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
         {
             Builder.ReadTexture(ShadowHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         }
-    }, [this](const FForwardPassData& Data, FDX12CommandContext& Cmd)
+        if (Data.ShadowMaskHandle)
+        {
+            Builder.ReadTexture(Data.ShadowMaskHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        }
+    }, [this, &Graph](const FForwardPassData& Data, FDX12CommandContext& Cmd)
     {
         const std::vector<FDrawSectionView>& DrawSections = GetWorld().GetDrawSectionViews();
 
@@ -847,9 +852,10 @@ void FForwardRenderer::AddForwardPass(FRenderGraph& Graph, const FCamera& Camera
         LocalCommandList->RSSetScissorRects(1, &ScissorRect);
 		LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
+        const uint32_t ShadowMaskSrvBindlessIndex = Data.ShadowMaskHandle ? Graph.GetTextureSrvBindlessIndex(Data.ShadowMaskHandle) : UINT32_MAX;
         const FForwardBindlessFrameIndices BindlessFrameIndices = BuildForwardBindlessFrameIndices(
             ShadowMap.SrvBindlessIndex,
-            ShadowMaskBindlessIndex,
+            ShadowMaskSrvBindlessIndex,
             bRayTracedShadowsEnabled,
             GetEnvironmentCubeSrvIndex(),
             GetBrdfLutSrvIndex());

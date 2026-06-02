@@ -33,8 +33,6 @@ public:
     uint32_t UpdateDepthSrv(FRenderer& Owner, uint32_t FrameIndex, ID3D12Resource* DepthBuffer);
     uint32_t UpdateGBufferSrv(FRenderer& Owner, EGBufferSlot Slot, ID3D12Resource* GBuffer);
     uint32_t UpdateLightingUav(FRenderer& Owner, ID3D12Resource* OutputTarget);
-    uint32_t UpdateShadowMaskUav(FRenderer& Owner, ID3D12Resource* ShadowMask);
-    uint32_t UpdateShadowMaskSrv(FRenderer& Owner, ID3D12Resource* ShadowMask);
 
     bool IsPipelineReady() const { return bRayTracingPipelineReady; }
     void SetPipelineReady(bool bReady) { bRayTracingPipelineReady = bReady; }
@@ -56,12 +54,10 @@ public:
     uint32_t RayTracingGBufferBSrvBindlessIndex = UINT32_MAX;
     uint32_t RayTracingGBufferCSrvBindlessIndex = UINT32_MAX;
     uint32_t RayTracingLightingUavBindlessIndex = UINT32_MAX;
-    uint32_t RayTracingShadowMaskUavBindlessIndex = UINT32_MAX;
     ID3D12Resource* RayTracingGBufferAResource = nullptr;
     ID3D12Resource* RayTracingGBufferBResource = nullptr;
     ID3D12Resource* RayTracingGBufferCResource = nullptr;
     ID3D12Resource* RayTracingLightingResource = nullptr;
-    ID3D12Resource* RayTracingShadowMaskUavResource = nullptr;
 
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> TlasScratchBuffers;
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> TlasResultBuffers;

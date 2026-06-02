@@ -3,7 +3,7 @@
 #include "../Common.hlsli"
 #include "../OctahedralEncoding.hlsli"
 #include "RestirGIReservoir.hlsli"
-#include "RestirGISh.hlsli"
+#include "../CommonSH.hlsli"
 #include "../GpuDebug/GpuDebugLineCommon.hlsl"
 
 #if !defined(RESTIR_GI_RANDOM_MODE_HASH) && !defined(RESTIR_GI_RANDOM_MODE_BLUE_NOISE_SOBOL)
@@ -392,7 +392,7 @@ void CSInitialSampling(uint3 DispatchThreadId : SV_DispatchThreadID)
 #endif
 #if RESTIR_GI_RANDOM_MODE_BLUE_NOISE_SOBOL
     FBlueNoiseSobolSampler BlueNoiseSobolSampler = BlueNoiseSobolSamplerCreate(HalfPos, uint2(HalfWidth, HalfHeight), SequenceFrame);
-    Xi = BlueNoiseSobolSamplerRandomFloat2(BlueNoiseSobolSampler);
+    Xi = BlueNoiseSobolSamplerRandomFloat2(BlueNoiseSobolSampler, BlueNoiseSobolTextureIndex, BlueNoiseScramblingRankingTextureIndex);
 #endif
     float3 SampleDirection = 0.0f.xxx;
     float DebugHitDistance = max(0.1f, RayLength);
@@ -407,7 +407,7 @@ void CSInitialSampling(uint3 DispatchThreadId : SV_DispatchThreadID)
     }
 
     InitialRadianceOut[HalfPos] = float4(Candidate, 0.0f);
-    InitialRayDirOut[HalfPos] = RestirGiEncodeDirection16x2(SampleDirection);
+    InitialRayDirOut[HalfPos] = EncodeDirection16x2(SampleDirection);
 }
 
 [numthreads(8, 8, 1)]
@@ -707,18 +707,18 @@ void CSResolve(uint3 DispatchThreadId : SV_DispatchThreadID)
         SampleRadiance01 * FinalWeights.z +
         SampleRadiance11 * FinalWeights.w;
 
-    const float3 Dir00 = RestirGiDecodeDirection16x2(ReservoirRayDirection[uint2(Tap00)]);
-    const float3 Dir10 = RestirGiDecodeDirection16x2(ReservoirRayDirection[uint2(Tap10)]);
-    const float3 Dir01 = RestirGiDecodeDirection16x2(ReservoirRayDirection[uint2(Tap01)]);
-    const float3 Dir11 = RestirGiDecodeDirection16x2(ReservoirRayDirection[uint2(Tap11)]);
-    const FRestirGiPackedSh Sh00 = RestirGiProjectSh(SampleRadiance00, Dir00);
-    const FRestirGiPackedSh Sh10 = RestirGiProjectSh(SampleRadiance10, Dir10);
-    const FRestirGiPackedSh Sh01 = RestirGiProjectSh(SampleRadiance01, Dir01);
-    const FRestirGiPackedSh Sh11 = RestirGiProjectSh(SampleRadiance11, Dir11);
-    FRestirGiPackedSh Sh = RestirGiScaleSh(
-        RestirGiAddSh(
-            RestirGiAddSh(RestirGiScaleSh(Sh00, FinalWeights.x), RestirGiScaleSh(Sh10, FinalWeights.y)),
-            RestirGiAddSh(RestirGiScaleSh(Sh01, FinalWeights.z), RestirGiScaleSh(Sh11, FinalWeights.w))),
+    const float3 Dir00 = DecodeDirection16x2(ReservoirRayDirection[uint2(Tap00)]);
+    const float3 Dir10 = DecodeDirection16x2(ReservoirRayDirection[uint2(Tap10)]);
+    const float3 Dir01 = DecodeDirection16x2(ReservoirRayDirection[uint2(Tap01)]);
+    const float3 Dir11 = DecodeDirection16x2(ReservoirRayDirection[uint2(Tap11)]);
+    const FPackedSh Sh00 = ProjectSh(SampleRadiance00, Dir00);
+    const FPackedSh Sh10 = ProjectSh(SampleRadiance10, Dir10);
+    const FPackedSh Sh01 = ProjectSh(SampleRadiance01, Dir01);
+    const FPackedSh Sh11 = ProjectSh(SampleRadiance11, Dir11);
+    FPackedSh Sh = ScaleSh(
+        AddSh(
+            AddSh(ScaleSh(Sh00, FinalWeights.x), ScaleSh(Sh10, FinalWeights.y)),
+            AddSh(ScaleSh(Sh01, FinalWeights.z), ScaleSh(Sh11, FinalWeights.w))),
         rcp(WeightSum));
 
     const float3 Resolved = max(WeightedRadiance / WeightSum, 0.0f.xxx);
@@ -728,7 +728,7 @@ void CSResolve(uint3 DispatchThreadId : SV_DispatchThreadID)
         MW01.x * FinalWeights.z +
         MW11.x * FinalWeights.w) / WeightSum;
     OutputTexture[Pixel] = float4(Resolved, saturate(Depth));
-    InputSHOut[Pixel] = RestirGiPackSh(Sh);
+    InputSHOut[Pixel] = PackSh(Sh);
     const float Variance = 1.0f - saturate(SampleCount / 500.0f);
     VarianceOut[Pixel] = Variance * Variance;
 }

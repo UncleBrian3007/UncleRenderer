@@ -24,10 +24,10 @@ FBlueNoiseSobolSampler BlueNoiseSobolSamplerCreate(uint2 Pixel, uint2 ScreenSize
     return Sampler;
 }
 
-float BlueNoiseSobolSamplerSample(in FBlueNoiseSobolSampler Sampler, uint SampleIndex, uint SampleDimension)
+float BlueNoiseSobolSamplerSample(in FBlueNoiseSobolSampler Sampler, uint SampleIndex, uint SampleDimension, uint SobolTextureIndex, uint ScramblingRankingTextureIndex)
 {
-    Texture2D<float4> SobolTexture = ResourceDescriptorHeap[BlueNoiseSobolTextureIndex];
-    Texture2D<float4> ScramblingRankingTexture = ResourceDescriptorHeap[BlueNoiseScramblingRankingTextureIndex];
+    Texture2D<float4> SobolTexture = ResourceDescriptorHeap[SobolTextureIndex];
+    Texture2D<float4> ScramblingRankingTexture = ResourceDescriptorHeap[ScramblingRankingTextureIndex];
 
     const uint PixelX = Sampler.Pixel.x % 128u;
     const uint PixelY = Sampler.Pixel.y % 128u;
@@ -43,18 +43,18 @@ float BlueNoiseSobolSamplerSample(in FBlueNoiseSobolSampler Sampler, uint Sample
     return (0.5f + Value) / 256.0f;
 }
 
-float BlueNoiseSobolSamplerRandomFloat(inout FBlueNoiseSobolSampler Sampler)
+float BlueNoiseSobolSamplerRandomFloat(inout FBlueNoiseSobolSampler Sampler, uint SobolTextureIndex, uint ScramblingRankingTextureIndex)
 {
-    const float Result = BlueNoiseSobolSamplerSample(Sampler, Sampler.SampleIndex, 0u);
+    const float Result = BlueNoiseSobolSamplerSample(Sampler, Sampler.SampleIndex, 0u, SobolTextureIndex, ScramblingRankingTextureIndex);
     Sampler.SampleIndex++;
     return Result;
 }
 
-float2 BlueNoiseSobolSamplerRandomFloat2(inout FBlueNoiseSobolSampler Sampler)
+float2 BlueNoiseSobolSamplerRandomFloat2(inout FBlueNoiseSobolSampler Sampler, uint SobolTextureIndex, uint ScramblingRankingTextureIndex)
 {
     const float2 Result = float2(
-        BlueNoiseSobolSamplerSample(Sampler, Sampler.SampleIndex, 0u),
-        BlueNoiseSobolSamplerSample(Sampler, Sampler.SampleIndex, 1u));
+        BlueNoiseSobolSamplerSample(Sampler, Sampler.SampleIndex, 0u, SobolTextureIndex, ScramblingRankingTextureIndex),
+        BlueNoiseSobolSamplerSample(Sampler, Sampler.SampleIndex, 1u, SobolTextureIndex, ScramblingRankingTextureIndex));
     Sampler.SampleIndex++;
     return Result;
 }

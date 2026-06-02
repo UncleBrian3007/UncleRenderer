@@ -53,7 +53,7 @@ void FDeferredResourceImporter::ImportFrameResources(FDeferredPassContext& Conte
     Owner.Gtao->ImportPersistentResources(Context);
     Owner.SparseSdfGI->ImportPersistentResources(Context);
     Owner.RestirGI->ImportPersistentResources(Context);
-    Owner.RestirGIDenoiser->ImportPersistentResources(Context);
+    Owner.DiffuseGIDenoiser->ImportPersistentResources(Context);
     Owner.Ssr->ImportPersistentResources(Context);
 
     OutResources.LightingHandle = ImportBindlessTexture(Graph, "Lighting", Owner.LightingBuffer);

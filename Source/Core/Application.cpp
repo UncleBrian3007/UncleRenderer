@@ -1954,12 +1954,27 @@ void FApplication::RenderUI()
         }
 
         ImGui::Separator();
-        if (ImGui::Checkbox("ReSTIR GI", &RendererConfig.bEnableRestirGI))
+        if (ImGui::Checkbox("Diffuse GI Denoiser", &RendererConfig.bEnableDiffuseGIDenoiser))
         {
+            UpsertConfigValue(GetRendererConfigPath(), "EnableDiffuseGIDenoiser", RendererConfig.bEnableDiffuseGIDenoiser ? "true" : "false");
             SyncDeferredRestirGIConfig();
         }
 
-        if (RendererConfig.bEnableRestirGI)
+        static const char* DiffuseGISourceItems[] = { "Off", "Sparse SDF GI", "ReSTIR GI" };
+        int DiffuseGISourceIndex = static_cast<int>(RendererConfig.DiffuseGISource);
+        ImGui::SetNextItemWidth(160.0f);
+        if (ImGui::Combo("Diffuse GI Source", &DiffuseGISourceIndex, DiffuseGISourceItems, IM_ARRAYSIZE(DiffuseGISourceItems)))
+        {
+            RendererConfig.DiffuseGISource = static_cast<EDiffuseGISource>(std::clamp(DiffuseGISourceIndex, 0, 2));
+            const char* DiffuseGISourceValue =
+                RendererConfig.DiffuseGISource == EDiffuseGISource::RestirGI ? "RestirGI" :
+                RendererConfig.DiffuseGISource == EDiffuseGISource::SparseSdfGI ? "SparseSdfGI" : "Off";
+            UpsertConfigValue(GetRendererConfigPath(), "DiffuseGISource", DiffuseGISourceValue);
+            SyncDeferredRestirGIConfig();
+            SyncDeferredSparseSdfGIConfig();
+        }
+
+        if (RendererConfig.DiffuseGISource == EDiffuseGISource::RestirGI)
         {
 		    const auto ApplyRestirGIConfig = [this]()
 		    {
@@ -1970,12 +1985,6 @@ void FApplication::RenderUI()
 		    {
 		        SyncDeferredRestirGITransientState();
 		    };
-
-		    ImGui::SameLine();
-            if (ImGui::Checkbox("GI Denoiser", &RendererConfig.bEnableRestirGIDenoiser))
-            {
-                ApplyRestirGIConfig();
-            }
 
             if (ImGui::Checkbox("Use Visibility", &RendererConfig.bRestirGIUseVisibility))
             {
@@ -2059,13 +2068,7 @@ void FApplication::RenderUI()
         }
 
         ImGui::Separator();
-        if (ImGui::Checkbox("Sparse SDF GI", &RendererConfig.bEnableSparseSdfGI))
-        {
-            UpsertConfigValue(GetRendererConfigPath(), "EnableSparseSdfGI", RendererConfig.bEnableSparseSdfGI ? "true" : "false");
-            SyncDeferredSparseSdfGIConfig();
-        }
-
-        if (RendererConfig.bEnableSparseSdfGI)
+        if (RendererConfig.DiffuseGISource == EDiffuseGISource::SparseSdfGI)
         {
             static const char* SparseSdfGIDebugModeItems[] = { "Off", "Ray Trace", "Cascade Slice", "Voxel Projection", "Brick SDF Surface", "Step Count" };
             int SparseSdfGIDebugModeIndex = static_cast<int>(std::clamp(RendererConfig.SparseSdfGIDebugMode, 0u, 5u));
@@ -2107,16 +2110,59 @@ void FApplication::RenderUI()
                 SyncDeferredSparseSdfGIConfig();
             }
 
-            if (ImGui::Checkbox("SDF GI Hit Light Visibility", &RendererConfig.bSparseSdfGIUseHitLightingVisibility))
-            {
-                UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIUseHitLightingVisibility", RendererConfig.bSparseSdfGIUseHitLightingVisibility ? "true" : "false");
-                SyncDeferredSparseSdfGIConfig();
-            }
-
             if (ImGui::Checkbox("SDF GI Temporal Reuse", &RendererConfig.bSparseSdfGIEnableRadianceTemporalReuse))
             {
                 UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIRadianceTemporalReuse", RendererConfig.bSparseSdfGIEnableRadianceTemporalReuse ? "true" : "false");
                 SyncDeferredSparseSdfGIConfig();
+            }
+
+            if (ImGui::Checkbox("Screen Probes", &RendererConfig.bSparseSdfGIUseScreenProbes))
+            {
+                UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIUseScreenProbes", RendererConfig.bSparseSdfGIUseScreenProbes ? "true" : "false");
+                SyncDeferredSparseSdfGIConfig();
+            }
+
+            if (RendererConfig.bSparseSdfGIUseScreenProbes)
+            {
+                int ProbeTileSize = static_cast<int>(std::clamp(RendererConfig.SparseSdfGIProbeTileSize, 4u, 16u));
+                ImGui::SetNextItemWidth(160.0f);
+                if (ImGui::SliderInt("Probe Tile Size", &ProbeTileSize, 4, 16))
+                {
+                    RendererConfig.SparseSdfGIProbeTileSize = static_cast<uint32_t>(std::clamp(ProbeTileSize, 4, 16));
+                    UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIProbeTileSize", std::to_string(RendererConfig.SparseSdfGIProbeTileSize));
+                    SyncDeferredSparseSdfGIConfig();
+                }
+
+                int ProbeRaysPerProbe = static_cast<int>(std::clamp(RendererConfig.SparseSdfGIProbeRaysPerProbe, 4u, 64u));
+                ImGui::SetNextItemWidth(160.0f);
+                if (ImGui::SliderInt("Probe Rays", &ProbeRaysPerProbe, 4, 64))
+                {
+                    RendererConfig.SparseSdfGIProbeRaysPerProbe = static_cast<uint32_t>(std::clamp(ProbeRaysPerProbe, 4, 64));
+                    UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIProbeRaysPerProbe", std::to_string(RendererConfig.SparseSdfGIProbeRaysPerProbe));
+                    SyncDeferredSparseSdfGIConfig();
+                }
+
+                static const char* ProbeDebugItems[] = { "Off", "Placement", "Validity", "Hit Ratio", "Variance", "Confidence", "Irradiance" };
+                int ProbeDebugMode = static_cast<int>(std::clamp(RendererConfig.SparseSdfGIProbeDebugMode, 0u, 6u));
+                ImGui::SetNextItemWidth(160.0f);
+                if (ImGui::Combo("Probe Debug", &ProbeDebugMode, ProbeDebugItems, IM_ARRAYSIZE(ProbeDebugItems)))
+                {
+                    RendererConfig.SparseSdfGIProbeDebugMode = static_cast<uint32_t>(ProbeDebugMode);
+                    UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIProbeDebugMode", std::to_string(RendererConfig.SparseSdfGIProbeDebugMode));
+                    SyncDeferredSparseSdfGIConfig();
+                }
+
+                if (ImGui::Checkbox("Probe Temporal Reuse", &RendererConfig.bSparseSdfGIProbeTemporalReuse))
+                {
+                    UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIProbeTemporalReuse", RendererConfig.bSparseSdfGIProbeTemporalReuse ? "true" : "false");
+                    SyncDeferredSparseSdfGIConfig();
+                }
+
+                if (ImGui::Checkbox("Probe Spawn Jitter", &RendererConfig.bSparseSdfGIProbeSpawnJitter))
+                {
+                    UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIProbeSpawnJitter", RendererConfig.bSparseSdfGIProbeSpawnJitter ? "true" : "false");
+                    SyncDeferredSparseSdfGIConfig();
+                }
             }
 
             if (ImGui::Button("Force Rebuild SDF"))

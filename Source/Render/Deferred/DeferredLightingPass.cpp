@@ -560,6 +560,7 @@ void FDeferredLightingPass::AddDirectLightingPass(FDeferredPassContext& Context,
     const FDeferredGBufferHandles& GBufferHandles = Context.Resources.GBufferHandles;
     const FRGResourceHandle DepthHandle = Context.Resources.DepthHandle;
     const FRGResourceHandle ShadowHandle = Context.Resources.ShadowHandle;
+    const FRGResourceHandle ShadowMaskHandle = Context.Resources.RayTracingShadow.ShadowMaskHandle;
     const bool bPbrResearchEnabled = bEnablePbrResearch;
     const EDeferredLightingVisualizationMode VisualizationMode = DeferredLightingVisualizationMode;
 
@@ -567,11 +568,13 @@ void FDeferredLightingPass::AddDirectLightingPass(FDeferredPassContext& Context,
     {
         bool bUseShadows = false;
         FRGResourceHandle DirectLightingHandle{};
+        FRGResourceHandle ShadowMaskHandle{};
     };
 
     Graph.AddPass<FDirectLightingPassData>("DirectLighting", [&](FDirectLightingPassData& Data, FRGPassBuilder& Builder)
     {
         Data.bUseShadows = FrameState.bRenderShadows;
+        Data.ShadowMaskHandle = ShadowMaskHandle;
         const FRGTextureDesc DirectLightingDesc =
         {
             static_cast<uint32>(Owner.Viewport.Width),
@@ -591,6 +594,10 @@ void FDeferredLightingPass::AddDirectLightingPass(FDeferredPassContext& Context,
         if (Data.bUseShadows)
         {
             Builder.ReadTexture(ShadowHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        }
+        if (Data.ShadowMaskHandle)
+        {
+            Builder.ReadTexture(Data.ShadowMaskHandle, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         }
     }, [&Owner, &Graph, bPbrResearchEnabled, VisualizationMode](const FDirectLightingPassData& Data, FDX12CommandContext& Cmd)
     {
@@ -630,7 +637,8 @@ void FDeferredLightingPass::AddDirectLightingPass(FDeferredPassContext& Context,
         LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         Cmd.SetRenderTarget(DirectLightingRtvHandle, nullptr);
 
-        const bool bUseShadowMask = Owner.bShadowsEnabled && Owner.bRayTracedShadowsEnabled && Owner.GetRayTracingRuntime().bRayTracingPipelineReady && IsValidBindlessIndex(Owner.ShadowMaskBindlessIndex);
+        const uint32_t ShadowMaskBindlessIndex = Data.ShadowMaskHandle ? Graph.GetTextureSrvBindlessIndex(Data.ShadowMaskHandle) : UINT32_MAX;
+        const bool bUseShadowMask = Owner.bShadowsEnabled && Owner.bRayTracedShadowsEnabled && Owner.GetRayTracingRuntime().bRayTracingPipelineReady && IsValidBindlessIndex(ShadowMaskBindlessIndex);
         const uint32_t PipelineIndex = (bUseShadowMask ? 1u : 0u) | (bPbrResearchEnabled ? 2u : 0u);
         LocalCommandList->SetPipelineState(Owner.DirectLightingPipelines[PipelineIndex].Get());
         LocalCommandList->SetGraphicsRootSignature(Owner.LightingRootSignature.Get());
@@ -640,7 +648,7 @@ void FDeferredLightingPass::AddDirectLightingPass(FDeferredPassContext& Context,
 
         LocalCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         LocalCommandList->SetGraphicsRootConstantBufferView(0, Owner.GetSceneConstantBufferAddress());
-        const uint32_t ResolvedShadowMaskIndex = bUseShadowMask ? Owner.ShadowMaskBindlessIndex : Owner.ShadowMap.SrvBindlessIndex;
+        const uint32_t ResolvedShadowMaskIndex = bUseShadowMask ? ShadowMaskBindlessIndex : Owner.ShadowMap.SrvBindlessIndex;
         const uint32_t LightingBindlessIndices[kLightingPassBindlessDwordCount] =
         {
             Owner.GBufferA.SrvBindlessIndex,
@@ -699,8 +707,9 @@ void FDeferredLightingPass::AddCompositeLightPass(FDeferredPassContext& Context,
     const FDeferredGBufferHandles& GBufferHandles = Context.Resources.GBufferHandles;
     const FRGResourceHandle DepthHandle = Context.Resources.DepthHandle;
     const FRGResourceHandle GtaoHandle = Context.Resources.Gtao.GtaoHandle;
-    const FRGResourceHandle RestirGIInputHandle = Owner.RestirGIDenoiser->IsEnabled() ? Context.Resources.RestirGIDenoiser.HistoryIrradianceHandle : Context.Resources.RestirGI.RestirGIHandle;
-    const FRGResourceHandle SparseSdfGIInputHandle = Context.Resources.SparseSdfGI.DiffuseGIHandle;
+    const bool bUseDenoisedDiffuseGI = Owner.DiffuseGIDenoiser->IsEnabled() && Owner.DiffuseGIDenoiser->HasCurrentFrameOutput();
+    const FRGResourceHandle RestirGIInputHandle = bUseDenoisedDiffuseGI ? Context.Resources.DiffuseGIDenoiser.HistoryIrradianceHandle : Context.Resources.RestirGI.RestirGIHandle;
+    const FRGResourceHandle SparseSdfGIInputHandle = bUseDenoisedDiffuseGI ? Context.Resources.DiffuseGIDenoiser.HistoryIrradianceHandle : Context.Resources.SparseSdfGI.DiffuseGIHandle;
     const FRGResourceHandle SsrHandle = (Owner.Ssr != nullptr) ? Context.Resources.Ssr.GetLightingHandle(Owner.Ssr->GetMode(), Owner.Ssr->IsDenoiseEnabled()) : FRGResourceHandle{};
     const FRGResourceHandle SsrFallbackHandle = Context.Resources.Ssr.SsrFallbackHandle;
     const FRGResourceHandle LightingHandle = Context.Resources.LightingHandle;
@@ -766,10 +775,13 @@ void FDeferredLightingPass::AddCompositeLightPass(FDeferredPassContext& Context,
         const bool bUsesSparseSdfDiffuse = CompositeDiffuseSource == ECompositeDiffuseSource::SparseSdfGI;
         const uint32_t SsrLightingBindlessIndex = (Owner.Ssr != nullptr) ? Owner.Ssr->GetLightingSrvBindlessIndex() : UINT32_MAX;
         const uint32_t SsrFallbackIndex = (Owner.Ssr != nullptr) ? Owner.Ssr->GetFallbackSrvBindlessIndex() : UINT32_MAX;
-        const uint32_t RestirGILightingBindlessIndex = Owner.RestirGIDenoiser->IsEnabled()
-            ? ((Owner.RestirGIDenoiser != nullptr) ? Owner.RestirGIDenoiser->GetCurrentOutputSrvBindlessIndex() : UINT32_MAX)
+        const bool bUseDenoisedDiffuseGI = Owner.DiffuseGIDenoiser->IsEnabled() && Owner.DiffuseGIDenoiser->HasCurrentFrameOutput();
+        const uint32_t RestirGILightingBindlessIndex = bUseDenoisedDiffuseGI
+            ? ((Owner.DiffuseGIDenoiser != nullptr) ? Owner.DiffuseGIDenoiser->GetCurrentOutputSrvBindlessIndex() : UINT32_MAX)
             : ((Owner.RestirGI != nullptr) ? Owner.RestirGI->GetCurrentOutputSrvBindlessIndex() : UINT32_MAX);
-        const uint32_t SparseSdfGILightingBindlessIndex = Owner.GetSparseSdfGI() ? Owner.GetSparseSdfGI()->GetCurrentOutputSrvBindlessIndex() : UINT32_MAX;
+        const uint32_t SparseSdfGILightingBindlessIndex = bUseDenoisedDiffuseGI
+            ? ((Owner.DiffuseGIDenoiser != nullptr) ? Owner.DiffuseGIDenoiser->GetCurrentOutputSrvBindlessIndex() : UINT32_MAX)
+            : (Owner.GetSparseSdfGI() ? Owner.GetSparseSdfGI()->GetCurrentOutputSrvBindlessIndex() : UINT32_MAX);
         const uint32_t GtaoBindlessIndex = (Owner.Gtao != nullptr) ? Owner.Gtao->GetSrvBindlessIndex() : UINT32_MAX;
         if (!AreAllBindlessIndicesValid(
             DepthBindlessIndex,

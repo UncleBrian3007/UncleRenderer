@@ -19,7 +19,7 @@
 #include "Deferred/Ssr.h"
 #include "SkyAtmosphere.h"
 #include "Deferred/RestirGI.h"
-#include "Deferred/RestirGIDenoiser.h"
+#include "Deferred/DiffuseGIDenoiser.h"
 #include "Deferred/SparseSdfGI.h"
 #include "Deferred/PathTracing.h"
 #include "Deferred/AutoExposure.h"
@@ -147,7 +147,7 @@ public:
         FGtaoFrameResources Gtao;
         FSparseSdfGIFrameResources SparseSdfGI;
         FRestirGIFrameResources RestirGI;
-        FRestirGIDenoiserFrameResources RestirGIDenoiser;
+        FDiffuseGIDenoiserFrameResources DiffuseGIDenoiser;
         FSsrFrameResources Ssr;
         FRGResourceHandle LightingHandle{};
         FAutoExposureFrameResources AutoExposure;
@@ -204,7 +204,7 @@ private:
     friend class FSsr;
     friend class FSkyAtmosphere;
     friend class FRestirGI;
-    friend class FRestirGIDenoiser;
+    friend class FDiffuseGIDenoiser;
     friend class FSparseSdfGI;
     friend class FPathTracing;
     friend class FAutoExposure;
@@ -224,7 +224,7 @@ private:
     std::unique_ptr<FSkyAtmosphere>             SkyAtmosphere;
     std::unique_ptr<FClusterDagRuntime>         ClusterDagRuntime;
     std::unique_ptr<FRestirGI>                  RestirGI;
-    std::unique_ptr<FRestirGIDenoiser>          RestirGIDenoiser;
+    std::unique_ptr<FDiffuseGIDenoiser>          DiffuseGIDenoiser;
     std::unique_ptr<FSparseSdfGI>               SparseSdfGI;
     std::unique_ptr<FPathTracing>               PathTracing;
     std::unique_ptr<FHzb>                       Hzb;

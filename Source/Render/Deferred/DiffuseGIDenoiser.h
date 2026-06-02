@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <d3d12.h>
+#include <vector>
 #include <wrl.h>
 
 #include "../GpuResource.h"
@@ -13,30 +14,34 @@ class FDeferredRenderer;
 struct FDeferredPassContext;
 class FDX12Device;
 
-struct FRestirGIDenoiserFrameResources
+struct FDiffuseGIDenoiserFrameResources
 {
     FRGResourceHandle PreBlurSHHandle{};
     FRGResourceHandle TemporalSHHandle{};
-    FRGResourceHandle HistorySHHandle{};
     FRGResourceHandle HistoryIrradianceHandle{};
-    FRGResourceHandle HistoryCountAHandle{};
-    FRGResourceHandle HistoryCountBHandle{};
-    FRGResourceHandle PrevLinearDepthHandle{};
-    FRGResourceHandle PrevNormalHandle{};
+    FRGResourceHandle HistorySHReadHandle{};
+    FRGResourceHandle HistorySHWriteHandle{};
+    FRGResourceHandle HistoryCountReadHandle{};
+    FRGResourceHandle HistoryCountWriteHandle{};
+    FRGResourceHandle PrevLinearDepthReadHandle{};
+    FRGResourceHandle PrevLinearDepthWriteHandle{};
+    FRGResourceHandle PrevNormalReadHandle{};
+    FRGResourceHandle PrevNormalWriteHandle{};
     FRGResourceHandle ShMipHandle{};
     FRGResourceHandle LinearDepthMipHandle{};
     FRGBufferHandle SpdAtomicCounterHandle{};
 };
 
-class FRestirGIDenoiser
+class FDiffuseGIDenoiser
 {
 public:
     bool InitializePipelines(FDeferredRenderer& Owner, FDX12Device* Device);
     bool InitializeResources(FDeferredRenderer& Owner, FDX12Device* Device, uint32_t Width, uint32_t Height);
     void ImportPersistentResources(FDeferredPassContext& Context);
     bool CreatePersistentDescriptors(FDeferredRenderer& Owner, FDX12Device* Device);
-    void AddPasses(FDeferredPassContext& Context) const;
+    void AddPasses(FDeferredPassContext& Context, FRGResourceHandle InputSHHandle, FRGResourceHandle VarianceHandle) const;
     void FinalizeFrame(FDeferredRenderer& Owner);
+    void OnFrameFenceSignaled(uint32_t FrameIndex);
     void InvalidateHistory();
 
     void SetEnabled(bool bInEnabled) { bEnabled = bInEnabled; }
@@ -46,10 +51,11 @@ public:
     uint32_t GetFreezeHistoryResetPeriod() const { return FreezeHistoryResetPeriod; }
 
     bool IsHistoryValid() const { return bHistoryValid; }
-    ID3D12Resource* GetCurrentOutputTexture() const { return HistoryIrradiance.Get(); }
-    uint32_t GetCurrentOutputSrvBindlessIndex() const { return HistoryIrradiance.SrvBindlessIndex; }
-    uint32_t GetCurrentOutputUavBindlessIndex() const { return HistoryIrradiance.UavBindlessIndex; }
-    uint32_t GetPrevLinearDepthSrvBindlessIndex() const { return PrevLinearDepth.SrvBindlessIndex; }
+    bool HasCurrentFrameOutput() const { return bPassesSubmittedThisFrame; }
+    ID3D12Resource* GetCurrentOutputTexture() const;
+    uint32_t GetCurrentOutputSrvBindlessIndex() const;
+    uint32_t GetCurrentOutputUavBindlessIndex() const;
+    uint32_t GetPrevLinearDepthSrvBindlessIndex() const;
 
 private:
     friend class FDeferredRenderer;
@@ -57,18 +63,21 @@ private:
     bool ShouldResetHistoryForFreeze(const FDeferredRenderer& Owner) const;
     void RefreshPersistentInputValidation();
     bool IsReady() const;
-    void AddFreezeResetPass(FDeferredRenderer& Owner, FRenderGraph& Graph, FRGResourceHandle HistorySHHandle, FRGResourceHandle HistoryCountAHandle, FRGResourceHandle HistoryCountBHandle) const;
     void AddPreBlurPass(FDeferredRenderer& Owner, FRenderGraph& Graph, const std::array<FRGResourceHandle, kDeferredGBufferCount>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle InputSHHandle, FRGResourceHandle VarianceHandle, FRGResourceHandle& PreBlurSHHandle) const;
-    void AddTemporalAccumulationPass(FDeferredRenderer& Owner, FRenderGraph& Graph, const std::array<FRGResourceHandle, kDeferredGBufferCount>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle VelocityHandle, FRGResourceHandle LinearDepthHandle, FRGResourceHandle InputSHHandle, FRGResourceHandle VarianceHandle, FRGResourceHandle PreBlurSHHandle, FRGResourceHandle& TemporalSHHandle, FRGResourceHandle HistorySHHandle, FRGResourceHandle HistoryCountAHandle, FRGResourceHandle HistoryCountBHandle, FRGResourceHandle PrevLinearDepthHandle, FRGResourceHandle PrevNormalHandle) const;
+    void AddTemporalAccumulationPass(FDeferredRenderer& Owner, FRenderGraph& Graph, const std::array<FRGResourceHandle, kDeferredGBufferCount>& GBufferHandles, FRGResourceHandle DepthHandle, FRGResourceHandle VelocityHandle, FRGResourceHandle LinearDepthHandle, FRGResourceHandle InputSHHandle, FRGResourceHandle VarianceHandle, FRGResourceHandle PreBlurSHHandle, FRGResourceHandle& TemporalSHHandle, FRGResourceHandle HistorySHReadHandle, FRGResourceHandle HistoryCountReadHandle, FRGResourceHandle HistoryCountWriteHandle, FRGResourceHandle PrevLinearDepthReadHandle, FRGResourceHandle PrevLinearDepthWriteHandle, FRGResourceHandle PrevNormalReadHandle, FRGResourceHandle PrevNormalWriteHandle) const;
     void AddShMipGenPass(FDeferredRenderer& Owner, FRenderGraph& Graph, FRGResourceHandle SourceHandle, FRGResourceHandle& DestinationHandle, FRGBufferHandle& AtomicCounterHandle) const;
     void AddLinearDepthMipGenPass(FDeferredRenderer& Owner, FRenderGraph& Graph, FRGResourceHandle SourceHandle, FRGResourceHandle& DestinationHandle, FRGBufferHandle& AtomicCounterHandle) const;
     void AddHistoryReconstructionPass(FDeferredRenderer& Owner, FRenderGraph& Graph, const std::array<FRGResourceHandle, kDeferredGBufferCount>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle InputSHHandle, FRGResourceHandle VarianceHandle, FRGResourceHandle HistorySHHandle, FRGResourceHandle HistoryCountHandle, FRGResourceHandle TemporalSHHandle, FRGResourceHandle ShMipHandle, FRGResourceHandle DepthMipHandle) const;
     void AddFinalBlurPass(FDeferredRenderer& Owner, FRenderGraph& Graph, const std::array<FRGResourceHandle, kDeferredGBufferCount>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle InputSHHandle, FRGResourceHandle VarianceHandle, FRGResourceHandle TemporalSHHandle, FRGResourceHandle HistoryIrradianceHandle, FRGResourceHandle HistorySHHandle, FRGResourceHandle HistoryCountHandle) const;
+    uint32_t GetFrameSlot(uint32_t FrameIndex) const;
 
 private:
     bool bEnabled = true;
     uint32_t FreezeHistoryResetPeriod = 3;
-    bool bHistoryValid = false;
+    mutable bool bHistoryValid = false;
+    mutable bool bPassesSubmittedThisFrame = false;
+    mutable uint32_t CurrentOutputSlot = 0;
+    mutable uint32_t CurrentReadSlot = 0;
     bool bPersistentInputsValid = false;
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSignature;
@@ -79,10 +88,11 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> HistoryReconstructionPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> FinalBlurPipeline;
 
-    FBindlessTexture HistoryIrradiance;
-    FBindlessTexture HistorySH;
-    FBindlessTexture HistoryCountA;
-    FBindlessTexture HistoryCountB;
-    FBindlessTexture PrevLinearDepth;
-    FBindlessTexture PrevNormal;
+    std::vector<FBindlessTexture> HistoryIrradiance;
+    std::vector<FBindlessTexture> HistorySH;
+    std::vector<FBindlessTexture> HistoryCount;
+    std::vector<FBindlessTexture> PrevLinearDepth;
+    std::vector<FBindlessTexture> PrevNormal;
+    mutable std::vector<bool> HistoryValid;
+    mutable std::vector<bool> PendingHistoryWrite;
 };

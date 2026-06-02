@@ -25,6 +25,13 @@ enum class ERestirGIRandomMode : uint32_t
     BlueNoiseSobol = 1
 };
 
+enum class EDiffuseGISource : uint32_t
+{
+    Off = 0,
+    SparseSdfGI = 1,
+    RestirGI = 2
+};
+
 enum class EDeferredLightingVisualizationMode : uint32_t
 {
     Off = LIGHTING_VISUALIZATION_OFF,
@@ -93,8 +100,8 @@ struct FRendererConfig
     bool bEnableSsrRefine = false;
     bool bEnableSsrDenoise = true;
     EDeferredLightingVisualizationMode DeferredLightingVisualizationMode = EDeferredLightingVisualizationMode::Off;
-    bool bEnableRestirGI = false;
-    bool bEnableRestirGIDenoiser = true;
+    EDiffuseGISource DiffuseGISource = EDiffuseGISource::Off;
+    bool bEnableDiffuseGIDenoiser = true;
     uint32_t RestirGISamplesPerPixel = 2;
     float RestirGIIntensity = 1.0f;
     float RestirGIRayLength = 1000.0f;
@@ -112,7 +119,6 @@ struct FRendererConfig
     bool bRestirGIUseBrdf = true;
     bool bRestirGIUseHistoryIndirect = true;
     ERestirGIRandomMode RestirGIRandomMode = ERestirGIRandomMode::BlueNoiseSobol;
-    bool bEnableSparseSdfGI = false;
     uint32_t SparseSdfGIDebugMode = 0;
     uint32_t SparseSdfGICascadeCount = 1;
     uint32_t SparseSdfGIMaxBrickTriangleReferences = 8u * 1024u * 1024u;
@@ -121,8 +127,13 @@ struct FRendererConfig
     bool bSparseSdfGITraceHalfResolution = false;
     float SparseSdfGIIntensity = 1.0f;
     float SparseSdfGIBounceStrength = 1.0f;
-    bool bSparseSdfGIUseHitLightingVisibility = false;
     bool bSparseSdfGIEnableRadianceTemporalReuse = true;
+    bool bSparseSdfGIUseScreenProbes = false;
+    uint32_t SparseSdfGIProbeTileSize = 8;
+    uint32_t SparseSdfGIProbeRaysPerProbe = 16;
+    uint32_t SparseSdfGIProbeDebugMode = 0;
+    bool bSparseSdfGIProbeTemporalReuse = false;
+    bool bSparseSdfGIProbeSpawnJitter = false;
     // Debug work caps to isolate the SparseSdfGI device-removed crash without rebuilding: lower these
     // to shrink GPU work. 0 disables the pass entirely. Default 0xFFFFFFFF = no cap (normal behavior).
     uint32_t SparseSdfGIDebugSolveGroupBudget = 0xFFFFFFFFu;

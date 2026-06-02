@@ -321,50 +321,6 @@ uint32_t FRayTracingRuntime::UpdateLightingUav(FRenderer& Owner, ID3D12Resource*
     return RayTracingLightingUavBindlessIndex;
 }
 
-uint32_t FRayTracingRuntime::UpdateShadowMaskUav(FRenderer& Owner, ID3D12Resource* ShadowMask)
-{
-    if (!ShadowMask)
-    {
-        return UINT32_MAX;
-    }
-
-    const auto UavDesc = CD3DX12_UNORDERED_ACCESS_VIEW_DESC::Tex2D(DXGI_FORMAT_R8_UNORM);
-
-    if (RayTracingShadowMaskUavBindlessIndex == UINT32_MAX)
-    {
-        RayTracingShadowMaskUavBindlessIndex = Owner.Device->CreateBindlessUav(ShadowMask, nullptr, UavDesc);
-    }
-    else if (RayTracingShadowMaskUavResource != ShadowMask)
-    {
-        Owner.Device->WriteBindlessUav(RayTracingShadowMaskUavBindlessIndex, ShadowMask, nullptr, UavDesc);
-    }
-    RayTracingShadowMaskUavResource = ShadowMask;
-
-    return RayTracingShadowMaskUavBindlessIndex;
-}
-
-uint32_t FRayTracingRuntime::UpdateShadowMaskSrv(FRenderer& Owner, ID3D12Resource* ShadowMask)
-{
-    if (!ShadowMask)
-    {
-        return UINT32_MAX;
-    }
-
-    const auto SrvDesc = CD3DX12_SHADER_RESOURCE_VIEW_DESC::Tex2D(DXGI_FORMAT_R8_UNORM, 1);
-
-    if (Owner.ShadowMaskBindlessIndex == UINT32_MAX)
-    {
-        Owner.ShadowMaskBindlessIndex = Owner.Device->CreateBindlessSrv(ShadowMask, SrvDesc);
-    }
-    else if (Owner.ShadowMaskResource != ShadowMask)
-    {
-        Owner.Device->WriteBindlessSrv(Owner.ShadowMaskBindlessIndex, ShadowMask, SrvDesc);
-    }
-    Owner.ShadowMaskResource = ShadowMask;
-
-    return Owner.ShadowMaskBindlessIndex;
-}
-
 bool FRayTracingRuntime::CreatePipeline(FRenderer& Owner, FDX12Device* Device)
 {
     bRayTracingPipelineReady = false;
@@ -551,11 +507,9 @@ bool FRayTracingRuntime::CreatePipeline(FRenderer& Owner, FDX12Device* Device)
     RayTracingGBufferASrvBindlessIndex = UINT32_MAX;
     RayTracingGBufferCSrvBindlessIndex = UINT32_MAX;
     RayTracingLightingUavBindlessIndex = UINT32_MAX;
-    RayTracingShadowMaskUavBindlessIndex = UINT32_MAX;
     RayTracingGBufferAResource = nullptr;
     RayTracingGBufferCResource = nullptr;
     RayTracingLightingResource = nullptr;
-    RayTracingShadowMaskUavResource = nullptr;
 
     const auto DepthSrvDesc = CD3DX12_SHADER_RESOURCE_VIEW_DESC::Tex2D(DXGI_FORMAT_R24_UNORM_X8_TYPELESS, 1);
 

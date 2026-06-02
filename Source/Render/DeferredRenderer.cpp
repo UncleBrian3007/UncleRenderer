@@ -111,7 +111,7 @@ FDeferredRenderer::FDeferredRenderer()
     , SkyAtmosphere(std::make_unique<FSkyAtmosphere>())
     , ClusterDagRuntime(std::make_unique<FClusterDagRuntime>())
     , RestirGI(std::make_unique<FRestirGI>())
-    , RestirGIDenoiser(std::make_unique<FRestirGIDenoiser>())
+    , DiffuseGIDenoiser(std::make_unique<FDiffuseGIDenoiser>())
     , SparseSdfGI(std::make_unique<FSparseSdfGI>())
     , PathTracing(std::make_unique<FPathTracing>())
     , AutoExposure(std::make_unique<FAutoExposure>())
@@ -285,14 +285,14 @@ void FDeferredRenderer::ApplyClusterDAGConfig(const FRendererConfig& Config)
 
 void FDeferredRenderer::ApplyRestirGIConfig(const FRendererConfig& Config)
 {
-    const bool bCurrentDenoiserEnabled = RestirGIDenoiser->IsEnabled();
-    if (bCurrentDenoiserEnabled != Config.bEnableRestirGIDenoiser)
+    const bool bCurrentDenoiserEnabled = DiffuseGIDenoiser->IsEnabled();
+    if (bCurrentDenoiserEnabled != Config.bEnableDiffuseGIDenoiser)
     {
-        RestirGIDenoiser->SetEnabled(Config.bEnableRestirGIDenoiser);
-        RestirGIDenoiser->InvalidateHistory();
+        DiffuseGIDenoiser->SetEnabled(Config.bEnableDiffuseGIDenoiser);
+        DiffuseGIDenoiser->InvalidateHistory();
     }
 
-    RestirGI->SetEnabled(Config.bEnableRestirGI);
+    RestirGI->SetEnabled(Config.DiffuseGISource == EDiffuseGISource::RestirGI);
     RestirGI->SetSamplesPerPixel(std::clamp(Config.RestirGISamplesPerPixel, 1u, 32u));
     RestirGI->SetIntensity((std::max)(0.0f, Config.RestirGIIntensity));
     RestirGI->SetRayLength((std::max)(0.1f, Config.RestirGIRayLength));
@@ -314,7 +314,7 @@ void FDeferredRenderer::ApplyRestirGIConfig(const FRendererConfig& Config)
     {
         RestirGI->SetRandomMode(Config.RestirGIRandomMode);
         RestirGI->InvalidateReservoirHistory();
-        RestirGIDenoiser->InvalidateHistory();
+        DiffuseGIDenoiser->InvalidateHistory();
     }
 }
 
@@ -401,7 +401,7 @@ bool FDeferredRenderer::InitializePipelineDomains(FDX12Device* Device, DXGI_FORM
         return false;
     }
 
-    if (!RestirGIDenoiser->InitializePipelines(*this, Device))
+    if (!DiffuseGIDenoiser->InitializePipelines(*this, Device))
     {
         LogError("Deferred renderer initialization failed: ReSTIR GI denoiser pipeline creation failed");
         return false;
@@ -505,7 +505,7 @@ bool FDeferredRenderer::InitializeFrameResources(FDX12Device* Device, uint32_t W
         return false;
     }
 
-    if (!RestirGIDenoiser->InitializeResources(*this, Device, Width, Height))
+    if (!DiffuseGIDenoiser->InitializeResources(*this, Device, Width, Height))
     {
         LogError("Deferred renderer initialization failed: ReSTIR GI denoiser resource creation failed");
         return false;
@@ -701,7 +701,7 @@ bool FDeferredRenderer::InitializeEnvironmentAndDescriptorResources(FDX12Device*
         return false;
     }
 
-    if (!RestirGIDenoiser->CreatePersistentDescriptors(*this, Device))
+    if (!DiffuseGIDenoiser->CreatePersistentDescriptors(*this, Device))
     {
         LogError("Deferred renderer initialization failed: ReSTIR GI denoiser descriptor creation failed");
         return false;
@@ -916,18 +916,18 @@ void FDeferredRenderer::PrepareFrameState(const FCamera& Camera, bool bAnySkinni
     if (!bHasPreviousViewProjection)
     {
         RestirGI->InvalidateReservoirHistory();
-        RestirGIDenoiser->InvalidateHistory();
+        DiffuseGIDenoiser->InvalidateHistory();
     }
 
     if (!RestirGI->IsEnabled())
     {
         RestirGI->InvalidateReservoirHistory();
-        RestirGIDenoiser->InvalidateHistory();
+        DiffuseGIDenoiser->InvalidateHistory();
     }
 
-    if (!RestirGIDenoiser->IsEnabled())
+    if (!DiffuseGIDenoiser->IsEnabled())
     {
-        RestirGIDenoiser->InvalidateHistory();
+        DiffuseGIDenoiser->InvalidateHistory();
     }
 
     OutState.bGtaoJitterActive = Gtao->IsEnabled() && Gtao->IsJitterEnabled();
@@ -985,7 +985,7 @@ void FDeferredRenderer::FinalizeFrameState(const FDeferredFrameState& FrameState
     bHasPreviousUnjitteredViewProjection = true;
 
     RestirGI->FinalizeFrame(*this);
-    RestirGIDenoiser->FinalizeFrame(*this);
+    DiffuseGIDenoiser->FinalizeFrame(*this);
 
     for (const std::unique_ptr<FObject>& Object : GetWorld().GetObjects())
     {
@@ -1001,6 +1001,8 @@ void FDeferredRenderer::OnFrameFenceSignaled(uint32_t FrameIndex, uint64_t Fence
 {
     Taa->OnFrameFenceSignaled(FrameIndex);
     PathTracing->OnFrameFenceSignaled(FrameIndex);
+    DiffuseGIDenoiser->OnFrameFenceSignaled(FrameIndex);
+    SparseSdfGI->OnFrameFenceSignaled(FrameIndex);
     ClusterDagStreamingManager->OnFrameFenceSignaled(FrameIndex, FenceValue);
 }
 

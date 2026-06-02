@@ -150,7 +150,19 @@ void FDeferredFrameOrchestrator::BuildFrameGraph(FDeferredPassContext& Context) 
         Owner.Gtao->AddPass(Context);
         Owner.SparseSdfGI->AddDiffuseGITracePasses(Context);
         Owner.RestirGI->AddPasses(Context);
-        Owner.RestirGIDenoiser->AddPasses(Context);
+        FRGResourceHandle DiffuseGIInputSHHandle{};
+        FRGResourceHandle DiffuseGIVarianceHandle{};
+        if (Owner.RestirGI->IsEnabled() && Owner.RestirGI->GetIntensity() > 0.0f)
+        {
+            DiffuseGIInputSHHandle = Context.Resources.RestirGI.RestirGiInputSHHandle;
+            DiffuseGIVarianceHandle = Context.Resources.RestirGI.RestirGiVarianceHandle;
+        }
+        else if (Owner.SparseSdfGI->IsEnabled() && Owner.SparseSdfGI->IsReady() && Owner.SparseSdfGI->GetIntensity() > 0.0f)
+        {
+            DiffuseGIInputSHHandle = Context.Resources.SparseSdfGI.DiffuseGIInputSHHandle;
+            DiffuseGIVarianceHandle = Context.Resources.SparseSdfGI.DiffuseGIVarianceHandle;
+        }
+        Owner.DiffuseGIDenoiser->AddPasses(Context, DiffuseGIInputSHHandle, DiffuseGIVarianceHandle);
         Owner.Ssr->AddPasses(Context);
         FRGResourceHandle DirectLightingHandle{};
         Owner.LightingPass->AddDirectLightingPass(Context, DirectLightingHandle);

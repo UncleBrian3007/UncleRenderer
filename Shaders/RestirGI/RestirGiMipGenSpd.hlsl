@@ -1,11 +1,11 @@
 #include "../SceneConstants.hlsl"
-#include "RestirGISh.hlsli"
+#include "../CommonSH.hlsli"
 
 #define A_GPU
 #define A_HLSL
 #include "../ffx_a.h"
 #undef AF4
-#define AF4 FRestirGiPackedSh
+#define AF4 FPackedSh
 
 cbuffer RestirGiSpdConstants : register(b0)
 {
@@ -26,13 +26,13 @@ groupshared AU1 SpdCounter;
 AF4 SpdLoadSourceImage(ASU2 Texel, AU1 Slice)
 {
     Texture2D<uint4> InputSh = ResourceDescriptorHeap[InputSrvIndex];
-    return RestirGiUnpackSh(InputSh[uint2(Texel)]);
+    return UnpackSh(InputSh[uint2(Texel)]);
 }
 
 AF4 SpdLoad(ASU2 Texel, AU1 Slice)
 {
     globallycoherent RWTexture2D<uint4> Mip3 = ResourceDescriptorHeap[OutputUavMip3];
-    return RestirGiUnpackSh(Mip3[uint2(Texel)]);
+    return UnpackSh(Mip3[uint2(Texel)]);
 }
 
 void SpdStore(ASU2 Pixel, AF4 Value, AU1 Mip, AU1 Slice)
@@ -43,7 +43,7 @@ void SpdStore(ASU2 Pixel, AF4 Value, AU1 Mip, AU1 Slice)
     else if (Mip >= 3u) { TargetIndex = OutputUavMip3; }
 
     RWTexture2D<uint4> OutputMip = ResourceDescriptorHeap[TargetIndex];
-    OutputMip[uint2(Pixel)] = RestirGiPackSh(Value);
+    OutputMip[uint2(Pixel)] = PackSh(Value);
 }
 
 void SpdIncreaseAtomicCounter(AU1 Slice)
@@ -75,7 +75,7 @@ void SpdStoreIntermediate(AU1 X, AU1 Y, AF4 Value)
 
 AF4 SpdReduce4(AF4 V0, AF4 V1, AF4 V2, AF4 V3)
 {
-    return RestirGiScaleSh(RestirGiAddSh(RestirGiAddSh(V0, V1), RestirGiAddSh(V2, V3)), 0.25f);
+    return ScaleSh(AddSh(AddSh(V0, V1), AddSh(V2, V3)), 0.25f);
 }
 
 #define SPD_NO_WAVE_OPERATIONS

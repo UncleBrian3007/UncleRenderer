@@ -97,10 +97,9 @@ void FRayTracingShadow::AddPass(FDeferredPassContext& Context) const
         FRayTracingRuntime& RayTracing = Owner.GetRayTracingRuntime();
         const uint32_t DepthBindlessIndex = RayTracing.UpdateDepthSrv(Owner, FrameIndex, DepthBuffer);
         const uint32_t GBufferABindlessIndex = RayTracing.UpdateGBufferSrv(Owner, FRayTracingRuntime::EGBufferSlot::A, GBufferA);
-        const uint32_t ShadowMaskUavBindlessIndex = RayTracing.UpdateShadowMaskUav(Owner, ShadowMask);
-        const uint32_t ShadowMaskSrvBindlessIndex = RayTracing.UpdateShadowMaskSrv(Owner, ShadowMask);
+        const uint32_t ShadowMaskUavBindlessIndex = Graph.GetTextureUavBindlessIndex(Data.ShadowMaskHandle);
 
-        if (DepthBindlessIndex == UINT32_MAX || GBufferABindlessIndex == UINT32_MAX || ShadowMaskUavBindlessIndex == UINT32_MAX || ShadowMaskSrvBindlessIndex == UINT32_MAX)
+        if (DepthBindlessIndex == UINT32_MAX || GBufferABindlessIndex == UINT32_MAX || ShadowMaskUavBindlessIndex == UINT32_MAX)
         {
             return;
         }

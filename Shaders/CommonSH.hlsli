@@ -1,7 +1,7 @@
-#ifndef RESTIR_GI_SH_HLSLI
-#define RESTIR_GI_SH_HLSLI
+#ifndef COMMON_SH_HLSLI
+#define COMMON_SH_HLSLI
 
-#include "../OctahedralEncoding.hlsli"
+#include "OctahedralEncoding.hlsli"
 
 // 1st-order SH basis constants.
 static const float SH_BASIS_L0 = 0.28209479177387814f;
@@ -19,9 +19,9 @@ struct SH
     float Cg;
 };
 
-typedef SH FRestirGiPackedSh;
+typedef SH FPackedSh;
 
-float3 RestirGiRgbToYCoCg(float3 Rgb)
+float3 RgbToYCoCg(float3 Rgb)
 {
     const float Y = dot(Rgb, float3(0.25f, 0.5f, 0.25f));
     const float Co = Rgb.r - Rgb.b;
@@ -29,17 +29,17 @@ float3 RestirGiRgbToYCoCg(float3 Rgb)
     return float3(Y, Co, Cg);
 }
 
-uint RestirGiEncodeDirection16x2(float3 Direction)
+uint EncodeDirection16x2(float3 Direction)
 {
     return EncodeOctahedral16x2(Direction);
 }
 
-float3 RestirGiDecodeDirection16x2(uint Packed)
+float3 DecodeDirection16x2(uint Packed)
 {
     return DecodeOctahedral16x2(Packed);
 }
 
-float3 RestirGiYCoCgToRgb(float3 YCoCg)
+float3 YCoCgToRgb(float3 YCoCg)
 {
     const float Y = YCoCg.x;
     const float Co = YCoCg.y;
@@ -50,7 +50,7 @@ float3 RestirGiYCoCgToRgb(float3 YCoCg)
         Y - Co * 0.5f - Cg);
 }
 
-sh2 RestirGiShEvaluate(float3 Direction)
+sh2 ShEvaluate(float3 Direction)
 {
     const float3 D = normalize(Direction);
     return sh2(
@@ -60,17 +60,17 @@ sh2 RestirGiShEvaluate(float3 Direction)
         -SH_BASIS_L1 * D.x);
 }
 
-sh2 RestirGiShScale(sh2 Sh, float Scale)
+sh2 ShScale(sh2 Sh, float Scale)
 {
     return Sh * Scale;
 }
 
-sh2 RestirGiShAdd(sh2 A, sh2 B)
+sh2 ShAdd(sh2 A, sh2 B)
 {
     return A + B;
 }
 
-sh2 RestirGiApplyDiffuseConvolutionL1(sh2 RadianceSh)
+sh2 ApplyDiffuseConvolutionL1(sh2 RadianceSh)
 {
     const float A0 = 0.886227f;
     const float A1 = 1.023326f;
@@ -80,52 +80,65 @@ sh2 RestirGiApplyDiffuseConvolutionL1(sh2 RadianceSh)
     return Result;
 }
 
-float RestirGiShUnproject(sh2 FunctionSh, float3 Direction)
+float ShUnproject(sh2 FunctionSh, float3 Direction)
 {
-    const sh2 Basis = RestirGiShEvaluate(Direction);
+    const sh2 Basis = ShEvaluate(Direction);
     return dot(FunctionSh, Basis);
 }
 
-FRestirGiPackedSh RestirGiProjectSh(float3 Radiance, float3 Direction)
+FPackedSh ProjectSh(float3 Radiance, float3 Direction)
 {
-    FRestirGiPackedSh Sh;
-    const float3 YCoCg = RestirGiRgbToYCoCg(max(Radiance, 0.0f.xxx));
-    Sh.ShY = RestirGiShScale(RestirGiShEvaluate(Direction), 2.0f * SH_PI * YCoCg.x);
+    FPackedSh Sh;
+    const float3 YCoCg = RgbToYCoCg(max(Radiance, 0.0f.xxx));
+    Sh.ShY = ShScale(ShEvaluate(Direction), 2.0f * SH_PI * YCoCg.x);
     Sh.Co = YCoCg.y;
     Sh.Cg = YCoCg.z;
     return Sh;
 }
 
-FRestirGiPackedSh RestirGiAddSh(FRestirGiPackedSh A, FRestirGiPackedSh B)
+// Projects an already-integrated, directionless irradiance into a DC-only SH so that
+// UnprojectIrradiance(Sh, anyNormal) returns the same irradiance (isotropic round-trip).
+// The DC scale is the inverse of the L0 diffuse-convolution gain (0.886227 * SH_BASIS_L0).
+FPackedSh ProjectIrradianceSh(float3 Irradiance)
 {
-    FRestirGiPackedSh Out;
-    Out.ShY = RestirGiShAdd(A.ShY, B.ShY);
+    FPackedSh Sh;
+    const float3 YCoCg = RgbToYCoCg(max(Irradiance, 0.0f.xxx));
+    Sh.ShY = float4(YCoCg.x / (0.886227f * SH_BASIS_L0), 0.0f, 0.0f, 0.0f);
+    Sh.Co = YCoCg.y;
+    Sh.Cg = YCoCg.z;
+    return Sh;
+}
+
+FPackedSh AddSh(FPackedSh A, FPackedSh B)
+{
+    FPackedSh Out;
+    Out.ShY = ShAdd(A.ShY, B.ShY);
     Out.Co = A.Co + B.Co;
     Out.Cg = A.Cg + B.Cg;
     return Out;
 }
 
-FRestirGiPackedSh RestirGiScaleSh(FRestirGiPackedSh A, float Scale)
+FPackedSh ScaleSh(FPackedSh A, float Scale)
 {
-    FRestirGiPackedSh Out;
-    Out.ShY = RestirGiShScale(A.ShY, Scale);
+    FPackedSh Out;
+    Out.ShY = ShScale(A.ShY, Scale);
     Out.Co = A.Co * Scale;
     Out.Cg = A.Cg * Scale;
     return Out;
 }
 
-FRestirGiPackedSh RestirGiLerpSh(FRestirGiPackedSh A, FRestirGiPackedSh B, float T)
+FPackedSh LerpSh(FPackedSh A, FPackedSh B, float T)
 {
-    return RestirGiAddSh(RestirGiScaleSh(A, 1.0f - T), RestirGiScaleSh(B, T));
+    return AddSh(ScaleSh(A, 1.0f - T), ScaleSh(B, T));
 }
 
-float3 RestirGiApproxRadiance(FRestirGiPackedSh Sh)
+float3 ApproxRadiance(FPackedSh Sh)
 {
     const float Y = max(0.0f, Sh.ShY.x / max(2.0f * SH_PI * SH_BASIS_L0, 1e-6f));
-    return max(RestirGiYCoCgToRgb(float3(Y, Sh.Co, Sh.Cg)), 0.0f.xxx);
+    return max(YCoCgToRgb(float3(Y, Sh.Co, Sh.Cg)), 0.0f.xxx);
 }
 
-uint4 RestirGiPackSh(FRestirGiPackedSh Sh)
+uint4 PackSh(FPackedSh Sh)
 {
     uint4 Packed;
     Packed.x = (f32tof16(Sh.ShY.x) << 16) | f32tof16(Sh.ShY.y);
@@ -135,9 +148,9 @@ uint4 RestirGiPackSh(FRestirGiPackedSh Sh)
     return Packed;
 }
 
-FRestirGiPackedSh RestirGiUnpackSh(uint4 Packed)
+FPackedSh UnpackSh(uint4 Packed)
 {
-    FRestirGiPackedSh Sh;
+    FPackedSh Sh;
     Sh.ShY.x = f16tof32(Packed.x >> 16);
     Sh.ShY.y = f16tof32(Packed.x & 0xFFFFu);
     Sh.ShY.z = f16tof32(Packed.y >> 16);
@@ -147,14 +160,14 @@ FRestirGiPackedSh RestirGiUnpackSh(uint4 Packed)
     return Sh;
 }
 
-float3 RestirGiUnprojectIrradiance(FRestirGiPackedSh Sh, float3 SurfaceNormal)
+float3 UnprojectIrradiance(FPackedSh Sh, float3 SurfaceNormal)
 {
-    const sh2 IrradianceSh = RestirGiApplyDiffuseConvolutionL1(Sh.ShY);
-    const float Y = max(0.0f, RestirGiShUnproject(IrradianceSh, normalize(SurfaceNormal)));
-    return max(RestirGiYCoCgToRgb(float3(Y, Sh.Co, Sh.Cg)), 0.0f.xxx);
+    const sh2 IrradianceSh = ApplyDiffuseConvolutionL1(Sh.ShY);
+    const float Y = max(0.0f, ShUnproject(IrradianceSh, normalize(SurfaceNormal)));
+    return max(YCoCgToRgb(float3(Y, Sh.Co, Sh.Cg)), 0.0f.xxx);
 }
 
-float RestirGiShVariance(FRestirGiPackedSh Sh)
+float ShVariance(FPackedSh Sh)
 {
     const float Y = max(0.0f, Sh.ShY.x / max(2.0f * SH_PI * SH_BASIS_L0, 1e-6f));
     const float Directional = saturate(length(Sh.ShY.yzw) / max(abs(Sh.ShY.x), 1e-5f));

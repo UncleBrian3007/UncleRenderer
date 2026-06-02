@@ -173,7 +173,7 @@
     <ClCompile Include="Source\Render\Deferred\PathTracing.cpp">
       <Filter>Source Files\Render</Filter>
     </ClCompile>
-    <ClCompile Include="Source\Render\Deferred\RestirGIDenoiser.cpp">
+    <ClCompile Include="Source\Render\Deferred\DiffuseGIDenoiser.cpp">
       <Filter>Source Files\Render</Filter>
     </ClCompile>
     <ClCompile Include="Source\Render\Deferred\ClusterDagRuntime.cpp">
@@ -460,7 +460,7 @@
     <ClInclude Include="Source\Render\Deferred\SparseSdfGI.h">
       <Filter>Header Files\Render</Filter>
     </ClInclude>
-    <ClInclude Include="Source\Render\Deferred\RestirGIDenoiser.h">
+    <ClInclude Include="Source\Render\Deferred\DiffuseGIDenoiser.h">
       <Filter>Header Files\Render</Filter>
     </ClInclude>
     <ClInclude Include="Source\Render\Deferred\PathTracing.h">
@@ -806,9 +806,6 @@
     <None Include="Shaders\ExtractHalfDepthNormal.hlsl">
       <Filter>Shaders</Filter>
     </None>
-    <None Include="Shaders\RestirGI\RestirGIDenoiser.hlsl">
-      <Filter>Shaders\RestirGI</Filter>
-    </None>
     <None Include="Shaders\RestirGI\RestirGiLinearDepthMipGenSpd.hlsl">
       <Filter>Shaders\RestirGI</Filter>
     </None>
@@ -870,6 +867,10 @@
       <Filter>Shaders</Filter>
     </None>
     <None Include="Shaders\PipelineKeyShared.h">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="Shaders\GIDenoiser\DiffuseGIDenoiser.hlsl" />
+    <None Include="Shaders\CommonSH.hlsli">
       <Filter>Shaders</Filter>
     </None>
   </ItemGroup>

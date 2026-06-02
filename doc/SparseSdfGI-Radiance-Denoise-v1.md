@@ -1,91 +1,128 @@
-# SparseSdfGI Radiance Denoise v1 (계획)
+# SparseSdfGI Radiance Denoise v1
 
-빌드 백본(`SparseSdfGI-v3.md`), 라이팅/캐시(`SparseSdfGI-Radiance-v1.md`)와 별개로, **노이즈 많은 per-pixel GI를 스크린공간에서 디노이즈**하는 작업의 설계와 구현 계획을 다룬다. AMD FidelityFX BrixelizerGI의 디노이저 구조에서 영감을 받되 SDK 소스/셰이더/상수는 복사하지 않는다. (구현 전 계획 문서)
+SparseSdfGI radiance denoise 작업은 SDF 빌드 백본(`SparseSdfGI-v3.md`)과 radiance cache 계획(`SparseSdfGI-Radiance-v1.md`)에서 분리해 다룬다. AMD FidelityFX BrixelizerGI의 denoise / screen-probe 구조에서 영감을 받았지만, FidelityFX SDK 소스, 셰이더 코드, 상수, 데이터 테이블은 복사하지 않는다.
 
-## 현재 노이즈의 출처
+## 현재 상태
 
-`CSDiffuseTrace`는 픽셀당 코사인 확산 레이 1개로 brick radiance cache를 1회 샘플한다. brick cache 자체는 다수 화면 픽셀로 공간 평균 + temporal 유지되어 **매끄럽다**. 노이즈는 **픽셀마다 단일 레이가 서로 다른 brick을 확률적으로 선택**(+ frame별 hit/miss 전환)하는 **per-pixel 샘플링**에서 온다. 즉 cache 표현이 아니라 sampling 분산 문제다.
+- **Phase 0 + Phase 1은 공용 `FDiffuseGIDenoiser`로 구현 완료**됐다.
+- denoiser는 SparseSdfGI 전용이 아니다. ReSTIR GI와 SparseSdfGI가 활성 diffuse GI source에 따라 같은 SH-irradiance SVGF 스타일 backend에 입력을 넣는다.
+- SparseSdfGI는 full-resolution `DiffuseGIInputSH`와 `DiffuseGIVariance`를 출력한다. `FDiffuseGIDenoiser`는 pre-blur, temporal accumulation, SH/depth mip 생성, history reconstruction, final bilateral blur를 처리한다.
+- **Road B v1은 선택 가능한 screen-probe front-end로 구현 완료**됐다. 이 경로는 denoiser와 composite 계약을 유지하면서 per-pixel 1-ray 입력 생성을 대체한다.
 
-## 순서 결정: 디노이저 vs Probe/SH
+## Phase 0/1 Backend
 
-"Probe/SH 확장부터 해야 하지 않나?"에 대한 정리:
+공용 backend pass chain은 다음과 같다.
 
-- **brick-SH(브릭 캐시 방향성, Radiance 로드맵 4단계)는 노이즈를 줄이지 않는다.** 픽셀당 여전히 단일 레이 1샘플이며, SH는 방향별 값 차이를 키워 **per-pixel 분산을 오히려 늘릴 수 있다.** 먼저 해도 화면이 noisy해 개선을 평가할 수 없다.
-- **노이즈를 줄이는 건 디노이저(temporal accumulation + spatial filter)** 이며, cache가 RGB든 SH든 무관하게 동작한다. 따라서 **"깨끗한 GI를 보는" 선행 조건은 디노이저다.**
-- 다만 **screen probe는 의미가 다르다.** BrixelizerGI의 screen probe는 희소 스크린 위치에서 다수 레이를 트레이스해 SH 프로브를 만들고 보간하므로, 그 자체가 (a) 방향성(SH) + (b) 노이즈 저감(다수 레이 + 보간 + temporal)을 **동시에** 준다. BrixelizerGI에서는 probe/SH와 디노이즈가 한 시스템이다. → "probe부터"라는 직관은 **screen-probe 경로를 택할 때** 맞고, brick-SH 단독을 먼저 하라는 뜻은 아니다.
+```text
+CSPreBlur
+  -> CSTemporalAccumulation
+  -> ShMipGen / LinearDepthMipGen
+  -> Denoiser HistoryBlur
+  -> CSFinalBlur
+```
 
-확정 경로 (Phase 0 → Phase 1 → Road B):
+backend는 frame overlap에 안전한 history buffer를 유지한다. 대상은 SH, irradiance, history count, 이전 linear depth, 이전 normal이다. front-end가 ReSTIR GI이든, SparseSdfGI per-pixel trace이든, SparseSdfGI screen probe이든 backend는 full-resolution SH와 variance 입력을 기대한다.
 
-1. **Phase 0 — 스크린공간 temporal accumulation**: per-pixel 출력에 reproject + disocclusion + temporal + AABB clamp.
-2. **Phase 1 — spatial bilateral blur**: temporal 후 잔여 노이즈 평탄화. **여기까지 Phase 0+1 = per-pixel 경로의 완성된 SVGF-lite 디노이저** → 깨끗하고 평가 가능한 baseline 확보.
-3. **Road B — screen probe + SH**: per-pixel 샘플링 front-end를 희소 screen probe로 교체(방향성 + 더 적은 레이). Phase 0의 temporal은 probe로 relocate, Phase 1의 blur는 최종 spatial 패스로 유지.
+## Road B: Screen Probe + SH Front-End
 
-**왜 Phase 1을 중간에 하나**: Phase 0+1의 reproject/disocclusion/temporal/clamp/bilateral 로직은 Road B에서 **버리지 않고 재배치**된다(probe·probe-output 위에 동일 적용). 먼저 단순한 per-pixel 경로로 디노이즈 체인을 끝까지 검증·튜닝해두면, Road B의 큰 리팩터에서 "probe 디버깅 + 디노이저 디버깅"을 동시에 하지 않아도 된다. 즉 Phase 0+1은 버리는 투자가 아니라 **Road B가 재사용하는 디노이즈 백엔드**다.
+Road B는 SparseSdfGI의 per-pixel 1-ray front-end를 희소 screen probe로 교체한다.
 
-**brick-SH(로드맵 4단계 원안)는 Road B에서 대체로 불필요**: screen probe는 RGB brick을 여러 방향으로 트레이스해 SH를 만들므로(서로 다른 레이 방향이 서로 다른 brick을 hit), **brick이 RGB여도 probe SH가 방향성 indirect를 제공**한다. brick 자체의 방향성 방출은 더 미세한 효과라 후순위.
+```text
+CSSpawnScreenProbes
+  -> CSTraceScreenProbes
+  -> CSInterpolateScreenProbes
+  -> shared FDiffuseGIDenoiser
+```
 
-## BrixelizerGI 디노이저 구조 (참고)
+기본값은 다음과 같다.
 
-패스 순서: `GenerateDisocclusionMask` → (`EmitPrimaryRayRadiance`) → `ReprojectScreenProbes`/`ReprojectGI` → `InterpolateScreenProbes`(temporal accumulation) → `BlurGI`(spatial).
+- `bSparseSdfGIUseScreenProbes = false`
+- `SparseSdfGIProbeTileSize = 8`
+- `SparseSdfGIProbeRaysPerProbe = 16`
+- `SparseSdfGIProbeDebugMode = 0`
+- `bSparseSdfGIProbeTemporalReuse = false`
 
-핵심 기법:
+probe path는 SparseSdfGI debug mode가 `Off`일 때만 활성화된다. 기존 SDF debug view들은 기존 trace/debug path를 그대로 사용한다.
 
-- **Disocclusion mask**: motion vector로 reproject한 history를 기하 일치도로 거부. 대략 `exp(-|1 - max(0, dot(N, N_hist))| * 1.4) * exp(-|worldPos - worldPos_hist| / depth)` + depth 비교.
-- **Temporal reprojection**: `history_uv = uv + motionVector`, 화면 밖 또는 disocclusion이면 reject.
-- **Temporal accumulation**: 지수 블렌드(`lerp(history, current, ~0.25)`, history 없으면 1.0) 또는 sample-count 가중(최대 ~64). **neighborhood AABB color clamp**(이웃 색 박스로 history를 클램프, factor 0.3~0.5)로 ghosting/firefly 제거. temporal variance(`(|L_hist - L| / max)²`)로 변화 큰 곳은 current 가중↑.
-- **Spatial bilateral blur**: separable X/Y, 노멀·깊이 edge-stopping.
-- half-res downsample + upsample로 비용 절감.
+### Probe Spawn
 
-## 구현 계획
+각 screen tile은 probe 하나를 만든다. probe는 representative pixel, world position, normal, depth, validity를 저장한다. 대표 픽셀은 기본적으로 tile 중앙을 **프레임 간 고정**으로 쓰되, 중앙 depth가 invalid이면 tile 내부에서 짧게 valid depth를 찾는다.
 
-### Phase 0 — 스크린공간 Temporal Accumulation (선행, 필수)
+`bSparseSdfGIProbeSpawnJitter`(ImGui "Probe Spawn Jitter")를 켜면 대표 픽셀을 프레임마다 tile 내부로 jitter해 coverage를 보완한다. jitter는 probe 앵커를 매 프레임 흔들기 때문에 **probe temporal과 함께 쓸 때만** 의미가 있다(temporal이 jitter된 샘플을 tile 단위로 누적). temporal 없이 jitter만 켜면 interpolation 패턴이 매 프레임 이동해 **떨리는 얼룩**으로 보이므로 기본값은 off다.
 
-- 신규 persistent texture: `DiffuseGIHistory`(직전 프레임 디노이즈 출력), reproject 검증용 직전 depth/normal(기존 history 버퍼 재사용 가능 여부 확인).
-- 입력: 현재 프레임 `DiffuseGI`(noisy), motion vector(TAA용 기존 것 재사용), 현재/직전 depth·normal.
-- 패스 `CSDenoiseTemporal`:
-  1. `history_uv = uv + motionVector`.
-  2. disocclusion: 화면 밖 / 노멀·깊이 불일치 → history reject.
-  3. `out = valid ? lerp(history, current, alpha) : current` (alpha ~0.1~0.25, 또는 sample-count 누적으로 초반 빠르게 수렴 후 안정).
-  4. **neighborhood AABB clamp**(현재 프레임 3×3 평균/분산 박스로 history 클램프) → ghosting/firefly 억제.
-- 출력 → 디노이즈된 `DiffuseGI` + `DiffuseGIHistory` 갱신.
-- history invalidation: resize / SparseSdfGI toggle / SDF rebuild / 카메라 cut 시.
+### Probe Trace
 
-### Phase 1 — Spatial Bilateral Blur
+각 probe는 기존 SDF / brick-radiance path를 통해 여러 개의 cosine-hemisphere ray를 trace한다. probe trace는 `CSDiffuseTrace`와 같은 hit shading helper를 공유한다.
 
-- 패스 `CSDenoiseBlurX` / `CSDenoiseBlurY`(separable), 노멀·깊이 가중 edge-stopping.
-- temporal 후 잔여 노이즈 평탄화. 누적 샘플 수가 낮은 픽셀(최근 disocclusion)에서 블러 반경↑.
+ray 방향(및 spawn jitter)은 ReSTIR GI와 **동일한 blue-noise Sobol 샘플러**(`BlueNoiseSobolSampler.hlsli`)를 쓴다. 기존 hash white-noise(`Random2`) 대신 저불일치 stratified 샘플을 써서 같은 ray 수에서 분산이 낮아지고 temporal 수렴이 빨라진다. 샘플러는 텍스처 인덱스를 파라미터로 받도록 통일했고(ReSTIR도 동일 호출), blue-noise 텍스처는 `FDeferredRenderer`가 소유한 것을 공유한다. probe당 ray `i`는 `SampleIndex=i`, 프레임 간에는 sampler가 pixel base를 골든비율로 shift해 decorrelate한다.
 
-### Phase 2 — Road B: Screen Probe + SH
+- miss: sky radiance
+- hit: valid한 brick radiance cache 우선 사용
+- cache miss: direct-light bounce fallback
 
-per-pixel 1-ray 샘플링을 희소 screen probe로 교체한다. probe가 RGB brick cache를 다수 방향으로 트레이스해 SH를 만들고, full-res로 보간해 GI를 생성한다. Phase 0 temporal은 probe에, Phase 1 blur는 최종 spatial 패스로 유지된다.
+probe는 cosine-hemisphere ray들의 radiance를 평균낸 뒤, per-pixel path와 동일하게 **DC-only irradiance SH**(`ProjectIrradianceSh`)로 emit한다. per-pixel path가 단일 ray radiance를 그대로 irradiance로 내보내는 것과 같은 추정량(cosine-weighted radiance 평균)이라, probe path를 켜고 꺼도 **밝기가 일치**한다(toggle 시 밝기 점프 없음). variance는 probe ray luminance variance를 누적해 산출한다.
 
-세부 단계:
+> **밝기 규약 결정 (a)**: directional L1 SH 대신 DC-only irradiance를 emit해 per-pixel 캘리브레이션과의 parity를 우선했다. directional 경로 (b)는 아래 Follow-Up Work 참고.
 
-1. **Probe placement (spawn)**: 화면을 타일(예: 8×8)로 나눠 타일당 1 probe 배치. probe 대표 픽셀은 타일 내 depth/normal 기준 선택, 프레임 간 jitter로 커버리지 보완.
-2. **Probe trace**: probe당 다수 코사인 레이(예: 32~64)를 brick cache(또는 sky)로 트레이스, hit radiance를 **SH(L1 = 4계수 × RGB)** 로 투영. 다수 레이라 probe 자체가 저노이즈.
-3. **Probe reproject + temporal**: 직전 프레임 probe SH를 motion vector로 reproject, disocclusion으로 거부, sample-count 가중 누적(**Phase 0 로직 relocate**). probe당 누적이라 빠르게 수렴.
-4. **Interpolate to full-res**: 각 픽셀이 인접 probe들을 depth/normal 가중 보간 후 픽셀 노멀 방향으로 SH 평가 → per-pixel diffuse GI. (`CSDiffuseTrace`의 per-pixel brick 직접 샘플을 대체)
-5. **Spatial blur**: **Phase 1의 bilateral blur를 최종 패스로** 적용.
-6. (선택) **brick directional cache(SH)**: probe SH로 부족한 brick 자체 방향성 방출이 필요할 때만. 후순위.
+### Probe Interpolation
 
-신규 리소스: `ProbeRadianceSH`(현재/history), `ProbeHeader`(위치·유효성), (재사용) `DiffuseGIHistory`.
-신규 패스: `CSSpawnProbes`, `CSTraceProbes`, `CSReprojectProbes`(temporal), `CSInterpolateProbes`. (Phase 0/1 패스는 재배치/유지)
+full-resolution pixel은 3x3 probe neighborhood에서 값을 모은다. interpolation weight는 screen distance, normal agreement, depth difference, plane distance를 사용한다. plane distance는 discontinuity 근처 light leak을 줄이기 위한 필수 항목이다.
 
-## 리소스 / 패스 요약
+출력 계약은 바뀌지 않는다.
 
-- Phase 0/1 텍스처: `DiffuseGIHistory`(+ 필요 시 history depth/normal, downsampled).
-- Phase 0/1 패스(각 패스 b2 bindless layout만 사용, root signature 미확장): `CSDenoiseTemporal`, `CSDenoiseBlurX`, `CSDenoiseBlurY`.
-- Road B 추가 리소스/패스: `ProbeRadianceSH`(현재/history), `ProbeHeader`; `CSSpawnProbes`, `CSTraceProbes`, `CSReprojectProbes`, `CSInterpolateProbes`.
-- 의존: motion vector(렌더러 기존), GBuffer normal/depth, 직전 프레임 depth/normal.
+- `DiffuseGI`: full-resolution irradiance preview / output
+- `DiffuseGIInputSH`: `FDiffuseGIDenoiser`가 읽는 full-resolution SH
+- `DiffuseGIVariance`: `FDiffuseGIDenoiser`가 읽는 full-resolution variance
 
-## 리스크 / 메모
+기여 가능한 valid probe가 하나도 없으면 pixel은 zero SH와 high variance를 쓴다. 그러면 denoiser의 history reconstruction이 보수적으로 빈 구간을 메운다.
 
-- motion vector 정확도: 현재 정적 단일 캐스케이드라 카메라 모션 위주. 동적 지오메트리는 후속.
-- AABB clamp 강도 튜닝: 약하면 ghosting, 강하면 떨림.
-- per-pixel 디노이저는 이후 screen-probe로 전환 시 일부 재작업이 생기나, Phase 0의 reproject/temporal/clamp 로직은 재사용 가능.
-- 에너지: 디노이저는 신호를 평활화할 뿐이며, GI를 cache로 재주입하지 않으므로(스크린공간) 직전에 고친 과밝음/피드백 루프와 무관하다.
+### Probe Temporal Reuse
 
-## 참고
+`bSparseSdfGIProbeTemporalReuse`가 켜지면 `CSTraceScreenProbes`가 probe SH를 프레임 간 누적한다. probe당 ray 수가 적어(16~32) 매 프레임 probe SH가 흔들리는데, 이를 probe 단계에서 평균내 떨림을 근본적으로 줄인다.
 
-- AMD FidelityFX BrixelizerGI 디노이저(disocclusion / reproject / temporal accumulation + AABB clamp / bilateral blur / screen probe) 구조에서 영감을 받았다. FidelityFX SDK 소스, 셰이더 코드, 상수 테이블은 복사하지 않는다.
-- 빌드 파이프라인: `SparseSdfGI-v3.md`. 라이팅/캐시: `SparseSdfGI-Radiance-v1.md`.
+- **persistent ring buffer**: `ProbeHistory`(`FScreenProbeHistory` = world pos + sample count + normal/depth + packed SH)를 frame-overlap-safe ring으로 둔다(brick radiance cache와 동일한 read=N-1 / write=N 슬롯 + fence 기반 `ProbeHistoryValid` 커밋).
+- **same-tile reprojection**: 현재 정적 cascade라 motion vector 없이 동일 tile 인덱스의 history를 읽는다. history의 world pos/normal/depth를 현재 probe와 비교해(`dot(normal) > 0.9`, depth 5%, plane 거리 ≤ `VoxelSize*4`) 불일치(=카메라 모션/disocclusion)면 reject하고 current로 리셋한다.
+- **누적**: `sampleCount = min(prevCount+1, 32)`, `alpha = max(1/sampleCount, 0.05)`로 `LerpSh(history, current, alpha)`. DC-only SH라 누적 후에도 per-pixel parity가 유지된다. variance는 `normalizedVariance / sampleCount`로 낮춰 denoiser가 수렴된 입력을 덜 blur하게 한다.
+- **무효화**: resize / tile size 변경 / screen-probe·temporal 토글 / SDF rebuild 시 history valid 플래그를 클리어한다.
+
+> **주의(이중 temporal)**: probe temporal과 full-res `FDiffuseGIDenoiser` temporal이 동시에 걸리면 lag가 곱해질 수 있다. probe temporal이 수렴을 책임지므로, 필요하면 denoiser temporal 강도를 source-aware로 낮추는 후속 작업이 있다(Follow-Up).
+
+## Variance Policy
+
+per-pixel 1-ray 입력은 white noise가 지배적이므로 강한 variance floor가 필요하다. 반면 probe 입력의 주요 artifact는 interpolation confidence, blocking, edge leak이다. 따라서 probe variance는 다음 식으로 시작한다.
+
+```text
+saturate(probe ray luminance variance + (1 - interpolation confidence))
+```
+
+작은 floor 값은 `0.05`로 둔다.
+
+## Debug Views
+
+`SparseSdfGIProbeDebugMode`는 SDF debug mode와 독립적이다.
+
+- `0`: Off
+- `1`: Probe placement
+- `2`: Validity / interpolation confidence
+- `3`: Probe hit ratio
+- `4`: Probe variance
+- `5`: Interpolation confidence heat
+- `6`: Probe irradiance
+
+`ProbeDebugMode != 0`이면 interpolation pass가 denoiser 입력(SH / variance)을 publish하지 않는다. 그러면 denoiser가 입력 없이 스킵되고 composite가 raw `DiffuseGI`(probe debug 색)로 폴백한다 — SDF debug mode와 동일한 메커니즘. 따라서 probe debug view는 denoiser on/off와 무관하게 보인다.
+
+## Follow-Up Work
+
+- probe temporal이 켜졌을 때 double-temporal ghosting을 피하기 위한 source-aware denoiser temporal strength 조정.
+- camera motion 시 probe history reprojection을 위한 motion-vector 기반 reproject(현재는 same-tile + geometry reject).
+- geometry discontinuity를 위한 adaptive probe placement.
+- 비용 절감을 위한 separable final blur 변형.
+- screen-probe SH만으로 부족할 때에 한해 optional directional brick radiance cache 검토.
+- **(b) directional probe SH**: 현재는 DC-only irradiance로 parity를 맞췄다. probe ray별 radiance를 `ProjectSh`로 L1 SH에 투영하고 interpolation 후 `UnprojectIrradiance`로 diffuse cosine convolution을 적용하면, probe별 방향성 indirect를 얻을 수 있다. 단 이 경로는 per-pixel DC-only 대비 절대 밝기가 달라지므로(상수 radiance 기준 약 1.4–1.5배), 채택 시 per-pixel/Intensity를 재캘리브레이션해 toggle 밝기 parity를 다시 맞춰야 한다. directional은 cosine-sampled 방향과 `ProjectSh`의 2π(uniform-sphere) 투영 상수가 섞여 절대 스케일이 ad-hoc인 점도 함께 정리 필요.
+
+## 튜닝 / 참고 메모
+
+- **`normalWeight = pow(dot, 32)`가 매우 날카로움**: 곡면/엣지에서 probe가 대거 reject → `totalWeight` 붕괴 → 고 variance로 denoiser에 과의존 → 곡면이 얼룩질 수 있음. `pow 8~16`으로 완화해 비교 권장.
+- **`ProbeVariance`를 float4로 잡고 `.x`/`.y`만 사용**(probe당 8바이트 낭비) — 무해.
+- **interpolation `screenWeight`가 jitter된 실제 probe 픽셀이 아니라 기하학적 tile 중심을 씀**(world-space weight는 실제 픽셀 사용해서 OK) — 사소.
+

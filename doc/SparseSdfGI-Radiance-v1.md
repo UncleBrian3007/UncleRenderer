@@ -18,7 +18,7 @@ v1 히트 라이팅 모델은 의도적으로 단순합니다.
 - 히트 레이는 SDF 이동 거리로 히트 지점을 계산하고 SDF 그래디언트로 히트 노멀을 추정한다.
 - 히트 조사도는 히트 노멀 기준 방향광 확산 바운스만 사용한다. 히트 지점에서 환경 큐브 스카이 항은 더하지 않는다(스카이를 더하면 과도하게 밝아져 제외).
 - `SparseSdfGIBounceStrength`는 SparseSdfGI 조사도 기여를 스케일한다.
-- `bSparseSdfGIUseHitLightingVisibility`는 히트 지점에서 방향광 쪽 가시성 레이를 선택적으로 쏜다. 기본값은 비활성으로, 광 누수 거동과 가시성 비용을 분리 관찰할 수 있다.
+- 히트 지점에서는 방향광 쪽 가시성 레이를 항상 1개 쏘아 직접 바운스에 가시성을 적용한다.
 
 제약은 여전히 큽니다. 히트 표면 머티리얼 직접 조회는 없고, 복사휘도 캐시는 dense brick 평균값 1개짜리 v1 형태이며, 시공간 디노이즈도 없고, 픽셀당 단일 확률적 확산 레이를 여전히 사용합니다. Radiance v1은 신호 형태 마일스톤이지 프로덕션 품질 GI가 아닙니다.
 
@@ -29,7 +29,7 @@ v1 히트 라이팅 모델은 의도적으로 단순합니다.
 - trace 전에 visible GBuffer 표면을 `SparseSdfGI Radiance Clear -> Inject -> Resolve Temporal -> Copy History`로 처리해 dense brick radiance cache를 갱신한다. v1 cache는 화면 픽셀의 `albedo * direct diffuse * shadow visibility * (1 - metallic)`를 brick별 정수 누적/평균으로 저장한다.
 - 표면 노멀 반구에서 코사인 가중 확산 레이 **픽셀당 1개**를 샘플(`SampleHemisphereCosine`, 프레임별 난수)하여 SDF 가시성을 트레이스한다.
 - **미스**: `EvaluateSparseSdfGISky(traceDirection)` 환경 큐브 스카이를 조사도로 사용한다.
-- **히트**: SDF 이동 거리로 히트 지점을, SDF 그래디언트(`ComputeSdfNormal`)로 히트 노멀을 구하고, 히트 brick의 radiance cache를 우선 샘플한다. cache가 비어 있으면 기존 **방향광 1개의 직접 바운스** `LightColor * LightIntensity * saturate(NdotL) * visibility`로 fallback한다. 미스용 스카이 값(`EvaluateSparseSdfGISky(traceDirection)`)은 히트 시 cache/direct bounce로 덮어쓰며, **히트 지점에서 환경 큐브 스카이 항을 더하지 않는다**(이전의 `skyBounce(hitNormal) + directBounce`는 과도하게 밝아져 제거됨). `UseHitLightingVisibility`가 켜진 경우에만 fallback direct bounce의 방향광 가시성 레이를 1개 더 쏜다.
+- **히트**: SDF 이동 거리로 히트 지점을, SDF 그래디언트(`ComputeSdfNormal`)로 히트 노멀을 구하고, 히트 brick의 radiance cache를 우선 샘플한다. cache가 비어 있으면 기존 **방향광 1개의 직접 바운스** `LightColor * LightIntensity * saturate(NdotL) * visibility`로 fallback한다. 미스용 스카이 값(`EvaluateSparseSdfGISky(traceDirection)`)은 히트 시 cache/direct bounce로 덮어쓰며, **히트 지점에서 환경 큐브 스카이 항을 더하지 않는다**(이전의 `skyBounce(hitNormal) + directBounce`는 과도하게 밝아져 제거됨). fallback direct bounce에는 방향광 가시성 레이를 항상 1개 더 쏜다.
 - 출력은 `irradiance * Intensity * BounceStrength`이며 수신 표면 알베도는 곱하지 않는다(합성 단계에서 곱함).
 
 즉 v1은 **단일 확률적 레이 + visible surface brick cache + brick 단위 temporal persistence**라 표면 색 기여와 간단한 offscreen 유지가 생기지만, screen-space 디노이즈가 없어 노이즈가 크고 occluded 표면 충실도는 낮다.
@@ -61,7 +61,7 @@ v1은 신호 형태 마일스톤이므로, 남은 작업은 정상 상태 비용
 
 ### 가시성 / 광 누수
 
-- `bSparseSdfGIUseHitLightingVisibility` 기본 활성화 여부와 비용/품질 트레이드오프를 결정한다.
+- 히트 지점의 방향광 가시성 레이는 항상 켜져 있으며, 비용/품질 트레이드오프 분리 관찰용 토글은 제거되었다.
 - 얇은 지오메트리에서의 SDF 가시성 누수를 편향(bias)·표면 두께(`SurfaceThicknessVoxels`) 튜닝으로 완화한다.
 
 ### 통합 / 검증

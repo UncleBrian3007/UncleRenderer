@@ -385,8 +385,6 @@ protected:
 
     // Ray Tracing
     std::unique_ptr<FRayTracingRuntime> RayTracingRuntime;
-    uint32_t ShadowMaskBindlessIndex = UINT32_MAX;
-    ID3D12Resource* ShadowMaskResource = nullptr;
 
     // Environment
     std::unique_ptr<FEnvironmentMap> EnvironmentMap;

@@ -253,7 +253,6 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableCas, { "EnableCas", "Cas" });
     ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::CasSharpness, { "CasSharpness" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableAutoExposure, { "EnableAutoExposure", "AutoExposure" });
-    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableSparseSdfGI, { "EnableSparseSdfGI", "SparseSdfGI" });
     ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIDebugMode, 0u, 5u, { "SparseSdfGIDebugMode" });
     ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGICascadeCount, 1u, 1u, { "SparseSdfGICascadeCount" });
     ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIMaxBrickTriangleReferences, 1024u * 1024u, 32u * 1024u * 1024u, { "SparseSdfGIMaxBrickTriangleReferences" });
@@ -264,8 +263,13 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGITraceHalfResolution, { "SparseSdfGITraceHalfResolution" });
     ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIIntensity, 0.0f, { "SparseSdfGIIntensity" });
     ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIBounceStrength, 0.0f, { "SparseSdfGIBounceStrength" });
-    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIUseHitLightingVisibility, { "SparseSdfGIUseHitLightingVisibility" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIEnableRadianceTemporalReuse, { "SparseSdfGIRadianceTemporalReuse", "SparseSdfGIEnableRadianceTemporalReuse" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIUseScreenProbes, { "SparseSdfGIUseScreenProbes" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIProbeTileSize, 4u, 16u, { "SparseSdfGIProbeTileSize" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIProbeRaysPerProbe, 4u, 64u, { "SparseSdfGIProbeRaysPerProbe" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIProbeDebugMode, 0u, 6u, { "SparseSdfGIProbeDebugMode" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIProbeTemporalReuse, { "SparseSdfGIProbeTemporalReuse" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIProbeSpawnJitter, { "SparseSdfGIProbeSpawnJitter" });
     ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::AutoExposureKey, { "AutoExposureKey" });
     ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::AutoExposureMin, { "AutoExposureMin" });
     ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::AutoExposureMax, { "AutoExposureMax" });
@@ -328,8 +332,17 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
             OutConfig.DeferredLightingVisualizationMode = EDeferredLightingVisualizationMode::IndirectIrradiance;
         }
     }
-    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableRestirGI, { "RestirGI", "EnableRestirGI" });
-    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableRestirGIDenoiser, { "RestirGIDenoiser", "EnableRestirGIDenoiser" });
+
+    if (MatchesKey(LowerKey, { "DiffuseGISource", "DiffuseGI" }))
+    {
+        if (LowerValue == "restirgi" || LowerValue == "restir")
+            OutConfig.DiffuseGISource = EDiffuseGISource::RestirGI;
+        else if (LowerValue == "sparsesdfgi" || LowerValue == "sparsesdf")
+            OutConfig.DiffuseGISource = EDiffuseGISource::SparseSdfGI;
+        else
+            OutConfig.DiffuseGISource = EDiffuseGISource::Off;
+    }
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableDiffuseGIDenoiser, { "DiffuseGIDenoiser", "EnableDiffuseGIDenoiser", "RestirGIDenoiser", "EnableRestirGIDenoiser" });
     ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::RestirGISamplesPerPixel, 1u, 32u, { "RestirGISamplesPerPixel" });
     ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::RestirGIIntensity, 0.0f, { "RestirGIIntensity" });
     ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::RestirGIRayLength, 0.1f, { "RestirGIRayLength" });

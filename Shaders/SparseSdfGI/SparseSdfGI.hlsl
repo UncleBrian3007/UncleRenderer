@@ -1,5 +1,7 @@
 #include "../SceneConstants.hlsl"
 #include "../Common.hlsli"
+#include "../CommonSH.hlsli"
+#include "../BlueNoiseSobolSampler.hlsli"
 
 cbuffer SparseSdfGIConstants : register(b1)
 {
@@ -29,7 +31,12 @@ cbuffer SparseSdfGIConstants : register(b1)
     float SurfaceThicknessVoxels;
     row_major float4x4 ModelWorld;
     float BounceStrength;
-    uint UseHitLightingVisibility;
+    uint ProbeTileSize;
+    uint ProbeCountX;
+    uint ProbeCountY;
+    uint ProbeRaysPerProbe;
+    uint ProbeDebugMode;
+    uint ProbeHistoryValid;
 };
 
 #if defined(SPARSE_SDF_GI_REFERENCE_INIT_SHADER)
@@ -87,12 +94,6 @@ cbuffer SparseSdfGIRadianceResolveBindlessConstants : register(b2)
     uint BrickRadianceUavIndex;
     uint RadianceHistoryValid;
 };
-#elif defined(SPARSE_SDF_GI_RADIANCE_COPY_SHADER)
-cbuffer SparseSdfGIRadianceCopyBindlessConstants : register(b2)
-{
-    uint BrickRadianceSrvIndex;
-    uint BrickRadianceHistoryUavIndex;
-};
 #elif defined(SPARSE_SDF_GI_TRACE_SHADER)
 cbuffer SparseSdfGITraceBindlessConstants : register(b2)
 {
@@ -105,6 +106,45 @@ cbuffer SparseSdfGITraceBindlessConstants : register(b2)
     uint EnvironmentCubeIndex;
     uint LinearClampSamplerIndex;
     uint BrickRadianceSrvIndex;
+    uint InputSHUavIndex;
+    uint VarianceUavIndex;
+};
+#elif defined(SPARSE_SDF_GI_PROBE_SPAWN_SHADER)
+cbuffer SparseSdfGIProbeSpawnBindlessConstants : register(b2)
+{
+    uint DepthIndex;
+    uint GBufferAIndex;
+    uint ProbeHeaderUavIndex;
+    uint JitterEnabled;
+    uint BlueNoiseSobolTextureIndex;
+    uint BlueNoiseScramblingRankingTextureIndex;
+};
+#elif defined(SPARSE_SDF_GI_PROBE_TRACE_SHADER)
+cbuffer SparseSdfGIProbeTraceBindlessConstants : register(b2)
+{
+    uint SdfAtlasSrvIndex;
+    uint CascadeBrickMapSrvIndex;
+    uint BrickMetadataSrvIndex;
+    uint BrickRadianceSrvIndex;
+    uint EnvironmentCubeIndex;
+    uint LinearClampSamplerIndex;
+    uint ProbeHeaderSrvIndex;
+    uint ProbeSHUavIndex;
+    uint ProbeVarianceUavIndex;
+    uint ProbeHistoryPackedIndices;
+    uint BlueNoisePackedIndices;
+};
+#elif defined(SPARSE_SDF_GI_PROBE_INTERPOLATE_SHADER)
+cbuffer SparseSdfGIProbeInterpolateBindlessConstants : register(b2)
+{
+    uint DepthIndex;
+    uint GBufferAIndex;
+    uint DiffuseGIUavIndex;
+    uint ProbeHeaderSrvIndex;
+    uint ProbeSHSrvIndex;
+    uint ProbeVarianceSrvIndex;
+    uint InputSHUavIndex;
+    uint VarianceUavIndex;
 };
 #else
 #error SparseSdfGI shader entry wrapper must define a bindless layout macro.
@@ -142,6 +182,26 @@ static const float SPARSE_SDF_GI_RADIANCE_ACCUM_SCALE = 16.0f;
 static const float SPARSE_SDF_GI_RADIANCE_MAX_SAMPLE = 32.0f;
 static const float SPARSE_SDF_GI_RADIANCE_HISTORY_DECAY = 0.985f;
 static const float SPARSE_SDF_GI_RADIANCE_CONFIDENCE_THRESHOLD = 0.05f;
+static const float SPARSE_SDF_GI_PROBE_MIN_VARIANCE = 0.05f;
+static const uint SPARSE_SDF_GI_PROBE_MAX_RAYS = 64u;
+
+struct FSparseSdfGIProbeHeader
+{
+    float4 WorldPositionDepth;
+    float4 NormalValid;
+    uint2 Pixel;
+    uint2 Padding;
+};
+
+static const float SPARSE_SDF_GI_PROBE_TEMPORAL_MAX_SAMPLES = 32.0f;
+static const float SPARSE_SDF_GI_PROBE_TEMPORAL_MIN_ALPHA = 0.05f;
+
+struct FScreenProbeHistory
+{
+    float4 WorldPositionCount;
+    float4 NormalDepth;
+    uint4 PackedSH;
+};
 
 groupshared float gs_EikonalA[SPARSE_SDF_GI_EIKONAL_LDS_COUNT];
 groupshared float gs_EikonalB[SPARSE_SDF_GI_EIKONAL_LDS_COUNT];
@@ -189,7 +249,7 @@ float EncodeSdfWorldDistance(float distance)
     return saturate(distance / max((float)BrickVoxelResolution * VoxelSize, 1e-5f));
 }
 
-#if defined(SPARSE_SDF_GI_TRACE_SHADER)
+#if defined(SPARSE_SDF_GI_TRACE_SHADER) || defined(SPARSE_SDF_GI_PROBE_TRACE_SHADER)
 float3 EvaluateSparseSdfGISky(float3 direction)
 {
     TextureCube EnvironmentMap = ResourceDescriptorHeap[EnvironmentCubeIndex];
@@ -1037,22 +1097,6 @@ void CSResolveBrickRadianceTemporal(uint3 dispatchThreadId : SV_DispatchThreadID
 }
 #endif
 
-#if defined(SPARSE_SDF_GI_RADIANCE_COPY_SHADER)
-[numthreads(64, 1, 1)]
-void CSCopyBrickRadianceToHistory(uint3 dispatchThreadId : SV_DispatchThreadID)
-{
-    const uint brickIndex = dispatchThreadId.x;
-    if (brickIndex >= GetSparseSdfGIBrickCapacity())
-    {
-        return;
-    }
-
-    StructuredBuffer<float4> brickRadiance = ResourceDescriptorHeap[BrickRadianceSrvIndex];
-    RWStructuredBuffer<float4> brickRadianceHistory = ResourceDescriptorHeap[BrickRadianceHistoryUavIndex];
-    brickRadianceHistory[brickIndex] = brickRadiance[brickIndex];
-}
-#endif
-
 float3 GetWorldRayDirection(uint2 pixel)
 {
     const float2 uv = (float2(pixel) + 0.5f.xx) / float2(max(OutputWidth, 1u), max(OutputHeight, 1u));
@@ -1230,6 +1274,48 @@ bool TrySampleBrickRadiance(StructuredBuffer<float4> brickRadiance, float3 world
     return true;
 }
 
+#if defined(SPARSE_SDF_GI_TRACE_SHADER) || defined(SPARSE_SDF_GI_PROBE_TRACE_SHADER)
+float3 EvaluateSparseSdfGIRayRadiance(
+    Texture3D<float> sdfAtlas,
+    StructuredBuffer<uint> cascadeBrickMap,
+    StructuredBuffer<uint4> brickMetadata,
+    StructuredBuffer<float4> brickRadiance,
+    float3 rayOrigin,
+    float3 traceDirection,
+    out bool hit)
+{
+    uint stepCount = 0u;
+    float travel = 0.0f;
+    hit = TraceSdfVisibility(rayOrigin, traceDirection, sdfAtlas, cascadeBrickMap, brickMetadata, stepCount, travel);
+
+    float3 radiance = EvaluateSparseSdfGISky(traceDirection);
+    if (!hit)
+    {
+        return radiance;
+    }
+
+    const float3 hitPosition = rayOrigin + traceDirection * travel;
+    float3 hitNormal = ComputeSdfNormal(sdfAtlas, cascadeBrickMap, hitPosition);
+    if (dot(hitNormal, hitNormal) <= 1e-8f)
+    {
+        hitNormal = -traceDirection;
+    }
+    if (dot(hitNormal, -traceDirection) < 0.0f)
+    {
+        hitNormal = -hitNormal;
+    }
+
+    const float3 lightDirection = normalize(LightDirection);
+    uint lightStepCount = 0u;
+    float lightTravel = 0.0f;
+    const float3 lightRayOrigin = hitPosition + hitNormal * (VoxelSize * 2.0f) + lightDirection * (VoxelSize * 2.0f);
+    const float lightVisibility = TraceSdfVisibility(lightRayOrigin, lightDirection, sdfAtlas, cascadeBrickMap, brickMetadata, lightStepCount, lightTravel) ? 0.0f : 1.0f;
+    const float3 directBounce = LightColor * LightIntensity * saturate(dot(hitNormal, lightDirection)) * lightVisibility;
+    float3 cachedRadiance = 0.0f.xxx;
+    return TrySampleBrickRadiance(brickRadiance, hitPosition, cachedRadiance) ? cachedRadiance : directBounce;
+}
+#endif
+
 float3 DebugBrickLocalSdfSurface(Texture3D<float> sdfAtlas, StructuredBuffer<uint> cascadeBrickMap, StructuredBuffer<uint4> brickMetadata, uint2 pixel)
 {
     const float3 rayDirection = GetWorldRayDirection(pixel);
@@ -1361,6 +1447,8 @@ void CSDiffuseTrace(uint3 dispatchThreadId : SV_DispatchThreadID)
     StructuredBuffer<uint4> brickMetadata = ResourceDescriptorHeap[BrickMetadataSrvIndex];
     StructuredBuffer<float4> brickRadiance = ResourceDescriptorHeap[BrickRadianceSrvIndex];
     RWTexture2D<float4> outputTexture = ResourceDescriptorHeap[DiffuseGIUavIndex];
+    RWTexture2D<uint4> inputSHOut = ResourceDescriptorHeap[InputSHUavIndex];
+    RWTexture2D<float> varianceOut = ResourceDescriptorHeap[VarianceUavIndex];
 
     const uint2 pixel = dispatchThreadId.xy;
     const float2 uv = (float2(pixel) + 0.5f.xx) / float2(max(OutputWidth, 1u), max(OutputHeight, 1u));
@@ -1368,6 +1456,8 @@ void CSDiffuseTrace(uint3 dispatchThreadId : SV_DispatchThreadID)
     if (depth <= 0.0f)
     {
         outputTexture[pixel] = 0.0f.xxxx;
+        inputSHOut[pixel] = uint4(0u, 0u, 0u, 0u);
+        varianceOut[pixel] = 0.0f;
         return;
     }
 
@@ -1375,42 +1465,367 @@ void CSDiffuseTrace(uint3 dispatchThreadId : SV_DispatchThreadID)
     const float3 viewPosition = ReconstructViewPositionFromDepth(uv, depth, Projection);
     const float3 worldPosition = mul(float4(viewPosition, 1.0f), ViewInverse).xyz;
 
-    uint stepCount = 0u;
-    float travel = 0.0f;
     const float3 rayOrigin = worldPosition + normal * (VoxelSize * 2.0f);
     const float3 traceDirection = SampleHemisphereCosine(Random2(pixel, FrameIndex), normal);
-    const bool hit = TraceSdfVisibility(rayOrigin, traceDirection, sdfAtlas, cascadeBrickMap, brickMetadata, stepCount, travel);
+    bool hit = false;
+    const float3 irradiance = EvaluateSparseSdfGIRayRadiance(sdfAtlas, cascadeBrickMap, brickMetadata, brickRadiance, rayOrigin, traceDirection, hit);
 
-    float3 irradiance = EvaluateSparseSdfGISky(traceDirection);
+    const float3 outputIrradiance = irradiance * Intensity * BounceStrength;
+    outputTexture[pixel] = float4(outputIrradiance, 1.0f);
+    // SparseSdfGI emits an integrated, directionless irradiance, so pack it as a DC-only SH;
+    // this round-trips through the denoiser's UnprojectIrradiance without brightening the result.
+    const FPackedSh outputSH = ProjectIrradianceSh(outputIrradiance);
+    inputSHOut[pixel] = PackSh(outputSH);
+    // 1-spp input is uniformly noisy: keep a strong but adaptive denoise floor (was pinned to 1.0).
+    varianceOut[pixel] = max(ShVariance(outputSH), 0.5f);
+}
+#endif
 
-    if (hit)
+#if defined(SPARSE_SDF_GI_PROBE_SPAWN_SHADER)
+uint GetScreenProbeIndex(uint2 probeCoord)
+{
+    return probeCoord.x + probeCoord.y * ProbeCountX;
+}
+
+[numthreads(8, 8, 1)]
+void CSSpawnScreenProbes(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    const uint2 probeCoord = dispatchThreadId.xy;
+    if (probeCoord.x >= ProbeCountX || probeCoord.y >= ProbeCountY)
     {
-        const float3 hitPosition = rayOrigin + traceDirection * travel;
-        float3 hitNormal = ComputeSdfNormal(sdfAtlas, cascadeBrickMap, hitPosition);
-        if (dot(hitNormal, hitNormal) <= 1e-8f)
-        {
-            hitNormal = -traceDirection;
-        }
-        if (dot(hitNormal, -traceDirection) < 0.0f)
-        {
-            hitNormal = -hitNormal;
-        }
-
-        const float3 lightDirection = normalize(LightDirection);
-        float lightVisibility = 1.0f;
-        if (UseHitLightingVisibility != 0u)
-        {
-            uint lightStepCount = 0u;
-            float lightTravel = 0.0f;
-            const float3 lightRayOrigin = hitPosition + hitNormal * (VoxelSize * 2.0f) + lightDirection * (VoxelSize * 2.0f);
-            lightVisibility = TraceSdfVisibility(lightRayOrigin, lightDirection, sdfAtlas, cascadeBrickMap, brickMetadata, lightStepCount, lightTravel) ? 0.0f : 1.0f;
-        }
-
-        const float3 directBounce = LightColor * LightIntensity * saturate(dot(hitNormal, lightDirection)) * lightVisibility;
-        float3 cachedRadiance = 0.0f.xxx;
-        irradiance = TrySampleBrickRadiance(brickRadiance, hitPosition, cachedRadiance) ? cachedRadiance : directBounce;
+        return;
     }
 
-    outputTexture[pixel] = float4(irradiance * Intensity * BounceStrength, 1.0f);
+    Texture2D<float> depthTexture = ResourceDescriptorHeap[DepthIndex];
+    Texture2D<float4> gbufferA = ResourceDescriptorHeap[GBufferAIndex];
+    RWStructuredBuffer<FSparseSdfGIProbeHeader> probeHeaders = ResourceDescriptorHeap[ProbeHeaderUavIndex];
+
+    const uint tileSize = max(ProbeTileSize, 1u);
+    const uint2 tileStart = probeCoord * tileSize;
+    const uint2 tileEnd = min(tileStart + tileSize, uint2(OutputWidth, OutputHeight));
+    const uint2 tileExtent = max(tileEnd - tileStart, 1u.xx);
+    uint2 candidate = min(tileStart + tileExtent / 2u, uint2(OutputWidth - 1u, OutputHeight - 1u));
+    if (JitterEnabled != 0u)
+    {
+        FBlueNoiseSobolSampler jitterSampler = BlueNoiseSobolSamplerCreate(probeCoord, uint2(max(ProbeCountX, 1u), max(ProbeCountY, 1u)), FrameIndex);
+        const float2 jitter = BlueNoiseSobolSamplerRandomFloat2(jitterSampler, BlueNoiseSobolTextureIndex, BlueNoiseScramblingRankingTextureIndex) - 0.5f.xx;
+        const int2 jitterPixels = int2(round(jitter * (float)tileSize * 0.5f));
+        candidate = uint2(clamp(int2(candidate) + jitterPixels, int2(tileStart), int2(max(tileEnd, uint2(1u, 1u)) - 1u)));
+    }
+
+    uint2 bestPixel = candidate;
+    float bestDepth = depthTexture.Load(int3(bestPixel, 0)).r;
+    bool valid = bestDepth > 0.0f;
+    [loop]
+    for (uint y = 0u; y < 16u && !valid; ++y)
+    {
+        if (y >= tileExtent.y)
+        {
+            break;
+        }
+        [loop]
+        for (uint x = 0u; x < 16u; ++x)
+        {
+            if (x >= tileExtent.x)
+            {
+                break;
+            }
+            const uint2 pixel = tileStart + uint2(x, y);
+            const float depth = depthTexture.Load(int3(pixel, 0)).r;
+            if (depth > 0.0f)
+            {
+                bestPixel = pixel;
+                bestDepth = depth;
+                valid = true;
+                break;
+            }
+        }
+    }
+
+    FSparseSdfGIProbeHeader header;
+    header.WorldPositionDepth = 0.0f.xxxx;
+    header.NormalValid = 0.0f.xxxx;
+    header.Pixel = bestPixel;
+    header.Padding = 0u.xx;
+    if (valid)
+    {
+        const float2 uv = (float2(bestPixel) + 0.5f.xx) / float2(max(OutputWidth, 1u), max(OutputHeight, 1u));
+        const float3 viewPosition = ReconstructViewPositionFromDepth(uv, bestDepth, Projection);
+        const float3 worldPosition = mul(float4(viewPosition, 1.0f), ViewInverse).xyz;
+        const float3 normal = normalize(gbufferA.Load(int3(bestPixel, 0)).xyz * 2.0f - 1.0f);
+        header.WorldPositionDepth = float4(worldPosition, bestDepth);
+        header.NormalValid = float4(normal, 1.0f);
+    }
+
+    probeHeaders[GetScreenProbeIndex(probeCoord)] = header;
+}
+#endif
+
+#if defined(SPARSE_SDF_GI_PROBE_TRACE_SHADER)
+groupshared float3 gs_ProbeRadiance[SPARSE_SDF_GI_PROBE_MAX_RAYS];
+groupshared float gs_ProbeLuminance[SPARSE_SDF_GI_PROBE_MAX_RAYS];
+groupshared float gs_ProbeHit[SPARSE_SDF_GI_PROBE_MAX_RAYS];
+
+[numthreads(64, 1, 1)]
+void CSTraceScreenProbes(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
+{
+    const uint probeIndex = groupId.x + groupId.y * ProbeCountX;
+    const uint lane = groupThreadId.x;
+    const uint probeCount = ProbeCountX * ProbeCountY;
+    if (probeIndex >= probeCount)
+    {
+        return;
+    }
+
+    StructuredBuffer<FSparseSdfGIProbeHeader> probeHeaders = ResourceDescriptorHeap[ProbeHeaderSrvIndex];
+    RWStructuredBuffer<uint4> probeSH = ResourceDescriptorHeap[ProbeSHUavIndex];
+    RWStructuredBuffer<float4> probeVariance = ResourceDescriptorHeap[ProbeVarianceUavIndex];
+    const FSparseSdfGIProbeHeader header = probeHeaders[probeIndex];
+    const uint rayCount = clamp(ProbeRaysPerProbe, 1u, SPARSE_SDF_GI_PROBE_MAX_RAYS);
+    const uint probeHistoryReadIndex = ProbeHistoryPackedIndices >> 16u;
+    const uint probeHistoryWriteIndex = ProbeHistoryPackedIndices & 0xFFFFu;
+    const uint blueNoiseSobolIndex = BlueNoisePackedIndices >> 16u;
+    const uint blueNoiseScramblingIndex = BlueNoisePackedIndices & 0xFFFFu;
+
+    if (lane < SPARSE_SDF_GI_PROBE_MAX_RAYS)
+    {
+        gs_ProbeRadiance[lane] = 0.0f.xxx;
+        gs_ProbeLuminance[lane] = 0.0f;
+        gs_ProbeHit[lane] = 0.0f;
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    if (header.NormalValid.w <= 0.5f)
+    {
+        if (lane == 0u)
+        {
+            probeSH[probeIndex] = uint4(0u, 0u, 0u, 0u);
+            probeVariance[probeIndex] = float4(1.0f, 0.0f, 0.0f, 0.0f);
+            RWStructuredBuffer<FScreenProbeHistory> probeHistoryWrite = ResourceDescriptorHeap[probeHistoryWriteIndex];
+            FScreenProbeHistory invalidHistory;
+            invalidHistory.WorldPositionCount = 0.0f.xxxx;
+            invalidHistory.NormalDepth = 0.0f.xxxx;
+            invalidHistory.PackedSH = uint4(0u, 0u, 0u, 0u);
+            probeHistoryWrite[probeIndex] = invalidHistory;
+        }
+        return;
+    }
+
+    if (lane < rayCount)
+    {
+        Texture3D<float> sdfAtlas = ResourceDescriptorHeap[SdfAtlasSrvIndex];
+        StructuredBuffer<uint> cascadeBrickMap = ResourceDescriptorHeap[CascadeBrickMapSrvIndex];
+        StructuredBuffer<uint4> brickMetadata = ResourceDescriptorHeap[BrickMetadataSrvIndex];
+        StructuredBuffer<float4> brickRadiance = ResourceDescriptorHeap[BrickRadianceSrvIndex];
+        const float3 normal = normalize(header.NormalValid.xyz);
+        const float3 rayOrigin = header.WorldPositionDepth.xyz + normal * (VoxelSize * 2.0f);
+        FBlueNoiseSobolSampler raySampler = BlueNoiseSobolSamplerCreate(header.Pixel, uint2(max(OutputWidth, 1u), max(OutputHeight, 1u)), FrameIndex);
+        const float2 Xi = float2(
+            BlueNoiseSobolSamplerSample(raySampler, lane, 0u, blueNoiseSobolIndex, blueNoiseScramblingIndex),
+            BlueNoiseSobolSamplerSample(raySampler, lane, 1u, blueNoiseSobolIndex, blueNoiseScramblingIndex));
+        const float3 traceDirection = SampleHemisphereCosine(Xi, normal);
+        bool hit = false;
+        const float3 radiance = EvaluateSparseSdfGIRayRadiance(sdfAtlas, cascadeBrickMap, brickMetadata, brickRadiance, rayOrigin, traceDirection, hit) * Intensity * BounceStrength;
+        gs_ProbeRadiance[lane] = radiance;
+        gs_ProbeLuminance[lane] = dot(radiance, float3(0.2126f, 0.7152f, 0.0722f));
+        gs_ProbeHit[lane] = hit ? 1.0f : 0.0f;
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    if (lane == 0u)
+    {
+        float3 sumRadiance = 0.0f.xxx;
+        float sumLum = 0.0f;
+        float sumLumSq = 0.0f;
+        float hitCount = 0.0f;
+        [loop]
+        for (uint i = 0u; i < rayCount; ++i)
+        {
+            sumRadiance += gs_ProbeRadiance[i];
+            sumLum += gs_ProbeLuminance[i];
+            sumLumSq += gs_ProbeLuminance[i] * gs_ProbeLuminance[i];
+            hitCount += gs_ProbeHit[i];
+        }
+
+        const float invCount = rcp((float)rayCount);
+        const float3 meanRadiance = sumRadiance * invCount;
+        const FPackedSh currentSh = ProjectIrradianceSh(meanRadiance);
+        const float meanLum = sumLum * invCount;
+        const float lumVariance = max(0.0f, sumLumSq * invCount - meanLum * meanLum);
+        const float normalizedVariance = saturate(lumVariance / max(meanLum * meanLum + 1e-4f, 1e-4f));
+
+        FPackedSh resolvedSh = currentSh;
+        float sampleCount = 1.0f;
+        if (ProbeHistoryValid != 0u)
+        {
+            StructuredBuffer<FScreenProbeHistory> probeHistoryRead = ResourceDescriptorHeap[probeHistoryReadIndex];
+            const FScreenProbeHistory prev = probeHistoryRead[probeIndex];
+            const float prevCount = prev.WorldPositionCount.w;
+            const float prevDepth = prev.NormalDepth.w;
+            const bool geometryMatch =
+                prevDepth > 0.0f &&
+                prevCount > 0.0f &&
+                dot(normalize(prev.NormalDepth.xyz), normalize(header.NormalValid.xyz)) > 0.9f &&
+                abs(prevDepth - header.WorldPositionDepth.w) <= max(prevDepth * 0.05f, 1e-4f) &&
+                length(prev.WorldPositionCount.xyz - header.WorldPositionDepth.xyz) <= VoxelSize * 4.0f;
+            if (geometryMatch)
+            {
+                sampleCount = min(prevCount + 1.0f, SPARSE_SDF_GI_PROBE_TEMPORAL_MAX_SAMPLES);
+                const float alpha = max(rcp(sampleCount), SPARSE_SDF_GI_PROBE_TEMPORAL_MIN_ALPHA);
+                resolvedSh = LerpSh(UnpackSh(prev.PackedSH), currentSh, alpha);
+            }
+        }
+
+        RWStructuredBuffer<FScreenProbeHistory> probeHistoryWrite = ResourceDescriptorHeap[probeHistoryWriteIndex];
+        FScreenProbeHistory outHistory;
+        outHistory.WorldPositionCount = float4(header.WorldPositionDepth.xyz, sampleCount);
+        outHistory.NormalDepth = float4(header.NormalValid.xyz, header.WorldPositionDepth.w);
+        outHistory.PackedSH = PackSh(resolvedSh);
+        probeHistoryWrite[probeIndex] = outHistory;
+
+        probeSH[probeIndex] = PackSh(resolvedSh);
+        const float resolvedVariance = max(normalizedVariance / sampleCount, SPARSE_SDF_GI_PROBE_MIN_VARIANCE);
+        probeVariance[probeIndex] = float4(resolvedVariance, hitCount * invCount, 1.0f, 0.0f);
+    }
+}
+#endif
+
+#if defined(SPARSE_SDF_GI_PROBE_INTERPOLATE_SHADER)
+uint GetScreenProbeIndexClamped(int2 probeCoord)
+{
+    const int2 clamped = clamp(probeCoord, int2(0, 0), int2((int)ProbeCountX - 1, (int)ProbeCountY - 1));
+    return (uint)clamped.x + (uint)clamped.y * ProbeCountX;
+}
+
+[numthreads(8, 8, 1)]
+void CSInterpolateScreenProbes(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    const uint2 pixel = dispatchThreadId.xy;
+    if (pixel.x >= OutputWidth || pixel.y >= OutputHeight)
+    {
+        return;
+    }
+
+    Texture2D<float> depthTexture = ResourceDescriptorHeap[DepthIndex];
+    Texture2D<float4> gbufferA = ResourceDescriptorHeap[GBufferAIndex];
+    RWTexture2D<float4> outputTexture = ResourceDescriptorHeap[DiffuseGIUavIndex];
+    RWTexture2D<uint4> inputSHOut = ResourceDescriptorHeap[InputSHUavIndex];
+    RWTexture2D<float> varianceOut = ResourceDescriptorHeap[VarianceUavIndex];
+
+    const float depth = depthTexture.Load(int3(pixel, 0)).r;
+    if (depth <= 0.0f)
+    {
+        outputTexture[pixel] = 0.0f.xxxx;
+        inputSHOut[pixel] = uint4(0u, 0u, 0u, 0u);
+        varianceOut[pixel] = 0.0f;
+        return;
+    }
+
+    StructuredBuffer<FSparseSdfGIProbeHeader> probeHeaders = ResourceDescriptorHeap[ProbeHeaderSrvIndex];
+    StructuredBuffer<uint4> probeSH = ResourceDescriptorHeap[ProbeSHSrvIndex];
+    StructuredBuffer<float4> probeVariance = ResourceDescriptorHeap[ProbeVarianceSrvIndex];
+    const float2 uv = (float2(pixel) + 0.5f.xx) / float2(max(OutputWidth, 1u), max(OutputHeight, 1u));
+    const float3 viewPosition = ReconstructViewPositionFromDepth(uv, depth, Projection);
+    const float3 worldPosition = mul(float4(viewPosition, 1.0f), ViewInverse).xyz;
+    const float3 normal = normalize(gbufferA.Load(int3(pixel, 0)).xyz * 2.0f - 1.0f);
+    const float2 probeSpace = (float2(pixel) + 0.5f.xx) / (float)max(ProbeTileSize, 1u) - 0.5f.xx;
+    const int2 baseProbe = int2(floor(probeSpace));
+
+    FPackedSh accumSh;
+    accumSh.ShY = 0.0f.xxxx;
+    accumSh.Co = 0.0f;
+    accumSh.Cg = 0.0f;
+    float totalWeight = 0.0f;
+    float weightedVariance = 0.0f;
+    float weightedHitRatio = 0.0f;
+
+    [unroll]
+    for (int oy = -1; oy <= 1; ++oy)
+    {
+        [unroll]
+        for (int ox = -1; ox <= 1; ++ox)
+        {
+            const int2 probeCoord = baseProbe + int2(ox, oy);
+            if (any(probeCoord < int2(0, 0)) || probeCoord.x >= (int)ProbeCountX || probeCoord.y >= (int)ProbeCountY)
+            {
+                continue;
+            }
+
+            const uint probeIndex = GetScreenProbeIndexClamped(probeCoord);
+            const FSparseSdfGIProbeHeader header = probeHeaders[probeIndex];
+            if (header.NormalValid.w <= 0.5f)
+            {
+                continue;
+            }
+
+            const float2 probeCenter = (float2(probeCoord) + 0.5f.xx) * (float)max(ProbeTileSize, 1u);
+            const float2 screenDelta = (float2(pixel) + 0.5f.xx - probeCenter) / (float)max(ProbeTileSize, 1u);
+            const float screenWeight = exp(-dot(screenDelta, screenDelta) * 1.5f);
+            const float3 probeNormal = normalize(header.NormalValid.xyz);
+            const float normalWeight = pow(saturate(dot(normal, probeNormal)), 32.0f);
+            const float depthWeight = exp(-abs(depth - header.WorldPositionDepth.w) / max(depth * 0.05f, 1e-3f));
+            const float planeDistance = abs(dot(probeNormal, worldPosition - header.WorldPositionDepth.xyz));
+            const float planeWeight = exp(-planeDistance / max(VoxelSize * 4.0f, 1e-3f));
+            const float weight = screenWeight * normalWeight * depthWeight * planeWeight;
+            if (weight <= 1e-5f)
+            {
+                continue;
+            }
+
+            accumSh = AddSh(accumSh, ScaleSh(UnpackSh(probeSH[probeIndex]), weight));
+            const float4 stats = probeVariance[probeIndex];
+            weightedVariance += stats.x * weight;
+            weightedHitRatio += stats.y * weight;
+            totalWeight += weight;
+        }
+    }
+
+    if (totalWeight <= 1e-5f)
+    {
+        outputTexture[pixel] = 0.0f.xxxx;
+        inputSHOut[pixel] = uint4(0u, 0u, 0u, 0u);
+        varianceOut[pixel] = 1.0f;
+        return;
+    }
+
+    const float invWeight = rcp(totalWeight);
+    const FPackedSh outputSH = ScaleSh(accumSh, invWeight);
+    const float confidence = saturate(totalWeight);
+    const float probeVarianceValue = weightedVariance * invWeight;
+    const float outputVariance = saturate(max(SPARSE_SDF_GI_PROBE_MIN_VARIANCE, probeVarianceValue) + (1.0f - confidence));
+    const float3 irradiance = UnprojectIrradiance(outputSH, normal);
+
+    inputSHOut[pixel] = PackSh(outputSH);
+    varianceOut[pixel] = outputVariance;
+
+    float3 output = irradiance;
+    if (ProbeDebugMode == 1u)
+    {
+        const uint2 representative = probeHeaders[GetScreenProbeIndexClamped(baseProbe)].Pixel;
+        const float d = length(float2(pixel) - float2(representative)) / max((float)ProbeTileSize, 1.0f);
+        output = lerp(float3(0.1f, 0.1f, 0.1f), float3(0.0f, 0.8f, 1.0f), saturate(1.0f - d));
+    }
+    else if (ProbeDebugMode == 2u)
+    {
+        output = confidence.xxx;
+    }
+    else if (ProbeDebugMode == 3u)
+    {
+        output = (weightedHitRatio * invWeight).xxx;
+    }
+    else if (ProbeDebugMode == 4u)
+    {
+        output = outputVariance.xxx;
+    }
+    else if (ProbeDebugMode == 5u)
+    {
+        output = float3(confidence, saturate(totalWeight * 0.25f), 0.0f);
+    }
+    else if (ProbeDebugMode == 6u)
+    {
+        output = irradiance;
+    }
+
+    outputTexture[pixel] = float4(output, 1.0f);
 }
 #endif
