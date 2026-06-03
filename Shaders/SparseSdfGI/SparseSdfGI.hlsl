@@ -85,6 +85,14 @@ cbuffer SparseSdfGIRadianceInjectBindlessConstants : register(b2)
     uint BrickRadianceAccumUavIndex;
     uint ShadowMaskIndex;
     uint ShadowMaskEnabled;
+    uint BrickIrradianceReadIndex;
+};
+#elif defined(SPARSE_SDF_GI_IRRADIANCE_ACCUM_SHADER)
+cbuffer SparseSdfGIIrradianceAccumulateBindlessConstants : register(b2)
+{
+    uint DepthIndex;
+    uint DiffuseGIIndex;
+    uint BrickIrradianceAccumUavIndex;
 };
 #elif defined(SPARSE_SDF_GI_RADIANCE_RESOLVE_SHADER)
 cbuffer SparseSdfGIRadianceResolveBindlessConstants : register(b2)
@@ -106,8 +114,8 @@ cbuffer SparseSdfGITraceBindlessConstants : register(b2)
     uint EnvironmentCubeIndex;
     uint LinearClampSamplerIndex;
     uint BrickRadianceSrvIndex;
-    uint InputSHUavIndex;
-    uint VarianceUavIndex;
+    uint InputSHVariancePackedIndices;
+    uint BlueNoisePackedIndices;
 };
 #elif defined(SPARSE_SDF_GI_PROBE_SPAWN_SHADER)
 cbuffer SparseSdfGIProbeSpawnBindlessConstants : register(b2)
@@ -118,6 +126,7 @@ cbuffer SparseSdfGIProbeSpawnBindlessConstants : register(b2)
     uint JitterEnabled;
     uint BlueNoiseSobolTextureIndex;
     uint BlueNoiseScramblingRankingTextureIndex;
+    uint VelocityIndex;
 };
 #elif defined(SPARSE_SDF_GI_PROBE_TRACE_SHADER)
 cbuffer SparseSdfGIProbeTraceBindlessConstants : register(b2)
@@ -190,7 +199,8 @@ struct FSparseSdfGIProbeHeader
     float4 WorldPositionDepth;
     float4 NormalValid;
     uint2 Pixel;
-    uint2 Padding;
+    uint PrevProbeIndex;
+    uint PrevProbeValid;
 };
 
 static const float SPARSE_SDF_GI_PROBE_TEMPORAL_MAX_SAMPLES = 32.0f;
@@ -1053,7 +1063,20 @@ void CSInjectBrickRadiance(uint3 dispatchThreadId : SV_DispatchThreadID)
         Texture2D shadowMaskTexture = ResourceDescriptorHeap[ShadowMaskIndex];
         shadowVisibility = shadowMaskTexture.Load(int3(pixel, 0)).r;
     }
-    const float3 sourceRadiance = saturate(albedo) * (1.0f - metallic) * LightColor * LightIntensity * directNdotL * saturate(shadowVisibility);
+    float3 indirectIrradiance = 0.0f.xxx;
+    // Multi-bounce: read the previous frame's accumulated diffuse GI irradiance from the world-space
+    // brick irradiance cache so the radiance cache (which probes sample) carries bounce N+1. The brick
+    // index is world-space, so unlike the screen-space feedback this needs no reprojection and has no
+    // off-screen / disocclusion sampling error. BounceStrength is the feedback gain (0 = single bounce);
+    // albedo < 1 keeps the loop convergent.
+    if (BounceStrength > 0.0f && BrickIrradianceReadIndex != 0xFFFFFFFFu)
+    {
+        StructuredBuffer<float4> brickIrradiance = ResourceDescriptorHeap[BrickIrradianceReadIndex];
+        indirectIrradiance = max(brickIrradiance[brickIndex].rgb, 0.0f.xxx) * BounceStrength;
+    }
+
+    const float3 directIrradiance = LightColor * LightIntensity * directNdotL * saturate(shadowVisibility);
+    const float3 sourceRadiance = saturate(albedo) * (1.0f - metallic) * (directIrradiance + indirectIrradiance);
     const float3 clampedRadiance = min(sourceRadiance, SPARSE_SDF_GI_RADIANCE_MAX_SAMPLE.xxx);
     const uint3 quantizedRadiance = (uint3)round(clampedRadiance * SPARSE_SDF_GI_RADIANCE_ACCUM_SCALE);
 
@@ -1061,6 +1084,49 @@ void CSInjectBrickRadiance(uint3 dispatchThreadId : SV_DispatchThreadID)
     InterlockedAdd(brickRadianceAccum[brickIndex].y, quantizedRadiance.y);
     InterlockedAdd(brickRadianceAccum[brickIndex].z, quantizedRadiance.z);
     InterlockedAdd(brickRadianceAccum[brickIndex].w, 1u);
+}
+#endif
+
+#if defined(SPARSE_SDF_GI_IRRADIANCE_ACCUM_SHADER)
+[numthreads(8, 8, 1)]
+void CSAccumulateBrickIrradiance(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    if (dispatchThreadId.x >= OutputWidth || dispatchThreadId.y >= OutputHeight)
+    {
+        return;
+    }
+
+    Texture2D depthTexture = ResourceDescriptorHeap[DepthIndex];
+    Texture2D<float4> diffuseGI = ResourceDescriptorHeap[DiffuseGIIndex];
+    RWStructuredBuffer<uint4> brickIrradianceAccum = ResourceDescriptorHeap[BrickIrradianceAccumUavIndex];
+
+    const uint2 pixel = dispatchThreadId.xy;
+    const float depth = depthTexture.Load(int3(pixel, 0)).r;
+    if (depth <= 0.0f)
+    {
+        return;
+    }
+
+    const float2 uv = (float2(pixel) + 0.5f.xx) / float2(max(OutputWidth, 1u), max(OutputHeight, 1u));
+    const float3 viewPosition = ReconstructViewPositionFromDepth(uv, depth, Projection);
+    const float3 worldPosition = mul(float4(viewPosition, 1.0f), ViewInverse).xyz;
+
+    uint brickIndex = 0u;
+    if (!TryGetBrickIndexFromWorld(worldPosition, brickIndex))
+    {
+        return;
+    }
+
+    // Accumulate this frame's diffuse GI irradiance per brick. Quantization matches the radiance inject
+    // so the shared CSResolveBrickRadianceTemporal pass dequantizes / averages it identically.
+    const float3 irradiance = max(diffuseGI.Load(int3(pixel, 0)).rgb, 0.0f.xxx);
+    const float3 clampedIrradiance = min(irradiance, SPARSE_SDF_GI_RADIANCE_MAX_SAMPLE.xxx);
+    const uint3 quantized = (uint3)round(clampedIrradiance * SPARSE_SDF_GI_RADIANCE_ACCUM_SCALE);
+
+    InterlockedAdd(brickIrradianceAccum[brickIndex].x, quantized.x);
+    InterlockedAdd(brickIrradianceAccum[brickIndex].y, quantized.y);
+    InterlockedAdd(brickIrradianceAccum[brickIndex].z, quantized.z);
+    InterlockedAdd(brickIrradianceAccum[brickIndex].w, 1u);
 }
 #endif
 
@@ -1440,6 +1506,11 @@ void CSDiffuseTrace(uint3 dispatchThreadId : SV_DispatchThreadID)
         return;
     }
 
+    const uint InputSHUavIndex = InputSHVariancePackedIndices >> 16u;
+    const uint VarianceUavIndex = InputSHVariancePackedIndices & 0xFFFFu;
+    const uint blueNoiseSobolIndex = BlueNoisePackedIndices >> 16u;
+    const uint blueNoiseScramblingIndex = BlueNoisePackedIndices & 0xFFFFu;
+
     Texture2D depthTexture = ResourceDescriptorHeap[DepthIndex];
     Texture2D gbufferA = ResourceDescriptorHeap[GBufferAIndex];
     Texture3D<float> sdfAtlas = ResourceDescriptorHeap[SdfAtlasSrvIndex];
@@ -1466,7 +1537,9 @@ void CSDiffuseTrace(uint3 dispatchThreadId : SV_DispatchThreadID)
     const float3 worldPosition = mul(float4(viewPosition, 1.0f), ViewInverse).xyz;
 
     const float3 rayOrigin = worldPosition + normal * (VoxelSize * 2.0f);
-    const float3 traceDirection = SampleHemisphereCosine(Random2(pixel, FrameIndex), normal);
+    FBlueNoiseSobolSampler diffuseSampler = BlueNoiseSobolSamplerCreate(pixel, uint2(max(OutputWidth, 1u), max(OutputHeight, 1u)), FrameIndex);
+    const float2 Xi = BlueNoiseSobolSamplerRandomFloat2(diffuseSampler, blueNoiseSobolIndex, blueNoiseScramblingIndex);
+    const float3 traceDirection = SampleHemisphereCosine(Xi, normal);
     bool hit = false;
     const float3 irradiance = EvaluateSparseSdfGIRayRadiance(sdfAtlas, cascadeBrickMap, brickMetadata, brickRadiance, rayOrigin, traceDirection, hit);
 
@@ -1546,7 +1619,8 @@ void CSSpawnScreenProbes(uint3 dispatchThreadId : SV_DispatchThreadID)
     header.WorldPositionDepth = 0.0f.xxxx;
     header.NormalValid = 0.0f.xxxx;
     header.Pixel = bestPixel;
-    header.Padding = 0u.xx;
+    header.PrevProbeIndex = GetScreenProbeIndex(probeCoord);
+    header.PrevProbeValid = 0u;
     if (valid)
     {
         const float2 uv = (float2(bestPixel) + 0.5f.xx) / float2(max(OutputWidth, 1u), max(OutputHeight, 1u));
@@ -1555,6 +1629,29 @@ void CSSpawnScreenProbes(uint3 dispatchThreadId : SV_DispatchThreadID)
         const float3 normal = normalize(gbufferA.Load(int3(bestPixel, 0)).xyz * 2.0f - 1.0f);
         header.WorldPositionDepth = float4(worldPosition, bestDepth);
         header.NormalValid = float4(normal, 1.0f);
+
+        // Reproject this surface to its previous-frame screen tile so probe temporal
+        // accumulation survives camera motion. Same-tile when velocity is disabled/zero.
+        uint prevProbeIndex = GetScreenProbeIndex(probeCoord);
+        uint prevProbeValid = 1u;
+        if (VelocityIndex != 0xFFFFFFFFu)
+        {
+            Texture2D<float4> velocityTexture = ResourceDescriptorHeap[VelocityIndex];
+            const float3 velocityNdc = velocityTexture.Load(int3(bestPixel, 0)).xyz;
+            const float2 prevUv = float2(uv.x - velocityNdc.x * 0.5f, uv.y + velocityNdc.y * 0.5f);
+            if (all(prevUv >= 0.0f.xx) && all(prevUv <= 1.0f.xx))
+            {
+                const uint2 prevPixel = (uint2)(prevUv * float2(OutputWidth, OutputHeight));
+                const uint2 prevTile = min(prevPixel / max(ProbeTileSize, 1u), uint2(max(ProbeCountX, 1u) - 1u, max(ProbeCountY, 1u) - 1u));
+                prevProbeIndex = prevTile.x + prevTile.y * ProbeCountX;
+            }
+            else
+            {
+                prevProbeValid = 0u;
+            }
+        }
+        header.PrevProbeIndex = prevProbeIndex;
+        header.PrevProbeValid = prevProbeValid;
     }
 
     probeHeaders[GetScreenProbeIndex(probeCoord)] = header;
@@ -1656,17 +1753,16 @@ void CSTraceScreenProbes(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Gr
 
         FPackedSh resolvedSh = currentSh;
         float sampleCount = 1.0f;
-        if (ProbeHistoryValid != 0u)
+        if (ProbeHistoryValid != 0u && header.PrevProbeValid != 0u)
         {
             StructuredBuffer<FScreenProbeHistory> probeHistoryRead = ResourceDescriptorHeap[probeHistoryReadIndex];
-            const FScreenProbeHistory prev = probeHistoryRead[probeIndex];
+            const FScreenProbeHistory prev = probeHistoryRead[header.PrevProbeIndex];
             const float prevCount = prev.WorldPositionCount.w;
             const float prevDepth = prev.NormalDepth.w;
             const bool geometryMatch =
                 prevDepth > 0.0f &&
                 prevCount > 0.0f &&
                 dot(normalize(prev.NormalDepth.xyz), normalize(header.NormalValid.xyz)) > 0.9f &&
-                abs(prevDepth - header.WorldPositionDepth.w) <= max(prevDepth * 0.05f, 1e-4f) &&
                 length(prev.WorldPositionCount.xyz - header.WorldPositionDepth.xyz) <= VoxelSize * 4.0f;
             if (geometryMatch)
             {

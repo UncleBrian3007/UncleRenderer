@@ -270,6 +270,9 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIProbeDebugMode, 0u, 6u, { "SparseSdfGIProbeDebugMode" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIProbeTemporalReuse, { "SparseSdfGIProbeTemporalReuse" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIProbeSpawnJitter, { "SparseSdfGIProbeSpawnJitter" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIProbeMotionReproject, { "SparseSdfGIProbeMotionReproject" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIMultiBounce, { "SparseSdfGIMultiBounce" });
+    ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIMultiBounceStrength, 0.0f, { "SparseSdfGIMultiBounceStrength" });
     ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::AutoExposureKey, { "AutoExposureKey" });
     ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::AutoExposureMin, { "AutoExposureMin" });
     ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::AutoExposureMax, { "AutoExposureMax" });

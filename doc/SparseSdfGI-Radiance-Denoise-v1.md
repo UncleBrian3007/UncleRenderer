@@ -56,6 +56,8 @@ probe path는 SparseSdfGI debug mode가 `Off`일 때만 활성화된다. 기존 
 
 ray 방향(및 spawn jitter)은 ReSTIR GI와 **동일한 blue-noise Sobol 샘플러**(`BlueNoiseSobolSampler.hlsli`)를 쓴다. 기존 hash white-noise(`Random2`) 대신 저불일치 stratified 샘플을 써서 같은 ray 수에서 분산이 낮아지고 temporal 수렴이 빨라진다. 샘플러는 텍스처 인덱스를 파라미터로 받도록 통일했고(ReSTIR도 동일 호출), blue-noise 텍스처는 `FDeferredRenderer`가 소유한 것을 공유한다. probe당 ray `i`는 `SampleIndex=i`, 프레임 간에는 sampler가 pixel base를 골든비율로 shift해 decorrelate한다.
 
+screen probe를 끈 **per-pixel `CSDiffuseTrace`** front-end도 동일 blue-noise Sobol 샘플러를 쓴다(픽셀당 1 ray). SparseSdfGI의 모든 GI 샘플링이 `Random2` 없이 ReSTIR와 같은 샘플러로 통일됐다. 두 trace 경로 모두 root signature가 64-DWORD 한계라, blue-noise 인덱스 2개와 한 쌍의 기존 인덱스를 각각 `16:16` packed DWORD로 묶어 bindless 상수에 싣는다.
+
 - miss: sky radiance
 - hit: valid한 brick radiance cache 우선 사용
 - cache miss: direct-light bounce fallback
@@ -81,7 +83,8 @@ full-resolution pixel은 3x3 probe neighborhood에서 값을 모은다. interpol
 `bSparseSdfGIProbeTemporalReuse`가 켜지면 `CSTraceScreenProbes`가 probe SH를 프레임 간 누적한다. probe당 ray 수가 적어(16~32) 매 프레임 probe SH가 흔들리는데, 이를 probe 단계에서 평균내 떨림을 근본적으로 줄인다.
 
 - **persistent ring buffer**: `ProbeHistory`(`FScreenProbeHistory` = world pos + sample count + normal/depth + packed SH)를 frame-overlap-safe ring으로 둔다(brick radiance cache와 동일한 read=N-1 / write=N 슬롯 + fence 기반 `ProbeHistoryValid` 커밋).
-- **same-tile reprojection**: 현재 정적 cascade라 motion vector 없이 동일 tile 인덱스의 history를 읽는다. history의 world pos/normal/depth를 현재 probe와 비교해(`dot(normal) > 0.9`, depth 5%, plane 거리 ≤ `VoxelSize*4`) 불일치(=카메라 모션/disocclusion)면 reject하고 current로 리셋한다.
+- **motion-vector reprojection** (`bSparseSdfGIProbeMotionReproject`, ImGui "Probe Motion Reproject", 기본 on): spawn 패스가 대표 픽셀의 velocity를 샘플해 이전 프레임 screen tile을 찾고, 그 prev-probe-index를 probe header에 실어(trace b2가 만석이라 trace에 새 인덱스를 추가하지 않는다) trace가 해당 history와 블렌드한다. 카메라가 움직여도 temporal 누적이 유지된다. 끄거나 velocity≈0이면 same-tile로 동작. 화면 밖으로 reproject되면 history 무효(reset).
+- **geometry reject**: 어느 경로든 history의 world pos/normal/depth를 현재 probe와 비교해(`dot(normal) > 0.9`, depth 5%, plane 거리 ≤ `VoxelSize*4`) 불일치(=disocclusion/잘못된 reproject)면 reject하고 current로 리셋한다.
 - **누적**: `sampleCount = min(prevCount+1, 32)`, `alpha = max(1/sampleCount, 0.05)`로 `LerpSh(history, current, alpha)`. DC-only SH라 누적 후에도 per-pixel parity가 유지된다. variance는 `normalizedVariance / sampleCount`로 낮춰 denoiser가 수렴된 입력을 덜 blur하게 한다.
 - **무효화**: resize / tile size 변경 / screen-probe·temporal 토글 / SDF rebuild 시 history valid 플래그를 클리어한다.
 
@@ -114,7 +117,6 @@ saturate(probe ray luminance variance + (1 - interpolation confidence))
 ## Follow-Up Work
 
 - probe temporal이 켜졌을 때 double-temporal ghosting을 피하기 위한 source-aware denoiser temporal strength 조정.
-- camera motion 시 probe history reprojection을 위한 motion-vector 기반 reproject(현재는 same-tile + geometry reject).
 - geometry discontinuity를 위한 adaptive probe placement.
 - 비용 절감을 위한 separable final blur 변형.
 - screen-probe SH만으로 부족할 때에 한해 optional directional brick radiance cache 검토.

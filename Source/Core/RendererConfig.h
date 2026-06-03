@@ -134,6 +134,9 @@ struct FRendererConfig
     uint32_t SparseSdfGIProbeDebugMode = 0;
     bool bSparseSdfGIProbeTemporalReuse = false;
     bool bSparseSdfGIProbeSpawnJitter = false;
+    bool bSparseSdfGIProbeMotionReproject = true;
+    bool bSparseSdfGIMultiBounce = false;
+    float SparseSdfGIMultiBounceStrength = 1.0f;
     // Debug work caps to isolate the SparseSdfGI device-removed crash without rebuilding: lower these
     // to shrink GPU work. 0 disables the pass entirely. Default 0xFFFFFFFF = no cap (normal behavior).
     uint32_t SparseSdfGIDebugSolveGroupBudget = 0xFFFFFFFFu;

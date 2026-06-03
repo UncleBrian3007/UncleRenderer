@@ -164,8 +164,8 @@ namespace
         DirectX::XMFLOAT4 NormalValid{};
         uint32_t PixelX = 0;
         uint32_t PixelY = 0;
-        uint32_t Reserved0 = 0;
-        uint32_t Reserved1 = 0;
+        uint32_t PrevProbeIndex = 0;
+        uint32_t PrevProbeValid = 0;
     };
 
     FRGBufferDesc CreateScreenProbeHeaderDesc(uint32_t ProbeCount)
@@ -277,8 +277,8 @@ namespace
         uint32_t EnvironmentCubeIndex = UINT32_MAX;
         uint32_t LinearClampSamplerIndex = UINT32_MAX;
         uint32_t BrickRadianceSrvIndex = UINT32_MAX;
-        uint32_t InputSHUavIndex = UINT32_MAX;
-        uint32_t VarianceUavIndex = UINT32_MAX;
+        uint32_t InputSHVariancePackedIndices = 0u;
+        uint32_t BlueNoisePackedIndices = 0u;
     };
 
     struct FSparseSdfGIProbeSpawnBindlessConstants
@@ -289,6 +289,7 @@ namespace
         uint32_t JitterEnabled = 0u;
         uint32_t BlueNoiseSobolTextureIndex = UINT32_MAX;
         uint32_t BlueNoiseScramblingRankingTextureIndex = UINT32_MAX;
+        uint32_t VelocityIndex = UINT32_MAX;
     };
 
     struct FSparseSdfGIProbeTraceBindlessConstants
@@ -332,6 +333,14 @@ namespace
         uint32_t BrickRadianceAccumUavIndex = UINT32_MAX;
         uint32_t ShadowMaskIndex = UINT32_MAX;
         uint32_t ShadowMaskEnabled = 0u;
+        uint32_t BrickIrradianceReadIndex = UINT32_MAX;
+    };
+
+    struct FSparseSdfGIIrradianceAccumulateBindlessConstants
+    {
+        uint32_t DepthIndex = UINT32_MAX;
+        uint32_t DiffuseGIIndex = UINT32_MAX;
+        uint32_t BrickIrradianceAccumUavIndex = UINT32_MAX;
     };
 
     struct FSparseSdfGIRadianceResolveBindlessConstants
@@ -365,6 +374,7 @@ bool FSparseSdfGI::InitializePipelines(FDeferredRenderer& Owner, FDX12Device* De
         SolveBrickReferencesPipeline.Reset();
         RadianceClearPipeline.Reset();
         RadianceInjectPipeline.Reset();
+        IrradianceAccumulatePipeline.Reset();
         RadianceResolvePipeline.Reset();
         ProbeSpawnPipeline.Reset();
         ProbeTracePipeline.Reset();
@@ -398,6 +408,7 @@ void FSparseSdfGI::ApplyConfig(const FRendererConfig& Config)
     const bool bPreviousRadianceTemporalReuse = bEnableRadianceTemporalReuse;
     const bool bPreviousProbeTemporalReuse = bProbeTemporalReuse;
     const bool bPreviousUseScreenProbes = bUseScreenProbes;
+    const bool bPreviousMultiBounce = bMultiBounce;
     const uint32_t PreviousProbeTileSize = ProbeTileSize;
     const uint32_t NewCascadeCount = std::clamp(Config.SparseSdfGICascadeCount, 1u, 1u);
     const float NewBaseVoxelSize = Config.SparseSdfGIBaseVoxelSize;
@@ -426,6 +437,9 @@ void FSparseSdfGI::ApplyConfig(const FRendererConfig& Config)
     ProbeDebugMode = std::clamp(Config.SparseSdfGIProbeDebugMode, 0u, 6u);
     bProbeTemporalReuse = Config.bSparseSdfGIProbeTemporalReuse;
     bProbeSpawnJitter = Config.bSparseSdfGIProbeSpawnJitter;
+    bProbeMotionReproject = Config.bSparseSdfGIProbeMotionReproject;
+    bMultiBounce = Config.bSparseSdfGIMultiBounce;
+    MultiBounceStrength = (std::max)(0.0f, Config.SparseSdfGIMultiBounceStrength);
     MaxBrickTriangleReferences = NewMaxBrickTriangleReferences;
     DebugSolveGroupBudget = Config.SparseSdfGIDebugSolveGroupBudget;
     DebugEmitTriangleBudget = Config.SparseSdfGIDebugEmitTriangleBudget;
@@ -446,6 +460,12 @@ void FSparseSdfGI::ApplyConfig(const FRendererConfig& Config)
     {
         std::fill(ProbeHistoryValid.begin(), ProbeHistoryValid.end(), false);
         std::fill(PendingProbeHistoryWrite.begin(), PendingProbeHistoryWrite.end(), false);
+    }
+
+    if (bPreviousMultiBounce != bMultiBounce)
+    {
+        std::fill(BrickIrradianceHistoryValid.begin(), BrickIrradianceHistoryValid.end(), false);
+        std::fill(PendingBrickIrradianceWrite.begin(), PendingBrickIrradianceWrite.end(), false);
     }
 }
 
@@ -468,6 +488,16 @@ void FSparseSdfGI::OnFrameFenceSignaled(uint32_t FrameIndex)
         {
             BrickRadianceHistoryValid[Slot] = true;
             PendingBrickRadianceWrite[Slot] = false;
+        }
+    }
+
+    if (!BrickIrradiance.empty())
+    {
+        const uint32_t Slot = FrameIndex % static_cast<uint32_t>(BrickIrradiance.size());
+        if (Slot < PendingBrickIrradianceWrite.size() && Slot < BrickIrradianceHistoryValid.size() && PendingBrickIrradianceWrite[Slot])
+        {
+            BrickIrradianceHistoryValid[Slot] = true;
+            PendingBrickIrradianceWrite[Slot] = false;
         }
     }
 
@@ -494,6 +524,7 @@ void FSparseSdfGI::ImportPersistentResources(FDeferredPassContext& Context)
     Resources.ReferenceCountersHandle = {};
     Resources.OccupiedBrickListHandle = {};
     Resources.BrickRadianceAccumHandle = {};
+    Resources.BrickIrradianceAccumHandle = {};
     Resources.DiffuseGIInputSHHandle = {};
     Resources.DiffuseGIVarianceHandle = {};
     Resources.CascadeBrickMapHandle = ImportBindlessBuffer(Graph, "SparseSdfGI Cascade Brick Map", CascadeBrickMap);
@@ -507,6 +538,16 @@ void FSparseSdfGI::ImportPersistentResources(FDeferredPassContext& Context)
         CurrentBrickRadianceReadSlot = (Context.FrameIndex + FrameCount - 1u) % FrameCount;
         Resources.BrickRadianceReadHandle = ImportBindlessBuffer(Graph, "SparseSdfGI Brick Radiance Read", BrickRadiance[CurrentBrickRadianceReadSlot]);
         Resources.BrickRadianceWriteHandle = ImportBindlessBuffer(Graph, "SparseSdfGI Brick Radiance Write", BrickRadiance[CurrentBrickRadianceWriteSlot]);
+    }
+    Resources.BrickIrradianceReadHandle = {};
+    Resources.BrickIrradianceWriteHandle = {};
+    const uint32_t IrradianceFrameCount = static_cast<uint32_t>(BrickIrradiance.size());
+    if (IrradianceFrameCount > 0u)
+    {
+        CurrentBrickIrradianceWriteSlot = Context.FrameIndex % IrradianceFrameCount;
+        CurrentBrickIrradianceReadSlot = (Context.FrameIndex + IrradianceFrameCount - 1u) % IrradianceFrameCount;
+        Resources.BrickIrradianceReadHandle = ImportBindlessBuffer(Graph, "SparseSdfGI Brick Irradiance Read", BrickIrradiance[CurrentBrickIrradianceReadSlot]);
+        Resources.BrickIrradianceWriteHandle = ImportBindlessBuffer(Graph, "SparseSdfGI Brick Irradiance Write", BrickIrradiance[CurrentBrickIrradianceWriteSlot]);
     }
     Resources.ProbeHistoryReadHandle = {};
     Resources.ProbeHistoryWriteHandle = {};
@@ -542,6 +583,8 @@ void FSparseSdfGI::AddSdfUpdatePasses(FDeferredPassContext& Context) const
 
     std::fill(BrickRadianceHistoryValid.begin(), BrickRadianceHistoryValid.end(), false);
     std::fill(PendingBrickRadianceWrite.begin(), PendingBrickRadianceWrite.end(), false);
+    std::fill(BrickIrradianceHistoryValid.begin(), BrickIrradianceHistoryValid.end(), false);
+    std::fill(PendingBrickIrradianceWrite.begin(), PendingBrickIrradianceWrite.end(), false);
     std::fill(ProbeHistoryValid.begin(), ProbeHistoryValid.end(), false);
     std::fill(PendingProbeHistoryWrite.begin(), PendingProbeHistoryWrite.end(), false);
     AddReferenceBuildInitPass(Context);
@@ -585,6 +628,7 @@ void FSparseSdfGI::AddDiffuseGITracePasses(FDeferredPassContext& Context) const
     if (bUseScreenProbes && DebugMode == ESparseSdfGIDebugMode::Off)
     {
         AddScreenProbeGITracePasses(Context, BrickRadianceHandle);
+        AddIrradianceCacheUpdatePasses(Context);
         return;
     }
 
@@ -635,6 +679,8 @@ void FSparseSdfGI::AddDiffuseGITracePasses(FDeferredPassContext& Context) const
         DispatchOutputPass(Context, Cmd, Pipeline, Data.bEnabled, BrickRadianceHandle, Data.InputSHHandle, Data.VarianceHandle);
     });
 
+    AddIrradianceCacheUpdatePasses(Context);
+
     (void)Owner;
 }
 
@@ -684,6 +730,7 @@ bool FSparseSdfGI::CreatePipelines(FDX12Device* Device)
     std::vector<uint8_t> SolveBrickReferencesByteCode;
     std::vector<uint8_t> RadianceClearByteCode;
     std::vector<uint8_t> RadianceInjectByteCode;
+    std::vector<uint8_t> IrradianceAccumulateByteCode;
     std::vector<uint8_t> RadianceResolveByteCode;
     std::vector<uint8_t> ProbeSpawnByteCode;
     std::vector<uint8_t> ProbeTraceByteCode;
@@ -709,6 +756,10 @@ bool FSparseSdfGI::CreatePipelines(FDX12Device* Device)
         return false;
     }
     if (!RendererUtils::CompileComputeShader(Compiler, Device, ShaderPath, L"CSInjectBrickRadiance", RadianceInjectByteCode, { L"SPARSE_SDF_GI_RADIANCE_INJECT_SHADER=1" }))
+    {
+        return false;
+    }
+    if (!RendererUtils::CompileComputeShader(Compiler, Device, ShaderPath, L"CSAccumulateBrickIrradiance", IrradianceAccumulateByteCode, { L"SPARSE_SDF_GI_IRRADIANCE_ACCUM_SHADER=1" }))
     {
         return false;
     }
@@ -759,6 +810,7 @@ bool FSparseSdfGI::CreatePipelines(FDX12Device* Device)
         && CreateComputePso(SolveBrickReferencesByteCode, SolveBrickReferencesPipeline, "CSSolveBrickReferences")
         && CreateComputePso(RadianceClearByteCode, RadianceClearPipeline, "CSClearBrickRadianceAccum")
         && CreateComputePso(RadianceInjectByteCode, RadianceInjectPipeline, "CSInjectBrickRadiance")
+        && CreateComputePso(IrradianceAccumulateByteCode, IrradianceAccumulatePipeline, "CSAccumulateBrickIrradiance")
         && CreateComputePso(RadianceResolveByteCode, RadianceResolvePipeline, "CSResolveBrickRadianceTemporal")
         && CreateComputePso(ProbeSpawnByteCode, ProbeSpawnPipeline, "CSSpawnScreenProbes")
         && CreateComputePso(ProbeTraceByteCode, ProbeTracePipeline, "CSTraceScreenProbes")
@@ -836,6 +888,21 @@ bool FSparseSdfGI::CreateResources(FDX12Device* Device, uint32_t Width, uint32_t
             true);
     }
 
+    BrickIrradiance.resize(FrameCount);
+    BrickIrradianceHistoryValid.assign(FrameCount, false);
+    PendingBrickIrradianceWrite.assign(FrameCount, false);
+    for (uint32_t FrameIndex = 0u; FrameIndex < FrameCount; ++FrameIndex)
+    {
+        CreateBindlessBuffer(
+            Device,
+            L"SparseSdfGI_BrickIrradiance_Frame" + std::to_wstring(FrameIndex),
+            BrickRadianceDesc,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            BrickIrradiance[FrameIndex],
+            true,
+            true);
+    }
+
     ProbeHistoryCapacity = (std::max)(1u, AlignDispatch(Width, 4u) * AlignDispatch(Height, 4u));
     const FRGBufferDesc ProbeHistoryDesc = CreateScreenProbeHistoryDesc(ProbeHistoryCapacity);
     ProbeHistory.resize(FrameCount);
@@ -875,6 +942,7 @@ bool FSparseSdfGI::RefreshPersistentInputValidation()
         SolveBrickReferencesPipeline &&
         RadianceClearPipeline &&
         RadianceInjectPipeline &&
+        IrradianceAccumulatePipeline &&
         RadianceResolvePipeline &&
         ProbeSpawnPipeline &&
         ProbeTracePipeline &&
@@ -886,6 +954,11 @@ bool FSparseSdfGI::RefreshPersistentInputValidation()
         BrickMetadata.IsFullyBound() &&
         !BrickRadiance.empty() &&
         std::all_of(BrickRadiance.begin(), BrickRadiance.end(), [](const FBindlessBuffer& Buffer)
+        {
+            return Buffer.IsFullyBound();
+        }) &&
+        !BrickIrradiance.empty() &&
+        std::all_of(BrickIrradiance.begin(), BrickIrradiance.end(), [](const FBindlessBuffer& Buffer)
         {
             return Buffer.IsFullyBound();
         }) &&
@@ -975,6 +1048,8 @@ void FSparseSdfGI::InvalidateCache() const
     CachedStaticCandidateCount = 0;
     std::fill(BrickRadianceHistoryValid.begin(), BrickRadianceHistoryValid.end(), false);
     std::fill(PendingBrickRadianceWrite.begin(), PendingBrickRadianceWrite.end(), false);
+    std::fill(BrickIrradianceHistoryValid.begin(), BrickIrradianceHistoryValid.end(), false);
+    std::fill(PendingBrickIrradianceWrite.begin(), PendingBrickIrradianceWrite.end(), false);
 }
 
 void FSparseSdfGI::AddReferenceBuildInitPass(FDeferredPassContext& Context) const
@@ -1438,6 +1513,15 @@ void FSparseSdfGI::AddRadianceCachePasses(FDeferredPassContext& Context) const
     const FDeferredGBufferHandles GBufferHandles = Context.Resources.GBufferHandles;
     const FRGResourceHandle DepthHandle = Context.Resources.DepthHandle;
     const FRGResourceHandle ShadowMaskHandle = Context.Resources.RayTracingShadow.ShadowMaskHandle;
+    // Multi-bounce reads the world-space brick irradiance cache (previous frame's resolved GI per
+    // brick). The read slot is only valid once a previous frame's accumulate+resolve has committed.
+    const FRGBufferHandle ImportedBrickIrradianceReadHandle = Context.Resources.SparseSdfGI.BrickIrradianceReadHandle;
+    const bool bIrradianceReadSlotValid = CurrentBrickIrradianceReadSlot < BrickIrradianceHistoryValid.size() && BrickIrradianceHistoryValid[CurrentBrickIrradianceReadSlot];
+    const bool bMultiBounceReady = bMultiBounce && bIrradianceReadSlotValid && static_cast<bool>(ImportedBrickIrradianceReadHandle);
+    // Only feed the brick irradiance cache back once a previous frame's accumulate+resolve has
+    // committed it; an empty handle makes the inject pass skip multi-bounce (first frame, resize,
+    // SDF rebuild, toggle).
+    const FRGBufferHandle BrickIrradianceReadHandle = bMultiBounceReady ? ImportedBrickIrradianceReadHandle : FRGBufferHandle{};
     const FRGBufferHandle BrickRadianceReadHandle = Context.Resources.SparseSdfGI.BrickRadianceReadHandle;
     const FRGBufferHandle BrickRadianceWriteHandle = Context.Resources.SparseSdfGI.BrickRadianceWriteHandle;
     const bool bReadSlotValid = CurrentBrickRadianceReadSlot < BrickRadianceHistoryValid.size() && BrickRadianceHistoryValid[CurrentBrickRadianceReadSlot];
@@ -1514,13 +1598,15 @@ void FSparseSdfGI::AddRadianceCachePasses(FDeferredPassContext& Context) const
         bool bEnabled = false;
         FRGBufferHandle BrickRadianceAccumHandle{};
         FRGResourceHandle ShadowMaskHandle{};
+        FRGBufferHandle BrickIrradianceReadHandle{};
     };
 
-    Graph.AddPass<FRadianceInjectPassData>("SparseSdfGI Radiance Inject", [&, DepthHandle, ShadowMaskHandle, GBufferHandles](FRadianceInjectPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FRadianceInjectPassData>("SparseSdfGI Radiance Inject", [&, DepthHandle, ShadowMaskHandle, GBufferHandles, BrickIrradianceReadHandle](FRadianceInjectPassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("SparseSdfGI");
         Data.BrickRadianceAccumHandle = Context.Resources.SparseSdfGI.BrickRadianceAccumHandle;
         Data.ShadowMaskHandle = ShadowMaskHandle;
+        Data.BrickIrradianceReadHandle = BrickIrradianceReadHandle;
         Data.bEnabled = bEnabled
             && bPersistentInputsValid
             && DebugMode == ESparseSdfGIDebugMode::Off
@@ -1541,6 +1627,10 @@ void FSparseSdfGI::AddRadianceCachePasses(FDeferredPassContext& Context) const
         if (Data.ShadowMaskHandle)
         {
             Builder.ReadTexture(Data.ShadowMaskHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        }
+        if (Data.BrickIrradianceReadHandle)
+        {
+            Builder.ReadBuffer(Data.BrickIrradianceReadHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         }
         Builder.WriteBuffer(Data.BrickRadianceAccumHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         Builder.UavBarrier(Data.BrickRadianceAccumHandle);
@@ -1569,6 +1659,9 @@ void FSparseSdfGI::AddRadianceCachePasses(FDeferredPassContext& Context) const
             return;
         }
 
+        const uint32_t BrickIrradianceReadBufferIndex = Data.BrickIrradianceReadHandle ? Context.Graph.GetBufferSrvBindlessIndex(Data.BrickIrradianceReadHandle) : UINT32_MAX;
+        const bool bUseMultiBounce = bMultiBounce && IsValidBindlessIndex(BrickIrradianceReadBufferIndex);
+
         ID3D12GraphicsCommandList* CommandList = Cmd.GetCommandList();
         ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
         CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
@@ -1589,6 +1682,9 @@ void FSparseSdfGI::AddRadianceCachePasses(FDeferredPassContext& Context) const
         Constants.CascadeMin = Bounds.Min;
         Constants.VoxelSize = Bounds.VoxelSize;
         Constants.CascadeExtent = Bounds.Extent;
+        // Reuse the unused-by-inject BounceStrength field to carry the multi-bounce feedback gain
+        // (0 = direct-only single bounce).
+        Constants.BounceStrength = bUseMultiBounce ? MultiBounceStrength : 0.0f;
         CommandList->SetComputeRoot32BitConstants(1, sizeof(FSparseSdfGIConstants) / sizeof(uint32_t), &Constants, 0);
 
         const FSparseSdfGIRadianceInjectBindlessConstants Bindless =
@@ -1599,7 +1695,8 @@ void FSparseSdfGI::AddRadianceCachePasses(FDeferredPassContext& Context) const
             Owner.GBufferC.SrvBindlessIndex,
             BrickRadianceAccumUavIndex,
             bUseShadowMask ? ShadowMaskBindlessIndex : UINT32_MAX,
-            bUseShadowMask ? 1u : 0u
+            bUseShadowMask ? 1u : 0u,
+            bUseMultiBounce ? BrickIrradianceReadBufferIndex : UINT32_MAX
         };
         static_assert(sizeof(FSparseSdfGIRadianceInjectBindlessConstants) / sizeof(uint32_t) <= kSparseSdfGIMaxBindlessDwordCount);
         CommandList->SetComputeRoot32BitConstants(2, sizeof(FSparseSdfGIRadianceInjectBindlessConstants) / sizeof(uint32_t), &Bindless, 0);
@@ -1692,12 +1789,223 @@ void FSparseSdfGI::AddRadianceCachePasses(FDeferredPassContext& Context) const
     }
 }
 
+void FSparseSdfGI::AddIrradianceCacheUpdatePasses(FDeferredPassContext& Context) const
+{
+    if (!bMultiBounce)
+    {
+        return;
+    }
+
+    FRenderGraph& Graph = Context.Graph;
+    const FRGResourceHandle DepthHandle = Context.Resources.DepthHandle;
+    const FRGResourceHandle DiffuseGIHandle = Context.Resources.SparseSdfGI.DiffuseGIHandle;
+    const FRGBufferHandle BrickIrradianceReadHandle = Context.Resources.SparseSdfGI.BrickIrradianceReadHandle;
+    const FRGBufferHandle BrickIrradianceWriteHandle = Context.Resources.SparseSdfGI.BrickIrradianceWriteHandle;
+    const bool bReadSlotValid = CurrentBrickIrradianceReadSlot < BrickIrradianceHistoryValid.size() && BrickIrradianceHistoryValid[CurrentBrickIrradianceReadSlot];
+    const bool bWillUpdate = bEnabled
+        && bPersistentInputsValid
+        && DebugMode == ESparseSdfGIDebugMode::Off
+        && static_cast<bool>(DepthHandle)
+        && static_cast<bool>(DiffuseGIHandle)
+        && static_cast<bool>(BrickIrradianceReadHandle)
+        && static_cast<bool>(BrickIrradianceWriteHandle);
+
+    struct FIrradianceClearPassData
+    {
+        bool bEnabled = false;
+        FRGBufferHandle AccumHandle{};
+    };
+
+    Graph.AddPass<FIrradianceClearPassData>("SparseSdfGI Irradiance Clear", [&, bWillUpdate](FIrradianceClearPassData& Data, FRGPassBuilder& Builder)
+    {
+        Builder.SetPixGroup("SparseSdfGI");
+        Data.bEnabled = bWillUpdate;
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+        Data.AccumHandle = Builder.CreateBuffer("SparseSdfGI Brick Irradiance Accum", CreateBrickRadianceAccumDesc());
+        Context.Resources.SparseSdfGI.BrickIrradianceAccumHandle = Data.AccumHandle;
+        Builder.WriteBuffer(Data.AccumHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.UavBarrier(Data.AccumHandle);
+    }, [this, &Context](const FIrradianceClearPassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+        FDeferredRenderer& Owner = Context.Owner;
+        const uint32_t AccumUavIndex = Context.Graph.GetBufferUavBindlessIndex(Data.AccumHandle);
+        if (!AreAllBindlessIndicesValid(AccumUavIndex))
+        {
+            return;
+        }
+        ID3D12GraphicsCommandList* CommandList = Cmd.GetCommandList();
+        ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
+        CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        CommandList->SetComputeRootSignature(RootSignature.Get());
+        CommandList->SetPipelineState(RadianceClearPipeline.Get());
+        CommandList->SetComputeRootConstantBufferView(0, Owner.GetSceneConstantBufferAddress());
+        FSparseSdfGIConstants Constants = {};
+        Constants.OutputWidth = static_cast<uint32_t>(Owner.Viewport.Width);
+        Constants.OutputHeight = static_cast<uint32_t>(Owner.Viewport.Height);
+        Constants.AtlasResolution = kSparseSdfGIAtlasResolution;
+        Constants.BrickGridResolution = kSparseSdfGIBrickGridResolution;
+        Constants.BrickVoxelResolution = kSparseSdfGIBrickVoxelResolution;
+        Constants.CascadeCount = CascadeCount;
+        Constants.Enabled = bEnabled ? 1u : 0u;
+        CommandList->SetComputeRoot32BitConstants(1, sizeof(FSparseSdfGIConstants) / sizeof(uint32_t), &Constants, 0);
+        const FSparseSdfGIRadianceClearBindlessConstants Bindless = { AccumUavIndex };
+        static_assert(sizeof(FSparseSdfGIRadianceClearBindlessConstants) / sizeof(uint32_t) <= kSparseSdfGIMaxBindlessDwordCount);
+        CommandList->SetComputeRoot32BitConstants(2, sizeof(FSparseSdfGIRadianceClearBindlessConstants) / sizeof(uint32_t), &Bindless, 0);
+        CommandList->Dispatch(AlignDispatch(GetBrickMapElementCount(), 64u), 1u, 1u);
+    });
+
+    struct FIrradianceAccumulatePassData
+    {
+        bool bEnabled = false;
+        FRGBufferHandle AccumHandle{};
+    };
+
+    Graph.AddPass<FIrradianceAccumulatePassData>("SparseSdfGI Irradiance Accumulate", [&, DepthHandle, DiffuseGIHandle, bWillUpdate](FIrradianceAccumulatePassData& Data, FRGPassBuilder& Builder)
+    {
+        Builder.SetPixGroup("SparseSdfGI");
+        Data.AccumHandle = Context.Resources.SparseSdfGI.BrickIrradianceAccumHandle;
+        Data.bEnabled = bWillUpdate && static_cast<bool>(Data.AccumHandle);
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+        Builder.ReadTexture(DepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(DiffuseGIHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.WriteBuffer(Data.AccumHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.UavBarrier(Data.AccumHandle);
+    }, [this, &Context, DiffuseGIHandle](const FIrradianceAccumulatePassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+        FDeferredRenderer& Owner = Context.Owner;
+        const uint32_t DepthBindlessIndex = Owner.GetCurrentDepthSrvBindlessIndex();
+        const uint32_t DiffuseGIIndex = Context.Graph.GetTextureSrvBindlessIndex(DiffuseGIHandle);
+        const uint32_t AccumUavIndex = Context.Graph.GetBufferUavBindlessIndex(Data.AccumHandle);
+        if (!AreAllBindlessIndicesValid(DepthBindlessIndex, DiffuseGIIndex, AccumUavIndex))
+        {
+            return;
+        }
+        ID3D12GraphicsCommandList* CommandList = Cmd.GetCommandList();
+        ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
+        CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        CommandList->SetComputeRootSignature(RootSignature.Get());
+        CommandList->SetPipelineState(IrradianceAccumulatePipeline.Get());
+        CommandList->SetComputeRootConstantBufferView(0, Owner.GetSceneConstantBufferAddress());
+        const FCascadeBounds Bounds = ComputeCascadeBounds(Owner);
+        FSparseSdfGIConstants Constants = {};
+        Constants.OutputWidth = static_cast<uint32_t>(Owner.Viewport.Width);
+        Constants.OutputHeight = static_cast<uint32_t>(Owner.Viewport.Height);
+        Constants.AtlasResolution = kSparseSdfGIAtlasResolution;
+        Constants.BrickGridResolution = kSparseSdfGIBrickGridResolution;
+        Constants.BrickVoxelResolution = kSparseSdfGIBrickVoxelResolution;
+        Constants.CascadeCount = CascadeCount;
+        Constants.FrameIndex = static_cast<uint32_t>(Owner.GetFrameNumber());
+        Constants.Enabled = bEnabled ? 1u : 0u;
+        Constants.CascadeMin = Bounds.Min;
+        Constants.VoxelSize = Bounds.VoxelSize;
+        Constants.CascadeExtent = Bounds.Extent;
+        CommandList->SetComputeRoot32BitConstants(1, sizeof(FSparseSdfGIConstants) / sizeof(uint32_t), &Constants, 0);
+        const FSparseSdfGIIrradianceAccumulateBindlessConstants Bindless = { DepthBindlessIndex, DiffuseGIIndex, AccumUavIndex };
+        static_assert(sizeof(FSparseSdfGIIrradianceAccumulateBindlessConstants) / sizeof(uint32_t) <= kSparseSdfGIMaxBindlessDwordCount);
+        CommandList->SetComputeRoot32BitConstants(2, sizeof(FSparseSdfGIIrradianceAccumulateBindlessConstants) / sizeof(uint32_t), &Bindless, 0);
+        CommandList->Dispatch(
+            AlignDispatch(static_cast<uint32_t>(Owner.Viewport.Width), kSparseSdfGIGroupSize2D),
+            AlignDispatch(static_cast<uint32_t>(Owner.Viewport.Height), kSparseSdfGIGroupSize2D),
+            1u);
+    });
+
+    struct FIrradianceResolvePassData
+    {
+        bool bEnabled = false;
+        bool bHistoryValid = false;
+        FRGBufferHandle AccumHandle{};
+        FRGBufferHandle ReadHandle{};
+        FRGBufferHandle WriteHandle{};
+    };
+
+    Graph.AddPass<FIrradianceResolvePassData>("SparseSdfGI Irradiance Resolve", [&, BrickIrradianceReadHandle, BrickIrradianceWriteHandle, bReadSlotValid, bWillUpdate](FIrradianceResolvePassData& Data, FRGPassBuilder& Builder)
+    {
+        Builder.SetPixGroup("SparseSdfGI");
+        Data.AccumHandle = Context.Resources.SparseSdfGI.BrickIrradianceAccumHandle;
+        Data.ReadHandle = BrickIrradianceReadHandle;
+        Data.WriteHandle = BrickIrradianceWriteHandle;
+        Data.bHistoryValid = bReadSlotValid;
+        Data.bEnabled = bWillUpdate
+            && static_cast<bool>(Data.AccumHandle)
+            && static_cast<bool>(Data.ReadHandle)
+            && static_cast<bool>(Data.WriteHandle);
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+        Builder.ReadBuffer(Data.AccumHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadBuffer(Data.ReadHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.WriteBuffer(Data.WriteHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.UavBarrier(Data.WriteHandle);
+    }, [this, &Context](const FIrradianceResolvePassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+        FDeferredRenderer& Owner = Context.Owner;
+        const uint32_t AccumSrvIndex = Context.Graph.GetBufferSrvBindlessIndex(Data.AccumHandle);
+        const uint32_t HistorySrvIndex = Context.Graph.GetBufferSrvBindlessIndex(Data.ReadHandle);
+        const uint32_t UavIndex = Context.Graph.GetBufferUavBindlessIndex(Data.WriteHandle);
+        if (!AreAllBindlessIndicesValid(AccumSrvIndex, HistorySrvIndex, UavIndex))
+        {
+            return;
+        }
+        ID3D12GraphicsCommandList* CommandList = Cmd.GetCommandList();
+        ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
+        CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        CommandList->SetComputeRootSignature(RootSignature.Get());
+        CommandList->SetPipelineState(RadianceResolvePipeline.Get());
+        CommandList->SetComputeRootConstantBufferView(0, Owner.GetSceneConstantBufferAddress());
+        FSparseSdfGIConstants Constants = {};
+        Constants.OutputWidth = static_cast<uint32_t>(Owner.Viewport.Width);
+        Constants.OutputHeight = static_cast<uint32_t>(Owner.Viewport.Height);
+        Constants.AtlasResolution = kSparseSdfGIAtlasResolution;
+        Constants.BrickGridResolution = kSparseSdfGIBrickGridResolution;
+        Constants.BrickVoxelResolution = kSparseSdfGIBrickVoxelResolution;
+        Constants.CascadeCount = CascadeCount;
+        Constants.Enabled = bEnabled ? 1u : 0u;
+        CommandList->SetComputeRoot32BitConstants(1, sizeof(FSparseSdfGIConstants) / sizeof(uint32_t), &Constants, 0);
+        const FSparseSdfGIRadianceResolveBindlessConstants Bindless =
+        {
+            AccumSrvIndex,
+            HistorySrvIndex,
+            UavIndex,
+            Data.bHistoryValid ? 1u : 0u
+        };
+        static_assert(sizeof(FSparseSdfGIRadianceResolveBindlessConstants) / sizeof(uint32_t) <= kSparseSdfGIMaxBindlessDwordCount);
+        CommandList->SetComputeRoot32BitConstants(2, sizeof(FSparseSdfGIRadianceResolveBindlessConstants) / sizeof(uint32_t), &Bindless, 0);
+        CommandList->Dispatch(AlignDispatch(GetBrickMapElementCount(), 64u), 1u, 1u);
+    });
+
+    if (bWillUpdate && CurrentBrickIrradianceWriteSlot < PendingBrickIrradianceWrite.size())
+    {
+        PendingBrickIrradianceWrite[CurrentBrickIrradianceWriteSlot] = true;
+        BrickIrradianceHistoryValid[CurrentBrickIrradianceWriteSlot] = false;
+    }
+}
+
 void FSparseSdfGI::AddScreenProbeGITracePasses(FDeferredPassContext& Context, FRGBufferHandle BrickRadianceHandle) const
 {
     FDeferredRenderer& Owner = Context.Owner;
     FRenderGraph& Graph = Context.Graph;
     const FDeferredGBufferHandles GBufferHandles = Context.Resources.GBufferHandles;
     const FRGResourceHandle DepthHandle = Context.Resources.DepthHandle;
+    const FRGResourceHandle VelocityHandle = bProbeMotionReproject ? Context.Resources.VelocityHandle : FRGResourceHandle{};
     const FRGResourceHandle SdfAtlasHandle = Context.Resources.SparseSdfGI.SdfAtlasHandle;
     const FRGBufferHandle BrickMapHandle = Context.Resources.SparseSdfGI.CascadeBrickMapHandle;
     const FRGBufferHandle BrickMetadataHandle = Context.Resources.SparseSdfGI.BrickMetadataHandle;
@@ -1717,9 +2025,10 @@ void FSparseSdfGI::AddScreenProbeGITracePasses(FDeferredPassContext& Context, FR
     {
         bool bEnabled = false;
         FRGBufferHandle ProbeHeaderHandle{};
+        FRGResourceHandle VelocityHandle{};
     };
 
-    Graph.AddPass<FProbeSpawnPassData>("SparseSdfGI Probe Spawn", [&, DepthHandle, GBufferHandles](FProbeSpawnPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FProbeSpawnPassData>("SparseSdfGI Probe Spawn", [&, DepthHandle, GBufferHandles, VelocityHandle](FProbeSpawnPassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("SparseSdfGI");
         Data.bEnabled = bEnabled && bPersistentInputsValid && ProbeSpawnPipeline && DepthHandle && GBufferHandles[0];
@@ -1730,8 +2039,13 @@ void FSparseSdfGI::AddScreenProbeGITracePasses(FDeferredPassContext& Context, FR
 
         Data.ProbeHeaderHandle = Builder.CreateBuffer("SparseSdfGI Probe Headers", CreateScreenProbeHeaderDesc(ProbeCount));
         ProbeHeaderHandle = Data.ProbeHeaderHandle;
+        Data.VelocityHandle = VelocityHandle;
         Builder.ReadTexture(DepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        if (Data.VelocityHandle)
+        {
+            Builder.ReadTexture(Data.VelocityHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        }
         Builder.WriteBuffer(Data.ProbeHeaderHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     }, [this, &Context, ProbeCountX, ProbeCountY, TileSize](const FProbeSpawnPassData& Data, FDX12CommandContext& Cmd)
     {
@@ -1747,6 +2061,8 @@ void FSparseSdfGI::AddScreenProbeGITracePasses(FDeferredPassContext& Context, FR
         {
             return;
         }
+
+        const uint32_t VelocityBindlessIndex = Data.VelocityHandle ? Context.Graph.GetTextureSrvBindlessIndex(Data.VelocityHandle) : UINT32_MAX;
 
         ID3D12GraphicsCommandList* CommandList = Cmd.GetCommandList();
         ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
@@ -1774,7 +2090,8 @@ void FSparseSdfGI::AddScreenProbeGITracePasses(FDeferredPassContext& Context, FR
             ProbeHeaderUavIndex,
             bProbeSpawnJitter ? 1u : 0u,
             Owner.BlueNoiseSobolTexture.SrvBindlessIndex,
-            Owner.BlueNoiseScramblingRanking1SPPTexture.SrvBindlessIndex
+            Owner.BlueNoiseScramblingRanking1SPPTexture.SrvBindlessIndex,
+            VelocityBindlessIndex
         };
         static_assert(sizeof(FSparseSdfGIProbeSpawnBindlessConstants) / sizeof(uint32_t) <= kSparseSdfGIMaxBindlessDwordCount);
         CommandList->SetComputeRoot32BitConstants(2, sizeof(FSparseSdfGIProbeSpawnBindlessConstants) / sizeof(uint32_t), &Bindless, 0);
@@ -2031,6 +2348,8 @@ void FSparseSdfGI::DispatchOutputPass(FDeferredPassContext& Context, FDX12Comman
     const uint32_t InputSHUavIndex = InputSHHandle ? Context.Graph.GetTextureUavBindlessIndex(InputSHHandle) : UINT32_MAX;
     const uint32_t VarianceUavIndex = VarianceHandle ? Context.Graph.GetTextureUavBindlessIndex(VarianceHandle) : UINT32_MAX;
     const uint32_t BrickRadianceSrvIndex = Context.Graph.GetBufferSrvBindlessIndex(BrickRadianceHandle);
+    const uint32_t BlueNoiseSobolIndex = Owner.BlueNoiseSobolTexture.SrvBindlessIndex;
+    const uint32_t BlueNoiseScramblingIndex = Owner.BlueNoiseScramblingRanking1SPPTexture.SrvBindlessIndex;
     const bool bInputsValid = AreAllBindlessIndicesValid(
         DepthBindlessIndex,
         Owner.GBufferA.SrvBindlessIndex,
@@ -2040,7 +2359,9 @@ void FSparseSdfGI::DispatchOutputPass(FDeferredPassContext& Context, FDX12Comman
         CascadeBrickMap.SrvBindlessIndex,
         BrickMetadata.SrvBindlessIndex,
         BrickRadianceSrvIndex,
-        DiffuseGI.UavBindlessIndex);
+        DiffuseGI.UavBindlessIndex,
+        BlueNoiseSobolIndex,
+        BlueNoiseScramblingIndex);
     const bool bDenoiserOutputsValid = (DebugMode != ESparseSdfGIDebugMode::Off) || AreAllBindlessIndicesValid(InputSHUavIndex, VarianceUavIndex);
     if (!bInputsValid)
     {
@@ -2090,8 +2411,8 @@ void FSparseSdfGI::DispatchOutputPass(FDeferredPassContext& Context, FDX12Comman
         EnvironmentCubeIndex,
         LinearClampSamplerIndex,
         BrickRadianceSrvIndex,
-        InputSHUavIndex,
-        VarianceUavIndex
+        (InputSHUavIndex << 16) | (VarianceUavIndex & 0xFFFFu),
+        (BlueNoiseSobolIndex << 16) | (BlueNoiseScramblingIndex & 0xFFFFu)
     };
     static_assert(sizeof(FSparseSdfGITraceBindlessConstants) / sizeof(uint32_t) <= kSparseSdfGIMaxBindlessDwordCount);
     CommandList->SetComputeRoot32BitConstants(2, sizeof(FSparseSdfGITraceBindlessConstants) / sizeof(uint32_t), &Bindless, 0);

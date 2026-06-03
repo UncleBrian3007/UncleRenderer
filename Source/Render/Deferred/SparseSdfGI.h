@@ -39,6 +39,9 @@ struct FSparseSdfGIFrameResources
     FRGBufferHandle BrickRadianceReadHandle{};
     FRGBufferHandle BrickRadianceWriteHandle{};
     FRGBufferHandle BrickRadianceAccumHandle{};
+    FRGBufferHandle BrickIrradianceReadHandle{};
+    FRGBufferHandle BrickIrradianceWriteHandle{};
+    FRGBufferHandle BrickIrradianceAccumHandle{};
     FRGBufferHandle ProbeHistoryReadHandle{};
     FRGBufferHandle ProbeHistoryWriteHandle{};
     FRGResourceHandle DiffuseGIHandle{};
@@ -84,6 +87,7 @@ private:
     void AddSectionReferenceEmitPass(FDeferredPassContext& Context, const FObject& Object, FMeshSection& Section, uint32_t DrawSectionIndex) const;
     void AddSolveBrickReferencesPass(FDeferredPassContext& Context) const;
     void AddRadianceCachePasses(FDeferredPassContext& Context) const;
+    void AddIrradianceCacheUpdatePasses(FDeferredPassContext& Context) const;
     void AddScreenProbeGITracePasses(FDeferredPassContext& Context, FRGBufferHandle BrickRadianceHandle) const;
     void DispatchOutputPass(FDeferredPassContext& Context, FDX12CommandContext& Cmd, ID3D12PipelineState* PipelineState, bool bPassEnabled, FRGBufferHandle BrickRadianceHandle, FRGResourceHandle InputSHHandle, FRGResourceHandle VarianceHandle) const;
 
@@ -103,6 +107,9 @@ private:
     uint32_t ProbeDebugMode = 0;
     bool bProbeTemporalReuse = false;
     bool bProbeSpawnJitter = false;
+    bool bProbeMotionReproject = true;
+    bool bMultiBounce = false;
+    float MultiBounceStrength = 1.0f;
     uint32_t MaxBrickTriangleReferences = 8u * 1024u * 1024u;
     uint32_t DebugSolveGroupBudget = 0xFFFFFFFFu;
     uint32_t DebugEmitTriangleBudget = 0xFFFFFFFFu;
@@ -116,6 +123,10 @@ private:
     mutable uint32_t CurrentBrickRadianceWriteSlot = 0;
     mutable std::vector<bool> BrickRadianceHistoryValid;
     mutable std::vector<bool> PendingBrickRadianceWrite;
+    mutable uint32_t CurrentBrickIrradianceReadSlot = 0;
+    mutable uint32_t CurrentBrickIrradianceWriteSlot = 0;
+    mutable std::vector<bool> BrickIrradianceHistoryValid;
+    mutable std::vector<bool> PendingBrickIrradianceWrite;
     mutable uint32_t CurrentProbeHistoryReadSlot = 0;
     mutable uint32_t CurrentProbeHistoryWriteSlot = 0;
     mutable std::vector<bool> ProbeHistoryValid;
@@ -129,6 +140,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RadianceClearPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RadianceInjectPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RadianceResolvePipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> IrradianceAccumulatePipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ProbeSpawnPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ProbeTracePipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ProbeInterpolatePipeline;
@@ -139,6 +151,7 @@ private:
     FBindlessBuffer CascadeBrickMap;
     FBindlessBuffer BrickMetadata;
     std::vector<FBindlessBuffer> BrickRadiance;
+    std::vector<FBindlessBuffer> BrickIrradiance;
     std::vector<FBindlessBuffer> ProbeHistory;
     FBindlessTexture DiffuseGI;
 };

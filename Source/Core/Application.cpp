@@ -2116,6 +2116,21 @@ void FApplication::RenderUI()
                 SyncDeferredSparseSdfGIConfig();
             }
 
+            if (ImGui::Checkbox("SDF GI Multi-Bounce", &RendererConfig.bSparseSdfGIMultiBounce))
+            {
+                UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIMultiBounce", RendererConfig.bSparseSdfGIMultiBounce ? "true" : "false");
+                SyncDeferredSparseSdfGIConfig();
+            }
+            if (RendererConfig.bSparseSdfGIMultiBounce)
+            {
+                if (ImGui::SliderFloat("Multi-Bounce Strength", &RendererConfig.SparseSdfGIMultiBounceStrength, 0.0f, 2.0f, "%.2f"))
+                {
+                    RendererConfig.SparseSdfGIMultiBounceStrength = (std::max)(RendererConfig.SparseSdfGIMultiBounceStrength, 0.0f);
+                    UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIMultiBounceStrength", std::to_string(RendererConfig.SparseSdfGIMultiBounceStrength));
+                    SyncDeferredSparseSdfGIConfig();
+                }
+            }
+
             if (ImGui::Checkbox("Screen Probes", &RendererConfig.bSparseSdfGIUseScreenProbes))
             {
                 UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIUseScreenProbes", RendererConfig.bSparseSdfGIUseScreenProbes ? "true" : "false");
@@ -2161,6 +2176,12 @@ void FApplication::RenderUI()
                 if (ImGui::Checkbox("Probe Spawn Jitter", &RendererConfig.bSparseSdfGIProbeSpawnJitter))
                 {
                     UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIProbeSpawnJitter", RendererConfig.bSparseSdfGIProbeSpawnJitter ? "true" : "false");
+                    SyncDeferredSparseSdfGIConfig();
+                }
+
+                if (ImGui::Checkbox("Probe Motion Reproject", &RendererConfig.bSparseSdfGIProbeMotionReproject))
+                {
+                    UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIProbeMotionReproject", RendererConfig.bSparseSdfGIProbeMotionReproject ? "true" : "false");
                     SyncDeferredSparseSdfGIConfig();
                 }
             }
