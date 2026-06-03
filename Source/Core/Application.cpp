@@ -564,6 +564,10 @@ bool FApplication::RenderFrame()
     }
 
     const uint64 FenceValue = Device->GetGraphicsQueue()->Signal();
+    // Stamp this frame's released transient pool resources / bindless descriptors with the real
+    // completion fence now that it is known, so the next overlapping frame cannot recycle a buffer or
+    // descriptor while this frame's GPU work is still using it.
+    FRenderGraph::FinalizeReleasedTransientFences(Device.get(), FenceValue);
     if (!RendererConfig.bEnableFrameOverlap)
     {
         Device->GetGraphicsQueue()->Wait(FenceValue);

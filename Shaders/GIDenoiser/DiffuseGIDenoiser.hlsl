@@ -443,7 +443,7 @@ void CSFinalBlur(uint3 DispatchThreadId : SV_DispatchThreadID)
     }
 
     Texture2D<uint4> TemporalSH = ResourceDescriptorHeap[TemporalSHIndex];
-    Texture2D<uint> HistoryCount = ResourceDescriptorHeap[OutHistoryCountIndex];
+    Texture2D<uint> HistoryCount = ResourceDescriptorHeap[HistoryCountIndex];
     Texture2D<float> LinearDepthTexture = ResourceDescriptorHeap[CurrentLinearDepthIndex];
     Texture2D<float4> GBufferA = ResourceDescriptorHeap[GBufferAIndex];
 

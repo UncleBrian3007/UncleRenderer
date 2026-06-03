@@ -12,6 +12,8 @@
 
 std::vector<FRenderGraph::FPooledTexture> FRenderGraph::TexturePool;
 std::vector<FRenderGraph::FPooledBuffer> FRenderGraph::BufferPool;
+std::vector<int32> FRenderGraph::PendingReleaseBufferPoolIndices;
+std::vector<int32> FRenderGraph::PendingReleaseTexturePoolIndices;
 std::unordered_map<uint32, FRenderGraph::FGpuTimingData> FRenderGraph::PendingGpuTimings;
 std::unordered_map<uint32, FRenderGraph::FGpuTimingResources> FRenderGraph::GpuTimingResources;
 
@@ -1251,18 +1253,20 @@ void FRenderGraph::ReleaseTransientTexture(FRGTextureResource& Texture)
     Pooled.CurrentState = Texture.CurrentState;
     Pooled.bInUse = false;
     Pooled.LastUseFrame = CurrentFrameIndex;
-    Pooled.LastFenceValue = CurrentFrameFenceValue;
+    // Hold as in-flight until FinalizeReleasedTransientFences stamps the real completion fence.
+    Pooled.LastFenceValue = kTransientReleasePendingFence;
+    PendingReleaseTexturePoolIndices.push_back(Texture.PoolIndex);
     if (Device)
     {
-        Device->RetireTransientBindlessDescriptorIndex(Texture.DefaultSrvBindlessIndex, CurrentFrameFenceValue);
-        Device->RetireTransientBindlessDescriptorIndex(Texture.DefaultUavBindlessIndex, CurrentFrameFenceValue);
+        Device->RetireTransientBindlessDescriptorIndex(Texture.DefaultSrvBindlessIndex, kTransientReleasePendingFence);
+        Device->RetireTransientBindlessDescriptorIndex(Texture.DefaultUavBindlessIndex, kTransientReleasePendingFence);
         for (uint32 Index : Texture.MipSrvBindlessIndices)
         {
-            Device->RetireTransientBindlessDescriptorIndex(Index, CurrentFrameFenceValue);
+            Device->RetireTransientBindlessDescriptorIndex(Index, kTransientReleasePendingFence);
         }
         for (uint32 Index : Texture.MipUavBindlessIndices)
         {
-            Device->RetireTransientBindlessDescriptorIndex(Index, CurrentFrameFenceValue);
+            Device->RetireTransientBindlessDescriptorIndex(Index, kTransientReleasePendingFence);
         }
     }
     Texture.DefaultSrvBindlessIndex = UINT32_MAX;
@@ -1288,11 +1292,13 @@ void FRenderGraph::ReleaseTransientBuffer(FRGBufferResource& Buffer)
     Pooled.CurrentState = Buffer.CurrentState;
     Pooled.bInUse = false;
     Pooled.LastUseFrame = CurrentFrameIndex;
-    Pooled.LastFenceValue = CurrentFrameFenceValue;
+    // Hold as in-flight until FinalizeReleasedTransientFences stamps the real completion fence.
+    Pooled.LastFenceValue = kTransientReleasePendingFence;
+    PendingReleaseBufferPoolIndices.push_back(Buffer.PoolIndex);
     if (Device)
     {
-        Device->RetireTransientBindlessDescriptorIndex(Buffer.DefaultSrvBindlessIndex, CurrentFrameFenceValue);
-        Device->RetireTransientBindlessDescriptorIndex(Buffer.DefaultUavBindlessIndex, CurrentFrameFenceValue);
+        Device->RetireTransientBindlessDescriptorIndex(Buffer.DefaultSrvBindlessIndex, kTransientReleasePendingFence);
+        Device->RetireTransientBindlessDescriptorIndex(Buffer.DefaultUavBindlessIndex, kTransientReleasePendingFence);
     }
     Buffer.DefaultSrvBindlessIndex = UINT32_MAX;
     Buffer.DefaultUavBindlessIndex = UINT32_MAX;
@@ -1300,6 +1306,34 @@ void FRenderGraph::ReleaseTransientBuffer(FRGBufferResource& Buffer)
     Buffer.DefaultUavViewResource = nullptr;
     Buffer.Resource = nullptr;
     Buffer.PoolIndex = -1;
+}
+
+void FRenderGraph::FinalizeReleasedTransientFences(FDX12Device* InDevice, uint64 FrameCompletionFenceValue)
+{
+    for (int32 PoolIndex : PendingReleaseBufferPoolIndices)
+    {
+        if (PoolIndex >= 0 && PoolIndex < static_cast<int32>(BufferPool.size())
+            && BufferPool[PoolIndex].LastFenceValue == kTransientReleasePendingFence)
+        {
+            BufferPool[PoolIndex].LastFenceValue = FrameCompletionFenceValue;
+        }
+    }
+    PendingReleaseBufferPoolIndices.clear();
+
+    for (int32 PoolIndex : PendingReleaseTexturePoolIndices)
+    {
+        if (PoolIndex >= 0 && PoolIndex < static_cast<int32>(TexturePool.size())
+            && TexturePool[PoolIndex].LastFenceValue == kTransientReleasePendingFence)
+        {
+            TexturePool[PoolIndex].LastFenceValue = FrameCompletionFenceValue;
+        }
+    }
+    PendingReleaseTexturePoolIndices.clear();
+
+    if (InDevice)
+    {
+        InDevice->FinalizeRetiredTransientDescriptorFences(FrameCompletionFenceValue);
+    }
 }
 
 uint32 FRenderGraph::GetTextureViewBindlessIndex(FRGTextureResource& Texture, bool bUav)

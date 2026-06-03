@@ -61,6 +61,9 @@ public:
     uint32_t             CreateBindlessUav(ID3D12Resource* Resource, ID3D12Resource* Counter, const D3D12_UNORDERED_ACCESS_VIEW_DESC& Desc);
     uint32_t             AllocateTransientBindlessDescriptorIndex();
     void                 RetireTransientBindlessDescriptorIndex(uint32_t Index, uint64_t FenceValue);
+    // Stamp transient descriptors retired with the pending sentinel fence (UINT64_MAX) with the
+    // frame's real completion fence, so they are not reclaimed before the frame's GPU work finishes.
+    void                 FinalizeRetiredTransientDescriptorFences(uint64_t FrameCompletionFenceValue);
     void                 PumpTransientBindlessDescriptorReclaim();
     void                 ResetBindlessDescriptorFrameStats();
     void                 SetLiveTransientBindlessOwnerTrackingEnabled(bool bEnabled);

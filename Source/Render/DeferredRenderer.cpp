@@ -677,7 +677,10 @@ bool FDeferredRenderer::InitializeEnvironmentAndDescriptorResources(FDX12Device*
         return false;
     }
     BlueNoiseSobolTexture->SetName(L"BlueNoiseSobol");
-    InitializeBindlessTexture(BlueNoiseSobolTexture, BuildTextureDescFromResource(BlueNoiseSobolTexture.Get()), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    // Static read-only texture sampled from both pixel and compute passes (e.g. SparseSdfGI probe
+    // trace). Keep it in the combined shader-resource state so compute reads are valid; otherwise it
+    // stays pixel-shader-only and compute dispatches hit an incompatible-layout fault on AMD.
+    InitializeBindlessTexture(BlueNoiseSobolTexture, BuildTextureDescFromResource(BlueNoiseSobolTexture.Get()), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     WriteOrCreateBindlessTextureSrv(Device, BlueNoiseSobolTexture);
 
     if (!TextureLoader->LoadOrDefault(L"Assets/Textures/BlueNoise/scrambling_ranking_128x128_2d_1spp.png", BlueNoiseScramblingRanking1SPPTexture.Resource))
@@ -686,8 +689,23 @@ bool FDeferredRenderer::InitializeEnvironmentAndDescriptorResources(FDX12Device*
         return false;
     }
     BlueNoiseScramblingRanking1SPPTexture->SetName(L"BlueNoiseScramblingRanking1SPP");
-    InitializeBindlessTexture(BlueNoiseScramblingRanking1SPPTexture, BuildTextureDescFromResource(BlueNoiseScramblingRanking1SPPTexture.Get()), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    InitializeBindlessTexture(BlueNoiseScramblingRanking1SPPTexture, BuildTextureDescFromResource(BlueNoiseScramblingRanking1SPPTexture.Get()), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     WriteOrCreateBindlessTextureSrv(Device, BlueNoiseScramblingRanking1SPPTexture);
+
+    // The texture loader leaves these in PIXEL_SHADER_RESOURCE, but they are sampled from compute
+    // passes (SparseSdfGI probe trace, RestirGI) and are never imported into the render graph, so no
+    // transition is otherwise issued. Move the actual resources to the combined read state to match
+    // the recorded state above; without this, compute dispatches fault with an incompatible layout.
+    {
+        constexpr D3D12_RESOURCE_STATES BlueNoiseReadState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        FDX12CommandContext BlueNoiseBarrierContext;
+        BlueNoiseBarrierContext.Initialize(Device, Device->GetGraphicsQueue(), 1);
+        BlueNoiseBarrierContext.BeginFrame(0);
+        BlueNoiseBarrierContext.TransitionResource(BlueNoiseSobolTexture.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, BlueNoiseReadState);
+        BlueNoiseBarrierContext.TransitionResource(BlueNoiseScramblingRanking1SPPTexture.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, BlueNoiseReadState);
+        BlueNoiseBarrierContext.CloseAndExecute();
+        BlueNoiseBarrierContext.GetQueue()->Flush();
+    }
 
     if (!CreateSceneTextures(Device, World))
     {

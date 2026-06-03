@@ -157,6 +157,15 @@ public:
     // ID3D12 objects do not survive into the DXGI process-termination report.
     static void ReleaseStaticGpuResources();
 
+    // Transient pool resources and bindless descriptors released during a frame's graph execution are
+    // tagged "in flight" (sentinel fence) so they cannot be reused until this method stamps them with
+    // the frame's actual completion fence. Must be called once per frame after the frame's command
+    // list has been submitted and signaled (when the real completion fence value is known). Using the
+    // estimate computed at Execute start is too low when extra signals occur before submission, which
+    // lets the next overlapping frame recycle a buffer the current frame's GPU is still reading.
+    static constexpr uint64 kTransientReleasePendingFence = UINT64_MAX;
+    static void FinalizeReleasedTransientFences(FDX12Device* InDevice, uint64 FrameCompletionFenceValue);
+
 private:
     template <typename HandleType>
     struct TRGUsage
@@ -282,6 +291,11 @@ private:
     };
 
     static std::vector<FPooledBuffer> BufferPool;
+
+    // Pool indices released this frame, awaiting FinalizeReleasedTransientFences to stamp the real
+    // completion fence (they hold the sentinel fence until then so they are not reused early).
+    static std::vector<int32> PendingReleaseBufferPoolIndices;
+    static std::vector<int32> PendingReleaseTexturePoolIndices;
 
     struct FGpuTimingData
     {

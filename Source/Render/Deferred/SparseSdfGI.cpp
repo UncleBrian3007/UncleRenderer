@@ -277,8 +277,8 @@ namespace
         uint32_t EnvironmentCubeIndex = UINT32_MAX;
         uint32_t LinearClampSamplerIndex = UINT32_MAX;
         uint32_t BrickRadianceSrvIndex = UINT32_MAX;
-        uint32_t InputSHVariancePackedIndices = 0u;
-        uint32_t BlueNoisePackedIndices = 0u;
+        uint32_t InputSHUavIndex = UINT32_MAX;
+        uint32_t VarianceUavIndex = UINT32_MAX;
     };
 
     struct FSparseSdfGIProbeSpawnBindlessConstants
@@ -303,8 +303,8 @@ namespace
         uint32_t ProbeHeaderSrvIndex = UINT32_MAX;
         uint32_t ProbeSHUavIndex = UINT32_MAX;
         uint32_t ProbeVarianceUavIndex = UINT32_MAX;
-        uint32_t ProbeHistoryPackedIndices = 0u;
-        uint32_t BlueNoisePackedIndices = 0u;
+        uint32_t ProbeHistoryReadSrvIndex = UINT32_MAX;
+        uint32_t ProbeHistoryWriteUavIndex = UINT32_MAX;
     };
 
     struct FSparseSdfGIProbeInterpolateBindlessConstants
@@ -674,8 +674,10 @@ void FSparseSdfGI::AddDiffuseGITracePasses(FDeferredPassContext& Context) const
             Builder.WriteTexture(Data.InputSHHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             Builder.WriteTexture(Data.VarianceHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         }
-    }, [&, Pipeline](const FOutputPassData& Data, FDX12CommandContext& Cmd)
+    }, [&, Pipeline, BrickRadianceHandle](const FOutputPassData& Data, FDX12CommandContext& Cmd)
     {
+        // BrickRadianceHandle must be captured by value: it is a local of AddDiffuseGITracePasses,
+        // and this executor lambda runs during graph execution after that function has returned.
         DispatchOutputPass(Context, Cmd, Pipeline, Data.bEnabled, BrickRadianceHandle, Data.InputSHHandle, Data.VarianceHandle);
     });
 
@@ -2204,6 +2206,8 @@ void FSparseSdfGI::AddScreenProbeGITracePasses(FDeferredPassContext& Context, FR
         Constants.ProbeRaysPerProbe = std::clamp(ProbeRaysPerProbe, 4u, 64u);
         Constants.ProbeDebugMode = ProbeDebugMode;
         Constants.ProbeHistoryValid = Data.bHistoryValid ? 1u : 0u;
+        Constants.TrianglePoolCapacity = BlueNoiseSobolIndex;
+        Constants.BuildWorkOffset = BlueNoiseScramblingIndex;
         CommandList->SetComputeRoot32BitConstants(1, sizeof(FSparseSdfGIConstants) / sizeof(uint32_t), &Constants, 0);
 
         const FSparseSdfGIProbeTraceBindlessConstants Bindless =
@@ -2217,8 +2221,8 @@ void FSparseSdfGI::AddScreenProbeGITracePasses(FDeferredPassContext& Context, FR
             ProbeHeaderSrvIndex,
             ProbeSHUavIndex,
             ProbeVarianceUavIndex,
-            (ProbeHistoryReadSrvIndex << 16) | (ProbeHistoryWriteUavIndex & 0xFFFFu),
-            (BlueNoiseSobolIndex << 16) | (BlueNoiseScramblingIndex & 0xFFFFu)
+            ProbeHistoryReadSrvIndex,
+            ProbeHistoryWriteUavIndex
         };
         static_assert(sizeof(FSparseSdfGIProbeTraceBindlessConstants) / sizeof(uint32_t) <= kSparseSdfGIMaxBindlessDwordCount);
         CommandList->SetComputeRoot32BitConstants(2, sizeof(FSparseSdfGIProbeTraceBindlessConstants) / sizeof(uint32_t), &Bindless, 0);
@@ -2398,6 +2402,8 @@ void FSparseSdfGI::DispatchOutputPass(FDeferredPassContext& Context, FDX12Comman
     Constants.VoxelSize = Bounds.VoxelSize;
     Constants.CascadeExtent = Bounds.Extent;
     Constants.SurfaceThicknessVoxels = kSparseSdfGISurfaceThicknessVoxels;
+    Constants.TrianglePoolCapacity = BlueNoiseSobolIndex;
+    Constants.BuildWorkOffset = BlueNoiseScramblingIndex;
     CommandList->SetComputeRoot32BitConstants(1, sizeof(FSparseSdfGIConstants) / sizeof(uint32_t), &Constants, 0);
 
     const FSparseSdfGITraceBindlessConstants Bindless =
@@ -2411,8 +2417,8 @@ void FSparseSdfGI::DispatchOutputPass(FDeferredPassContext& Context, FDX12Comman
         EnvironmentCubeIndex,
         LinearClampSamplerIndex,
         BrickRadianceSrvIndex,
-        (InputSHUavIndex << 16) | (VarianceUavIndex & 0xFFFFu),
-        (BlueNoiseSobolIndex << 16) | (BlueNoiseScramblingIndex & 0xFFFFu)
+        InputSHUavIndex,
+        VarianceUavIndex
     };
     static_assert(sizeof(FSparseSdfGITraceBindlessConstants) / sizeof(uint32_t) <= kSparseSdfGIMaxBindlessDwordCount);
     CommandList->SetComputeRoot32BitConstants(2, sizeof(FSparseSdfGITraceBindlessConstants) / sizeof(uint32_t), &Bindless, 0);

@@ -669,6 +669,18 @@ void FDX12Device::PumpTransientBindlessDescriptorReclaim()
     ReclaimTransientBindlessDescriptorIndicesLocked(CompletedFenceValue);
 }
 
+void FDX12Device::FinalizeRetiredTransientDescriptorFences(uint64_t FrameCompletionFenceValue)
+{
+    std::lock_guard<std::mutex> Lock(TransientBindlessDescriptorMutex);
+    for (FRetiredBindlessDescriptor& Retired : RetiredTransientBindlessDescriptorIndices)
+    {
+        if (Retired.FenceValue == UINT64_MAX)
+        {
+            Retired.FenceValue = FrameCompletionFenceValue;
+        }
+    }
+}
+
 void FDX12Device::ResetBindlessDescriptorFrameStats()
 {
 #if WITH_BINDLESS_DESCRIPTOR_STATS

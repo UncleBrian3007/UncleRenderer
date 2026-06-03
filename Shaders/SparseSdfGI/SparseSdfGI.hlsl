@@ -114,8 +114,8 @@ cbuffer SparseSdfGITraceBindlessConstants : register(b2)
     uint EnvironmentCubeIndex;
     uint LinearClampSamplerIndex;
     uint BrickRadianceSrvIndex;
-    uint InputSHVariancePackedIndices;
-    uint BlueNoisePackedIndices;
+    uint InputSHUavIndex;
+    uint VarianceUavIndex;
 };
 #elif defined(SPARSE_SDF_GI_PROBE_SPAWN_SHADER)
 cbuffer SparseSdfGIProbeSpawnBindlessConstants : register(b2)
@@ -140,8 +140,8 @@ cbuffer SparseSdfGIProbeTraceBindlessConstants : register(b2)
     uint ProbeHeaderSrvIndex;
     uint ProbeSHUavIndex;
     uint ProbeVarianceUavIndex;
-    uint ProbeHistoryPackedIndices;
-    uint BlueNoisePackedIndices;
+    uint ProbeHistoryReadSrvIndex;
+    uint ProbeHistoryWriteUavIndex;
 };
 #elif defined(SPARSE_SDF_GI_PROBE_INTERPOLATE_SHADER)
 cbuffer SparseSdfGIProbeInterpolateBindlessConstants : register(b2)
@@ -161,6 +161,8 @@ cbuffer SparseSdfGIProbeInterpolateBindlessConstants : register(b2)
 
 static const uint SPARSE_SDF_GI_INVALID_BRICK_ID = 0xffffffffu;
 static const uint SPARSE_SDF_GI_INVALID_REFERENCE = 0xffffffffu;
+uint GetTraceBlueNoiseSobolTextureIndex() { return TrianglePoolCapacity; }
+uint GetTraceBlueNoiseScramblingRankingTextureIndex() { return BuildWorkOffset; }
 // referenceCounters[] slot meanings (shared by init/emit/solve).
 static const uint SPARSE_SDF_GI_REF_COUNTER_TRIANGLE = 0u;
 static const uint SPARSE_SDF_GI_REF_COUNTER_REFERENCE = 1u;
@@ -1506,10 +1508,6 @@ void CSDiffuseTrace(uint3 dispatchThreadId : SV_DispatchThreadID)
         return;
     }
 
-    const uint InputSHUavIndex = InputSHVariancePackedIndices >> 16u;
-    const uint VarianceUavIndex = InputSHVariancePackedIndices & 0xFFFFu;
-    const uint blueNoiseSobolIndex = BlueNoisePackedIndices >> 16u;
-    const uint blueNoiseScramblingIndex = BlueNoisePackedIndices & 0xFFFFu;
 
     Texture2D depthTexture = ResourceDescriptorHeap[DepthIndex];
     Texture2D gbufferA = ResourceDescriptorHeap[GBufferAIndex];
@@ -1538,7 +1536,7 @@ void CSDiffuseTrace(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     const float3 rayOrigin = worldPosition + normal * (VoxelSize * 2.0f);
     FBlueNoiseSobolSampler diffuseSampler = BlueNoiseSobolSamplerCreate(pixel, uint2(max(OutputWidth, 1u), max(OutputHeight, 1u)), FrameIndex);
-    const float2 Xi = BlueNoiseSobolSamplerRandomFloat2(diffuseSampler, blueNoiseSobolIndex, blueNoiseScramblingIndex);
+    const float2 Xi = BlueNoiseSobolSamplerRandomFloat2(diffuseSampler, GetTraceBlueNoiseSobolTextureIndex(), GetTraceBlueNoiseScramblingRankingTextureIndex());
     const float3 traceDirection = SampleHemisphereCosine(Xi, normal);
     bool hit = false;
     const float3 irradiance = EvaluateSparseSdfGIRayRadiance(sdfAtlas, cascadeBrickMap, brickMetadata, brickRadiance, rayOrigin, traceDirection, hit);
@@ -1679,10 +1677,6 @@ void CSTraceScreenProbes(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Gr
     RWStructuredBuffer<float4> probeVariance = ResourceDescriptorHeap[ProbeVarianceUavIndex];
     const FSparseSdfGIProbeHeader header = probeHeaders[probeIndex];
     const uint rayCount = clamp(ProbeRaysPerProbe, 1u, SPARSE_SDF_GI_PROBE_MAX_RAYS);
-    const uint probeHistoryReadIndex = ProbeHistoryPackedIndices >> 16u;
-    const uint probeHistoryWriteIndex = ProbeHistoryPackedIndices & 0xFFFFu;
-    const uint blueNoiseSobolIndex = BlueNoisePackedIndices >> 16u;
-    const uint blueNoiseScramblingIndex = BlueNoisePackedIndices & 0xFFFFu;
 
     if (lane < SPARSE_SDF_GI_PROBE_MAX_RAYS)
     {
@@ -1698,7 +1692,7 @@ void CSTraceScreenProbes(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Gr
         {
             probeSH[probeIndex] = uint4(0u, 0u, 0u, 0u);
             probeVariance[probeIndex] = float4(1.0f, 0.0f, 0.0f, 0.0f);
-            RWStructuredBuffer<FScreenProbeHistory> probeHistoryWrite = ResourceDescriptorHeap[probeHistoryWriteIndex];
+            RWStructuredBuffer<FScreenProbeHistory> probeHistoryWrite = ResourceDescriptorHeap[ProbeHistoryWriteUavIndex];
             FScreenProbeHistory invalidHistory;
             invalidHistory.WorldPositionCount = 0.0f.xxxx;
             invalidHistory.NormalDepth = 0.0f.xxxx;
@@ -1718,8 +1712,8 @@ void CSTraceScreenProbes(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Gr
         const float3 rayOrigin = header.WorldPositionDepth.xyz + normal * (VoxelSize * 2.0f);
         FBlueNoiseSobolSampler raySampler = BlueNoiseSobolSamplerCreate(header.Pixel, uint2(max(OutputWidth, 1u), max(OutputHeight, 1u)), FrameIndex);
         const float2 Xi = float2(
-            BlueNoiseSobolSamplerSample(raySampler, lane, 0u, blueNoiseSobolIndex, blueNoiseScramblingIndex),
-            BlueNoiseSobolSamplerSample(raySampler, lane, 1u, blueNoiseSobolIndex, blueNoiseScramblingIndex));
+            BlueNoiseSobolSamplerSample(raySampler, lane, 0u, GetTraceBlueNoiseSobolTextureIndex(), GetTraceBlueNoiseScramblingRankingTextureIndex()),
+            BlueNoiseSobolSamplerSample(raySampler, lane, 1u, GetTraceBlueNoiseSobolTextureIndex(), GetTraceBlueNoiseScramblingRankingTextureIndex()));
         const float3 traceDirection = SampleHemisphereCosine(Xi, normal);
         bool hit = false;
         const float3 radiance = EvaluateSparseSdfGIRayRadiance(sdfAtlas, cascadeBrickMap, brickMetadata, brickRadiance, rayOrigin, traceDirection, hit) * Intensity * BounceStrength;
@@ -1755,7 +1749,7 @@ void CSTraceScreenProbes(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Gr
         float sampleCount = 1.0f;
         if (ProbeHistoryValid != 0u && header.PrevProbeValid != 0u)
         {
-            StructuredBuffer<FScreenProbeHistory> probeHistoryRead = ResourceDescriptorHeap[probeHistoryReadIndex];
+            StructuredBuffer<FScreenProbeHistory> probeHistoryRead = ResourceDescriptorHeap[ProbeHistoryReadSrvIndex];
             const FScreenProbeHistory prev = probeHistoryRead[header.PrevProbeIndex];
             const float prevCount = prev.WorldPositionCount.w;
             const float prevDepth = prev.NormalDepth.w;
@@ -1772,7 +1766,7 @@ void CSTraceScreenProbes(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Gr
             }
         }
 
-        RWStructuredBuffer<FScreenProbeHistory> probeHistoryWrite = ResourceDescriptorHeap[probeHistoryWriteIndex];
+        RWStructuredBuffer<FScreenProbeHistory> probeHistoryWrite = ResourceDescriptorHeap[ProbeHistoryWriteUavIndex];
         FScreenProbeHistory outHistory;
         outHistory.WorldPositionCount = float4(header.WorldPositionDepth.xyz, sampleCount);
         outHistory.NormalDepth = float4(header.NormalValid.xyz, header.WorldPositionDepth.w);
