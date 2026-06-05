@@ -146,7 +146,7 @@ bool PassesAlphaMask(
     if (sceneData.MaterialTextureIndices0.x != 0xffffffffu)
     {
         const float2 baseUV = ApplyTextureTransform(uv, sceneData.BaseColorTransformOffsetScale, sceneData.BaseColorTransformRotation);
-        Texture2D AlbedoTexture = ResourceDescriptorHeap[sceneData.MaterialTextureIndices0.x];
+        Texture2D AlbedoTexture = ResourceDescriptorHeap[NonUniformResourceIndex(sceneData.MaterialTextureIndices0.x)];
         alpha *= AlbedoTexture.SampleLevel(MaterialSampler, baseUV, 0.0f).a;
     }
 

@@ -93,7 +93,7 @@ bool LoadClusterDagTriangleIndices(
     index1 = 0u;
     index2 = 0u;
 
-    StructuredBuffer<uint> IndexBuffer = ResourceDescriptorHeap[sceneData.ExtraBindlessIndices.y];
+    StructuredBuffer<uint> IndexBuffer = ResourceDescriptorHeap[NonUniformResourceIndex(sceneData.ExtraBindlessIndices.y)];
     const uint baseIndex = drawData.StartIndex + primitiveId * 3u;
     if (HasClusterDagPageData(visibleEntry))
     {
@@ -111,8 +111,8 @@ bool LoadClusterDagTriangleIndices(
 
 float3 LoadClusterDagPosition(ClusterDagResolveSceneData sceneData, ClusterDagVisibleEntry visibleEntry, uint vertexIndex, ByteAddressBuffer PageData)
 {
-    StructuredBuffer<float3> PositionBuffer = ResourceDescriptorHeap[sceneData.VertexBufferBindlessIndices.x];
-    StructuredBuffer<ClusterDagPackedPosition> PackedPositionBuffer = ResourceDescriptorHeap[sceneData.VertexBufferBindlessIndices.x];
+    StructuredBuffer<float3> PositionBuffer = ResourceDescriptorHeap[NonUniformResourceIndex(sceneData.VertexBufferBindlessIndices.x)];
+    StructuredBuffer<ClusterDagPackedPosition> PackedPositionBuffer = ResourceDescriptorHeap[NonUniformResourceIndex(sceneData.VertexBufferBindlessIndices.x)];
     uint packedXy = 0u;
     uint packedZ = 0u;
     if (LoadClusterDagPagedPackedPositionWords(visibleEntry, vertexIndex, PageData, packedXy, packedZ))
@@ -135,8 +135,8 @@ float3 LoadClusterDagPosition(ClusterDagResolveSceneData sceneData, ClusterDagVi
 
 float3 LoadClusterDagNormal(ClusterDagResolveSceneData sceneData, ClusterDagVisibleEntry visibleEntry, uint vertexIndex, ByteAddressBuffer PageData)
 {
-    StructuredBuffer<float3> NormalBuffer = ResourceDescriptorHeap[sceneData.VertexBufferBindlessIndices.y];
-    StructuredBuffer<uint> PackedNormalBuffer = ResourceDescriptorHeap[sceneData.VertexBufferBindlessIndices.y];
+    StructuredBuffer<float3> NormalBuffer = ResourceDescriptorHeap[NonUniformResourceIndex(sceneData.VertexBufferBindlessIndices.y)];
+    StructuredBuffer<uint> PackedNormalBuffer = ResourceDescriptorHeap[NonUniformResourceIndex(sceneData.VertexBufferBindlessIndices.y)];
     uint packedNormal = 0u;
     if (LoadClusterDagPagedPackedScalar(visibleEntry, vertexIndex, kClusterDagGpuPageHeaderPackedNormalByteOffsetOffset, kClusterDagGpuPageHeaderPackedNormalCountOffset, PageData, packedNormal))
     {
@@ -170,14 +170,14 @@ float2 LoadClusterDagUv(ClusterDagResolveSceneData sceneData, ClusterDagVisibleE
 
         if (sceneData.VertexBufferBindlessIndices.z != 0xffffffffu)
         {
-            StructuredBuffer<uint> PackedTexCoordBuffer = ResourceDescriptorHeap[sceneData.VertexBufferBindlessIndices.z];
+            StructuredBuffer<uint> PackedTexCoordBuffer = ResourceDescriptorHeap[NonUniformResourceIndex(sceneData.VertexBufferBindlessIndices.z)];
             return DecodeClusterDagPackedUV(PackedTexCoordBuffer[vertexIndex]);
         }
 
         return sceneData.ClusterDagPackedConstantUV.xy;
     }
 
-    StructuredBuffer<float2> TexCoordBuffer = ResourceDescriptorHeap[sceneData.VertexBufferBindlessIndices.z];
+    StructuredBuffer<float2> TexCoordBuffer = ResourceDescriptorHeap[NonUniformResourceIndex(sceneData.VertexBufferBindlessIndices.z)];
     return TexCoordBuffer[vertexIndex];
 }
 
@@ -198,14 +198,14 @@ float4 LoadClusterDagTangent(ClusterDagResolveSceneData sceneData, ClusterDagVis
 
         if (sceneData.VertexBufferBindlessIndices.w != 0xffffffffu)
         {
-            StructuredBuffer<uint> PackedTangentBuffer = ResourceDescriptorHeap[sceneData.VertexBufferBindlessIndices.w];
+            StructuredBuffer<uint> PackedTangentBuffer = ResourceDescriptorHeap[NonUniformResourceIndex(sceneData.VertexBufferBindlessIndices.w)];
             return DecodeClusterDagPackedTangent(PackedTangentBuffer[vertexIndex]);
         }
 
         return BuildClusterDagFallbackTangent(normal);
     }
 
-    StructuredBuffer<float4> TangentBuffer = ResourceDescriptorHeap[sceneData.VertexBufferBindlessIndices.w];
+    StructuredBuffer<float4> TangentBuffer = ResourceDescriptorHeap[NonUniformResourceIndex(sceneData.VertexBufferBindlessIndices.w)];
     return TangentBuffer[vertexIndex];
 }
 
@@ -226,14 +226,14 @@ float4 LoadClusterDagColor(ClusterDagResolveSceneData sceneData, ClusterDagVisib
 
         if (sceneData.ExtraBindlessIndices.x != 0xffffffffu)
         {
-            StructuredBuffer<uint> PackedColorBuffer = ResourceDescriptorHeap[sceneData.ExtraBindlessIndices.x];
+            StructuredBuffer<uint> PackedColorBuffer = ResourceDescriptorHeap[NonUniformResourceIndex(sceneData.ExtraBindlessIndices.x)];
             return DecodeClusterDagPackedColor(PackedColorBuffer[vertexIndex]);
         }
 
         return sceneData.ClusterDagPackedConstantColor;
     }
 
-    StructuredBuffer<float4> ColorBuffer = ResourceDescriptorHeap[sceneData.ExtraBindlessIndices.x];
+    StructuredBuffer<float4> ColorBuffer = ResourceDescriptorHeap[NonUniformResourceIndex(sceneData.ExtraBindlessIndices.x)];
     return ColorBuffer[vertexIndex];
 }
 

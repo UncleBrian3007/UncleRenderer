@@ -1,0 +1,1 @@
+- Do not write comments. Make the code self-explanatory through precise function and variable names so that no comment is needed. If you feel a comment is required, rename or restructure until it isn't. The only exception is a single short line for a genuine non-obvious hardware/precision constraint that cannot be expressed in a name.

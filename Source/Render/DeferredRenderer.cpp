@@ -45,7 +45,7 @@ using Microsoft::WRL::ComPtr;
 
 namespace
 {
-    uint32_t PackClusterDagDebugColor(uint32_t ClusterIndex, uint32_t MipLevel)
+    uint32_t PackClusterDagDebugColor(uint32_t ClusterIndex, uint32_t MipLevel, uint32_t MaxMipLevel)
     {
         uint32_t Hash = ClusterIndex * 747796405u + 2891336453u + MipLevel * 277803737u;
         Hash ^= Hash >> 16;
@@ -57,7 +57,10 @@ namespace
         const uint8_t R = static_cast<uint8_t>(96u + (Hash & 0x7fu));
         const uint8_t G = static_cast<uint8_t>(96u + ((Hash >> 8) & 0x7fu));
         const uint8_t B = static_cast<uint8_t>(96u + ((Hash >> 16) & 0x7fu));
-        const uint8_t A = static_cast<uint8_t>((std::min)(MipLevel, 255u));
+        const uint32_t MipColorByte = MaxMipLevel > 0u
+            ? (MipLevel * 255u + MaxMipLevel / 2u) / MaxMipLevel
+            : 0u;
+        const uint8_t A = static_cast<uint8_t>((std::min)(MipColorByte, 255u));
         return static_cast<uint32_t>(R)
             | (static_cast<uint32_t>(G) << 8)
             | (static_cast<uint32_t>(B) << 16)
@@ -66,11 +69,17 @@ namespace
 
     std::vector<uint32_t> BuildClusterDagDebugColorTable(const FRuntimeClusterHierarchy& RuntimeHierarchy, uint32_t IndexCount)
     {
+        uint32_t MaxMipLevel = 0u;
+        for (const FRuntimeCluster& Cluster : RuntimeHierarchy.Clusters)
+        {
+            MaxMipLevel = (std::max)(MaxMipLevel, Cluster.MipLevel);
+        }
+
         std::vector<uint32_t> DebugColors(IndexCount, 0xffffffffu);
         for (uint32_t ClusterIndex = 0; ClusterIndex < static_cast<uint32_t>(RuntimeHierarchy.Clusters.size()); ++ClusterIndex)
         {
             const FRuntimeCluster& Cluster = RuntimeHierarchy.Clusters[ClusterIndex];
-            const uint32_t PackedColor = PackClusterDagDebugColor(ClusterIndex, Cluster.MipLevel);
+            const uint32_t PackedColor = PackClusterDagDebugColor(ClusterIndex, Cluster.MipLevel, MaxMipLevel);
             for (uint32_t DrawDataOffset = 0; DrawDataOffset < Cluster.DrawDataCount; ++DrawDataOffset)
             {
                 const uint32_t DrawDataIndex = Cluster.DrawDataStart + DrawDataOffset;
@@ -144,14 +153,25 @@ bool FDeferredRenderer::IsClusterDagEnabled() const
 {
     return ClusterDagRuntime->IsEnabled();
 }
+
 bool FDeferredRenderer::IsClusterDagFastShaderEnabled() const
 {
+#ifdef _DEBUG
     return ClusterDagRuntime->IsFastShaderEnabled();
+#else
+    return false;
+#endif   
 }
+
 bool FDeferredRenderer::IsClusterDagDebugEnabled() const
 {
+#ifdef _DEBUG
     return ClusterDagRuntime->IsDebugEnabled();
+#else
+    return false;
+#endif
 }
+
 EClusterDAGTraversalMode FDeferredRenderer::GetClusterDagTraversalMode() const
 {
     return ClusterDagRuntime->GetTraversalMode();
@@ -671,19 +691,19 @@ bool FDeferredRenderer::InitializeEnvironmentAndDescriptorResources(FDX12Device*
         return false;
     }
 
-    if (!TextureLoader->LoadOrDefault(L"Assets/Textures/BlueNoise/sobol_256_4d.png", BlueNoiseSobolTexture.Resource))
+    bool bSobolFreshlyLoaded = false;
+    if (!TextureLoader->LoadOrDefault(L"Assets/Textures/BlueNoise/sobol_256_4d.png", BlueNoiseSobolTexture.Resource, nullptr, false, &bSobolFreshlyLoaded))
     {
         LogError("Deferred renderer initialization failed: blue noise sobol texture loading failed");
         return false;
     }
     BlueNoiseSobolTexture->SetName(L"BlueNoiseSobol");
-    // Static read-only texture sampled from both pixel and compute passes (e.g. SparseSdfGI probe
-    // trace). Keep it in the combined shader-resource state so compute reads are valid; otherwise it
-    // stays pixel-shader-only and compute dispatches hit an incompatible-layout fault on AMD.
+
     InitializeBindlessTexture(BlueNoiseSobolTexture, BuildTextureDescFromResource(BlueNoiseSobolTexture.Get()), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     WriteOrCreateBindlessTextureSrv(Device, BlueNoiseSobolTexture);
 
-    if (!TextureLoader->LoadOrDefault(L"Assets/Textures/BlueNoise/scrambling_ranking_128x128_2d_1spp.png", BlueNoiseScramblingRanking1SPPTexture.Resource))
+    bool bScramblingFreshlyLoaded = false;
+    if (!TextureLoader->LoadOrDefault(L"Assets/Textures/BlueNoise/scrambling_ranking_128x128_2d_1spp.png", BlueNoiseScramblingRanking1SPPTexture.Resource, nullptr, false, &bScramblingFreshlyLoaded))
     {
         LogError("Deferred renderer initialization failed: blue noise scrambling/ranking texture loading failed");
         return false;
@@ -692,17 +712,20 @@ bool FDeferredRenderer::InitializeEnvironmentAndDescriptorResources(FDX12Device*
     InitializeBindlessTexture(BlueNoiseScramblingRanking1SPPTexture, BuildTextureDescFromResource(BlueNoiseScramblingRanking1SPPTexture.Get()), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     WriteOrCreateBindlessTextureSrv(Device, BlueNoiseScramblingRanking1SPPTexture);
 
-    // The texture loader leaves these in PIXEL_SHADER_RESOURCE, but they are sampled from compute
-    // passes (SparseSdfGI probe trace, RestirGI) and are never imported into the render graph, so no
-    // transition is otherwise issued. Move the actual resources to the combined read state to match
-    // the recorded state above; without this, compute dispatches fault with an incompatible layout.
+    if (bSobolFreshlyLoaded || bScramblingFreshlyLoaded)
     {
         constexpr D3D12_RESOURCE_STATES BlueNoiseReadState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
         FDX12CommandContext BlueNoiseBarrierContext;
         BlueNoiseBarrierContext.Initialize(Device, Device->GetGraphicsQueue(), 1);
         BlueNoiseBarrierContext.BeginFrame(0);
-        BlueNoiseBarrierContext.TransitionResource(BlueNoiseSobolTexture.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, BlueNoiseReadState);
-        BlueNoiseBarrierContext.TransitionResource(BlueNoiseScramblingRanking1SPPTexture.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, BlueNoiseReadState);
+        if (bSobolFreshlyLoaded)
+        {
+            BlueNoiseBarrierContext.TransitionResource(BlueNoiseSobolTexture.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, BlueNoiseReadState);
+        }
+        if (bScramblingFreshlyLoaded)
+        {
+            BlueNoiseBarrierContext.TransitionResource(BlueNoiseScramblingRanking1SPPTexture.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, BlueNoiseReadState);
+        }
         BlueNoiseBarrierContext.CloseAndExecute();
         BlueNoiseBarrierContext.GetQueue()->Flush();
     }

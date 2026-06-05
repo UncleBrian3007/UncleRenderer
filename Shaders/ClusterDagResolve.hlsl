@@ -299,14 +299,14 @@ PSOutput ClusterDagResolvePS(VSOutput Input)
 
     if (useNormalMap && normalTextureIndex != 0xffffffffu)
     {
-        Texture2D NormalTexture = ResourceDescriptorHeap[normalTextureIndex];
+        Texture2D NormalTexture = ResourceDescriptorHeap[NonUniformResourceIndex(normalTextureIndex)];
         const float2 tangentNormalRG = NormalTexture.SampleGrad(MaterialSampler, normalUvGradients.UV, normalUvGradients.Ddx, normalUvGradients.Ddy).rg * 2.0f - 1.0f;
         const float3 tangentNormal = DecodeTangentNormalRG(tangentNormalRG);
         worldNormal = ComputeWorldNormal(worldNormal, worldTangent, tangentNormal);
     }
     if (useClearcoat && clearcoatNormalTextureIndex != 0xffffffffu)
     {
-        Texture2D ClearcoatNormalTexture = ResourceDescriptorHeap[clearcoatNormalTextureIndex];
+        Texture2D ClearcoatNormalTexture = ResourceDescriptorHeap[NonUniformResourceIndex(clearcoatNormalTextureIndex)];
         const float2 clearcoatTangentNormalRG = ClearcoatNormalTexture.SampleGrad(MaterialSampler, clearcoatNormalUvGradients.UV, clearcoatNormalUvGradients.Ddx, clearcoatNormalUvGradients.Ddy).rg * 2.0f - 1.0f;
         const float3 clearcoatTangentNormal = DecodeTangentNormalRG(clearcoatTangentNormalRG);
         worldNormal = ComputeWorldNormal(worldNormal, worldTangent, clearcoatTangentNormal);
@@ -320,7 +320,7 @@ PSOutput ClusterDagResolvePS(VSOutput Input)
     float alpha = sceneData.BaseColorAlpha * color.a;
     if (useBaseColorMap && albedoTextureIndex != 0xffffffffu)
     {
-        Texture2D AlbedoTexture = ResourceDescriptorHeap[albedoTextureIndex];
+        Texture2D AlbedoTexture = ResourceDescriptorHeap[NonUniformResourceIndex(albedoTextureIndex)];
         const float4 albedoSample = AlbedoTexture.SampleGrad(MaterialSampler, baseUvGradients.UV, baseUvGradients.Ddx, baseUvGradients.Ddy);
         albedo *= albedoSample.rgb;
         alpha *= albedoSample.a;
@@ -330,7 +330,7 @@ PSOutput ClusterDagResolvePS(VSOutput Input)
     float roughness = sceneData.RoughnessFactor;
     if (useMetallicRoughnessMap && metallicRoughnessTextureIndex != 0xffffffffu)
     {
-        Texture2D MetallicRoughnessTexture = ResourceDescriptorHeap[metallicRoughnessTextureIndex];
+        Texture2D MetallicRoughnessTexture = ResourceDescriptorHeap[NonUniformResourceIndex(metallicRoughnessTextureIndex)];
         const float2 metallicRoughness = MetallicRoughnessTexture.SampleGrad(MaterialSampler, mrUvGradients.UV, mrUvGradients.Ddx, mrUvGradients.Ddy).bg;
         metallic *= metallicRoughness.x;
         roughness *= metallicRoughness.y;
@@ -344,7 +344,7 @@ PSOutput ClusterDagResolvePS(VSOutput Input)
     {
         if (sceneData.ExtraBindlessIndices.z != 0xffffffffu)
         {
-            StructuredBuffer<uint> ClusterDebugColorBuffer = ResourceDescriptorHeap[sceneData.ExtraBindlessIndices.z];
+            StructuredBuffer<uint> ClusterDebugColorBuffer = ResourceDescriptorHeap[NonUniformResourceIndex(sceneData.ExtraBindlessIndices.z)];
             customData = DecodeDebugColor(ClusterDebugColorBuffer[drawData.StartIndex]);
         }
     }
@@ -354,12 +354,12 @@ PSOutput ClusterDagResolvePS(VSOutput Input)
         float sheenRoughness = sceneData.SheenRoughnessFactor;
         if (sheenColorTextureIndex != 0xffffffffu)
         {
-            Texture2D SheenColorTexture = ResourceDescriptorHeap[sheenColorTextureIndex];
+            Texture2D SheenColorTexture = ResourceDescriptorHeap[NonUniformResourceIndex(sheenColorTextureIndex)];
             sheenColor *= SheenColorTexture.SampleGrad(MaterialSampler, sheenColorUvGradients.UV, sheenColorUvGradients.Ddx, sheenColorUvGradients.Ddy).rgb;
         }
         if (sheenRoughnessTextureIndex != 0xffffffffu)
         {
-            Texture2D SheenRoughnessTexture = ResourceDescriptorHeap[sheenRoughnessTextureIndex];
+            Texture2D SheenRoughnessTexture = ResourceDescriptorHeap[NonUniformResourceIndex(sheenRoughnessTextureIndex)];
             sheenRoughness *= SheenRoughnessTexture.SampleGrad(MaterialSampler, sheenRoughnessUvGradients.UV, sheenRoughnessUvGradients.Ddx, sheenRoughnessUvGradients.Ddy).a;
         }
         customData = float4(sheenColor, sheenRoughness);
@@ -370,12 +370,12 @@ PSOutput ClusterDagResolvePS(VSOutput Input)
         float clearcoatRoughness = sceneData.ClearcoatRoughnessFactor;
         if (clearcoatTextureIndex != 0xffffffffu)
         {
-            Texture2D ClearcoatTexture = ResourceDescriptorHeap[clearcoatTextureIndex];
+            Texture2D ClearcoatTexture = ResourceDescriptorHeap[NonUniformResourceIndex(clearcoatTextureIndex)];
             clearcoat *= ClearcoatTexture.SampleGrad(MaterialSampler, clearcoatUvGradients.UV, clearcoatUvGradients.Ddx, clearcoatUvGradients.Ddy).r;
         }
         if (clearcoatRoughnessTextureIndex != 0xffffffffu)
         {
-            Texture2D ClearcoatRoughnessTexture = ResourceDescriptorHeap[clearcoatRoughnessTextureIndex];
+            Texture2D ClearcoatRoughnessTexture = ResourceDescriptorHeap[NonUniformResourceIndex(clearcoatRoughnessTextureIndex)];
             clearcoatRoughness *= ClearcoatRoughnessTexture.SampleGrad(MaterialSampler, clearcoatRoughnessUvGradients.UV, clearcoatRoughnessUvGradients.Ddx, clearcoatRoughnessUvGradients.Ddy).g;
         }
         customData = float4(clearcoat, clearcoatRoughness, 0.0f, 0.0f);
@@ -385,7 +385,7 @@ PSOutput ClusterDagResolvePS(VSOutput Input)
         float anisotropyValue = 1.0f;
         if (anisotropyTextureIndex != 0xffffffffu)
         {
-            Texture2D AnisotropyTexture = ResourceDescriptorHeap[anisotropyTextureIndex];
+            Texture2D AnisotropyTexture = ResourceDescriptorHeap[NonUniformResourceIndex(anisotropyTextureIndex)];
             anisotropyValue = AnisotropyTexture.SampleGrad(MaterialSampler, anisotropyUvGradients.UV, anisotropyUvGradients.Ddx, anisotropyUvGradients.Ddy).r;
         }
         customData = float4(anisotropyValue, sceneData.AnisotropyStrength, 0.0f, 0.0f);
@@ -394,7 +394,7 @@ PSOutput ClusterDagResolvePS(VSOutput Input)
     float3 emissive = sceneData.EmissiveFactor;
     if (useEmissiveMap && emissiveTextureIndex != 0xffffffffu)
     {
-        Texture2D EmissiveTexture = ResourceDescriptorHeap[emissiveTextureIndex];
+        Texture2D EmissiveTexture = ResourceDescriptorHeap[NonUniformResourceIndex(emissiveTextureIndex)];
         emissive *= EmissiveTexture.SampleGrad(MaterialSampler, emissiveUvGradients.UV, emissiveUvGradients.Ddx, emissiveUvGradients.Ddy).rgb;
     }
 

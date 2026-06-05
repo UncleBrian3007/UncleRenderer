@@ -71,8 +71,13 @@ FTextureLoader::FTextureLoader(FDX12Device* InDevice)
 {
 }
 
-bool FTextureLoader::LoadOrDefault(const std::wstring& TexturePath, ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload, bool bUseSRGB)
+bool FTextureLoader::LoadOrDefault(const std::wstring& TexturePath, ComPtr<ID3D12Resource>& OutTexture, FTextureUploadWork* RecordedUpload, bool bUseSRGB, bool* OutWasFreshlyLoaded)
 {
+    if (OutWasFreshlyLoaded)
+    {
+        *OutWasFreshlyLoaded = false;
+    }
+
     const std::wstring CacheKey = BuildCacheKey(TexturePath, bUseSRGB);
     if (TryGetCachedTexture(CacheKey, OutTexture))
     {
@@ -81,6 +86,10 @@ bool FTextureLoader::LoadOrDefault(const std::wstring& TexturePath, ComPtr<ID3D1
 
     if (!TexturePath.empty() && LoadTextureInternal(TexturePath, OutTexture, RecordedUpload, bUseSRGB))
     {
+        if (OutWasFreshlyLoaded)
+        {
+            *OutWasFreshlyLoaded = true;
+        }
         std::lock_guard<std::mutex> Lock(GTextureCacheMutex);
         GlobalTextureCache[CacheKey] = OutTexture;
         return true;
@@ -94,6 +103,10 @@ bool FTextureLoader::LoadOrDefault(const std::wstring& TexturePath, ComPtr<ID3D1
 
     if (CreateDefaultGridTexture(OutTexture, RecordedUpload, bUseSRGB))
     {
+        if (OutWasFreshlyLoaded)
+        {
+            *OutWasFreshlyLoaded = true;
+        }
         std::lock_guard<std::mutex> Lock(GTextureCacheMutex);
         GlobalTextureCache[DefaultCacheKey] = OutTexture;
         return true;

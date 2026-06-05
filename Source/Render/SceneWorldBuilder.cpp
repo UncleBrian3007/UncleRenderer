@@ -371,7 +371,8 @@ namespace
         FDX12Device* Device,
         const std::vector<uint32_t>& Indices,
         FMeshGeometryBuffers& InOutGeometry,
-        FUploadBatch* UploadBatch = nullptr)
+        FUploadBatch* UploadBatch = nullptr,
+        const wchar_t* ResourceName = L"PrimitiveIndexBuffer")
     {
         if (!Device || Indices.empty())
         {
@@ -383,7 +384,7 @@ namespace
         FUploadBuffer UploadBuffer;
         CreateBindlessBufferWithUpload(
             Device,
-            L"PrimitiveIndexBuffer",
+            ResourceName,
             CreateStructuredBufferDesc<uint32_t>(Indices.size()),
             D3D12_RESOURCE_STATE_COPY_DEST,
             InOutGeometry.IndexBuffer,
@@ -660,7 +661,7 @@ namespace
             && (ClusterDagPackedVertexData.Tangents.empty()
                 || CreateStructuredBufferFromData(Device, ClusterDagPackedVertexData.Tangents, InOutMeshSection.ClusterDagVertexBuffers[kClusterDagVertexStreamTangent], L"ClusterDagTangentBuffer", &UploadBatch))
             && (ClusterDagPackedVertexData.Colors.empty() || CreateStructuredBufferFromData(Device, ClusterDagPackedVertexData.Colors, InOutMeshSection.ClusterDagColorBuffer, L"ClusterDagColorBuffer", &UploadBatch))
-            && CreateIndexBufferFromIndices(Device, ClusterDAG->RuntimeHierarchy.PackedIndices, ClusterDagGeometry, &UploadBatch);
+            && CreateIndexBufferFromIndices(Device, ClusterDAG->RuntimeHierarchy.PackedIndices, ClusterDagGeometry, &UploadBatch, L"ClusterDagRuntimeIndexBuffer");
         if (bCreatedClusterDagGeometry)
         {
             InOutMeshSection.ClusterDagVertexPackingMode = GClusterDagVertexPackingModeBasic;

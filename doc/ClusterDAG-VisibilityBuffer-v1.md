@@ -241,6 +241,7 @@ material feature는 visible pixel을 material bucket으로 미리 분류하지 �
 - 레지스터 압력 증가
 - 특화 material shader 대비 occupancy 저하
 - 혼합 material 픽셀 쿼드/웨이브 내 branch divergence
+- per-pixel로 resolve된 `sceneData`/material descriptor 인덱스가 non-uniform이라 `NonUniformResourceIndex`가 필요하고, 이는 wave scalarization 비용을 유발 (`ClusterDAG-AMD-NonUniform-Bindless-Bug.md` 참고)
 
 즉 현재 구현은 완전한 분류 기반 visibility-buffer 렌더러보다, 실질적으로 "fullscreen deferred uber resolve"에 더 가깝습니다.
 
@@ -339,9 +340,11 @@ SW raster fallback 경로가 near plane 교차 triangle을 조용히 드롭하�
 
 - `pipelineKey` 기반 visible pixel 분류
 - material/feature class별 screen-space 리스트 구성
-- material bucket별 더 좁은 resolve shader 실행
+- material bucket별 더 좁은 resolve shader 실행 (per-material indirect dispatch)
 
 버킷 수를 소수로만 나눠도 현재 올인원 구조보다 개선 여지가 큽니다.
+
+부수 효과: bucket별 dispatch 안에서는 material/geometry descriptor 인덱스가 **uniform**이 되므로 root 상수로 바인딩할 수 있고, 현재 fullscreen resolve가 강제로 쓰는 `NonUniformResourceIndex`(및 그 wave scalarization 비용)를 제거할 수 있습니다. (`ClusterDAG-AMD-NonUniform-Bindless-Bug.md` 참고)
 
 ### Priority 5 - Resolve 출력 재검토
 

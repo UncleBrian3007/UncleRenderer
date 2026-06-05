@@ -142,7 +142,7 @@ struct FRendererConfig
     uint32_t SparseSdfGIDebugSolveGroupBudget = 0xFFFFFFFFu;
     uint32_t SparseSdfGIDebugEmitTriangleBudget = 0xFFFFFFFFu;
     bool bEnableIndirectDraw = true;
-    bool bEnableClusterDAGRuntime = false;
+    bool bEnableClusterDAGRuntime = true;
     bool bForceRebuildClusterDAGCache = false;
     bool bEnableSkinningIndirectDraw = false;
     bool bEnableClusterDAGFastShader = false;
@@ -161,7 +161,7 @@ struct FRendererConfig
     bool bEnableClusterDAGForceMip = false;
     uint32_t ClusterDAGForceMipLevel = 0;
     bool bEnableClusterDAGForceSoftwareRaster = false;
-    bool bEnableClusterDAGDebug = false;
+    bool bEnableClusterDAGDebug = true;
     bool bEnablePbrResearch = false;
     bool bEnableGpuDebugPrint = true;
     std::wstring EnvironmentEquirectPath = L"Assets/Textures/hdri/rural_landscape_1k.hdr";

@@ -1733,8 +1733,6 @@ void FApplication::RenderUI()
         }
 
         ImGui::Separator();
-        const std::string ScenePathUtf8 = StringUtils::WideToUtf8(CurrentScenePath);
-        ImGui::TextWrapped("Scene: %s", ScenePathUtf8.c_str());
         if (ImGui::Button("Load Scene"))
         {
             const std::filesystem::path ScenePath(CurrentScenePath);
@@ -1745,6 +1743,9 @@ void FApplication::RenderUI()
                 PendingScenePath = SelectedScene;
             }
         }
+        const std::string ScenePathUtf8 = StringUtils::WideToUtf8(CurrentScenePath);
+        ImGui::SameLine();
+        ImGui::TextWrapped("%s", ScenePathUtf8.c_str());
 
         const char* SelectedName = SelectedSectionIndex >= 0 ? SelectedSectionName.c_str() : "None";
         ImGui::Text("Selected: %s [%d]", SelectedName, SelectedSectionIndex);
@@ -1910,31 +1911,6 @@ void FApplication::RenderUI()
             ApplyDeferredHzbConfig();
         }
 
-		ImGui::Separator();
-        if (ImGui::Checkbox("GTAO", &RendererConfig.bEnableGtao))
-        {
-			SyncRendererGtaoConfig();
-        }
-
-        if (RendererConfig.bEnableGtao)
-        {
-			ImGui::SameLine();
-			if (ImGui::Checkbox("GTAO Jitter", &RendererConfig.bEnableGtaoJitter))
-			{
-				SyncRendererGtaoConfig();
-			}
-
-			if (ImGui::SliderFloat("GTAO Radius", &RendererConfig.GtaoRadius, 0.05f, 3.0f, "%.2f"))
-			{
-				SyncRendererGtaoConfig();
-			}
-
-			if (ImGui::SliderFloat("GTAO Thickness", &RendererConfig.GtaoThickness, 0.0f, 1.0f, "%.2f"))
-			{
-				SyncRendererGtaoConfig();
-			}
-        }
-
         ImGui::Separator();
         static const char* LightingDebugViewItems[] =
         {
@@ -1980,30 +1956,20 @@ void FApplication::RenderUI()
 
         if (RendererConfig.DiffuseGISource == EDiffuseGISource::RestirGI)
         {
-		    const auto ApplyRestirGIConfig = [this]()
-		    {
-		        SyncDeferredRestirGIConfig();
-		    };
-
-		    const auto ApplyRestirGITransientState = [this]()
-		    {
-		        SyncDeferredRestirGITransientState();
-		    };
-
             if (ImGui::Checkbox("Use Visibility", &RendererConfig.bRestirGIUseVisibility))
             {
-                ApplyRestirGIConfig();
+                SyncDeferredRestirGIConfig();
             }
 
 		    ImGui::SameLine();
             if (ImGui::Checkbox("Use BRDF", &RendererConfig.bRestirGIUseBrdf))
             {
-                ApplyRestirGIConfig();
+                SyncDeferredRestirGIConfig();
             }
 
             if (ImGui::Checkbox("Use History Indirect", &RendererConfig.bRestirGIUseHistoryIndirect))
             {
-                ApplyRestirGIConfig();
+                SyncDeferredRestirGIConfig();
             }
 
             int RestirRandomModeIndex = (RendererConfig.RestirGIRandomMode == ERestirGIRandomMode::BlueNoiseSobol) ? 1 : 0;
@@ -2013,14 +1979,14 @@ void FApplication::RenderUI()
             {
                 RendererConfig.RestirGIRandomMode = (RestirRandomModeIndex == 1) ? ERestirGIRandomMode::BlueNoiseSobol : ERestirGIRandomMode::Hash;
                 UpsertConfigValue(GetRendererConfigPath(), "RestirGIRandomMode", RestirRandomModeToConfigString(RendererConfig.RestirGIRandomMode));
-                ApplyRestirGIConfig();
+                SyncDeferredRestirGIConfig();
             }
 
             bool bRestirGIFreezeFrameUI = bRestirGIFreezeFrame;
             if (ImGui::Checkbox("Freeze ReSTIR GI", &bRestirGIFreezeFrameUI))
             {
                 bRestirGIFreezeFrame = bRestirGIFreezeFrameUI;
-                ApplyRestirGITransientState();
+		        SyncDeferredRestirGITransientState();
             }
 
             ImGui::SameLine();
@@ -2039,7 +2005,7 @@ void FApplication::RenderUI()
             if (ImGui::Checkbox("Debug ReSTIR GI Ray", &bRestirGIDebugRay))
             {
                 bRestirGIDebugRayEnabled = bRestirGIDebugRay;
-                ApplyRestirGITransientState();
+		        SyncDeferredRestirGITransientState();
             }
 
             int RestirDebugPixel[2] = { RestirGIDebugPixelX, RestirGIDebugPixelY };
@@ -2047,31 +2013,30 @@ void FApplication::RenderUI()
             {
                 RestirGIDebugPixelX = (std::max)(0, RestirDebugPixel[0]);
                 RestirGIDebugPixelY = (std::max)(0, RestirDebugPixel[1]);
-                ApplyRestirGITransientState();
+                SyncDeferredRestirGITransientState();
             }
             if (ImGui::Checkbox("Temporal Reuse", &RendererConfig.bEnableRestirGITemporalReuse))
             {
-                ApplyRestirGIConfig();
+                SyncDeferredRestirGIConfig();
             }
 
 		    ImGui::SameLine();
             if (ImGui::Checkbox("Spatial Reuse", &RendererConfig.bEnableRestirGISpatialReuse))
             {
-                ApplyRestirGIConfig();
+                SyncDeferredRestirGIConfig();
             }
 
             if (ImGui::SliderFloat("Temporal Add Scale", &RendererConfig.RestirGITemporalAdditionalScale, 0.0f, 1.0f, "%.2f"))
             {
-                ApplyRestirGIConfig();
+                SyncDeferredRestirGIConfig();
             }
 
             if (ImGui::SliderFloat("Spatial Add Scale", &RendererConfig.RestirGISpatialAdditionalScale, 0.0f, 1.0f, "%.2f"))
             {
-                ApplyRestirGIConfig();
+                SyncDeferredRestirGIConfig();
             }
         }
 
-        ImGui::Separator();
         if (RendererConfig.DiffuseGISource == EDiffuseGISource::SparseSdfGI)
         {
             static const char* SparseSdfGIDebugModeItems[] = { "Off", "Ray Trace", "Cascade Slice", "Voxel Projection", "Brick SDF Surface", "Step Count" };
@@ -2195,6 +2160,77 @@ void FApplication::RenderUI()
                 if (DeferredRenderer && DeferredRenderer->GetSparseSdfGI())
                 {
                     DeferredRenderer->GetSparseSdfGI()->ForceInvalidateCache();
+                }
+            }
+        }
+
+        const bool bRayTracingSupported = Device && Device->IsRayTracingSupported();
+        bool bPathTracing = RendererConfig.bEnablePathTracing;
+        ImGui::Separator();
+        if (ImGui::Checkbox("Path Tracing", &bPathTracing))
+        {
+            if (bPathTracing && !bRayTracingSupported)
+            {
+                RendererConfig.bEnablePathTracing = false;
+                LogWarning("Path tracing requested, but DXR is not supported. Disabling path tracing.");
+            }
+            else
+            {
+                RendererConfig.bEnablePathTracing = bPathTracing;
+            }
+
+            SyncRendererPathTracingConfig();
+        }
+
+        if (RendererConfig.bEnablePathTracing)
+        {
+            ImGui::SameLine();
+            if (ImGui::Checkbox("Accumulation", &RendererConfig.bEnablePathTracingAccumulation))
+            {
+                SyncRendererPathTracingConfig();
+            }
+
+		    ImGui::SameLine();
+		    if (ImGui::Checkbox("PT GGX VNDF", &RendererConfig.bEnablePathTracingVndf))
+		    {
+			    SyncRendererPathTracingConfig();
+		    }
+
+            int PathTracingMaxBounces = static_cast<int>(RendererConfig.PathTracingMaxBounces);
+            if (ImGui::SliderInt("Max Bounces", &PathTracingMaxBounces, 0, 16))
+            {
+                RendererConfig.PathTracingMaxBounces = static_cast<uint32_t>(PathTracingMaxBounces);
+                SyncRendererPathTracingConfig();
+            }
+
+            // Path Tracing Debug Mode
+            const char* DebugModeNames[] = {
+                "Normal PT",
+                "GBuffer Albedo",
+                "First Hit Albedo",
+                "Texture Index Hash",
+                "Direct Light",
+                "Diffuse Probability",
+                "Hit/Miss Mask",
+                "Throughput Over Pdf",
+                "Firefly Metric",
+                "First Hit Distance",
+                "Sky Miss Contribution",
+                "First Hit NdotV",
+                "Bounce1 NdotV",
+                "Indirect Irradiance"
+            };
+            static_assert(IM_ARRAYSIZE(DebugModeNames) == PATH_TRACING_DEBUG_MAX + 1);
+            int CurrentDebugMode = 0;
+            if (DeferredRenderer)
+            {
+                CurrentDebugMode = DeferredRenderer->GetPathTracing()->GetDebugMode();
+            }
+            if (ImGui::Combo("PT Debug Mode", &CurrentDebugMode, DebugModeNames, IM_ARRAYSIZE(DebugModeNames)))
+            {
+                if (DeferredRenderer)
+                {
+                    DeferredRenderer->GetPathTracing()->SetDebugMode(CurrentDebugMode);
                 }
             }
         }
@@ -2546,7 +2582,6 @@ void FApplication::RenderUI()
         }
 
 		ImGui::SameLine();
-        const bool bRayTracingSupported = Device && Device->IsRayTracingSupported();
         bool bRayTracedShadows = RendererConfig.bEnableRayTracedShadows;
         if (ImGui::Checkbox("Ray Traced Shadows", &bRayTracedShadows))
         {
@@ -2585,76 +2620,31 @@ void FApplication::RenderUI()
         //    }
         //}
 
-        bool bPathTracing = RendererConfig.bEnablePathTracing;
-        ImGui::Separator();
-        if (ImGui::Checkbox("Path Tracing", &bPathTracing))
+		ImGui::Separator();
+        if (ImGui::Checkbox("GTAO", &RendererConfig.bEnableGtao))
         {
-            if (bPathTracing && !bRayTracingSupported)
-            {
-                RendererConfig.bEnablePathTracing = false;
-                LogWarning("Path tracing requested, but DXR is not supported. Disabling path tracing.");
-            }
-            else
-            {
-                RendererConfig.bEnablePathTracing = bPathTracing;
-            }
-
-            SyncRendererPathTracingConfig();
+			SyncRendererGtaoConfig();
         }
 
-        if (RendererConfig.bEnablePathTracing)
+        if (RendererConfig.bEnableGtao)
         {
-            ImGui::SameLine();
-            if (ImGui::Checkbox("Accumulation", &RendererConfig.bEnablePathTracingAccumulation))
-            {
-                SyncRendererPathTracingConfig();
-            }
+			ImGui::SameLine();
+			if (ImGui::Checkbox("GTAO Jitter", &RendererConfig.bEnableGtaoJitter))
+			{
+				SyncRendererGtaoConfig();
+			}
 
-		    ImGui::SameLine();
-		    if (ImGui::Checkbox("PT GGX VNDF", &RendererConfig.bEnablePathTracingVndf))
-		    {
-			    SyncRendererPathTracingConfig();
-		    }
+			if (ImGui::SliderFloat("GTAO Radius", &RendererConfig.GtaoRadius, 0.05f, 3.0f, "%.2f"))
+			{
+				SyncRendererGtaoConfig();
+			}
 
-            int PathTracingMaxBounces = static_cast<int>(RendererConfig.PathTracingMaxBounces);
-            if (ImGui::SliderInt("Max Bounces", &PathTracingMaxBounces, 0, 16))
-            {
-                RendererConfig.PathTracingMaxBounces = static_cast<uint32_t>(PathTracingMaxBounces);
-                SyncRendererPathTracingConfig();
-            }
-
-            // Path Tracing Debug Mode
-            const char* DebugModeNames[] = {
-                "Normal PT",
-                "GBuffer Albedo",
-                "First Hit Albedo",
-                "Texture Index Hash",
-                "Direct Light",
-                "Diffuse Probability",
-                "Hit/Miss Mask",
-                "Throughput Over Pdf",
-                "Firefly Metric",
-                "First Hit Distance",
-                "Sky Miss Contribution",
-                "First Hit NdotV",
-                "Bounce1 NdotV",
-                "Indirect Irradiance"
-            };
-            static_assert(IM_ARRAYSIZE(DebugModeNames) == PATH_TRACING_DEBUG_MAX + 1);
-            int CurrentDebugMode = 0;
-            if (DeferredRenderer)
-            {
-                CurrentDebugMode = DeferredRenderer->GetPathTracing()->GetDebugMode();
-            }
-            if (ImGui::Combo("PT Debug Mode", &CurrentDebugMode, DebugModeNames, IM_ARRAYSIZE(DebugModeNames)))
-            {
-                if (DeferredRenderer)
-                {
-                    DeferredRenderer->GetPathTracing()->SetDebugMode(CurrentDebugMode);
-                }
-            }
+			if (ImGui::SliderFloat("GTAO Thickness", &RendererConfig.GtaoThickness, 0.0f, 1.0f, "%.2f"))
+			{
+				SyncRendererGtaoConfig();
+			}
         }
-
+        
 		//if (ImGui::Checkbox("Section Pix Events", &RendererConfig.bEnableSectionPixEvents))
 		//{
 		//	SetSectionPixEventsEnabled(RendererConfig.bEnableSectionPixEvents);
