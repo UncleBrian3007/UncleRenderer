@@ -254,11 +254,9 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::CasSharpness, { "CasSharpness" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableAutoExposure, { "EnableAutoExposure", "AutoExposure" });
     ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIDebugMode, 0u, 9u, { "SparseSdfGIDebugMode" });
-    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGISdfBuildMode, 0u, 1u, { "SparseSdfGISdfBuildMode" });
     ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGICascadeCount, 1u, 1u, { "SparseSdfGICascadeCount" });
     ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIMaxBrickTriangleReferences, 1024u * 1024u, 32u * 1024u * 1024u, { "SparseSdfGIMaxBrickTriangleReferences" });
-    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIDebugSolveGroupBudget, 0u, 0xFFFFFFFFu, { "SparseSdfGIDebugSolveGroupBudget" });
-    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIDebugEmitTriangleBudget, 0u, 0xFFFFFFFFu, { "SparseSdfGIDebugEmitTriangleBudget" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIMaxScatterBricks, 4096u, 64u * 64u * 64u, { "SparseSdfGIMaxScatterBricks" });
     ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIBaseVoxelSize, { "SparseSdfGIBaseVoxelSize" });
     ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGICascadeScale, 1.01f, { "SparseSdfGICascadeScale" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGITraceHalfResolution, { "SparseSdfGITraceHalfResolution" });

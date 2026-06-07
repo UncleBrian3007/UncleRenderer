@@ -2046,16 +2046,6 @@ void FApplication::RenderUI()
                 SyncDeferredSparseSdfGIConfig();
             }
 
-            static const char* SparseSdfGIBuildModeItems[] = { "Legacy Eikonal", "Exact Shared Border" };
-            int SparseSdfGIBuildModeIndex = static_cast<int>(std::clamp(RendererConfig.SparseSdfGISdfBuildMode, 0u, 1u));
-            ImGui::SetNextItemWidth(160.0f);
-            if (ImGui::Combo("SDF Build Mode", &SparseSdfGIBuildModeIndex, SparseSdfGIBuildModeItems, IM_ARRAYSIZE(SparseSdfGIBuildModeItems)))
-            {
-                RendererConfig.SparseSdfGISdfBuildMode = static_cast<uint32_t>(SparseSdfGIBuildModeIndex);
-                UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGISdfBuildMode", std::to_string(RendererConfig.SparseSdfGISdfBuildMode));
-                SyncDeferredSparseSdfGIConfig();
-            }
-
             if (ImGui::Checkbox("SDF Hierarchical Trace", &RendererConfig.bSparseSdfGIUseHierarchicalTrace))
             {
                 UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIUseHierarchicalTrace", RendererConfig.bSparseSdfGIUseHierarchicalTrace ? "true" : "false");
@@ -2089,6 +2079,18 @@ void FApplication::RenderUI()
             {
                 RendererConfig.SparseSdfGIMaxBrickTriangleReferences = static_cast<uint32_t>(std::clamp(SparseSdfGIMaxBrickRefsM, 1, 32)) * 1024u * 1024u;
                 UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIMaxBrickTriangleReferences", std::to_string(RendererConfig.SparseSdfGIMaxBrickTriangleReferences));
+                SyncDeferredSparseSdfGIConfig();
+            }
+
+            int SparseSdfGIMaxScatterBricksK = static_cast<int>(std::clamp(
+                RendererConfig.SparseSdfGIMaxScatterBricks / 1024u,
+                4u,
+                256u));
+            ImGui::SetNextItemWidth(160.0f);
+            if (ImGui::SliderInt("Max Scatter Bricks (K)", &SparseSdfGIMaxScatterBricksK, 4, 256))
+            {
+                RendererConfig.SparseSdfGIMaxScatterBricks = static_cast<uint32_t>(std::clamp(SparseSdfGIMaxScatterBricksK, 4, 256)) * 1024u;
+                UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIMaxScatterBricks", std::to_string(RendererConfig.SparseSdfGIMaxScatterBricks));
                 SyncDeferredSparseSdfGIConfig();
             }
 

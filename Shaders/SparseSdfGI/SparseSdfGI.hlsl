@@ -11,7 +11,7 @@ cbuffer SparseSdfGIConstants : register(b1)
     uint AtlasResolution;
     uint BrickGridResolution;
     uint BrickVoxelResolution;
-    uint SdfBuildMode;
+    uint Reserved0;
     uint FrameIndex;
     uint DebugMode;
     uint Enabled;
@@ -40,37 +40,98 @@ cbuffer SparseSdfGIConstants : register(b1)
     uint UseHierarchicalTrace;
 };
 
-#if defined(SPARSE_SDF_GI_REFERENCE_INIT_SHADER)
-cbuffer SparseSdfGIReferenceInitBindlessConstants : register(b2)
+#if defined(SPARSE_SDF_GI_SCATTER_INIT_SHADER)
+cbuffer SparseSdfGIScatterInitBindlessConstants : register(b2)
 {
     uint SdfAtlasUavIndex;
     uint CascadeBrickMapUavIndex;
     uint BrickMetadataUavIndex;
-    uint ReferenceHeadsUavIndex;
-    uint ReferenceCountersUavIndex;
+    uint ScatterTouchedBricksUavIndex;
+    uint ScatterCountersUavIndex;
     uint ReferenceStatsUavIndex;
 };
-#elif defined(SPARSE_SDF_GI_REFERENCE_EMIT_SHADER)
-cbuffer SparseSdfGIReferenceEmitBindlessConstants : register(b2)
+#elif defined(SPARSE_SDF_GI_SCATTER_PREPARE_SHADER)
+cbuffer SparseSdfGIScatterPrepareBindlessConstants : register(b2)
 {
     uint PositionBufferIndex;
     uint IndexBufferIndex;
-    uint ReferenceTrianglePoolUavIndex;
-    uint ReferenceHeadsUavIndex;
-    uint ReferenceNodesUavIndex;
-    uint ReferenceCountersUavIndex;
-    uint OccupiedBrickListUavIndex;
+    uint ScatterJobsUavIndex;
+    uint ScatterCountersUavIndex;
 };
-#elif defined(SPARSE_SDF_GI_REFERENCE_SOLVE_SHADER)
-cbuffer SparseSdfGIReferenceSolveBindlessConstants : register(b2)
+#elif defined(SPARSE_SDF_GI_SCATTER_SCAN_JOBS_SHADER)
+cbuffer SparseSdfGIScatterScanJobsBindlessConstants : register(b2)
+{
+    uint ScatterJobsSrvIndex;
+    uint ScatterJobOffsetsUavIndex;
+    uint ScatterGroupSumsUavIndex;
+    uint ScatterCountersSrvIndex;
+};
+#elif defined(SPARSE_SDF_GI_SCATTER_SCAN_GROUPS_SHADER)
+cbuffer SparseSdfGIScatterScanGroupsBindlessConstants : register(b2)
+{
+    uint ScatterInputGroupSumsSrvIndex;
+    uint ScatterGroupOffsetsUavIndex;
+    uint ScatterOutputGroupSumsUavIndex;
+};
+#elif defined(SPARSE_SDF_GI_SCATTER_SCAN_GROUP2_SHADER)
+cbuffer SparseSdfGIScatterScanGroup2BindlessConstants : register(b2)
+{
+    uint ScatterGroup2SumsSrvIndex;
+    uint ScatterGroup2OffsetsUavIndex;
+    uint ScatterCountersUavIndex;
+};
+#elif defined(SPARSE_SDF_GI_SCATTER_ADD_OFFSETS_SHADER)
+cbuffer SparseSdfGIScatterAddOffsetsBindlessConstants : register(b2)
+{
+    uint ScatterJobOffsetsUavIndex;
+    uint ScatterGroupOffsetsSrvIndex;
+    uint ScatterGroup2OffsetsSrvIndex;
+    uint ScatterCountersSrvIndex;
+};
+#elif defined(SPARSE_SDF_GI_SCATTER_BUILD_SAMPLE_ARGS_SHADER) || defined(SPARSE_SDF_GI_SCATTER_BUILD_BRICK_ARGS_SHADER)
+cbuffer SparseSdfGIScatterBuildArgsBindlessConstants : register(b2)
+{
+    uint ScatterCountersSrvIndex;
+    uint ScatterDispatchArgsUavIndex;
+};
+#elif defined(SPARSE_SDF_GI_SCATTER_MARK_TOUCHED_SHADER)
+cbuffer SparseSdfGIScatterMarkTouchedBindlessConstants : register(b2)
+{
+    uint ScatterJobsSrvIndex;
+    uint ScatterJobOffsetsSrvIndex;
+    uint ScatterTouchedBricksUavIndex;
+    uint ScatterCountersSrvIndex;
+};
+#elif defined(SPARSE_SDF_GI_SCATTER_ALLOCATE_BRICKS_SHADER)
+cbuffer SparseSdfGIScatterAllocateBindlessConstants : register(b2)
+{
+    uint ScatterTouchedBricksSrvIndex;
+    uint CascadeBrickMapUavIndex;
+    uint ScatterBrickListUavIndex;
+    uint ScatterCountersUavIndex;
+};
+#elif defined(SPARSE_SDF_GI_SCATTER_CLEAR_BRICK_STORAGE_SHADER)
+cbuffer SparseSdfGIScatterClearBrickBindlessConstants : register(b2)
+{
+    uint ScatterBrickSdfUavIndex;
+};
+#elif defined(SPARSE_SDF_GI_SCATTER_SDF_SAMPLES_SHADER)
+cbuffer SparseSdfGIScatterSamplesBindlessConstants : register(b2)
+{
+    uint ScatterJobsSrvIndex;
+    uint ScatterJobOffsetsSrvIndex;
+    uint CascadeBrickMapSrvIndex;
+    uint ScatterBrickSdfUavIndex;
+    uint ScatterCountersSrvIndex;
+};
+#elif defined(SPARSE_SDF_GI_SCATTER_FINALIZE_BRICKS_SHADER)
+cbuffer SparseSdfGIScatterFinalizeBindlessConstants : register(b2)
 {
     uint SdfAtlasUavIndex;
     uint BrickMetadataUavIndex;
-    uint ReferenceTrianglePoolSrvIndex;
-    uint ReferenceHeadsSrvIndex;
-    uint ReferenceNodesSrvIndex;
-    uint ReferenceCountersSrvIndex;
-    uint OccupiedBrickListSrvIndex;
+    uint ScatterBrickListSrvIndex;
+    uint ScatterBrickSdfSrvIndex;
+    uint ScatterCountersSrvIndex;
     uint ReferenceStatsUavIndex;
 };
 #elif defined(SPARSE_SDF_GI_BUILD_TRACE_HIERARCHY_BOTTOM_SHADER)
@@ -189,14 +250,23 @@ static const uint SPARSE_SDF_GI_INVALID_BRICK_ID = 0xffffffffu;
 static const uint SPARSE_SDF_GI_INVALID_REFERENCE = 0xffffffffu;
 uint GetTraceBlueNoiseSobolTextureIndex() { return TrianglePoolCapacity; }
 uint GetTraceBlueNoiseScramblingRankingTextureIndex() { return BuildWorkOffset; }
-static const uint SPARSE_SDF_GI_BUILD_MODE_LEGACY_EIKONAL = 0u;
-static const uint SPARSE_SDF_GI_BUILD_MODE_EXACT_SHARED_BORDER = 1u;
 // referenceCounters[] slot meanings (shared by init/emit/solve).
 static const uint SPARSE_SDF_GI_REF_COUNTER_TRIANGLE = 0u;
 static const uint SPARSE_SDF_GI_REF_COUNTER_REFERENCE = 1u;
 static const uint SPARSE_SDF_GI_REF_COUNTER_TRIANGLE_OVERFLOW = 2u;
 static const uint SPARSE_SDF_GI_REF_COUNTER_REFERENCE_OVERFLOW = 3u;
 static const uint SPARSE_SDF_GI_REF_COUNTER_OCCUPIED_BRICK = 4u;
+static const uint SPARSE_SDF_GI_SCATTER_COUNTER_JOB = 0u;
+static const uint SPARSE_SDF_GI_SCATTER_COUNTER_SAMPLE = 1u;
+static const uint SPARSE_SDF_GI_SCATTER_COUNTER_ALLOCATED_BRICK = 2u;
+static const uint SPARSE_SDF_GI_SCATTER_COUNTER_JOB_OVERFLOW = 3u;
+static const uint SPARSE_SDF_GI_SCATTER_COUNTER_BRICK_OVERFLOW = 4u;
+static const uint SPARSE_SDF_GI_SCATTER_SCAN_GROUP_SIZE = 256u;
+static const uint SPARSE_SDF_GI_SCATTER_SAMPLE_GROUP_SIZE = 128u;
+static const uint SPARSE_SDF_GI_SCATTER_BRICK_GROUP_SIZE = 512u;
+static const uint SPARSE_SDF_GI_SCATTER_DISPATCH_GROUP_LIMIT = 65535u;
+static const uint SPARSE_SDF_GI_SCATTER_DISTANCE_FAR_UINT = 0x00ffffffu;
+static const float SPARSE_SDF_GI_SCATTER_BAND_VOXELS = 3.0f;
 static const uint SPARSE_SDF_GI_BRICK_LOCAL_DIM = 8u;
 static const uint SPARSE_SDF_GI_BRICK_INTERVAL_DIM_EXACT = SPARSE_SDF_GI_BRICK_LOCAL_DIM - 1u;
 static const uint SPARSE_SDF_GI_BRICK_LOCAL_DIM_LOG2 = 3u;
@@ -250,6 +320,15 @@ struct FSparseSdfGITraceHierarchyNode
     uint Reserved;
 };
 
+struct FSparseSdfGIScatterJob
+{
+    float4 P0;
+    float4 P1;
+    float4 P2;
+    uint4 PairMinSampleCount;
+    uint4 PairCount;
+};
+
 static const float SPARSE_SDF_GI_PROBE_TEMPORAL_MAX_SAMPLES = 32.0f;
 static const float SPARSE_SDF_GI_PROBE_TEMPORAL_MIN_ALPHA = 0.05f;
 
@@ -269,6 +348,7 @@ groupshared uint gs_MetadataMaxX[SPARSE_SDF_GI_EIKONAL_LDS_COUNT];
 groupshared uint gs_MetadataMaxY[SPARSE_SDF_GI_EIKONAL_LDS_COUNT];
 groupshared uint gs_MetadataMaxZ[SPARSE_SDF_GI_EIKONAL_LDS_COUNT];
 groupshared uint gs_MetadataOccupied[SPARSE_SDF_GI_EIKONAL_LDS_COUNT];
+groupshared uint gs_ScatterScan[SPARSE_SDF_GI_SCATTER_SCAN_GROUP_SIZE];
 
 // Cooperative triangle cache for the brick solve. The per-brick reference list is gathered into LDS
 // once (by lane 0) and then consumed by all 512 voxel threads, instead of every thread independently
@@ -298,7 +378,7 @@ uint3 UnflattenBrickLocalCoord(uint index)
 
 bool IsExactSharedBorderSdf()
 {
-    return SdfBuildMode == SPARSE_SDF_GI_BUILD_MODE_EXACT_SHARED_BORDER;
+    return true;
 }
 
 uint GetBrickIntervalResolution()
@@ -479,22 +559,116 @@ uint GetSparseSdfGIBrickCapacity()
     return BrickGridResolution * BrickGridResolution * BrickGridResolution;
 }
 
-#if defined(SPARSE_SDF_GI_REFERENCE_SOLVE_SHADER)
-void StoreSparseSdfGIReferenceStats(StructuredBuffer<uint> referenceCounters)
+uint GetScatterBrickCapacity()
 {
-    if (ReferenceStatsUavIndex == 0xffffffffu)
+    return MaxBrickTriangleReferences;
+}
+
+uint GetScatterPairForFirstLogicalSample(uint logicalSample)
+{
+    return logicalSample + ((logicalSample > 0u) ? ((logicalSample - 1u) / SPARSE_SDF_GI_BRICK_INTERVAL_DIM_EXACT) : 0u);
+}
+
+uint GetScatterPairForLastLogicalSample(uint logicalSample)
+{
+    return logicalSample + min(logicalSample / SPARSE_SDF_GI_BRICK_INTERVAL_DIM_EXACT, BrickGridResolution - 1u);
+}
+
+void DecodeScatterPair(uint pair, out uint brickCoord, out uint localCoord)
+{
+    brickCoord = min(pair / SPARSE_SDF_GI_BRICK_LOCAL_DIM, BrickGridResolution - 1u);
+    localCoord = pair - brickCoord * SPARSE_SDF_GI_BRICK_LOCAL_DIM;
+}
+
+uint EncodeScatterDistanceUint(float distance)
+{
+    const float normalized = saturate(distance / max(GetSdfWorldDistanceScale(), 1e-5f));
+    return min((uint)round(normalized * (float)SPARSE_SDF_GI_SCATTER_DISTANCE_FAR_UINT), SPARSE_SDF_GI_SCATTER_DISTANCE_FAR_UINT);
+}
+
+float DecodeScatterDistanceUint(uint encoded)
+{
+    return (float)min(encoded, SPARSE_SDF_GI_SCATTER_DISTANCE_FAR_UINT) / (float)SPARSE_SDF_GI_SCATTER_DISTANCE_FAR_UINT;
+}
+
+uint GetScatterLinearDispatchId(uint3 groupId, uint groupThreadIndex, uint groupSize)
+{
+    const uint groupLinear = groupId.x
+        + groupId.y * SPARSE_SDF_GI_SCATTER_DISPATCH_GROUP_LIMIT
+        + groupId.z * SPARSE_SDF_GI_SCATTER_DISPATCH_GROUP_LIMIT * SPARSE_SDF_GI_SCATTER_DISPATCH_GROUP_LIMIT;
+    return groupLinear * groupSize + groupThreadIndex;
+}
+
+void StoreScatterDispatchArgs(RWByteAddressBuffer args, uint itemCount, uint groupSize)
+{
+    const uint groupCount = (itemCount + groupSize - 1u) / groupSize;
+    const uint dispatchX = min(groupCount, SPARSE_SDF_GI_SCATTER_DISPATCH_GROUP_LIMIT);
+    const uint dispatchY = (groupCount + SPARSE_SDF_GI_SCATTER_DISPATCH_GROUP_LIMIT - 1u) / SPARSE_SDF_GI_SCATTER_DISPATCH_GROUP_LIMIT;
+    args.Store(0u, dispatchX);
+    args.Store(4u, max(dispatchY, 1u));
+    args.Store(8u, 1u);
+}
+
+uint ScanScatterJobOffsets(StructuredBuffer<uint> offsets, uint jobCount, uint sampleIndex)
+{
+    uint lo = 0u;
+    uint hi = jobCount;
+    [loop]
+    while (lo < hi)
     {
-        return;
+        const uint mid = (lo + hi) >> 1u;
+        const uint endOffset = offsets[mid];
+        if (sampleIndex < endOffset)
+        {
+            hi = mid;
+        }
+        else
+        {
+            lo = mid + 1u;
+        }
+    }
+    return min(lo, max(jobCount, 1u) - 1u);
+}
+
+bool ResolveScatterSample(
+    StructuredBuffer<FSparseSdfGIScatterJob> jobs,
+    StructuredBuffer<uint> offsets,
+    uint jobCount,
+    uint sampleCount,
+    uint sampleIndex,
+    out FSparseSdfGIScatterJob job,
+    out uint3 brickCoord,
+    out uint3 localCoord,
+    out float3 worldPosition)
+{
+    if (jobCount == 0u || sampleIndex >= sampleCount)
+    {
+        return false;
     }
 
-    RWStructuredBuffer<uint> referenceStats = ResourceDescriptorHeap[ReferenceStatsUavIndex];
-    referenceStats[SPARSE_SDF_GI_REF_COUNTER_TRIANGLE] = referenceCounters[SPARSE_SDF_GI_REF_COUNTER_TRIANGLE];
-    referenceStats[SPARSE_SDF_GI_REF_COUNTER_REFERENCE] = referenceCounters[SPARSE_SDF_GI_REF_COUNTER_REFERENCE];
-    referenceStats[SPARSE_SDF_GI_REF_COUNTER_TRIANGLE_OVERFLOW] = referenceCounters[SPARSE_SDF_GI_REF_COUNTER_TRIANGLE_OVERFLOW];
-    referenceStats[SPARSE_SDF_GI_REF_COUNTER_REFERENCE_OVERFLOW] = referenceCounters[SPARSE_SDF_GI_REF_COUNTER_REFERENCE_OVERFLOW];
-    referenceStats[SPARSE_SDF_GI_REF_COUNTER_OCCUPIED_BRICK] = referenceCounters[SPARSE_SDF_GI_REF_COUNTER_OCCUPIED_BRICK];
+    const uint jobIndex = ScanScatterJobOffsets(offsets, jobCount, sampleIndex);
+    job = jobs[jobIndex];
+    const uint jobStart = (jobIndex == 0u) ? 0u : offsets[jobIndex - 1u];
+    uint localSample = sampleIndex - jobStart;
+    const uint cx = max(job.PairCount.x, 1u);
+    const uint cy = max(job.PairCount.y, 1u);
+    const uint pairX = job.PairMinSampleCount.x + (localSample % cx);
+    localSample /= cx;
+    const uint pairY = job.PairMinSampleCount.y + (localSample % cy);
+    localSample /= cy;
+    const uint pairZ = job.PairMinSampleCount.z + localSample;
+
+    DecodeScatterPair(pairX, brickCoord.x, localCoord.x);
+    DecodeScatterPair(pairY, brickCoord.y, localCoord.y);
+    DecodeScatterPair(pairZ, brickCoord.z, localCoord.z);
+    if (any(brickCoord >= BrickGridResolution.xxx) || any(localCoord >= SPARSE_SDF_GI_BRICK_LOCAL_DIM.xxx))
+    {
+        return false;
+    }
+
+    worldPosition = CascadeMin + ((float3)(brickCoord * SPARSE_SDF_GI_BRICK_INTERVAL_DIM_EXACT + localCoord) * VoxelSize);
+    return true;
 }
-#endif
 
 uint PackBrickLocalAabb(uint3 localMin, uint3 localMax)
 {
@@ -520,42 +694,6 @@ uint3 UnpackBrickLocalAabbMax(uint packedAabb)
         (packedAabb >> 12u) & 0xfu,
         (packedAabb >> 16u) & 0xfu,
         (packedAabb >> 20u) & 0xfu);
-}
-
-float LoadSdfBrickVoxel(Texture3D<float> sdfAtlas, StructuredBuffer<uint> cascadeBrickMap, int3 globalVoxelCoord)
-{
-    if (any(globalVoxelCoord < 0) || any(globalVoxelCoord >= (int)AtlasResolution))
-    {
-        return 1.0f;
-    }
-
-    const uint3 brickCoord = (uint3)globalVoxelCoord / BrickVoxelResolution;
-    if (any(brickCoord >= BrickGridResolution.xxx))
-    {
-        return 1.0f;
-    }
-
-    const uint brickMapIndex = LinearizeBrickCoord(brickCoord);
-    const uint brickCount = BrickGridResolution * BrickGridResolution * BrickGridResolution;
-    if (brickMapIndex >= brickCount)
-    {
-        return 1.0f;
-    }
-
-    const uint brickId = cascadeBrickMap[brickMapIndex];
-    if (brickId == SPARSE_SDF_GI_INVALID_BRICK_ID || brickId >= brickCount)
-    {
-        return 1.0f;
-    }
-
-    const uint3 localCoord = (uint3)globalVoxelCoord - brickCoord * BrickVoxelResolution;
-    const uint3 atlasCoord = BrickIdToBrickCoord(brickId) * BrickVoxelResolution + localCoord;
-    if (any(atlasCoord >= AtlasResolution.xxx))
-    {
-        return 1.0f;
-    }
-
-    return sdfAtlas.Load(int4((int3)atlasCoord, 0)).r;
 }
 
 float LoadSdfBrickLocal(Texture3D<float> sdfAtlas, StructuredBuffer<uint> cascadeBrickMap, uint3 brickCoord, uint3 localCoord)
@@ -600,31 +738,6 @@ void GetExactSharedBorderCell(float3 worldPosition, out uint3 brickCoord, out ui
     valid = valid && all(brickCoord < BrickGridResolution.xxx) && all(localCoord < SPARSE_SDF_GI_BRICK_INTERVAL_DIM_EXACT.xxx);
 }
 
-float SampleSdfAtlasLegacy(Texture3D<float> sdfAtlas, StructuredBuffer<uint> cascadeBrickMap, float3 worldPosition)
-{
-    const float3 atlasFloat = (worldPosition - CascadeMin) / VoxelSize;
-    const float3 sampleCoord = atlasFloat - 0.5f.xxx;
-    const int3 baseCoord = (int3)floor(sampleCoord);
-    const float3 fracCoord = saturate(sampleCoord - (float3)baseCoord);
-
-    const float c000 = LoadSdfBrickVoxel(sdfAtlas, cascadeBrickMap, baseCoord + int3(0, 0, 0));
-    const float c100 = LoadSdfBrickVoxel(sdfAtlas, cascadeBrickMap, baseCoord + int3(1, 0, 0));
-    const float c010 = LoadSdfBrickVoxel(sdfAtlas, cascadeBrickMap, baseCoord + int3(0, 1, 0));
-    const float c110 = LoadSdfBrickVoxel(sdfAtlas, cascadeBrickMap, baseCoord + int3(1, 1, 0));
-    const float c001 = LoadSdfBrickVoxel(sdfAtlas, cascadeBrickMap, baseCoord + int3(0, 0, 1));
-    const float c101 = LoadSdfBrickVoxel(sdfAtlas, cascadeBrickMap, baseCoord + int3(1, 0, 1));
-    const float c011 = LoadSdfBrickVoxel(sdfAtlas, cascadeBrickMap, baseCoord + int3(0, 1, 1));
-    const float c111 = LoadSdfBrickVoxel(sdfAtlas, cascadeBrickMap, baseCoord + int3(1, 1, 1));
-
-    const float c00 = lerp(c000, c100, fracCoord.x);
-    const float c10 = lerp(c010, c110, fracCoord.x);
-    const float c01 = lerp(c001, c101, fracCoord.x);
-    const float c11 = lerp(c011, c111, fracCoord.x);
-    const float c0 = lerp(c00, c10, fracCoord.y);
-    const float c1 = lerp(c01, c11, fracCoord.y);
-    return lerp(c0, c1, fracCoord.z);
-}
-
 float SampleSdfAtlasExactSharedBorder(Texture3D<float> sdfAtlas, StructuredBuffer<uint> cascadeBrickMap, float3 worldPosition)
 {
     uint3 brickCoord = uint3(0u, 0u, 0u);
@@ -657,20 +770,7 @@ float SampleSdfAtlasExactSharedBorder(Texture3D<float> sdfAtlas, StructuredBuffe
 
 float SampleSdfAtlas(Texture3D<float> sdfAtlas, StructuredBuffer<uint> cascadeBrickMap, float3 worldPosition)
 {
-    return IsExactSharedBorderSdf()
-        ? SampleSdfAtlasExactSharedBorder(sdfAtlas, cascadeBrickMap, worldPosition)
-        : SampleSdfAtlasLegacy(sdfAtlas, cascadeBrickMap, worldPosition);
-}
-
-float SampleSdfAtlasPointLegacy(Texture3D<float> sdfAtlas, StructuredBuffer<uint> cascadeBrickMap, float3 worldPosition)
-{
-    const float3 atlasFloat = (worldPosition - CascadeMin) / VoxelSize;
-    if (any(atlasFloat < 0.0f.xxx) || any(atlasFloat >= (float)AtlasResolution))
-    {
-        return 1.0f;
-    }
-
-    return LoadSdfBrickVoxel(sdfAtlas, cascadeBrickMap, (int3)floor(atlasFloat));
+    return SampleSdfAtlasExactSharedBorder(sdfAtlas, cascadeBrickMap, worldPosition);
 }
 
 float SampleSdfAtlasPointExactSharedBorder(Texture3D<float> sdfAtlas, StructuredBuffer<uint> cascadeBrickMap, float3 worldPosition)
@@ -690,9 +790,7 @@ float SampleSdfAtlasPointExactSharedBorder(Texture3D<float> sdfAtlas, Structured
 
 float SampleSdfAtlasPoint(Texture3D<float> sdfAtlas, StructuredBuffer<uint> cascadeBrickMap, float3 worldPosition)
 {
-    return IsExactSharedBorderSdf()
-        ? SampleSdfAtlasPointExactSharedBorder(sdfAtlas, cascadeBrickMap, worldPosition)
-        : SampleSdfAtlasPointLegacy(sdfAtlas, cascadeBrickMap, worldPosition);
+    return SampleSdfAtlasPointExactSharedBorder(sdfAtlas, cascadeBrickMap, worldPosition);
 }
 
 float SampleSdfAtlasDebugSurface(Texture3D<float> sdfAtlas, StructuredBuffer<uint> cascadeBrickMap, float3 worldPosition)
@@ -1288,7 +1386,7 @@ bool TraceSdfHierarchicalRaw(
             break;
         }
 
-        if (!advancedInsideTop)
+        if (!advancedInsideTop && travel <= endT)
         {
             travel = topCellExit + epsilon;
         }
@@ -1381,60 +1479,6 @@ bool TraceSdfVisibility(
     return false;
 }
 
-struct FSparseSdfGITrianglePoolEntry
-{
-    float4 P0;
-    float4 P1;
-    float4 P2;
-};
-
-struct FSparseSdfGIBrickReference
-{
-    uint TriangleId;
-    uint Next;
-    uint Reserved0;
-    uint Reserved1; 
-};
-
-#if defined(SPARSE_SDF_GI_REFERENCE_INIT_SHADER)
-[numthreads(8, 8, 8)]
-void CSInitReferenceBuild(uint3 dispatchThreadId : SV_DispatchThreadID)
-{
-    RWTexture3D<float> sdfAtlas = ResourceDescriptorHeap[SdfAtlasUavIndex];
-    RWStructuredBuffer<uint> cascadeBrickMap = ResourceDescriptorHeap[CascadeBrickMapUavIndex];
-    RWStructuredBuffer<uint4> brickMetadata = ResourceDescriptorHeap[BrickMetadataUavIndex];
-    RWStructuredBuffer<uint> referenceHeads = ResourceDescriptorHeap[ReferenceHeadsUavIndex];
-    RWStructuredBuffer<uint> referenceCounters = ResourceDescriptorHeap[ReferenceCountersUavIndex];
-    RWStructuredBuffer<uint> referenceStats = ResourceDescriptorHeap[ReferenceStatsUavIndex];
-
-    if (all(dispatchThreadId < AtlasResolution.xxx))
-    {
-        sdfAtlas[dispatchThreadId] = 1.0f;
-    }
-
-    if (all(dispatchThreadId < BrickGridResolution.xxx))
-    {
-        const uint brickMapIndex = LinearizeBrickCoord(dispatchThreadId);
-        cascadeBrickMap[brickMapIndex] = brickMapIndex;
-        brickMetadata[brickMapIndex] = uint4(0u, 0u, 0u, 0u);
-        referenceHeads[brickMapIndex] = SPARSE_SDF_GI_INVALID_REFERENCE;
-    }
-
-    if (all(dispatchThreadId == 0u.xxx))
-    {
-        referenceCounters[SPARSE_SDF_GI_REF_COUNTER_TRIANGLE] = 0u;
-        referenceCounters[SPARSE_SDF_GI_REF_COUNTER_REFERENCE] = 0u;
-        referenceCounters[SPARSE_SDF_GI_REF_COUNTER_TRIANGLE_OVERFLOW] = 0u;
-        referenceCounters[SPARSE_SDF_GI_REF_COUNTER_REFERENCE_OVERFLOW] = 0u;
-        referenceCounters[SPARSE_SDF_GI_REF_COUNTER_OCCUPIED_BRICK] = 0u;
-        referenceStats[SPARSE_SDF_GI_REF_COUNTER_TRIANGLE] = 0u;
-        referenceStats[SPARSE_SDF_GI_REF_COUNTER_REFERENCE] = 0u;
-        referenceStats[SPARSE_SDF_GI_REF_COUNTER_TRIANGLE_OVERFLOW] = 0u;
-        referenceStats[SPARSE_SDF_GI_REF_COUNTER_REFERENCE_OVERFLOW] = 0u;
-        referenceStats[SPARSE_SDF_GI_REF_COUNTER_OCCUPIED_BRICK] = 0u;
-    }
-}
-#endif
 
 #if defined(SPARSE_SDF_GI_REFERENCE_STATS_SHADER)
 [numthreads(1, 1, 1)]
@@ -1455,9 +1499,50 @@ void CSStoreReferenceStatsToGpuDebug(uint3 dispatchThreadId : SV_DispatchThreadI
 }
 #endif
 
-#if defined(SPARSE_SDF_GI_REFERENCE_EMIT_SHADER)
+#if defined(SPARSE_SDF_GI_SCATTER_INIT_SHADER)
+[numthreads(8, 8, 8)]
+void CSInitDistributedScatterBuild(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    RWTexture3D<float> sdfAtlas = ResourceDescriptorHeap[SdfAtlasUavIndex];
+    RWStructuredBuffer<uint> cascadeBrickMap = ResourceDescriptorHeap[CascadeBrickMapUavIndex];
+    RWStructuredBuffer<uint4> brickMetadata = ResourceDescriptorHeap[BrickMetadataUavIndex];
+    RWStructuredBuffer<uint> touchedBricks = ResourceDescriptorHeap[ScatterTouchedBricksUavIndex];
+    RWStructuredBuffer<uint> counters = ResourceDescriptorHeap[ScatterCountersUavIndex];
+    RWStructuredBuffer<uint> referenceStats = ResourceDescriptorHeap[ReferenceStatsUavIndex];
+
+    if (all(dispatchThreadId < AtlasResolution.xxx))
+    {
+        sdfAtlas[dispatchThreadId] = 1.0f;
+    }
+
+    if (all(dispatchThreadId < BrickGridResolution.xxx))
+    {
+        const uint brickIndex = LinearizeBrickCoord(dispatchThreadId);
+        cascadeBrickMap[brickIndex] = SPARSE_SDF_GI_INVALID_BRICK_ID;
+        brickMetadata[brickIndex] = uint4(0u, 0u, 0u, 0u);
+        touchedBricks[brickIndex] = 0u;
+    }
+
+    if (all(dispatchThreadId == 0u.xxx))
+    {
+        [unroll]
+        for (uint i = 0u; i < 8u; ++i)
+        {
+            counters[i] = 0u;
+        }
+
+        referenceStats[SPARSE_SDF_GI_REF_COUNTER_TRIANGLE] = 0u;
+        referenceStats[SPARSE_SDF_GI_REF_COUNTER_REFERENCE] = 0u;
+        referenceStats[SPARSE_SDF_GI_REF_COUNTER_TRIANGLE_OVERFLOW] = 0u;
+        referenceStats[SPARSE_SDF_GI_REF_COUNTER_REFERENCE_OVERFLOW] = 0u;
+        referenceStats[SPARSE_SDF_GI_REF_COUNTER_OCCUPIED_BRICK] = 0u;
+    }
+}
+#endif
+
+#if defined(SPARSE_SDF_GI_SCATTER_PREPARE_SHADER)
 [numthreads(64, 1, 1)]
-void CSEmitTriangleReferences(uint3 dispatchThreadId : SV_DispatchThreadID)
+void CSPrepareScatterJobs(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
     if (dispatchThreadId.x >= ModelTriangleCount)
     {
@@ -1466,11 +1551,8 @@ void CSEmitTriangleReferences(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     StructuredBuffer<float3> positions = ResourceDescriptorHeap[PositionBufferIndex];
     StructuredBuffer<uint> indices = ResourceDescriptorHeap[IndexBufferIndex];
-    RWStructuredBuffer<FSparseSdfGITrianglePoolEntry> trianglePool = ResourceDescriptorHeap[ReferenceTrianglePoolUavIndex];
-    RWStructuredBuffer<uint> referenceHeads = ResourceDescriptorHeap[ReferenceHeadsUavIndex];
-    RWStructuredBuffer<FSparseSdfGIBrickReference> references = ResourceDescriptorHeap[ReferenceNodesUavIndex];
-    RWStructuredBuffer<uint> referenceCounters = ResourceDescriptorHeap[ReferenceCountersUavIndex];
-    RWStructuredBuffer<uint> occupiedBrickList = ResourceDescriptorHeap[OccupiedBrickListUavIndex];
+    RWStructuredBuffer<FSparseSdfGIScatterJob> jobs = ResourceDescriptorHeap[ScatterJobsUavIndex];
+    RWStructuredBuffer<uint> counters = ResourceDescriptorHeap[ScatterCountersUavIndex];
 
     const uint triBase = ModelDrawIndexStart + dispatchThreadId.x * 3u;
     if (triBase + 2u >= ModelDrawIndexStart + ModelDrawIndexCount)
@@ -1483,225 +1565,357 @@ void CSEmitTriangleReferences(uint3 dispatchThreadId : SV_DispatchThreadID)
     const uint i2 = indices[triBase + 2u];
     if (max(i0, max(i1, i2)) >= BuildWorkOffset)
     {
-        InterlockedAdd(referenceCounters[SPARSE_SDF_GI_REF_COUNTER_TRIANGLE_OVERFLOW], 1u);
+        InterlockedAdd(counters[SPARSE_SDF_GI_SCATTER_COUNTER_JOB_OVERFLOW], 1u);
         return;
     }
 
     const float3 p0 = mul(float4(positions[i0], 1.0f), ModelWorld).xyz;
     const float3 p1 = mul(float4(positions[i1], 1.0f), ModelWorld).xyz;
     const float3 p2 = mul(float4(positions[i2], 1.0f), ModelWorld).xyz;
-
-    uint triangleId = 0u;
-    InterlockedAdd(referenceCounters[SPARSE_SDF_GI_REF_COUNTER_TRIANGLE], 1u, triangleId);
-    if (triangleId >= TrianglePoolCapacity)
-    {
-        InterlockedAdd(referenceCounters[SPARSE_SDF_GI_REF_COUNTER_TRIANGLE_OVERFLOW], 1u);
-        return;
-    }
-
-    trianglePool[triangleId].P0 = float4(p0, 0.0f);
-    trianglePool[triangleId].P1 = float4(p1, 0.0f);
-    trianglePool[triangleId].P2 = float4(p2, 0.0f);
-
-    const float surfaceBand = VoxelSize * SurfaceThicknessVoxels;
-    const float exactCoverageBand = VoxelSize * (float)SPARSE_SDF_GI_BRICK_INTERVAL_DIM_EXACT;
-    const float referenceBand = IsExactSharedBorderSdf() ? max(surfaceBand, exactCoverageBand) : surfaceBand;
-    const float3 triMinWorld = min(p0, min(p1, p2)) - referenceBand.xxx;
-    const float3 triMaxWorld = max(p0, max(p1, p2)) + referenceBand.xxx;
+    const float band = SPARSE_SDF_GI_SCATTER_BAND_VOXELS * VoxelSize;
+    const float3 triMinWorld = min(p0, min(p1, p2)) - band.xxx;
+    const float3 triMaxWorld = max(p0, max(p1, p2)) + band.xxx;
     const float3 cascadeMax = CascadeMin + CascadeExtent;
     if (any(triMaxWorld < CascadeMin) || any(triMinWorld > cascadeMax))
     {
         return;
     }
 
-    const float brickWorldExtent = max(VoxelSize * (float)GetBrickIntervalResolution(), 1e-5f);
-    const int3 minBrick = clamp((int3)floor((triMinWorld - CascadeMin) / brickWorldExtent), 0, (int)BrickGridResolution - 1);
-    const int3 maxBrick = clamp((int3)floor((triMaxWorld - CascadeMin) / brickWorldExtent), 0, (int)BrickGridResolution - 1);
-    if (any(maxBrick < minBrick))
+    const uint logicalMax = BrickGridResolution * SPARSE_SDF_GI_BRICK_INTERVAL_DIM_EXACT;
+    const int3 minLogical = clamp((int3)floor((triMinWorld - CascadeMin) / VoxelSize), 0, (int)logicalMax);
+    const int3 maxLogical = clamp((int3)ceil((triMaxWorld - CascadeMin) / VoxelSize), 0, (int)logicalMax);
+    if (any(maxLogical < minLogical))
     {
         return;
     }
 
-    const uint3 brickSpan = (uint3)(maxBrick - minBrick + 1);
-    const uint brickReferenceCount = brickSpan.x * brickSpan.y * brickSpan.z;
-    if (brickReferenceCount > SPARSE_SDF_GI_MAX_TRIANGLE_BRICK_REFERENCES)
+    const uint3 pairMin = uint3(
+        GetScatterPairForFirstLogicalSample((uint)minLogical.x),
+        GetScatterPairForFirstLogicalSample((uint)minLogical.y),
+        GetScatterPairForFirstLogicalSample((uint)minLogical.z));
+    const uint3 pairMax = uint3(
+        GetScatterPairForLastLogicalSample((uint)maxLogical.x),
+        GetScatterPairForLastLogicalSample((uint)maxLogical.y),
+        GetScatterPairForLastLogicalSample((uint)maxLogical.z));
+    const uint3 pairCount = pairMax - pairMin + 1u.xxx;
+    const uint sampleCount = pairCount.x * pairCount.y * pairCount.z;
+    if (sampleCount == 0u)
     {
-        InterlockedAdd(referenceCounters[SPARSE_SDF_GI_REF_COUNTER_REFERENCE_OVERFLOW], brickReferenceCount);
         return;
     }
 
-    [loop]
-    for (int z = minBrick.z; z <= maxBrick.z; ++z)
+    uint jobIndex = 0u;
+    InterlockedAdd(counters[SPARSE_SDF_GI_SCATTER_COUNTER_JOB], 1u, jobIndex);
+    if (jobIndex >= TrianglePoolCapacity)
     {
-        [loop]
-        for (int y = minBrick.y; y <= maxBrick.y; ++y)
-        {
-            [loop]
-            for (int x = minBrick.x; x <= maxBrick.x; ++x)
-            {
-                const uint brickIndex = LinearizeBrickCoord(uint3(x, y, z));
-                uint referenceId = 0u;
-                InterlockedAdd(referenceCounters[SPARSE_SDF_GI_REF_COUNTER_REFERENCE], 1u, referenceId);
-                if (referenceId >= MaxBrickTriangleReferences)
-                {
-                    InterlockedAdd(referenceCounters[SPARSE_SDF_GI_REF_COUNTER_REFERENCE_OVERFLOW], 1u);
-                    continue;
-                }
+        InterlockedAdd(counters[SPARSE_SDF_GI_SCATTER_COUNTER_JOB_OVERFLOW], 1u);
+        return;
+    }
 
-                uint oldHead = SPARSE_SDF_GI_INVALID_REFERENCE;
-                InterlockedExchange(referenceHeads[brickIndex], referenceId, oldHead);
-                references[referenceId].TriangleId = triangleId;
-                references[referenceId].Next = oldHead;
-                references[referenceId].Reserved0 = 0u;
-                references[referenceId].Reserved1 = 0u;
-                if (oldHead == SPARSE_SDF_GI_INVALID_REFERENCE)
-                {
-                    uint occupiedListIndex = 0u;
-                    InterlockedAdd(referenceCounters[SPARSE_SDF_GI_REF_COUNTER_OCCUPIED_BRICK], 1u, occupiedListIndex);
-                    if (occupiedListIndex < BrickGridResolution * BrickGridResolution * BrickGridResolution)
-                    {
-                        occupiedBrickList[occupiedListIndex] = brickIndex;
-                    }
-                }
-            }
-        }
+    FSparseSdfGIScatterJob job;
+    job.P0 = float4(p0, 0.0f);
+    job.P1 = float4(p1, 0.0f);
+    job.P2 = float4(p2, 0.0f);
+    job.PairMinSampleCount = uint4(pairMin, sampleCount);
+    job.PairCount = uint4(pairCount, 0u);
+    jobs[jobIndex] = job;
+}
+#endif
+
+#if defined(SPARSE_SDF_GI_SCATTER_SCAN_JOBS_SHADER)
+[numthreads(256, 1, 1)]
+void CSScanScatterJobCounts(uint3 groupId : SV_GroupID, uint groupThreadIndex : SV_GroupIndex)
+{
+    StructuredBuffer<FSparseSdfGIScatterJob> jobs = ResourceDescriptorHeap[ScatterJobsSrvIndex];
+    RWStructuredBuffer<uint> offsets = ResourceDescriptorHeap[ScatterJobOffsetsUavIndex];
+    RWStructuredBuffer<uint> groupSums = ResourceDescriptorHeap[ScatterGroupSumsUavIndex];
+    StructuredBuffer<uint> counters = ResourceDescriptorHeap[ScatterCountersSrvIndex];
+    const uint jobCount = min(counters[SPARSE_SDF_GI_SCATTER_COUNTER_JOB], TrianglePoolCapacity);
+    const uint jobIndex = groupId.x * SPARSE_SDF_GI_SCATTER_SCAN_GROUP_SIZE + groupThreadIndex;
+    gs_ScatterScan[groupThreadIndex] = (jobIndex < jobCount) ? jobs[jobIndex].PairMinSampleCount.w : 0u;
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (uint stride = 1u; stride < SPARSE_SDF_GI_SCATTER_SCAN_GROUP_SIZE; stride <<= 1u)
+    {
+        const uint addend = (groupThreadIndex >= stride) ? gs_ScatterScan[groupThreadIndex - stride] : 0u;
+        GroupMemoryBarrierWithGroupSync();
+        gs_ScatterScan[groupThreadIndex] += addend;
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (jobIndex < TrianglePoolCapacity)
+    {
+        offsets[jobIndex] = gs_ScatterScan[groupThreadIndex];
+    }
+    if (groupThreadIndex == SPARSE_SDF_GI_SCATTER_SCAN_GROUP_SIZE - 1u)
+    {
+        groupSums[groupId.x] = gs_ScatterScan[groupThreadIndex];
     }
 }
 #endif
 
-#if defined(SPARSE_SDF_GI_REFERENCE_SOLVE_SHADER)
-[numthreads(512, 1, 1)]
-void CSSolveBrickReferences(uint3 groupId : SV_GroupID, uint groupThreadIndex : SV_GroupIndex)
+#if defined(SPARSE_SDF_GI_SCATTER_SCAN_GROUPS_SHADER)
+[numthreads(256, 1, 1)]
+void CSScanScatterGroupSums(uint3 groupId : SV_GroupID, uint groupThreadIndex : SV_GroupIndex)
 {
-    if (groupThreadIndex >= SPARSE_SDF_GI_EIKONAL_LDS_COUNT)
+    StructuredBuffer<uint> inputSums = ResourceDescriptorHeap[ScatterInputGroupSumsSrvIndex];
+    RWStructuredBuffer<uint> groupOffsets = ResourceDescriptorHeap[ScatterGroupOffsetsUavIndex];
+    RWStructuredBuffer<uint> outputSums = ResourceDescriptorHeap[ScatterOutputGroupSumsUavIndex];
+    const uint groupIndex = groupId.x * SPARSE_SDF_GI_SCATTER_SCAN_GROUP_SIZE + groupThreadIndex;
+    gs_ScatterScan[groupThreadIndex] = (groupIndex < ModelTriangleCount) ? inputSums[groupIndex] : 0u;
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (uint stride = 1u; stride < SPARSE_SDF_GI_SCATTER_SCAN_GROUP_SIZE; stride <<= 1u)
     {
-        return;
+        const uint addend = (groupThreadIndex >= stride) ? gs_ScatterScan[groupThreadIndex - stride] : 0u;
+        GroupMemoryBarrierWithGroupSync();
+        gs_ScatterScan[groupThreadIndex] += addend;
+        GroupMemoryBarrierWithGroupSync();
     }
 
-    StructuredBuffer<FSparseSdfGITrianglePoolEntry> trianglePool = ResourceDescriptorHeap[ReferenceTrianglePoolSrvIndex];
-    StructuredBuffer<uint> referenceHeads = ResourceDescriptorHeap[ReferenceHeadsSrvIndex];
-    StructuredBuffer<FSparseSdfGIBrickReference> references = ResourceDescriptorHeap[ReferenceNodesSrvIndex];
-    StructuredBuffer<uint> referenceCounters = ResourceDescriptorHeap[ReferenceCountersSrvIndex];
-    StructuredBuffer<uint> occupiedBrickList = ResourceDescriptorHeap[OccupiedBrickListSrvIndex];
-    RWTexture3D<float> sdfAtlas = ResourceDescriptorHeap[SdfAtlasUavIndex];
-    RWStructuredBuffer<uint4> brickMetadata = ResourceDescriptorHeap[BrickMetadataUavIndex];
-
-    const uint solveListIndex = BuildWorkOffset + groupId.x;
-    const uint occupiedBrickCount = min(referenceCounters[SPARSE_SDF_GI_REF_COUNTER_OCCUPIED_BRICK], GetSparseSdfGIBrickCapacity());
-    if (BuildWorkOffset == 0u && groupId.x == 0u && groupThreadIndex == 0u)
+    if (groupIndex < ModelTriangleCount)
     {
-        StoreSparseSdfGIReferenceStats(referenceCounters);
+        groupOffsets[groupIndex] = gs_ScatterScan[groupThreadIndex];
     }
-
-    if (solveListIndex >= occupiedBrickCount)
+    if (groupThreadIndex == SPARSE_SDF_GI_SCATTER_SCAN_GROUP_SIZE - 1u)
     {
-        return;
+        outputSums[groupId.x] = gs_ScatterScan[groupThreadIndex];
     }
-
-    const uint brickIndex = occupiedBrickList[solveListIndex];
-    if (brickIndex >= BrickGridResolution * BrickGridResolution * BrickGridResolution)
-    {
-        return;
-    }
-
-    const uint3 brickCoord = BrickIdToBrickCoord(brickIndex);
-    const uint head = referenceHeads[brickIndex];
-    const uint3 localCoord = UnflattenBrickLocalCoord(groupThreadIndex);
-    const uint3 atlasCoord = brickCoord * BrickVoxelResolution + localCoord;
-#if defined(SPARSE_SDF_GI_EXACT_SHARED_BORDER)
-    const float3 voxelCenter = CascadeMin + ((float3)(brickCoord * SPARSE_SDF_GI_BRICK_INTERVAL_DIM_EXACT + localCoord) * VoxelSize);
-#else
-    const float3 voxelCenter = CascadeMin + ((float3(atlasCoord) + 0.5f.xxx) * VoxelSize);
+}
 #endif
-    const float surfaceBand = max(VoxelSize * SurfaceThicknessVoxels, 1e-5f);
-    const uint triangleCount = min(referenceCounters[SPARSE_SDF_GI_REF_COUNTER_TRIANGLE], TrianglePoolCapacity);
-    const uint referenceCount = min(referenceCounters[SPARSE_SDF_GI_REF_COUNTER_REFERENCE], MaxBrickTriangleReferences);
 
-    float seedValue = 1.0f;
+#if defined(SPARSE_SDF_GI_SCATTER_SCAN_GROUP2_SHADER)
+[numthreads(256, 1, 1)]
+void CSScanScatterGroup2Sums(uint3 groupId : SV_GroupID, uint groupThreadIndex : SV_GroupIndex)
+{
+    StructuredBuffer<uint> group2Sums = ResourceDescriptorHeap[ScatterGroup2SumsSrvIndex];
+    RWStructuredBuffer<uint> group2Offsets = ResourceDescriptorHeap[ScatterGroup2OffsetsUavIndex];
+    RWStructuredBuffer<uint> counters = ResourceDescriptorHeap[ScatterCountersUavIndex];
+    gs_ScatterScan[groupThreadIndex] = (groupThreadIndex < ModelTriangleCount) ? group2Sums[groupThreadIndex] : 0u;
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (uint stride = 1u; stride < SPARSE_SDF_GI_SCATTER_SCAN_GROUP_SIZE; stride <<= 1u)
+    {
+        const uint addend = (groupThreadIndex >= stride) ? gs_ScatterScan[groupThreadIndex - stride] : 0u;
+        GroupMemoryBarrierWithGroupSync();
+        gs_ScatterScan[groupThreadIndex] += addend;
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (groupThreadIndex < ModelTriangleCount)
+    {
+        group2Offsets[groupThreadIndex] = gs_ScatterScan[groupThreadIndex];
+    }
     if (groupThreadIndex == 0u)
     {
-        gs_SolveWalkCursor = head;
+        counters[SPARSE_SDF_GI_SCATTER_COUNTER_SAMPLE] = (ModelTriangleCount == 0u) ? 0u : gs_ScatterScan[ModelTriangleCount - 1u];
     }
-    GroupMemoryBarrierWithGroupSync();
-
-    [loop]
-    while (true)
-    {
-        // Lane 0 walks the next slice of the brick's reference list into the LDS triangle cache.
-        if (groupThreadIndex == 0u)
-        {
-            uint cachedCount = 0u;
-            uint referenceId = gs_SolveWalkCursor;
-            [loop]
-            while (referenceId != SPARSE_SDF_GI_INVALID_REFERENCE
-                && referenceId < referenceCount
-                && cachedCount < SPARSE_SDF_GI_SOLVE_TRIANGLE_CACHE)
-            {
-                const FSparseSdfGIBrickReference reference = references[referenceId];
-                referenceId = reference.Next;
-                if (reference.TriangleId < triangleCount)
-                {
-                    const FSparseSdfGITrianglePoolEntry triEntry = trianglePool[reference.TriangleId];
-                    gs_SolveTriP0[cachedCount] = triEntry.P0.xyz;
-                    gs_SolveTriP1[cachedCount] = triEntry.P1.xyz;
-                    gs_SolveTriP2[cachedCount] = triEntry.P2.xyz;
-                    ++cachedCount;
-                }
-            }
-            gs_SolveWalkCursor = referenceId;
-            gs_SolveBatchCount = cachedCount;
-        }
-        GroupMemoryBarrierWithGroupSync();
-
-        const uint batchCount = gs_SolveBatchCount;
-        if (batchCount == 0u)
-        {
-            break;
-        }
-
-        [loop]
-        for (uint i = 0u; i < batchCount; ++i)
-        {
-            const float distanceToTriangle = PointTriangleDistance(voxelCenter, gs_SolveTriP0[i], gs_SolveTriP1[i], gs_SolveTriP2[i]);
-#if defined(SPARSE_SDF_GI_EXACT_SHARED_BORDER)
-            seedValue = min(seedValue, EncodeSdfWorldDistance(distanceToTriangle));
-#else
-            if (distanceToTriangle <= surfaceBand)
-            {
-                seedValue = min(seedValue, EncodeSdfWorldDistance(distanceToTriangle));
-            }
+}
 #endif
-        }
 
-        // All voxel threads must finish reading this batch before lane 0 refills the LDS cache.
-        GroupMemoryBarrierWithGroupSync();
-    }
-
-#if defined(SPARSE_SDF_GI_EXACT_SHARED_BORDER)
-    const float finalSdf = seedValue;
-#else
-    gs_EikonalA[groupThreadIndex] = seedValue;
-    gs_EikonalB[groupThreadIndex] = seedValue;
-    GroupMemoryBarrierWithGroupSync();
-
-    bool readFromA = true;
-    [unroll]
-    for (uint sweep = 0u; sweep < 4u; ++sweep)
+#if defined(SPARSE_SDF_GI_SCATTER_ADD_OFFSETS_SHADER)
+[numthreads(256, 1, 1)]
+void CSAddScatterJobGroupOffsets(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    const uint jobIndex = dispatchThreadId.x;
+    if (jobIndex >= TrianglePoolCapacity)
     {
-        [unroll]
-        for (uint offsetIndex = 0u; offsetIndex < 3u; ++offsetIndex)
-        {
-            const uint offset = (offsetIndex == 0u) ? 4u : ((offsetIndex == 1u) ? 2u : 1u);
-            const float relaxedValue = RelaxEikonalVoxel(readFromA, localCoord, offset);
-            EikonalStore(!readFromA, groupThreadIndex, relaxedValue);
-            GroupMemoryBarrierWithGroupSync();
-            readFromA = !readFromA;
-        }
+        return;
     }
 
-    const float finalSdf = readFromA ? gs_EikonalA[groupThreadIndex] : gs_EikonalB[groupThreadIndex];
+    RWStructuredBuffer<uint> offsets = ResourceDescriptorHeap[ScatterJobOffsetsUavIndex];
+    StructuredBuffer<uint> groupOffsets = ResourceDescriptorHeap[ScatterGroupOffsetsSrvIndex];
+    StructuredBuffer<uint> group2Offsets = ResourceDescriptorHeap[ScatterGroup2OffsetsSrvIndex];
+    StructuredBuffer<uint> counters = ResourceDescriptorHeap[ScatterCountersSrvIndex];
+    const uint jobCount = min(counters[SPARSE_SDF_GI_SCATTER_COUNTER_JOB], TrianglePoolCapacity);
+    if (jobIndex >= jobCount)
+    {
+        offsets[jobIndex] = (jobCount == 0u) ? 0u : offsets[jobCount - 1u];
+        return;
+    }
+
+    const uint groupIndex = jobIndex / SPARSE_SDF_GI_SCATTER_SCAN_GROUP_SIZE;
+    const uint group2Index = groupIndex / SPARSE_SDF_GI_SCATTER_SCAN_GROUP_SIZE;
+    const uint localGroupOffset = (groupIndex == 0u) ? 0u : groupOffsets[groupIndex - 1u];
+    const uint group2Offset = (group2Index == 0u) ? 0u : group2Offsets[group2Index - 1u];
+    offsets[jobIndex] += localGroupOffset + group2Offset;
+}
 #endif
-    sdfAtlas[atlasCoord] = finalSdf;
+
+#if defined(SPARSE_SDF_GI_SCATTER_BUILD_SAMPLE_ARGS_SHADER)
+[numthreads(1, 1, 1)]
+void CSBuildScatterSampleArgs(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    StructuredBuffer<uint> counters = ResourceDescriptorHeap[ScatterCountersSrvIndex];
+    RWByteAddressBuffer args = ResourceDescriptorHeap[ScatterDispatchArgsUavIndex];
+    StoreScatterDispatchArgs(args, counters[SPARSE_SDF_GI_SCATTER_COUNTER_SAMPLE], SPARSE_SDF_GI_SCATTER_SAMPLE_GROUP_SIZE);
+}
+#endif
+
+#if defined(SPARSE_SDF_GI_SCATTER_MARK_TOUCHED_SHADER)
+[numthreads(128, 1, 1)]
+void CSMarkScatterTouchedBricks(uint3 groupId : SV_GroupID, uint groupThreadIndex : SV_GroupIndex)
+{
+    const uint sampleIndex = GetScatterLinearDispatchId(groupId, groupThreadIndex, SPARSE_SDF_GI_SCATTER_SAMPLE_GROUP_SIZE);
+    StructuredBuffer<FSparseSdfGIScatterJob> jobs = ResourceDescriptorHeap[ScatterJobsSrvIndex];
+    StructuredBuffer<uint> offsets = ResourceDescriptorHeap[ScatterJobOffsetsSrvIndex];
+    StructuredBuffer<uint> counters = ResourceDescriptorHeap[ScatterCountersSrvIndex];
+    RWStructuredBuffer<uint> touchedBricks = ResourceDescriptorHeap[ScatterTouchedBricksUavIndex];
+
+    const uint jobCount = min(counters[SPARSE_SDF_GI_SCATTER_COUNTER_JOB], TrianglePoolCapacity);
+    const uint sampleCount = counters[SPARSE_SDF_GI_SCATTER_COUNTER_SAMPLE];
+
+    FSparseSdfGIScatterJob job;
+    uint3 brickCoord;
+    uint3 localCoord;
+    float3 worldPosition;
+    if (!ResolveScatterSample(jobs, offsets, jobCount, sampleCount, sampleIndex, job, brickCoord, localCoord, worldPosition))
+    {
+        return;
+    }
+
+    const float distanceToTriangle = PointTriangleDistance(worldPosition, job.P0.xyz, job.P1.xyz, job.P2.xyz);
+    if (distanceToTriangle <= SPARSE_SDF_GI_SCATTER_BAND_VOXELS * VoxelSize)
+    {
+        touchedBricks[LinearizeBrickCoord(brickCoord)] = 1u;
+    }
+}
+#endif
+
+#if defined(SPARSE_SDF_GI_SCATTER_ALLOCATE_BRICKS_SHADER)
+[numthreads(256, 1, 1)]
+void CSAllocateScatterBricks(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    const uint logicalBrick = dispatchThreadId.x;
+    if (logicalBrick >= GetSparseSdfGIBrickCapacity())
+    {
+        return;
+    }
+
+    StructuredBuffer<uint> touchedBricks = ResourceDescriptorHeap[ScatterTouchedBricksSrvIndex];
+    RWStructuredBuffer<uint> cascadeBrickMap = ResourceDescriptorHeap[CascadeBrickMapUavIndex];
+    RWStructuredBuffer<uint> brickList = ResourceDescriptorHeap[ScatterBrickListUavIndex];
+    RWStructuredBuffer<uint> counters = ResourceDescriptorHeap[ScatterCountersUavIndex];
+    if (touchedBricks[logicalBrick] == 0u)
+    {
+        return;
+    }
+
+    uint physicalBrick = 0u;
+    InterlockedAdd(counters[SPARSE_SDF_GI_SCATTER_COUNTER_ALLOCATED_BRICK], 1u, physicalBrick);
+    if (physicalBrick >= GetScatterBrickCapacity())
+    {
+        InterlockedAdd(counters[SPARSE_SDF_GI_SCATTER_COUNTER_BRICK_OVERFLOW], 1u);
+        return;
+    }
+
+    cascadeBrickMap[logicalBrick] = physicalBrick;
+    brickList[physicalBrick] = logicalBrick;
+}
+#endif
+
+#if defined(SPARSE_SDF_GI_SCATTER_BUILD_BRICK_ARGS_SHADER)
+[numthreads(1, 1, 1)]
+void CSBuildScatterBrickArgs(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    StructuredBuffer<uint> counters = ResourceDescriptorHeap[ScatterCountersSrvIndex];
+    RWByteAddressBuffer args = ResourceDescriptorHeap[ScatterDispatchArgsUavIndex];
+    const uint allocated = min(counters[SPARSE_SDF_GI_SCATTER_COUNTER_ALLOCATED_BRICK], GetScatterBrickCapacity());
+    StoreScatterDispatchArgs(args, max(allocated, 1u), 1u);
+}
+#endif
+
+#if defined(SPARSE_SDF_GI_SCATTER_CLEAR_BRICK_STORAGE_SHADER)
+[numthreads(512, 1, 1)]
+void CSClearScatterBrickStorage(uint3 groupId : SV_GroupID, uint groupThreadIndex : SV_GroupIndex)
+{
+    RWStructuredBuffer<uint> brickSdf = ResourceDescriptorHeap[ScatterBrickSdfUavIndex];
+    const uint physicalBrick = groupId.x + groupId.y * SPARSE_SDF_GI_SCATTER_DISPATCH_GROUP_LIMIT;
+    if (physicalBrick >= GetScatterBrickCapacity() || groupThreadIndex >= SPARSE_SDF_GI_SCATTER_BRICK_GROUP_SIZE)
+    {
+        return;
+    }
+
+    brickSdf[physicalBrick * SPARSE_SDF_GI_SCATTER_BRICK_GROUP_SIZE + groupThreadIndex] = SPARSE_SDF_GI_SCATTER_DISTANCE_FAR_UINT;
+}
+#endif
+
+#if defined(SPARSE_SDF_GI_SCATTER_SDF_SAMPLES_SHADER)
+[numthreads(128, 1, 1)]
+void CSScatterSdfSamples(uint3 groupId : SV_GroupID, uint groupThreadIndex : SV_GroupIndex)
+{
+    const uint sampleIndex = GetScatterLinearDispatchId(groupId, groupThreadIndex, SPARSE_SDF_GI_SCATTER_SAMPLE_GROUP_SIZE);
+    StructuredBuffer<FSparseSdfGIScatterJob> jobs = ResourceDescriptorHeap[ScatterJobsSrvIndex];
+    StructuredBuffer<uint> offsets = ResourceDescriptorHeap[ScatterJobOffsetsSrvIndex];
+    StructuredBuffer<uint> cascadeBrickMap = ResourceDescriptorHeap[CascadeBrickMapSrvIndex];
+    StructuredBuffer<uint> counters = ResourceDescriptorHeap[ScatterCountersSrvIndex];
+    RWStructuredBuffer<uint> brickSdf = ResourceDescriptorHeap[ScatterBrickSdfUavIndex];
+
+    const uint jobCount = min(counters[SPARSE_SDF_GI_SCATTER_COUNTER_JOB], TrianglePoolCapacity);
+    const uint sampleCount = counters[SPARSE_SDF_GI_SCATTER_COUNTER_SAMPLE];
+    FSparseSdfGIScatterJob job;
+    uint3 brickCoord;
+    uint3 localCoord;
+    float3 worldPosition;
+    if (!ResolveScatterSample(jobs, offsets, jobCount, sampleCount, sampleIndex, job, brickCoord, localCoord, worldPosition))
+    {
+        return;
+    }
+
+    const float distanceToTriangle = PointTriangleDistance(worldPosition, job.P0.xyz, job.P1.xyz, job.P2.xyz);
+    if (distanceToTriangle > SPARSE_SDF_GI_SCATTER_BAND_VOXELS * VoxelSize)
+    {
+        return;
+    }
+
+    const uint physicalBrick = cascadeBrickMap[LinearizeBrickCoord(brickCoord)];
+    if (physicalBrick >= GetScatterBrickCapacity())
+    {
+        return;
+    }
+
+    const uint encoded = EncodeScatterDistanceUint(distanceToTriangle);
+    InterlockedMin(brickSdf[physicalBrick * SPARSE_SDF_GI_SCATTER_BRICK_GROUP_SIZE + FlattenBrickLocalCoord(localCoord)], encoded);
+}
+#endif
+
+#if defined(SPARSE_SDF_GI_SCATTER_FINALIZE_BRICKS_SHADER)
+[numthreads(512, 1, 1)]
+void CSFinalizeScatterBricks(uint3 groupId : SV_GroupID, uint groupThreadIndex : SV_GroupIndex)
+{
+    RWTexture3D<float> sdfAtlas = ResourceDescriptorHeap[SdfAtlasUavIndex];
+    RWStructuredBuffer<uint4> brickMetadata = ResourceDescriptorHeap[BrickMetadataUavIndex];
+    StructuredBuffer<uint> brickList = ResourceDescriptorHeap[ScatterBrickListSrvIndex];
+    StructuredBuffer<uint> brickSdf = ResourceDescriptorHeap[ScatterBrickSdfSrvIndex];
+    StructuredBuffer<uint> counters = ResourceDescriptorHeap[ScatterCountersSrvIndex];
+    RWStructuredBuffer<uint> referenceStats = ResourceDescriptorHeap[ReferenceStatsUavIndex];
+
+    const uint physicalBrick = groupId.x + groupId.y * SPARSE_SDF_GI_SCATTER_DISPATCH_GROUP_LIMIT;
+    const uint allocatedBrickCount = min(counters[SPARSE_SDF_GI_SCATTER_COUNTER_ALLOCATED_BRICK], GetScatterBrickCapacity());
+    if (physicalBrick == 0u && groupThreadIndex == 0u)
+    {
+        referenceStats[SPARSE_SDF_GI_REF_COUNTER_TRIANGLE] = min(counters[SPARSE_SDF_GI_SCATTER_COUNTER_JOB], TrianglePoolCapacity);
+        referenceStats[SPARSE_SDF_GI_REF_COUNTER_REFERENCE] = counters[SPARSE_SDF_GI_SCATTER_COUNTER_SAMPLE];
+        referenceStats[SPARSE_SDF_GI_REF_COUNTER_TRIANGLE_OVERFLOW] = counters[SPARSE_SDF_GI_SCATTER_COUNTER_JOB_OVERFLOW];
+        referenceStats[SPARSE_SDF_GI_REF_COUNTER_REFERENCE_OVERFLOW] = counters[SPARSE_SDF_GI_SCATTER_COUNTER_BRICK_OVERFLOW];
+        referenceStats[SPARSE_SDF_GI_REF_COUNTER_OCCUPIED_BRICK] = allocatedBrickCount;
+    }
+
+    if (physicalBrick >= allocatedBrickCount || groupThreadIndex >= SPARSE_SDF_GI_SCATTER_BRICK_GROUP_SIZE)
+    {
+        return;
+    }
+
+    const uint logicalBrick = brickList[physicalBrick];
+    const uint3 logicalBrickCoord = BrickIdToBrickCoord(logicalBrick);
+    const uint3 physicalBrickCoord = BrickIdToBrickCoord(physicalBrick);
+    const uint3 localCoord = UnflattenBrickLocalCoord(groupThreadIndex);
+    const uint encoded = brickSdf[physicalBrick * SPARSE_SDF_GI_SCATTER_BRICK_GROUP_SIZE + groupThreadIndex];
+    const float finalSdf = DecodeScatterDistanceUint(encoded);
+    sdfAtlas[physicalBrickCoord * BrickVoxelResolution + localCoord] = finalSdf;
 
     const bool occupied = DecodeSdfWorldDistance(finalSdf) <= VoxelSize * SPARSE_SDF_GI_SURFACE_METADATA_VOXELS;
     gs_MetadataMinX[groupThreadIndex] = occupied ? localCoord.x : 0xffffffffu;
@@ -1714,7 +1928,7 @@ void CSSolveBrickReferences(uint3 groupId : SV_GroupID, uint groupThreadIndex : 
     GroupMemoryBarrierWithGroupSync();
 
     [unroll]
-    for (uint stride = SPARSE_SDF_GI_EIKONAL_LDS_COUNT >> 1u; stride > 0u; stride >>= 1u)
+    for (uint stride = SPARSE_SDF_GI_SCATTER_BRICK_GROUP_SIZE >> 1u; stride > 0u; stride >>= 1u)
     {
         if (groupThreadIndex < stride)
         {
@@ -1734,20 +1948,18 @@ void CSSolveBrickReferences(uint3 groupId : SV_GroupID, uint groupThreadIndex : 
     {
         if (gs_MetadataOccupied[0] == 0u)
         {
-            brickMetadata[brickIndex] = uint4(0u, 0u, 0u, 0u);
+            brickMetadata[logicalBrick] = uint4(0u, 0u, 0u, 0u);
             return;
         }
 
         const uint3 localMin = uint3(gs_MetadataMinX[0], gs_MetadataMinY[0], gs_MetadataMinZ[0]);
         const uint3 localMax = uint3(gs_MetadataMaxX[0], gs_MetadataMaxY[0], gs_MetadataMaxZ[0]);
-        brickMetadata[brickIndex] = uint4(
-            PackBrickLocalAabb(localMin, localMax),
-            SPARSE_SDF_GI_BRICK_METADATA_OCCUPIED,
-            0u,
-            0u);
+        brickMetadata[logicalBrick] = uint4(PackBrickLocalAabb(localMin, localMax), SPARSE_SDF_GI_BRICK_METADATA_OCCUPIED, 0u, 0u);
     }
 }
 #endif
+
+
 
 #if defined(SPARSE_SDF_GI_BUILD_TRACE_HIERARCHY_BOTTOM_SHADER)
 [numthreads(64, 1, 1)]

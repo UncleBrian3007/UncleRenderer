@@ -30,25 +30,26 @@ enum class ESparseSdfGIDebugMode : uint32_t
     BrickID = 8
 };
 
-enum class ESparseSdfGISdfBuildMode : uint32_t
-{
-    LegacyEikonal = 0,
-    ExactSharedBorder = 1
-};
-
 struct FSparseSdfGIFrameResources
 {
     FRGResourceHandle SdfAtlasHandle{};
     FRGBufferHandle CascadeBrickMapHandle{};
     FRGBufferHandle BrickMetadataHandle{};
-    FRGBufferHandle TrianglePoolHandle{};
-    FRGBufferHandle BrickReferenceHeadsHandle{};
-    FRGBufferHandle BrickReferencesHandle{};
-    FRGBufferHandle ReferenceCountersHandle{};
-    FRGBufferHandle OccupiedBrickListHandle{};
     FRGBufferHandle ReferenceCounterStatsHandle{};
     FRGBufferHandle TraceHierarchyBottomHandle{};
     FRGBufferHandle TraceHierarchyTopHandle{};
+    FRGBufferHandle ScatterJobsHandle{};
+    FRGBufferHandle ScatterJobOffsetsHandle{};
+    FRGBufferHandle ScatterJobGroupSumsHandle{};
+    FRGBufferHandle ScatterJobGroupOffsetsHandle{};
+    FRGBufferHandle ScatterJobGroup2SumsHandle{};
+    FRGBufferHandle ScatterJobGroup2OffsetsHandle{};
+    FRGBufferHandle ScatterTouchedBricksHandle{};
+    FRGBufferHandle ScatterBrickListHandle{};
+    FRGBufferHandle ScatterBrickSdfHandle{};
+    FRGBufferHandle ScatterCountersHandle{};
+    FRGBufferHandle ScatterSampleDispatchArgsHandle{};
+    FRGBufferHandle ScatterBrickDispatchArgsHandle{};
     FRGBufferHandle BrickRadianceReadHandle{};
     FRGBufferHandle BrickRadianceWriteHandle{};
     FRGBufferHandle BrickRadianceAccumHandle{};
@@ -81,7 +82,6 @@ public:
     float GetIntensity() const { return Intensity; }
     float GetEffectiveVoxelSize() const { return CachedEffectiveVoxelSize; }
     float GetEffectiveCascadeExtent() const { return CachedCascadeBounds.Extent.x; }
-    ESparseSdfGISdfBuildMode GetSdfBuildMode() const { return SdfBuildMode; }
     uint32_t GetCurrentOutputSrvBindlessIndex() const { return bPersistentInputsValid ? DiffuseGI.SrvBindlessIndex : UINT32_MAX; }
 
 private:
@@ -93,6 +93,7 @@ private:
     };
 
     bool CreateRootSignature(FDX12Device* Device);
+    bool CreateDispatchCommandSignature(FDX12Device* Device);
     bool CreatePipelines(FDX12Device* Device);
     bool CreateResources(FDX12Device* Device, uint32_t Width, uint32_t Height, uint32_t FramesInFlight);
     bool RefreshPersistentInputValidation();
@@ -100,9 +101,9 @@ private:
     uint64_t ComputeBuildSettingsSignature(const FCascadeBounds& Bounds) const;
     uint64_t ComputeStaticSceneSignature(const FDeferredRenderer& Owner, uint32_t& OutStaticCandidateCount) const;
     void InvalidateCache() const;
-    void AddReferenceBuildInitPass(FDeferredPassContext& Context) const;
-    void AddSectionReferenceEmitPass(FDeferredPassContext& Context, const FObject& Object, FMeshSection& Section, uint32_t DrawSectionIndex) const;
-    void AddSolveBrickReferencesPass(FDeferredPassContext& Context) const;
+    void AddDistributedScatterInitPass(FDeferredPassContext& Context, uint32_t MaxStaticTriangleCount) const;
+    void AddSectionDistributedScatterPreparePass(FDeferredPassContext& Context, const FObject& Object, FMeshSection& Section, uint32_t DrawSectionIndex) const;
+    void AddDistributedScatterPasses(FDeferredPassContext& Context, uint32_t MaxStaticTriangleCount) const;
     void AddBuildTraceHierarchyPasses(FDeferredPassContext& Context) const;
     void AddReferenceStatsPresentPass(FDeferredPassContext& Context) const;
     void AddRadianceCachePasses(FDeferredPassContext& Context) const;
@@ -115,7 +116,6 @@ private:
 private:
     bool bEnabled = false;
     ESparseSdfGIDebugMode DebugMode = ESparseSdfGIDebugMode::RayTrace;
-    ESparseSdfGISdfBuildMode SdfBuildMode = ESparseSdfGISdfBuildMode::LegacyEikonal;
     uint32_t CascadeCount = 1;
     float BaseVoxelSize = 0.0f;
     mutable float CachedEffectiveVoxelSize = 0.0f;
@@ -137,8 +137,7 @@ private:
     float MultiBounceStrength = 1.0f;
     float SurfaceHitThresholdVoxels = 0.75f;
     uint32_t MaxBrickTriangleReferences = 8u * 1024u * 1024u;
-    uint32_t DebugSolveGroupBudget = 0xFFFFFFFFu;
-    uint32_t DebugEmitTriangleBudget = 0xFFFFFFFFu;
+    uint32_t MaxScatterBricks = 64u * 1024u;
     bool bPersistentInputsValid = false;
     mutable bool bSdfCacheValid = false;
     mutable uint64_t CachedSceneSignature = 0;
@@ -160,10 +159,20 @@ private:
     uint32_t ProbeHistoryCapacity = 0;
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> RootSignature;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> ReferenceBuildInitPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> ReferenceEmitPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> SolveBrickReferencesPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> ExactSolveBrickReferencesPipeline;
+    Microsoft::WRL::ComPtr<ID3D12CommandSignature> DispatchCommandSignature;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> ScatterInitPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> ScatterPreparePipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> ScatterScanJobsPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> ScatterScanGroupsPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> ScatterScanGroup2Pipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> ScatterAddOffsetsPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> ScatterBuildSampleArgsPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> ScatterMarkTouchedPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> ScatterAllocateBricksPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> ScatterBuildBrickArgsPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> ScatterClearBrickStoragePipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> ScatterSdfSamplesPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> ScatterFinalizeBricksPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> BuildTraceHierarchyBottomPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> BuildTraceHierarchyTopPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ReferenceStatsPresentPipeline;
