@@ -564,9 +564,6 @@ bool FApplication::RenderFrame()
     }
 
     const uint64 FenceValue = Device->GetGraphicsQueue()->Signal();
-    // Stamp this frame's released transient pool resources / bindless descriptors with the real
-    // completion fence now that it is known, so the next overlapping frame cannot recycle a buffer or
-    // descriptor while this frame's GPU work is still using it.
     FRenderGraph::FinalizeReleasedTransientFences(Device.get(), FenceValue);
     if (!RendererConfig.bEnableFrameOverlap)
     {
@@ -2039,13 +2036,29 @@ void FApplication::RenderUI()
 
         if (RendererConfig.DiffuseGISource == EDiffuseGISource::SparseSdfGI)
         {
-            static const char* SparseSdfGIDebugModeItems[] = { "Off", "Ray Trace", "Cascade Slice", "Voxel Projection", "Brick SDF Surface", "Step Count" };
-            int SparseSdfGIDebugModeIndex = static_cast<int>(std::clamp(RendererConfig.SparseSdfGIDebugMode, 0u, 5u));
+            static const char* SparseSdfGIDebugModeItems[] = { "Off", "Ray Trace", "Cascade Slice", "Gradient", "Step Count", "Shared Sample Mismatch", "Brick Local Gradient", "Hit UVW", "Brick ID", "Brick Local Gradient (FFX Rounded)" };
+            int SparseSdfGIDebugModeIndex = static_cast<int>(std::clamp(RendererConfig.SparseSdfGIDebugMode, 0u, 9u));
             ImGui::SetNextItemWidth(160.0f);
             if (ImGui::Combo("SDF GI Debug Mode", &SparseSdfGIDebugModeIndex, SparseSdfGIDebugModeItems, IM_ARRAYSIZE(SparseSdfGIDebugModeItems)))
             {
                 RendererConfig.SparseSdfGIDebugMode = static_cast<uint32_t>(SparseSdfGIDebugModeIndex);
                 UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIDebugMode", std::to_string(RendererConfig.SparseSdfGIDebugMode));
+                SyncDeferredSparseSdfGIConfig();
+            }
+
+            static const char* SparseSdfGIBuildModeItems[] = { "Legacy Eikonal", "Exact Shared Border" };
+            int SparseSdfGIBuildModeIndex = static_cast<int>(std::clamp(RendererConfig.SparseSdfGISdfBuildMode, 0u, 1u));
+            ImGui::SetNextItemWidth(160.0f);
+            if (ImGui::Combo("SDF Build Mode", &SparseSdfGIBuildModeIndex, SparseSdfGIBuildModeItems, IM_ARRAYSIZE(SparseSdfGIBuildModeItems)))
+            {
+                RendererConfig.SparseSdfGISdfBuildMode = static_cast<uint32_t>(SparseSdfGIBuildModeIndex);
+                UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGISdfBuildMode", std::to_string(RendererConfig.SparseSdfGISdfBuildMode));
+                SyncDeferredSparseSdfGIConfig();
+            }
+
+            if (ImGui::Checkbox("SDF Hierarchical Trace", &RendererConfig.bSparseSdfGIUseHierarchicalTrace))
+            {
+                UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIUseHierarchicalTrace", RendererConfig.bSparseSdfGIUseHierarchicalTrace ? "true" : "false");
                 SyncDeferredSparseSdfGIConfig();
             }
 
@@ -2057,6 +2070,14 @@ void FApplication::RenderUI()
                 RendererConfig.SparseSdfGIBaseVoxelSize = (std::max)(SparseSdfGIBaseVoxelSize, 0.0f);
                 UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIBaseVoxelSize", std::to_string(RendererConfig.SparseSdfGIBaseVoxelSize));
                 SyncDeferredSparseSdfGIConfig();
+            }
+            if (RendererConfig.SparseSdfGIBaseVoxelSize <= 0.0f && DeferredRenderer && DeferredRenderer->GetSparseSdfGI())
+            {
+                ImGui::Text("  Auto Voxel Size: %.4f", DeferredRenderer->GetSparseSdfGI()->GetEffectiveVoxelSize());
+            }
+            if (DeferredRenderer && DeferredRenderer->GetSparseSdfGI())
+            {
+                ImGui::Text("  Cascade Extent: %.3f", DeferredRenderer->GetSparseSdfGI()->GetEffectiveCascadeExtent());
             }
 
             int SparseSdfGIMaxBrickRefsM = static_cast<int>(std::clamp(
@@ -2099,6 +2120,12 @@ void FApplication::RenderUI()
                     SyncDeferredSparseSdfGIConfig();
                 }
             }
+            if (ImGui::SliderFloat("SDF Hit Threshold", &RendererConfig.SparseSdfGISurfaceHitThresholdVoxels, 0.05f, 0.75f, "%.3f"))
+            {
+                RendererConfig.SparseSdfGISurfaceHitThresholdVoxels = std::clamp(RendererConfig.SparseSdfGISurfaceHitThresholdVoxels, 0.05f, 0.75f);
+                UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGISurfaceHitThresholdVoxels", std::to_string(RendererConfig.SparseSdfGISurfaceHitThresholdVoxels));
+                SyncDeferredSparseSdfGIConfig();
+            }
 
             if (ImGui::Checkbox("Screen Probes", &RendererConfig.bSparseSdfGIUseScreenProbes))
             {
@@ -2139,6 +2166,12 @@ void FApplication::RenderUI()
                 if (ImGui::Checkbox("Probe Temporal Reuse", &RendererConfig.bSparseSdfGIProbeTemporalReuse))
                 {
                     UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIProbeTemporalReuse", RendererConfig.bSparseSdfGIProbeTemporalReuse ? "true" : "false");
+                    SyncDeferredSparseSdfGIConfig();
+                }
+
+                if (ImGui::Checkbox("Probe Directional SH", &RendererConfig.bSparseSdfGIProbeDirectionalSH))
+                {
+                    UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIProbeDirectionalSH", RendererConfig.bSparseSdfGIProbeDirectionalSH ? "true" : "false");
                     SyncDeferredSparseSdfGIConfig();
                 }
 

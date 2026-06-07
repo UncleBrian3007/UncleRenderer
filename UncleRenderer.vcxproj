@@ -211,6 +211,7 @@ if exist "$(SolutionDir)packages\Microsoft.Direct3D.D3D12.1.618.4\bin\x64\d3d12S
   </ItemGroup>
   <ItemGroup>
     <None Include="Assets\Scenes\BoxTextured.json" />
+    <None Include="Assets\Scenes\Chess.json" />
     <None Include="Assets\Scenes\CompareBaseColor.json" />
     <None Include="Assets\Scenes\CompareNormal.json" />
     <None Include="Assets\Scenes\Duck.json" />

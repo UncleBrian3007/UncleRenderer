@@ -14,13 +14,6 @@
 - For persistent renderer inputs created during initialization or persistent descriptor creation, cache validation state at creation/refresh time instead of recomputing the full validation every frame.
 - Per-frame validation should be limited to transient RenderGraph resources, frame-indexed bindless indices, resize/recreated resources, or inputs with a concrete invalidation path.
 
-### Copilot Chat
-- Use workspace-root-relative markdown links: path/to/File.ext#L123
-- In multi-root workspaces, the path must be relative to the owning workspace root.
-- Do not prefix workspace names like UncleRenderer/ or UE_Release/.
-- Include line numbers whenever possible.
-- Do not use absolute paths, file://, vscode://, or web URLs.
-
 ## Building the project
 
 MSBuild is not on PATH. Use the full path:
@@ -76,6 +69,7 @@ Before adding a new variable to `Renderer.h` or `FRenderer`, check whether it be
 - Never add or reorder `float`, `float2`, `float3`, or matrix fields in a shared C++/HLSL constants block without verifying HLSL 16-byte cbuffer packing and adding/updating `offsetof` static asserts.
 - Keep code dry.
 - Keep comments minimal. Prefer clear naming and structure over explanatory comments, and avoid multi-line comments unless they document non-obvious constraints or design decisions.
+- RenderGraph pass executors run deferred: always capture local variables (handles, flags) by value, never by reference ([&]), to avoid dangling pointers.
 
 ## Documentation
 - Add doc/FeatureName.md for all significant features; see doc/ClusterDAG-Streaming-v1.md for reference.

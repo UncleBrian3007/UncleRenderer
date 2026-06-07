@@ -873,5 +873,8 @@
     <None Include="Shaders\CommonSH.hlsli">
       <Filter>Shaders</Filter>
     </None>
+    <None Include="Assets\Scenes\Chess.json">
+      <Filter>Assets</Filter>
+    </None>
   </ItemGroup>
 </Project>

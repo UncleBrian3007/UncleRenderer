@@ -1253,7 +1253,6 @@ void FRenderGraph::ReleaseTransientTexture(FRGTextureResource& Texture)
     Pooled.CurrentState = Texture.CurrentState;
     Pooled.bInUse = false;
     Pooled.LastUseFrame = CurrentFrameIndex;
-    // Hold as in-flight until FinalizeReleasedTransientFences stamps the real completion fence.
     Pooled.LastFenceValue = kTransientReleasePendingFence;
     PendingReleaseTexturePoolIndices.push_back(Texture.PoolIndex);
     if (Device)
@@ -1292,7 +1291,6 @@ void FRenderGraph::ReleaseTransientBuffer(FRGBufferResource& Buffer)
     Pooled.CurrentState = Buffer.CurrentState;
     Pooled.bInUse = false;
     Pooled.LastUseFrame = CurrentFrameIndex;
-    // Hold as in-flight until FinalizeReleasedTransientFences stamps the real completion fence.
     Pooled.LastFenceValue = kTransientReleasePendingFence;
     PendingReleaseBufferPoolIndices.push_back(Buffer.PoolIndex);
     if (Device)

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <d3d12.h>
 #include <vector>
@@ -21,9 +22,18 @@ enum class ESparseSdfGIDebugMode : uint32_t
     Off = 0,
     RayTrace = 1,
     CascadeSlice = 2,
-    VoxelProjection = 3,
-    BrickLocalSdfSurface = 4,
-    StepCount = 5
+    Gradient = 3,
+    StepCount = 4,
+    SharedSampleMismatch = 5,
+    BrickLocalGradient = 6,
+    HitUVW = 7,
+    BrickID = 8
+};
+
+enum class ESparseSdfGISdfBuildMode : uint32_t
+{
+    LegacyEikonal = 0,
+    ExactSharedBorder = 1
 };
 
 struct FSparseSdfGIFrameResources
@@ -36,6 +46,9 @@ struct FSparseSdfGIFrameResources
     FRGBufferHandle BrickReferencesHandle{};
     FRGBufferHandle ReferenceCountersHandle{};
     FRGBufferHandle OccupiedBrickListHandle{};
+    FRGBufferHandle ReferenceCounterStatsHandle{};
+    FRGBufferHandle TraceHierarchyBottomHandle{};
+    FRGBufferHandle TraceHierarchyTopHandle{};
     FRGBufferHandle BrickRadianceReadHandle{};
     FRGBufferHandle BrickRadianceWriteHandle{};
     FRGBufferHandle BrickRadianceAccumHandle{};
@@ -64,7 +77,11 @@ public:
 
     bool IsEnabled() const { return bEnabled; }
     bool IsReady() const { return bPersistentInputsValid; }
+    bool IsDebugVisualizationActive() const { return DebugMode != ESparseSdfGIDebugMode::Off; }
     float GetIntensity() const { return Intensity; }
+    float GetEffectiveVoxelSize() const { return CachedEffectiveVoxelSize; }
+    float GetEffectiveCascadeExtent() const { return CachedCascadeBounds.Extent.x; }
+    ESparseSdfGISdfBuildMode GetSdfBuildMode() const { return SdfBuildMode; }
     uint32_t GetCurrentOutputSrvBindlessIndex() const { return bPersistentInputsValid ? DiffuseGI.SrvBindlessIndex : UINT32_MAX; }
 
 private:
@@ -86,18 +103,25 @@ private:
     void AddReferenceBuildInitPass(FDeferredPassContext& Context) const;
     void AddSectionReferenceEmitPass(FDeferredPassContext& Context, const FObject& Object, FMeshSection& Section, uint32_t DrawSectionIndex) const;
     void AddSolveBrickReferencesPass(FDeferredPassContext& Context) const;
+    void AddBuildTraceHierarchyPasses(FDeferredPassContext& Context) const;
+    void AddReferenceStatsPresentPass(FDeferredPassContext& Context) const;
     void AddRadianceCachePasses(FDeferredPassContext& Context) const;
     void AddIrradianceCacheUpdatePasses(FDeferredPassContext& Context) const;
     void AddScreenProbeGITracePasses(FDeferredPassContext& Context, FRGBufferHandle BrickRadianceHandle) const;
     void DispatchOutputPass(FDeferredPassContext& Context, FDX12CommandContext& Cmd, ID3D12PipelineState* PipelineState, bool bPassEnabled, FRGBufferHandle BrickRadianceHandle, FRGResourceHandle InputSHHandle, FRGResourceHandle VarianceHandle) const;
+    bool BindSparseConstants(FDeferredRenderer& Owner, ID3D12GraphicsCommandList* CommandList, const void* Constants, size_t ConstantsSize) const;
+    void ResetSparseConstantCursor(uint32_t FrameIndex) const;
 
 private:
     bool bEnabled = false;
     ESparseSdfGIDebugMode DebugMode = ESparseSdfGIDebugMode::RayTrace;
+    ESparseSdfGISdfBuildMode SdfBuildMode = ESparseSdfGISdfBuildMode::LegacyEikonal;
     uint32_t CascadeCount = 1;
     float BaseVoxelSize = 0.0f;
+    mutable float CachedEffectiveVoxelSize = 0.0f;
     float CascadeScale = 2.0f;
     bool bTraceHalfResolution = false;
+    bool bUseHierarchicalTrace = true;
     float Intensity = 1.0f;
     float BounceStrength = 1.0f;
     bool bEnableRadianceTemporalReuse = true;
@@ -106,10 +130,12 @@ private:
     uint32_t ProbeRaysPerProbe = 16;
     uint32_t ProbeDebugMode = 0;
     bool bProbeTemporalReuse = false;
+    bool bProbeDirectionalSH = false;
     bool bProbeSpawnJitter = false;
     bool bProbeMotionReproject = true;
     bool bMultiBounce = false;
     float MultiBounceStrength = 1.0f;
+    float SurfaceHitThresholdVoxels = 0.75f;
     uint32_t MaxBrickTriangleReferences = 8u * 1024u * 1024u;
     uint32_t DebugSolveGroupBudget = 0xFFFFFFFFu;
     uint32_t DebugEmitTriangleBudget = 0xFFFFFFFFu;
@@ -137,12 +163,17 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ReferenceBuildInitPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ReferenceEmitPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> SolveBrickReferencesPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> ExactSolveBrickReferencesPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> BuildTraceHierarchyBottomPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> BuildTraceHierarchyTopPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> ReferenceStatsPresentPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RadianceClearPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RadianceInjectPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RadianceResolvePipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> IrradianceAccumulatePipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ProbeSpawnPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ProbeTracePipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> ProbeTraceDirectionalPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ProbeInterpolatePipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> DebugTracePipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> DiffuseTracePipeline;
@@ -150,6 +181,11 @@ private:
     FBindlessTexture SdfAtlas;
     FBindlessBuffer CascadeBrickMap;
     FBindlessBuffer BrickMetadata;
+    FBindlessBuffer TraceHierarchyBottom;
+    FBindlessBuffer TraceHierarchyTop;
+    FBindlessBuffer ReferenceCounterStats;
+    mutable std::vector<FMappedUploadBuffer> SparseConstantBuffers;
+    mutable std::vector<uint32_t> SparseConstantCursors;
     std::vector<FBindlessBuffer> BrickRadiance;
     std::vector<FBindlessBuffer> BrickIrradiance;
     std::vector<FBindlessBuffer> ProbeHistory;

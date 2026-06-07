@@ -253,7 +253,8 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableCas, { "EnableCas", "Cas" });
     ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::CasSharpness, { "CasSharpness" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableAutoExposure, { "EnableAutoExposure", "AutoExposure" });
-    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIDebugMode, 0u, 5u, { "SparseSdfGIDebugMode" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIDebugMode, 0u, 9u, { "SparseSdfGIDebugMode" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGISdfBuildMode, 0u, 1u, { "SparseSdfGISdfBuildMode" });
     ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGICascadeCount, 1u, 1u, { "SparseSdfGICascadeCount" });
     ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIMaxBrickTriangleReferences, 1024u * 1024u, 32u * 1024u * 1024u, { "SparseSdfGIMaxBrickTriangleReferences" });
     ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIDebugSolveGroupBudget, 0u, 0xFFFFFFFFu, { "SparseSdfGIDebugSolveGroupBudget" });
@@ -261,6 +262,7 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIBaseVoxelSize, { "SparseSdfGIBaseVoxelSize" });
     ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGICascadeScale, 1.01f, { "SparseSdfGICascadeScale" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGITraceHalfResolution, { "SparseSdfGITraceHalfResolution" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIUseHierarchicalTrace, { "SparseSdfGIUseHierarchicalTrace" });
     ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIIntensity, 0.0f, { "SparseSdfGIIntensity" });
     ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIBounceStrength, 0.0f, { "SparseSdfGIBounceStrength" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIEnableRadianceTemporalReuse, { "SparseSdfGIRadianceTemporalReuse", "SparseSdfGIEnableRadianceTemporalReuse" });
@@ -269,10 +271,12 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIProbeRaysPerProbe, 4u, 64u, { "SparseSdfGIProbeRaysPerProbe" });
     ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIProbeDebugMode, 0u, 6u, { "SparseSdfGIProbeDebugMode" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIProbeTemporalReuse, { "SparseSdfGIProbeTemporalReuse" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIProbeDirectionalSH, { "SparseSdfGIProbeDirectionalSH" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIProbeSpawnJitter, { "SparseSdfGIProbeSpawnJitter" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIProbeMotionReproject, { "SparseSdfGIProbeMotionReproject" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIMultiBounce, { "SparseSdfGIMultiBounce" });
     ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIMultiBounceStrength, 0.0f, { "SparseSdfGIMultiBounceStrength" });
+    ApplyClampedFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGISurfaceHitThresholdVoxels, 0.05f, 0.75f, { "SparseSdfGISurfaceHitThresholdVoxels" });
     ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::AutoExposureKey, { "AutoExposureKey" });
     ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::AutoExposureMin, { "AutoExposureMin" });
     ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::AutoExposureMax, { "AutoExposureMax" });

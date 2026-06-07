@@ -54,7 +54,7 @@ cbuffer DeferredLightingConstants : register(b2)
     uint RestirGIEnabled;
     float SsrRoughnessCutoff;
     uint DeferredLightingVisualizationModeOverride;
-    uint DeferredLightingPadding0;
+    uint SparseSdfGIDebugActive;
     uint DeferredLightingPadding1;
     uint DeferredLightingPadding2;
 };
@@ -206,6 +206,10 @@ float4 DeferredCompositeLightPS(VSOutput Input) : SV_Target
     {
         indirectIrradiance = SparseSdfGITexture.Sample(GBufferSampler, Input.UV).rgb;
         indirectDiffuse = indirectIrradiance * albedo * (1.0f - metallic);
+    }
+    if (SparseSdfGIDebugActive != 0u)
+    {
+        return float4(indirectIrradiance, 1.0f);
     }
 #endif
 

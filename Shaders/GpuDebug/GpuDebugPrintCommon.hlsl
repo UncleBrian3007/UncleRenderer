@@ -16,5 +16,10 @@ static const uint kDebugPrintStatsClusterDagStackOverflowIndex = 23;
 static const uint kDebugPrintStatsClusterDagExpandedOverflowIndex = 24;
 static const uint kDebugPrintStatsClusterDagIterationOverflowIndex = 25;
 static const uint kDebugPrintStatsClusterDagPersistentOverflowIndex = 29;
+static const uint kDebugPrintStatsSparseSdfGITriangleIndex = 19;
+static const uint kDebugPrintStatsSparseSdfGIReferenceIndex = 20;
+static const uint kDebugPrintStatsSparseSdfGIOccupiedBrickIndex = 21;
+static const uint kDebugPrintStatsSparseSdfGITriangleOverflowIndex = 22;
+static const uint kDebugPrintStatsSparseSdfGIReferenceOverflowIndex = 30;
 
 #endif // DEBUG_PRINT_COMMON_HLSL

@@ -25,9 +25,16 @@ namespace
 {
     constexpr uint32_t kSparseSdfGIBrickGridResolution = 64u;
     constexpr uint32_t kSparseSdfGIBrickVoxelResolution = 8u;
+    constexpr uint32_t kSparseSdfGIExactBrickIntervalResolution = kSparseSdfGIBrickVoxelResolution - 1u;
     constexpr uint32_t kSparseSdfGIAtlasResolution = kSparseSdfGIBrickGridResolution * kSparseSdfGIBrickVoxelResolution;
     constexpr uint32_t kSparseSdfGIConstantsDwordCount = 51u;
-    constexpr uint32_t kSparseSdfGIMaxBindlessDwordCount = 11u;
+    constexpr uint32_t kSparseSdfGIMaxBindlessDwordCount = 13u;
+    constexpr uint32_t kSparseSdfGIConstantBufferSlotsPerFrame = 8192u;
+    constexpr uint32_t kSparseSdfGIConstantBufferStride = 256u;
+    constexpr uint32_t kSparseSdfGIHierarchyBottomResolution = 16u;
+    constexpr uint32_t kSparseSdfGIHierarchyTopResolution = 4u;
+    constexpr uint32_t kSparseSdfGIHierarchyBottomCellSize = 4u;
+    constexpr uint32_t kSparseSdfGIHierarchyTopCellSize = 16u;
     constexpr uint32_t kSparseSdfGIGroupSize2D = 8u;
     constexpr uint32_t kSparseSdfGIGroupSize3D = 8u;
     constexpr uint32_t kSparseSdfGIReferenceEmitGroupSize = 64u;
@@ -36,6 +43,7 @@ namespace
     constexpr float kSparseSdfGICascadeSceneRadiusMargin = 1.10f;
     constexpr float kSparseSdfGIMinVoxelSize = 0.001f;
     constexpr float kSparseSdfGISurfaceThicknessVoxels = 1.5f;
+    constexpr float kSparseSdfGISurfaceHitThresholdVoxels = 0.75f;
     constexpr uint32_t kSparseSdfGIDefaultMaxBrickTriangleReferences = 8u * 1024u * 1024u;
     constexpr uint32_t kSparseSdfGIMinBrickTriangleReferences = 1u * 1024u * 1024u;
     constexpr uint32_t kSparseSdfGIMaxBrickTriangleReferencesLimit = 32u * 1024u * 1024u;
@@ -135,6 +143,34 @@ namespace
         return CreateRWStructuredBufferDesc<uint32_t>(GetBrickMapElementCount());
     }
 
+    uint32_t GetTraceHierarchyBottomNodeCount()
+    {
+        return kSparseSdfGIHierarchyBottomResolution * kSparseSdfGIHierarchyBottomResolution * kSparseSdfGIHierarchyBottomResolution;
+    }
+
+    uint32_t GetTraceHierarchyTopNodeCount()
+    {
+        return kSparseSdfGIHierarchyTopResolution * kSparseSdfGIHierarchyTopResolution * kSparseSdfGIHierarchyTopResolution;
+    }
+
+    struct FTraceHierarchyNodeGpu
+    {
+        uint32_t MinPacked = 0;
+        uint32_t MaxPacked = 0;
+        uint32_t Flags = 0;
+        uint32_t Reserved = 0;
+    };
+
+    FRGBufferDesc CreateTraceHierarchyBottomDesc()
+    {
+        return CreateRWStructuredBufferDesc<FTraceHierarchyNodeGpu>(GetTraceHierarchyBottomNodeCount());
+    }
+
+    FRGBufferDesc CreateTraceHierarchyTopDesc()
+    {
+        return CreateRWStructuredBufferDesc<FTraceHierarchyNodeGpu>(GetTraceHierarchyTopNodeCount());
+    }
+
     struct FBrickRadianceGpu
     {
         DirectX::XMFLOAT4 Radiance{ 0.0f, 0.0f, 0.0f, 0.0f };
@@ -202,7 +238,7 @@ namespace
         uint32_t AtlasResolution = kSparseSdfGIAtlasResolution;
         uint32_t BrickGridResolution = kSparseSdfGIBrickGridResolution;
         uint32_t BrickVoxelResolution = kSparseSdfGIBrickVoxelResolution;
-        uint32_t CascadeCount = 1;
+        uint32_t SdfBuildMode = 0;
         uint32_t FrameIndex = 0;
         uint32_t DebugMode = 0;
         uint32_t Enabled = 0;
@@ -211,12 +247,8 @@ namespace
         uint32_t ModelDrawIndexStart = 0;
         uint32_t ModelDrawIndexCount = 0;
         uint32_t MaxBrickTriangleReferences = kSparseSdfGIDefaultMaxBrickTriangleReferences;
-        float BaseVoxelSize = 0.25f;
-        float CascadeScale = 2.0f;
         float Intensity = 1.0f;
         float MaxTraceDistance = 64.0f;
-        uint32_t TrianglePoolCapacity = 0;
-        uint32_t BuildWorkOffset = 0u;
         DirectX::XMFLOAT3 CascadeMin{ 0.0f, 0.0f, 0.0f };
         float VoxelSize = 0.25f;
         DirectX::XMFLOAT3 CascadeExtent{ 1.0f, 1.0f, 1.0f };
@@ -229,11 +261,19 @@ namespace
         uint32_t ProbeRaysPerProbe = 16u;
         uint32_t ProbeDebugMode = 0u;
         uint32_t ProbeHistoryValid = 0u;
+        float SurfaceHitThresholdVoxels = kSparseSdfGISurfaceHitThresholdVoxels;
+        uint32_t TrianglePoolCapacity = 0;
+        uint32_t BuildWorkOffset = 0u;
+        uint32_t UseHierarchicalTrace = 1u;
     };
-    static_assert(offsetof(FSparseSdfGIConstants, CascadeMin) == 20u * sizeof(uint32_t));
-    static_assert(offsetof(FSparseSdfGIConstants, CascadeExtent) == 24u * sizeof(uint32_t));
-    static_assert(offsetof(FSparseSdfGIConstants, World) == 28u * sizeof(uint32_t));
-    static_assert(sizeof(FSparseSdfGIConstants) / sizeof(uint32_t) == 51u);
+    static_assert(offsetof(FSparseSdfGIConstants, CascadeMin) == 16u * sizeof(uint32_t));
+    static_assert(offsetof(FSparseSdfGIConstants, CascadeExtent) == 20u * sizeof(uint32_t));
+    static_assert(offsetof(FSparseSdfGIConstants, World) == 24u * sizeof(uint32_t));
+    static_assert(offsetof(FSparseSdfGIConstants, BounceStrength) == 40u * sizeof(uint32_t));
+    static_assert(offsetof(FSparseSdfGIConstants, ProbeRaysPerProbe) == 44u * sizeof(uint32_t));
+    static_assert(offsetof(FSparseSdfGIConstants, TrianglePoolCapacity) == 48u * sizeof(uint32_t));
+    static_assert(offsetof(FSparseSdfGIConstants, UseHierarchicalTrace) == 50u * sizeof(uint32_t));
+    static_assert(sizeof(FSparseSdfGIConstants) / sizeof(uint32_t) == kSparseSdfGIConstantsDwordCount);
 
     struct FSparseSdfGIReferenceInitBindlessConstants
     {
@@ -242,6 +282,7 @@ namespace
         uint32_t BrickMetadataUavIndex = UINT32_MAX;
         uint32_t ReferenceHeadsUavIndex = UINT32_MAX;
         uint32_t ReferenceCountersUavIndex = UINT32_MAX;
+        uint32_t ReferenceStatsUavIndex = UINT32_MAX;
     };
 
     struct FSparseSdfGIReferenceEmitBindlessConstants
@@ -264,6 +305,26 @@ namespace
         uint32_t ReferenceNodesSrvIndex = UINT32_MAX;
         uint32_t ReferenceCountersSrvIndex = UINT32_MAX;
         uint32_t OccupiedBrickListSrvIndex = UINT32_MAX;
+        uint32_t ReferenceStatsUavIndex = UINT32_MAX;
+    };
+
+    struct FSparseSdfGIBuildTraceHierarchyBottomBindlessConstants
+    {
+        uint32_t CascadeBrickMapSrvIndex = UINT32_MAX;
+        uint32_t BrickMetadataSrvIndex = UINT32_MAX;
+        uint32_t TraceHierarchyBottomUavIndex = UINT32_MAX;
+    };
+
+    struct FSparseSdfGIBuildTraceHierarchyTopBindlessConstants
+    {
+        uint32_t TraceHierarchyBottomSrvIndex = UINT32_MAX;
+        uint32_t TraceHierarchyTopUavIndex = UINT32_MAX;
+    };
+
+    struct FSparseSdfGIReferenceStatsPresentBindlessConstants
+    {
+        uint32_t ReferenceStatsSrvIndex = UINT32_MAX;
+        uint32_t DebugPrintStatsUavIndex = UINT32_MAX;
     };
 
     struct FSparseSdfGITraceBindlessConstants
@@ -279,6 +340,8 @@ namespace
         uint32_t BrickRadianceSrvIndex = UINT32_MAX;
         uint32_t InputSHUavIndex = UINT32_MAX;
         uint32_t VarianceUavIndex = UINT32_MAX;
+        uint32_t TraceHierarchyBottomSrvIndex = UINT32_MAX;
+        uint32_t TraceHierarchyTopSrvIndex = UINT32_MAX;
     };
 
     struct FSparseSdfGIProbeSpawnBindlessConstants
@@ -305,6 +368,8 @@ namespace
         uint32_t ProbeVarianceUavIndex = UINT32_MAX;
         uint32_t ProbeHistoryReadSrvIndex = UINT32_MAX;
         uint32_t ProbeHistoryWriteUavIndex = UINT32_MAX;
+        uint32_t TraceHierarchyBottomSrvIndex = UINT32_MAX;
+        uint32_t TraceHierarchyTopSrvIndex = UINT32_MAX;
     };
 
     struct FSparseSdfGIProbeInterpolateBindlessConstants
@@ -372,12 +437,17 @@ bool FSparseSdfGI::InitializePipelines(FDeferredRenderer& Owner, FDX12Device* De
         ReferenceBuildInitPipeline.Reset();
         ReferenceEmitPipeline.Reset();
         SolveBrickReferencesPipeline.Reset();
+        ExactSolveBrickReferencesPipeline.Reset();
+        BuildTraceHierarchyBottomPipeline.Reset();
+        BuildTraceHierarchyTopPipeline.Reset();
+        ReferenceStatsPresentPipeline.Reset();
         RadianceClearPipeline.Reset();
         RadianceInjectPipeline.Reset();
         IrradianceAccumulatePipeline.Reset();
         RadianceResolvePipeline.Reset();
         ProbeSpawnPipeline.Reset();
         ProbeTracePipeline.Reset();
+        ProbeTraceDirectionalPipeline.Reset();
         ProbeInterpolatePipeline.Reset();
         DebugTracePipeline.Reset();
         DiffuseTracePipeline.Reset();
@@ -408,14 +478,18 @@ void FSparseSdfGI::ApplyConfig(const FRendererConfig& Config)
     const bool bPreviousRadianceTemporalReuse = bEnableRadianceTemporalReuse;
     const bool bPreviousProbeTemporalReuse = bProbeTemporalReuse;
     const bool bPreviousUseScreenProbes = bUseScreenProbes;
+    const bool bPreviousProbeDirectionalSH = bProbeDirectionalSH;
     const bool bPreviousMultiBounce = bMultiBounce;
     const uint32_t PreviousProbeTileSize = ProbeTileSize;
+    const ESparseSdfGISdfBuildMode PreviousSdfBuildMode = SdfBuildMode;
     const uint32_t NewCascadeCount = std::clamp(Config.SparseSdfGICascadeCount, 1u, 1u);
     const float NewBaseVoxelSize = Config.SparseSdfGIBaseVoxelSize;
     const float NewCascadeScale = (std::max)(Config.SparseSdfGICascadeScale, 1.01f);
     const uint32_t NewMaxBrickTriangleReferences = std::clamp(Config.SparseSdfGIMaxBrickTriangleReferences, kSparseSdfGIMinBrickTriangleReferences, kSparseSdfGIMaxBrickTriangleReferencesLimit);
+    const ESparseSdfGISdfBuildMode NewSdfBuildMode = static_cast<ESparseSdfGISdfBuildMode>(std::clamp(Config.SparseSdfGISdfBuildMode, 0u, 1u));
     const bool bBuildSettingsChanged =
         CascadeCount != NewCascadeCount ||
+        PreviousSdfBuildMode != NewSdfBuildMode ||
         BaseVoxelSize != NewBaseVoxelSize ||
         CascadeScale != NewCascadeScale ||
         MaxBrickTriangleReferences != NewMaxBrickTriangleReferences ||
@@ -423,11 +497,13 @@ void FSparseSdfGI::ApplyConfig(const FRendererConfig& Config)
         DebugEmitTriangleBudget != Config.SparseSdfGIDebugEmitTriangleBudget;
 
     bEnabled = Config.DiffuseGISource == EDiffuseGISource::SparseSdfGI;
-    DebugMode = static_cast<ESparseSdfGIDebugMode>(std::clamp(Config.SparseSdfGIDebugMode, 0u, 5u));
+    DebugMode = static_cast<ESparseSdfGIDebugMode>(std::clamp(Config.SparseSdfGIDebugMode, 0u, 9u));
+    SdfBuildMode = NewSdfBuildMode;
     CascadeCount = NewCascadeCount;
     BaseVoxelSize = NewBaseVoxelSize;
     CascadeScale = NewCascadeScale;
     bTraceHalfResolution = Config.bSparseSdfGITraceHalfResolution;
+    bUseHierarchicalTrace = Config.bSparseSdfGIUseHierarchicalTrace;
     Intensity = (std::max)(0.0f, Config.SparseSdfGIIntensity);
     BounceStrength = (std::max)(0.0f, Config.SparseSdfGIBounceStrength);
     bEnableRadianceTemporalReuse = Config.bSparseSdfGIEnableRadianceTemporalReuse;
@@ -436,10 +512,12 @@ void FSparseSdfGI::ApplyConfig(const FRendererConfig& Config)
     ProbeRaysPerProbe = std::clamp(Config.SparseSdfGIProbeRaysPerProbe, 4u, 64u);
     ProbeDebugMode = std::clamp(Config.SparseSdfGIProbeDebugMode, 0u, 6u);
     bProbeTemporalReuse = Config.bSparseSdfGIProbeTemporalReuse;
+    bProbeDirectionalSH = Config.bSparseSdfGIProbeDirectionalSH;
     bProbeSpawnJitter = Config.bSparseSdfGIProbeSpawnJitter;
     bProbeMotionReproject = Config.bSparseSdfGIProbeMotionReproject;
     bMultiBounce = Config.bSparseSdfGIMultiBounce;
     MultiBounceStrength = (std::max)(0.0f, Config.SparseSdfGIMultiBounceStrength);
+    SurfaceHitThresholdVoxels = std::clamp(Config.SparseSdfGISurfaceHitThresholdVoxels, 0.05f, kSparseSdfGISurfaceHitThresholdVoxels);
     MaxBrickTriangleReferences = NewMaxBrickTriangleReferences;
     DebugSolveGroupBudget = Config.SparseSdfGIDebugSolveGroupBudget;
     DebugEmitTriangleBudget = Config.SparseSdfGIDebugEmitTriangleBudget;
@@ -456,6 +534,7 @@ void FSparseSdfGI::ApplyConfig(const FRendererConfig& Config)
 
     if (bPreviousProbeTemporalReuse != bProbeTemporalReuse ||
         bPreviousUseScreenProbes != bUseScreenProbes ||
+        bPreviousProbeDirectionalSH != bProbeDirectionalSH ||
         PreviousProbeTileSize != ProbeTileSize)
     {
         std::fill(ProbeHistoryValid.begin(), ProbeHistoryValid.end(), false);
@@ -512,8 +591,60 @@ void FSparseSdfGI::OnFrameFenceSignaled(uint32_t FrameIndex)
     }
 }
 
+void FSparseSdfGI::ResetSparseConstantCursor(uint32_t FrameIndex) const
+{
+    if (SparseConstantCursors.empty())
+    {
+        return;
+    }
+
+    SparseConstantCursors[FrameIndex % static_cast<uint32_t>(SparseConstantCursors.size())] = 0u;
+}
+
+bool FSparseSdfGI::BindSparseConstants(FDeferredRenderer& Owner, ID3D12GraphicsCommandList* CommandList, const void* Constants, size_t ConstantsSize) const
+{
+    if (!CommandList || !Constants || ConstantsSize == 0u || ConstantsSize > kSparseSdfGIConstantBufferStride || SparseConstantBuffers.empty() || SparseConstantCursors.empty())
+    {
+        return false;
+    }
+
+    const uint32_t FrameSlot = Owner.GetFrameIndex() % static_cast<uint32_t>(SparseConstantBuffers.size());
+    if (FrameSlot >= SparseConstantCursors.size())
+    {
+        return false;
+    }
+
+    uint32_t& Cursor = SparseConstantCursors[FrameSlot];
+    if (Cursor >= kSparseSdfGIConstantBufferSlotsPerFrame)
+    {
+        LogError("SparseSdfGI constants skipped: per-frame constant buffer slot budget exceeded.");
+        return false;
+    }
+
+    FMappedUploadBuffer& Buffer = SparseConstantBuffers[FrameSlot];
+    if (!Buffer.IsValid())
+    {
+        return false;
+    }
+
+    const uint64_t Offset = static_cast<uint64_t>(Cursor) * kSparseSdfGIConstantBufferStride;
+    if (Offset + ConstantsSize > Buffer.Size)
+    {
+        LogError("SparseSdfGI constants skipped: constant buffer offset exceeded allocation.");
+        return false;
+    }
+
+    std::memset(Buffer.MappedData + Offset, 0, kSparseSdfGIConstantBufferStride);
+    std::memcpy(Buffer.MappedData + Offset, Constants, ConstantsSize);
+    CommandList->SetComputeRootConstantBufferView(1, Buffer.GetGPUVirtualAddress() + Offset);
+    ++Cursor;
+    return true;
+}
+
 void FSparseSdfGI::ImportPersistentResources(FDeferredPassContext& Context)
 {
+    ResetSparseConstantCursor(Context.FrameIndex);
+
     FRenderGraph& Graph = Context.Graph;
     FSparseSdfGIFrameResources& Resources = Context.Resources.SparseSdfGI;
 
@@ -523,6 +654,9 @@ void FSparseSdfGI::ImportPersistentResources(FDeferredPassContext& Context)
     Resources.BrickReferencesHandle = {};
     Resources.ReferenceCountersHandle = {};
     Resources.OccupiedBrickListHandle = {};
+    Resources.ReferenceCounterStatsHandle = ImportBindlessBuffer(Graph, "SparseSdfGI Reference Counter Stats", ReferenceCounterStats);
+    Resources.TraceHierarchyBottomHandle = ImportBindlessBuffer(Graph, "SparseSdfGI Trace Hierarchy Bottom", TraceHierarchyBottom);
+    Resources.TraceHierarchyTopHandle = ImportBindlessBuffer(Graph, "SparseSdfGI Trace Hierarchy Top", TraceHierarchyTop);
     Resources.BrickRadianceAccumHandle = {};
     Resources.BrickIrradianceAccumHandle = {};
     Resources.DiffuseGIInputSHHandle = {};
@@ -578,6 +712,7 @@ void FSparseSdfGI::AddSdfUpdatePasses(FDeferredPassContext& Context) const
         CachedBuildSettingsSignature == BuildSettingsSignature &&
         CachedStaticCandidateCount == StaticCandidateCount)
     {
+        AddReferenceStatsPresentPass(Context);
         return;
     }
 
@@ -601,6 +736,8 @@ void FSparseSdfGI::AddSdfUpdatePasses(FDeferredPassContext& Context) const
     }
 
     AddSolveBrickReferencesPass(Context);
+    AddBuildTraceHierarchyPasses(Context);
+    AddReferenceStatsPresentPass(Context);
 
     bSdfCacheValid = true;
     CachedSceneSignature = SceneSignature;
@@ -620,6 +757,8 @@ void FSparseSdfGI::AddDiffuseGITracePasses(FDeferredPassContext& Context) const
     const FRGResourceHandle SdfAtlasHandle = Context.Resources.SparseSdfGI.SdfAtlasHandle;
     const FRGBufferHandle BrickMapHandle = Context.Resources.SparseSdfGI.CascadeBrickMapHandle;
     const FRGBufferHandle BrickMetadataHandle = Context.Resources.SparseSdfGI.BrickMetadataHandle;
+    const FRGBufferHandle TraceHierarchyBottomHandle = Context.Resources.SparseSdfGI.TraceHierarchyBottomHandle;
+    const FRGBufferHandle TraceHierarchyTopHandle = Context.Resources.SparseSdfGI.TraceHierarchyTopHandle;
     const FRGBufferHandle BrickRadianceHandle = Context.Resources.SparseSdfGI.BrickRadianceWriteHandle;
     const FRGResourceHandle DiffuseHandle = Context.Resources.SparseSdfGI.DiffuseGIHandle;
     const bool bWritesDenoiserInputs = DebugMode == ESparseSdfGIDebugMode::Off;
@@ -640,7 +779,7 @@ void FSparseSdfGI::AddDiffuseGITracePasses(FDeferredPassContext& Context) const
         FRGResourceHandle VarianceHandle{};
     };
 
-    Graph.AddPass<FOutputPassData>("SparseSdfGI Trace", [&, DepthHandle, SdfAtlasHandle, BrickMapHandle, BrickMetadataHandle, BrickRadianceHandle, DiffuseHandle, GBufferHandles, Pipeline, bWritesDenoiserInputs](FOutputPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FOutputPassData>("SparseSdfGI Trace", [&, DepthHandle, SdfAtlasHandle, BrickMapHandle, BrickMetadataHandle, TraceHierarchyBottomHandle, TraceHierarchyTopHandle, BrickRadianceHandle, DiffuseHandle, GBufferHandles, Pipeline, bWritesDenoiserInputs](FOutputPassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("SparseSdfGI");
         Data.bEnabled = bEnabled && bPersistentInputsValid;
@@ -667,6 +806,8 @@ void FSparseSdfGI::AddDiffuseGITracePasses(FDeferredPassContext& Context) const
         Builder.ReadTexture(SdfAtlasHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadBuffer(BrickMapHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadBuffer(BrickMetadataHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadBuffer(TraceHierarchyBottomHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadBuffer(TraceHierarchyTopHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadBuffer(BrickRadianceHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.WriteTexture(DiffuseHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         if (Data.bWritesDenoiserInputs)
@@ -676,8 +817,6 @@ void FSparseSdfGI::AddDiffuseGITracePasses(FDeferredPassContext& Context) const
         }
     }, [&, Pipeline, BrickRadianceHandle](const FOutputPassData& Data, FDX12CommandContext& Cmd)
     {
-        // BrickRadianceHandle must be captured by value: it is a local of AddDiffuseGITracePasses,
-        // and this executor lambda runs during graph execution after that function has returned.
         DispatchOutputPass(Context, Cmd, Pipeline, Data.bEnabled, BrickRadianceHandle, Data.InputSHHandle, Data.VarianceHandle);
     });
 
@@ -695,7 +834,7 @@ bool FSparseSdfGI::CreateRootSignature(FDX12Device* Device)
 
     CD3DX12_ROOT_PARAMETER1 RootParams[3] = {};
     RootParams[0].InitAsConstantBufferView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE, D3D12_SHADER_VISIBILITY_ALL);
-    RootParams[1].InitAsConstants(kSparseSdfGIConstantsDwordCount, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+    RootParams[1].InitAsConstantBufferView(1, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE, D3D12_SHADER_VISIBILITY_ALL);
     RootParams[2].InitAsConstants(kSparseSdfGIMaxBindlessDwordCount, 2, 0, D3D12_SHADER_VISIBILITY_ALL);
 
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC RootSigDesc;
@@ -730,12 +869,17 @@ bool FSparseSdfGI::CreatePipelines(FDX12Device* Device)
     std::vector<uint8_t> ReferenceBuildInitByteCode;
     std::vector<uint8_t> ReferenceEmitByteCode;
     std::vector<uint8_t> SolveBrickReferencesByteCode;
+    std::vector<uint8_t> ExactSolveBrickReferencesByteCode;
+    std::vector<uint8_t> BuildTraceHierarchyBottomByteCode;
+    std::vector<uint8_t> BuildTraceHierarchyTopByteCode;
+    std::vector<uint8_t> ReferenceStatsPresentByteCode;
     std::vector<uint8_t> RadianceClearByteCode;
     std::vector<uint8_t> RadianceInjectByteCode;
     std::vector<uint8_t> IrradianceAccumulateByteCode;
     std::vector<uint8_t> RadianceResolveByteCode;
     std::vector<uint8_t> ProbeSpawnByteCode;
     std::vector<uint8_t> ProbeTraceByteCode;
+    std::vector<uint8_t> ProbeTraceDirectionalByteCode;
     std::vector<uint8_t> ProbeInterpolateByteCode;
     std::vector<uint8_t> DebugTraceByteCode;
     std::vector<uint8_t> DiffuseTraceByteCode;
@@ -750,6 +894,22 @@ bool FSparseSdfGI::CreatePipelines(FDX12Device* Device)
         return false;
     }
     if (!RendererUtils::CompileComputeShader(Compiler, Device, ShaderPath, L"CSSolveBrickReferences", SolveBrickReferencesByteCode, { L"SPARSE_SDF_GI_REFERENCE_SOLVE_SHADER=1" }))
+    {
+        return false;
+    }
+    if (!RendererUtils::CompileComputeShader(Compiler, Device, ShaderPath, L"CSSolveBrickReferences", ExactSolveBrickReferencesByteCode, { L"SPARSE_SDF_GI_REFERENCE_SOLVE_SHADER=1", L"SPARSE_SDF_GI_EXACT_SHARED_BORDER=1" }))
+    {
+        return false;
+    }
+    if (!RendererUtils::CompileComputeShader(Compiler, Device, ShaderPath, L"CSBuildTraceHierarchyBottom", BuildTraceHierarchyBottomByteCode, { L"SPARSE_SDF_GI_BUILD_TRACE_HIERARCHY_BOTTOM_SHADER=1" }))
+    {
+        return false;
+    }
+    if (!RendererUtils::CompileComputeShader(Compiler, Device, ShaderPath, L"CSBuildTraceHierarchyTop", BuildTraceHierarchyTopByteCode, { L"SPARSE_SDF_GI_BUILD_TRACE_HIERARCHY_TOP_SHADER=1" }))
+    {
+        return false;
+    }
+    if (!RendererUtils::CompileComputeShader(Compiler, Device, ShaderPath, L"CSStoreReferenceStatsToGpuDebug", ReferenceStatsPresentByteCode, { L"SPARSE_SDF_GI_REFERENCE_STATS_SHADER=1" }))
     {
         return false;
     }
@@ -774,6 +934,10 @@ bool FSparseSdfGI::CreatePipelines(FDX12Device* Device)
         return false;
     }
     if (!RendererUtils::CompileComputeShader(Compiler, Device, ShaderPath, L"CSTraceScreenProbes", ProbeTraceByteCode, { L"SPARSE_SDF_GI_PROBE_TRACE_SHADER=1" }))
+    {
+        return false;
+    }
+    if (!RendererUtils::CompileComputeShader(Compiler, Device, ShaderPath, L"CSTraceScreenProbes", ProbeTraceDirectionalByteCode, { L"SPARSE_SDF_GI_PROBE_TRACE_SHADER=1", L"SPARSE_SDF_GI_PROBE_DIRECTIONAL_SH=1" }))
     {
         return false;
     }
@@ -810,12 +974,17 @@ bool FSparseSdfGI::CreatePipelines(FDX12Device* Device)
     return CreateComputePso(ReferenceBuildInitByteCode, ReferenceBuildInitPipeline, "CSInitReferenceBuild")
         && CreateComputePso(ReferenceEmitByteCode, ReferenceEmitPipeline, "CSEmitTriangleReferences")
         && CreateComputePso(SolveBrickReferencesByteCode, SolveBrickReferencesPipeline, "CSSolveBrickReferences")
+        && CreateComputePso(ExactSolveBrickReferencesByteCode, ExactSolveBrickReferencesPipeline, "CSSolveBrickReferences ExactSharedBorder")
+        && CreateComputePso(BuildTraceHierarchyBottomByteCode, BuildTraceHierarchyBottomPipeline, "CSBuildTraceHierarchyBottom")
+        && CreateComputePso(BuildTraceHierarchyTopByteCode, BuildTraceHierarchyTopPipeline, "CSBuildTraceHierarchyTop")
+        && CreateComputePso(ReferenceStatsPresentByteCode, ReferenceStatsPresentPipeline, "CSStoreReferenceStatsToGpuDebug")
         && CreateComputePso(RadianceClearByteCode, RadianceClearPipeline, "CSClearBrickRadianceAccum")
         && CreateComputePso(RadianceInjectByteCode, RadianceInjectPipeline, "CSInjectBrickRadiance")
         && CreateComputePso(IrradianceAccumulateByteCode, IrradianceAccumulatePipeline, "CSAccumulateBrickIrradiance")
         && CreateComputePso(RadianceResolveByteCode, RadianceResolvePipeline, "CSResolveBrickRadianceTemporal")
         && CreateComputePso(ProbeSpawnByteCode, ProbeSpawnPipeline, "CSSpawnScreenProbes")
         && CreateComputePso(ProbeTraceByteCode, ProbeTracePipeline, "CSTraceScreenProbes")
+        && CreateComputePso(ProbeTraceDirectionalByteCode, ProbeTraceDirectionalPipeline, "CSTraceScreenProbes DirectionalSH")
         && CreateComputePso(ProbeInterpolateByteCode, ProbeInterpolatePipeline, "CSInterpolateScreenProbes")
         && CreateComputePso(DebugTraceByteCode, DebugTracePipeline, "CSDebugTrace")
         && CreateComputePso(DiffuseTraceByteCode, DiffuseTracePipeline, "CSDiffuseTrace");
@@ -873,7 +1042,48 @@ bool FSparseSdfGI::CreateResources(FDX12Device* Device, uint32_t Width, uint32_t
         true,
         true);
 
+    CreateBindlessBuffer(
+        Device,
+        L"SparseSdfGI_TraceHierarchyBottom",
+        CreateTraceHierarchyBottomDesc(),
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        TraceHierarchyBottom,
+        true,
+        true);
+
+    CreateBindlessBuffer(
+        Device,
+        L"SparseSdfGI_TraceHierarchyTop",
+        CreateTraceHierarchyTopDesc(),
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        TraceHierarchyTop,
+        true,
+        true);
+
+    CreateBindlessBuffer(
+        Device,
+        L"SparseSdfGI_ReferenceCounterStats",
+        CreateRWStructuredBufferDesc<uint32_t>(5u),
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        ReferenceCounterStats,
+        true,
+        true);
+
     const uint32_t FrameCount = (std::max)(2u, FramesInFlight);
+    SparseConstantBuffers.resize(FrameCount);
+    SparseConstantCursors.assign(FrameCount, 0u);
+    for (uint32_t FrameIndex = 0u; FrameIndex < FrameCount; ++FrameIndex)
+    {
+        if (!CreateMappedConstantBuffer(
+            Device,
+            L"SparseSdfGI_Constants_Frame" + std::to_wstring(FrameIndex),
+            static_cast<uint64_t>(kSparseSdfGIConstantBufferSlotsPerFrame) * kSparseSdfGIConstantBufferStride,
+            SparseConstantBuffers[FrameIndex]))
+        {
+            return false;
+        }
+    }
+
     const FRGBufferDesc BrickRadianceDesc = CreateBrickRadianceDesc();
     BrickRadiance.resize(FrameCount);
     BrickRadianceHistoryValid.assign(FrameCount, false);
@@ -942,18 +1152,31 @@ bool FSparseSdfGI::RefreshPersistentInputValidation()
         ReferenceBuildInitPipeline &&
         ReferenceEmitPipeline &&
         SolveBrickReferencesPipeline &&
+        ExactSolveBrickReferencesPipeline &&
+        BuildTraceHierarchyBottomPipeline &&
+        BuildTraceHierarchyTopPipeline &&
+        ReferenceStatsPresentPipeline &&
         RadianceClearPipeline &&
         RadianceInjectPipeline &&
         IrradianceAccumulatePipeline &&
         RadianceResolvePipeline &&
         ProbeSpawnPipeline &&
         ProbeTracePipeline &&
+        ProbeTraceDirectionalPipeline &&
         ProbeInterpolatePipeline &&
         DebugTracePipeline &&
         DiffuseTracePipeline &&
         SdfAtlas.IsFullyBound() &&
         CascadeBrickMap.IsFullyBound() &&
         BrickMetadata.IsFullyBound() &&
+        TraceHierarchyBottom.IsFullyBound() &&
+        TraceHierarchyTop.IsFullyBound() &&
+        ReferenceCounterStats.IsFullyBound() &&
+        !SparseConstantBuffers.empty() &&
+        std::all_of(SparseConstantBuffers.begin(), SparseConstantBuffers.end(), [](const FMappedUploadBuffer& Buffer)
+        {
+            return Buffer.IsValid();
+        }) &&
         !BrickRadiance.empty() &&
         std::all_of(BrickRadiance.begin(), BrickRadiance.end(), [](const FBindlessBuffer& Buffer)
         {
@@ -975,15 +1198,24 @@ FSparseSdfGI::FCascadeBounds FSparseSdfGI::ComputeCascadeBounds(const FDeferredR
     const float AutoVoxelSize = (std::max)(
         (SceneRadius * 2.0f * kSparseSdfGICascadeSceneRadiusMargin) / static_cast<float>(kSparseSdfGIAtlasResolution),
         kSparseSdfGIMinVoxelSize);
-    const float VoxelSize = (BaseVoxelSize > 0.0f)
+    const float LegacyVoxelSize = (BaseVoxelSize > 0.0f)
         ? (std::max)(BaseVoxelSize, kSparseSdfGIMinVoxelSize)
         : AutoVoxelSize;
-    const float ExtentValue = VoxelSize * static_cast<float>(kSparseSdfGIAtlasResolution);
+    const bool bExactSharedBorder = SdfBuildMode == ESparseSdfGISdfBuildMode::ExactSharedBorder;
+    const float SamplePitch = bExactSharedBorder
+        ? LegacyVoxelSize * (static_cast<float>(kSparseSdfGIBrickVoxelResolution) / static_cast<float>(kSparseSdfGIExactBrickIntervalResolution))
+        : LegacyVoxelSize;
+    const float BrickIntervalCount = bExactSharedBorder
+        ? static_cast<float>(kSparseSdfGIBrickGridResolution * kSparseSdfGIExactBrickIntervalResolution)
+        : static_cast<float>(kSparseSdfGIAtlasResolution);
+    const float ExtentValue = SamplePitch * BrickIntervalCount;
     const DirectX::XMFLOAT3 SceneCenter = Owner.GetSceneCenter();
+
+    CachedEffectiveVoxelSize = SamplePitch;
 
     FCascadeBounds Bounds = {};
     Bounds.Extent = DirectX::XMFLOAT3(ExtentValue, ExtentValue, ExtentValue);
-    Bounds.VoxelSize = VoxelSize;
+    Bounds.VoxelSize = SamplePitch;
     Bounds.Min = DirectX::XMFLOAT3(
         SceneCenter.x - Bounds.Extent.x * 0.5f,
         SceneCenter.y - Bounds.Extent.y * 0.5f,
@@ -997,8 +1229,10 @@ uint64_t FSparseSdfGI::ComputeBuildSettingsSignature(const FCascadeBounds& Bound
     HashValue(Hash, kSparseSdfGIBrickGridResolution);
     HashValue(Hash, kSparseSdfGIBrickVoxelResolution);
     HashValue(Hash, kSparseSdfGIAtlasResolution);
+    HashValue(Hash, kSparseSdfGIExactBrickIntervalResolution);
     HashValue(Hash, kSparseSdfGISurfaceThicknessVoxels);
     HashValue(Hash, CascadeCount);
+    HashValue(Hash, SdfBuildMode);
     HashValue(Hash, BaseVoxelSize);
     HashValue(Hash, CascadeScale);
     HashValue(Hash, MaxBrickTriangleReferences);
@@ -1060,6 +1294,7 @@ void FSparseSdfGI::AddReferenceBuildInitPass(FDeferredPassContext& Context) cons
     const FRGResourceHandle SdfAtlasHandle = Context.Resources.SparseSdfGI.SdfAtlasHandle;
     const FRGBufferHandle BrickMapHandle = Context.Resources.SparseSdfGI.CascadeBrickMapHandle;
     const FRGBufferHandle BrickMetadataHandle = Context.Resources.SparseSdfGI.BrickMetadataHandle;
+    const FRGBufferHandle ReferenceStatsHandle = Context.Resources.SparseSdfGI.ReferenceCounterStatsHandle;
 
     uint32_t MaxStaticTriangleCount = 0;
     auto Sections = Context.Owner.GetWorld().BuildSectionList();
@@ -1082,10 +1317,11 @@ void FSparseSdfGI::AddReferenceBuildInitPass(FDeferredPassContext& Context) cons
         FRGBufferHandle BrickReferencesHandle{};
         FRGBufferHandle ReferenceCountersHandle{};
         FRGBufferHandle OccupiedBrickListHandle{};
+        FRGBufferHandle ReferenceStatsHandle{};
         uint32_t TrianglePoolCapacity = 0;
     };
 
-    Graph.AddPass<FReferenceBuildInitPassData>("SparseSdfGI Reference Build Init", [&, SdfAtlasHandle, BrickMapHandle, BrickMetadataHandle, MaxStaticTriangleCount](FReferenceBuildInitPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FReferenceBuildInitPassData>("SparseSdfGI Reference Build Init", [&, SdfAtlasHandle, BrickMapHandle, BrickMetadataHandle, ReferenceStatsHandle, MaxStaticTriangleCount](FReferenceBuildInitPassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("SparseSdfGI");
         Data.bEnabled = bEnabled && bPersistentInputsValid;
@@ -1099,6 +1335,7 @@ void FSparseSdfGI::AddReferenceBuildInitPass(FDeferredPassContext& Context) cons
         Data.BrickReferencesHandle = Builder.CreateBuffer("SparseSdfGI Brick References", CreateBrickReferencesDesc(MaxBrickTriangleReferences));
         Data.ReferenceCountersHandle = Builder.CreateBuffer("SparseSdfGI Reference Counters", CreateReferenceCountersDesc());
         Data.OccupiedBrickListHandle = Builder.CreateBuffer("SparseSdfGI Occupied Brick List", CreateOccupiedBrickListDesc());
+        Data.ReferenceStatsHandle = ReferenceStatsHandle;
 
         Context.Resources.SparseSdfGI.TrianglePoolHandle = Data.TrianglePoolHandle;
         Context.Resources.SparseSdfGI.BrickReferenceHeadsHandle = Data.BrickReferenceHeadsHandle;
@@ -1114,10 +1351,12 @@ void FSparseSdfGI::AddReferenceBuildInitPass(FDeferredPassContext& Context) cons
         Builder.WriteBuffer(Data.BrickReferenceHeadsHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         Builder.WriteBuffer(Data.BrickReferencesHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         Builder.WriteBuffer(Data.ReferenceCountersHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.WriteBuffer(Data.ReferenceStatsHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         Builder.UavBarrier(SdfAtlasHandle);
         Builder.UavBarrier(BrickMetadataHandle);
         Builder.UavBarrier(Data.BrickReferenceHeadsHandle);
         Builder.UavBarrier(Data.ReferenceCountersHandle);
+        Builder.UavBarrier(Data.ReferenceStatsHandle);
     }, [this, &Context](const FReferenceBuildInitPassData& Data, FDX12CommandContext& Cmd)
     {
         if (!Data.bEnabled)
@@ -1136,28 +1375,31 @@ void FSparseSdfGI::AddReferenceBuildInitPass(FDeferredPassContext& Context) cons
         FSparseSdfGIConstants Constants = {};
         Constants.OutputWidth = static_cast<uint32_t>(Owner.Viewport.Width);
         Constants.OutputHeight = static_cast<uint32_t>(Owner.Viewport.Height);
-        Constants.CascadeCount = CascadeCount;
+        Constants.SdfBuildMode = static_cast<uint32_t>(SdfBuildMode);
         Constants.FrameIndex = static_cast<uint32_t>(Owner.GetFrameNumber());
         Constants.DebugMode = static_cast<uint32_t>(DebugMode);
         Constants.Enabled = bEnabled ? 1u : 0u;
         Constants.TraceHalfResolution = bTraceHalfResolution ? 1u : 0u;
+        Constants.UseHierarchicalTrace = bUseHierarchicalTrace ? 1u : 0u;
         const FCascadeBounds Bounds = ComputeCascadeBounds(Owner);
-        Constants.BaseVoxelSize = Bounds.VoxelSize;
-        Constants.CascadeScale = CascadeScale;
         Constants.Intensity = Intensity;
         Constants.BounceStrength = BounceStrength;
         Constants.VoxelSize = Bounds.VoxelSize;
-        Constants.MaxTraceDistance = Bounds.VoxelSize * static_cast<float>(kSparseSdfGIAtlasResolution);
+        Constants.MaxTraceDistance = Bounds.Extent.x;
         Constants.MaxBrickTriangleReferences = MaxBrickTriangleReferences;
         Constants.TrianglePoolCapacity = Data.TrianglePoolCapacity;
         Constants.CascadeMin = Bounds.Min;
         Constants.CascadeExtent = Bounds.Extent;
         static_assert(sizeof(FSparseSdfGIConstants) / sizeof(uint32_t) <= kSparseSdfGIConstantsDwordCount);
-        CommandList->SetComputeRoot32BitConstants(1, sizeof(FSparseSdfGIConstants) / sizeof(uint32_t), &Constants, 0);
+        if (!BindSparseConstants(Owner, CommandList, &Constants, sizeof(Constants)))
+        {
+            return;
+        }
 
         const uint32_t BrickReferenceHeadsUavIndex = Context.Graph.GetBufferUavBindlessIndex(Data.BrickReferenceHeadsHandle);
         const uint32_t ReferenceCountersUavIndex = Context.Graph.GetBufferUavBindlessIndex(Data.ReferenceCountersHandle);
-        if (!AreAllBindlessIndicesValid(SdfAtlas.UavBindlessIndex, CascadeBrickMap.UavBindlessIndex, BrickMetadata.UavBindlessIndex, BrickReferenceHeadsUavIndex, ReferenceCountersUavIndex))
+        const uint32_t ReferenceStatsUavIndex = Context.Graph.GetBufferUavBindlessIndex(Data.ReferenceStatsHandle);
+        if (!AreAllBindlessIndicesValid(SdfAtlas.UavBindlessIndex, CascadeBrickMap.UavBindlessIndex, BrickMetadata.UavBindlessIndex, BrickReferenceHeadsUavIndex, ReferenceCountersUavIndex, ReferenceStatsUavIndex))
         {
             return;
         }
@@ -1168,7 +1410,8 @@ void FSparseSdfGI::AddReferenceBuildInitPass(FDeferredPassContext& Context) cons
             CascadeBrickMap.UavBindlessIndex,
             BrickMetadata.UavBindlessIndex,
             BrickReferenceHeadsUavIndex,
-            ReferenceCountersUavIndex
+            ReferenceCountersUavIndex,
+            ReferenceStatsUavIndex
         };
         static_assert(sizeof(FSparseSdfGIReferenceInitBindlessConstants) / sizeof(uint32_t) <= kSparseSdfGIMaxBindlessDwordCount);
         CommandList->SetComputeRoot32BitConstants(2, sizeof(FSparseSdfGIReferenceInitBindlessConstants) / sizeof(uint32_t), &Bindless, 0);
@@ -1300,25 +1543,27 @@ void FSparseSdfGI::AddSectionReferenceEmitPass(FDeferredPassContext& Context, co
         FSparseSdfGIConstants Constants = {};
         Constants.OutputWidth = static_cast<uint32_t>(Owner.Viewport.Width);
         Constants.OutputHeight = static_cast<uint32_t>(Owner.Viewport.Height);
-        Constants.CascadeCount = CascadeCount;
+        Constants.SdfBuildMode = static_cast<uint32_t>(SdfBuildMode);
         Constants.FrameIndex = static_cast<uint32_t>(Owner.GetFrameNumber());
         Constants.DebugMode = static_cast<uint32_t>(DebugMode);
         Constants.Enabled = bEnabled ? 1u : 0u;
         Constants.TraceHalfResolution = bTraceHalfResolution ? 1u : 0u;
+        Constants.UseHierarchicalTrace = bUseHierarchicalTrace ? 1u : 0u;
         Constants.MaxBrickTriangleReferences = MaxBrickTriangleReferences;
         Constants.TrianglePoolCapacity = Data.TrianglePoolCapacity;
         Constants.BuildWorkOffset = Data.PositionCount;
-        Constants.BaseVoxelSize = Data.VoxelSize;
-        Constants.CascadeScale = CascadeScale;
         Constants.Intensity = Intensity;
         Constants.BounceStrength = BounceStrength;
-        Constants.MaxTraceDistance = Data.VoxelSize * static_cast<float>(kSparseSdfGIAtlasResolution);
+        Constants.MaxTraceDistance = Data.CascadeExtent.x;
         Constants.CascadeMin = Data.CascadeMin;
         Constants.VoxelSize = Data.VoxelSize;
         Constants.CascadeExtent = Data.CascadeExtent;
         Constants.SurfaceThicknessVoxels = kSparseSdfGISurfaceThicknessVoxels;
         Constants.World = Data.World;
-        CommandList->SetComputeRoot32BitConstants(1, sizeof(FSparseSdfGIConstants) / sizeof(uint32_t), &Constants, 0);
+        if (!BindSparseConstants(Owner, CommandList, &Constants, sizeof(Constants)))
+        {
+            return;
+        }
 
         const uint32_t TrianglePoolUavIndex = Context.Graph.GetBufferUavBindlessIndex(Data.TrianglePoolHandle);
         const uint32_t BrickReferenceHeadsUavIndex = Context.Graph.GetBufferUavBindlessIndex(Data.BrickReferenceHeadsHandle);
@@ -1358,7 +1603,10 @@ void FSparseSdfGI::AddSectionReferenceEmitPass(FDeferredPassContext& Context, co
             Constants.ModelTriangleCount = ChunkTriangleCount;
             Constants.ModelDrawIndexStart = Data.DrawIndexStart + TriangleOffset * 3u;
             Constants.ModelDrawIndexCount = ChunkTriangleCount * 3u;
-            CommandList->SetComputeRoot32BitConstants(1, sizeof(FSparseSdfGIConstants) / sizeof(uint32_t), &Constants, 0);
+            if (!BindSparseConstants(Owner, CommandList, &Constants, sizeof(Constants)))
+            {
+                return;
+            }
             CommandList->Dispatch(AlignDispatch(ChunkTriangleCount, kSparseSdfGIReferenceEmitGroupSize), 1u, 1u);
         }
     });
@@ -1374,6 +1622,7 @@ void FSparseSdfGI::AddSolveBrickReferencesPass(FDeferredPassContext& Context) co
     const FRGBufferHandle BrickReferencesHandle = Context.Resources.SparseSdfGI.BrickReferencesHandle;
     const FRGBufferHandle ReferenceCountersHandle = Context.Resources.SparseSdfGI.ReferenceCountersHandle;
     const FRGBufferHandle OccupiedBrickListHandle = Context.Resources.SparseSdfGI.OccupiedBrickListHandle;
+    const FRGBufferHandle ReferenceStatsHandle = Context.Resources.SparseSdfGI.ReferenceCounterStatsHandle;
     struct FSolveBrickReferencesPassData
     {
         bool bEnabled = false;
@@ -1384,10 +1633,11 @@ void FSparseSdfGI::AddSolveBrickReferencesPass(FDeferredPassContext& Context) co
         FRGBufferHandle BrickReferencesHandle{};
         FRGBufferHandle ReferenceCountersHandle{};
         FRGBufferHandle OccupiedBrickListHandle{};
+        FRGBufferHandle ReferenceStatsHandle{};
         uint32_t TrianglePoolCapacity = 0;
     };
 
-    Graph.AddPass<FSolveBrickReferencesPassData>("SparseSdfGI Solve Brick References", [&, SdfAtlasHandle, BrickMetadataHandle, TrianglePoolHandle, BrickReferenceHeadsHandle, BrickReferencesHandle, ReferenceCountersHandle, OccupiedBrickListHandle](FSolveBrickReferencesPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FSolveBrickReferencesPassData>("SparseSdfGI Solve Brick References", [&, SdfAtlasHandle, BrickMetadataHandle, TrianglePoolHandle, BrickReferenceHeadsHandle, BrickReferencesHandle, ReferenceCountersHandle, OccupiedBrickListHandle, ReferenceStatsHandle](FSolveBrickReferencesPassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("SparseSdfGI");
         Data.SdfAtlasHandle = SdfAtlasHandle;
@@ -1397,6 +1647,7 @@ void FSparseSdfGI::AddSolveBrickReferencesPass(FDeferredPassContext& Context) co
         Data.BrickReferencesHandle = BrickReferencesHandle;
         Data.ReferenceCountersHandle = ReferenceCountersHandle;
         Data.OccupiedBrickListHandle = OccupiedBrickListHandle;
+        Data.ReferenceStatsHandle = ReferenceStatsHandle;
         auto Sections = Context.Owner.GetWorld().BuildSectionList();
         for (const FMeshSection& Section : Sections)
         {
@@ -1414,7 +1665,8 @@ void FSparseSdfGI::AddSolveBrickReferencesPass(FDeferredPassContext& Context) co
             && static_cast<bool>(Data.BrickReferenceHeadsHandle)
             && static_cast<bool>(Data.BrickReferencesHandle)
             && static_cast<bool>(Data.ReferenceCountersHandle)
-            && static_cast<bool>(Data.OccupiedBrickListHandle);
+            && static_cast<bool>(Data.OccupiedBrickListHandle)
+            && static_cast<bool>(Data.ReferenceStatsHandle);
         if (!Data.bEnabled)
         {
             return;
@@ -1427,8 +1679,10 @@ void FSparseSdfGI::AddSolveBrickReferencesPass(FDeferredPassContext& Context) co
         Builder.ReadBuffer(Data.OccupiedBrickListHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.WriteTexture(Data.SdfAtlasHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         Builder.WriteBuffer(Data.BrickMetadataHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.WriteBuffer(Data.ReferenceStatsHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         Builder.UavBarrier(Data.SdfAtlasHandle);
         Builder.UavBarrier(Data.BrickMetadataHandle);
+        Builder.UavBarrier(Data.ReferenceStatsHandle);
     }, [this, &Context](const FSolveBrickReferencesPassData& Data, FDX12CommandContext& Cmd)
     {
         if (!Data.bEnabled)
@@ -1441,7 +1695,10 @@ void FSparseSdfGI::AddSolveBrickReferencesPass(FDeferredPassContext& Context) co
         ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
         CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         CommandList->SetComputeRootSignature(RootSignature.Get());
-        CommandList->SetPipelineState(SolveBrickReferencesPipeline.Get());
+        ID3D12PipelineState* SolvePipeline = (SdfBuildMode == ESparseSdfGISdfBuildMode::ExactSharedBorder)
+            ? ExactSolveBrickReferencesPipeline.Get()
+            : SolveBrickReferencesPipeline.Get();
+        CommandList->SetPipelineState(SolvePipeline);
         CommandList->SetComputeRootConstantBufferView(0, Owner.GetSceneConstantBufferAddress());
 
         const FCascadeBounds Bounds = ComputeCascadeBounds(Owner);
@@ -1449,23 +1706,25 @@ void FSparseSdfGI::AddSolveBrickReferencesPass(FDeferredPassContext& Context) co
         FSparseSdfGIConstants Constants = {};
         Constants.OutputWidth = static_cast<uint32_t>(Owner.Viewport.Width);
         Constants.OutputHeight = static_cast<uint32_t>(Owner.Viewport.Height);
-        Constants.CascadeCount = CascadeCount;
+        Constants.SdfBuildMode = static_cast<uint32_t>(SdfBuildMode);
         Constants.FrameIndex = static_cast<uint32_t>(Owner.GetFrameNumber());
         Constants.DebugMode = static_cast<uint32_t>(DebugMode);
         Constants.Enabled = bEnabled ? 1u : 0u;
         Constants.TraceHalfResolution = bTraceHalfResolution ? 1u : 0u;
-        Constants.BaseVoxelSize = Bounds.VoxelSize;
-        Constants.CascadeScale = CascadeScale;
+        Constants.UseHierarchicalTrace = bUseHierarchicalTrace ? 1u : 0u;
         Constants.Intensity = Intensity;
         Constants.BounceStrength = BounceStrength;
-        Constants.MaxTraceDistance = Bounds.VoxelSize * static_cast<float>(kSparseSdfGIAtlasResolution);
+        Constants.MaxTraceDistance = Bounds.Extent.x;
         Constants.MaxBrickTriangleReferences = MaxBrickTriangleReferences;
         Constants.TrianglePoolCapacity = Data.TrianglePoolCapacity;
         Constants.CascadeMin = Bounds.Min;
         Constants.VoxelSize = Bounds.VoxelSize;
         Constants.CascadeExtent = Bounds.Extent;
         Constants.SurfaceThicknessVoxels = kSparseSdfGISurfaceThicknessVoxels;
-        CommandList->SetComputeRoot32BitConstants(1, sizeof(FSparseSdfGIConstants) / sizeof(uint32_t), &Constants, 0);
+        if (!BindSparseConstants(Owner, CommandList, &Constants, sizeof(Constants)))
+        {
+            return;
+        }
 
         const uint32_t TrianglePoolSrvIndex = Context.Graph.GetBufferSrvBindlessIndex(Data.TrianglePoolHandle);
         const uint32_t BrickReferenceHeadsSrvIndex = Context.Graph.GetBufferSrvBindlessIndex(Data.BrickReferenceHeadsHandle);
@@ -1474,13 +1733,15 @@ void FSparseSdfGI::AddSolveBrickReferencesPass(FDeferredPassContext& Context) co
         const uint32_t OccupiedBrickListSrvIndex = Context.Graph.GetBufferSrvBindlessIndex(Data.OccupiedBrickListHandle);
         const uint32_t SdfAtlasUavIndex = Context.Graph.GetTextureUavBindlessIndex(Data.SdfAtlasHandle);
         const uint32_t BrickMetadataUavIndex = Context.Graph.GetBufferUavBindlessIndex(Data.BrickMetadataHandle);
-        if (!AreAllBindlessIndicesValid(SdfAtlasUavIndex, BrickMetadataUavIndex, TrianglePoolSrvIndex, BrickReferenceHeadsSrvIndex, BrickReferencesSrvIndex, ReferenceCountersSrvIndex, OccupiedBrickListSrvIndex))
+        const uint32_t ReferenceStatsUavIndex = Context.Graph.GetBufferUavBindlessIndex(Data.ReferenceStatsHandle);
+        if (!AreAllBindlessIndicesValid(SdfAtlasUavIndex, BrickMetadataUavIndex, TrianglePoolSrvIndex, BrickReferenceHeadsSrvIndex, BrickReferencesSrvIndex, ReferenceCountersSrvIndex, OccupiedBrickListSrvIndex, ReferenceStatsUavIndex))
         {
             std::ostringstream Oss;
             Oss << "SparseSdfGI solve skipped: invalid bindless index (SdfAtlasUav=" << SdfAtlasUavIndex
                 << ", BrickMetadataUav=" << BrickMetadataUavIndex << ", TrianglePoolSrv=" << TrianglePoolSrvIndex
                 << ", HeadsSrv=" << BrickReferenceHeadsSrvIndex << ", ReferencesSrv=" << BrickReferencesSrvIndex
-                << ", CountersSrv=" << ReferenceCountersSrvIndex << ", OccupiedBrickListSrv=" << OccupiedBrickListSrvIndex << ").";
+                << ", CountersSrv=" << ReferenceCountersSrvIndex << ", OccupiedBrickListSrv=" << OccupiedBrickListSrvIndex
+                << ", ReferenceStatsUav=" << ReferenceStatsUavIndex << ").";
             LogError(Oss.str());
             return;
         }
@@ -1493,19 +1754,227 @@ void FSparseSdfGI::AddSolveBrickReferencesPass(FDeferredPassContext& Context) co
             BrickReferenceHeadsSrvIndex,
             BrickReferencesSrvIndex,
             ReferenceCountersSrvIndex,
-            OccupiedBrickListSrvIndex
+            OccupiedBrickListSrvIndex,
+            ReferenceStatsUavIndex
         };
         static_assert(sizeof(FSparseSdfGIReferenceSolveBindlessConstants) / sizeof(uint32_t) <= kSparseSdfGIMaxBindlessDwordCount);
         CommandList->SetComputeRoot32BitConstants(2, sizeof(FSparseSdfGIReferenceSolveBindlessConstants) / sizeof(uint32_t), &Bindless, 0);
-        // Debug work cap (DebugSolveGroupBudget): shrink/skip solve to isolate the device-removed crash.
+
         const uint32_t SolveGroupBudget = (std::min)(GetBrickMapElementCount(), DebugSolveGroupBudget);
         for (uint32_t SolveDispatchOffset = 0u; SolveDispatchOffset < SolveGroupBudget; SolveDispatchOffset += kSparseSdfGISolveDispatchChunkGroups)
         {
             Constants.BuildWorkOffset = SolveDispatchOffset;
-            CommandList->SetComputeRoot32BitConstants(1, sizeof(FSparseSdfGIConstants) / sizeof(uint32_t), &Constants, 0);
+            if (!BindSparseConstants(Owner, CommandList, &Constants, sizeof(Constants)))
+            {
+                return;
+            }
             const uint32_t ChunkGroupCount = (std::min)(kSparseSdfGISolveDispatchChunkGroups, SolveGroupBudget - SolveDispatchOffset);
             CommandList->Dispatch(ChunkGroupCount, 1u, 1u);
         }
+    });
+}
+
+void FSparseSdfGI::AddBuildTraceHierarchyPasses(FDeferredPassContext& Context) const
+{
+    FRenderGraph& Graph = Context.Graph;
+    const FRGBufferHandle BrickMapHandle = Context.Resources.SparseSdfGI.CascadeBrickMapHandle;
+    const FRGBufferHandle BrickMetadataHandle = Context.Resources.SparseSdfGI.BrickMetadataHandle;
+    const FRGBufferHandle BottomHandle = Context.Resources.SparseSdfGI.TraceHierarchyBottomHandle;
+    const FRGBufferHandle TopHandle = Context.Resources.SparseSdfGI.TraceHierarchyTopHandle;
+    FDeferredRenderer* OwnerPtr = &Context.Owner;
+    FRenderGraph* GraphPtr = &Context.Graph;
+
+    struct FBuildBottomPassData
+    {
+        bool bEnabled = false;
+        FRGBufferHandle BrickMapHandle{};
+        FRGBufferHandle BrickMetadataHandle{};
+        FRGBufferHandle BottomHandle{};
+    };
+
+    Graph.AddPass<FBuildBottomPassData>("SparseSdfGI Build Trace Hierarchy Bottom", [this, BrickMapHandle, BrickMetadataHandle, BottomHandle](FBuildBottomPassData& Data, FRGPassBuilder& Builder)
+    {
+        Builder.SetPixGroup("SparseSdfGI");
+        Data.BrickMapHandle = BrickMapHandle;
+        Data.BrickMetadataHandle = BrickMetadataHandle;
+        Data.BottomHandle = BottomHandle;
+        Data.bEnabled = bEnabled
+            && bPersistentInputsValid
+            && BuildTraceHierarchyBottomPipeline
+            && static_cast<bool>(Data.BrickMapHandle)
+            && static_cast<bool>(Data.BrickMetadataHandle)
+            && static_cast<bool>(Data.BottomHandle);
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        Builder.ReadBuffer(Data.BrickMapHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadBuffer(Data.BrickMetadataHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.WriteBuffer(Data.BottomHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.UavBarrier(Data.BottomHandle);
+    }, [this, OwnerPtr, GraphPtr](const FBuildBottomPassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        FDeferredRenderer& Owner = *OwnerPtr;
+        ID3D12GraphicsCommandList* CommandList = Cmd.GetCommandList();
+        ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
+        CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        CommandList->SetComputeRootSignature(RootSignature.Get());
+        CommandList->SetPipelineState(BuildTraceHierarchyBottomPipeline.Get());
+        CommandList->SetComputeRootConstantBufferView(0, Owner.GetSceneConstantBufferAddress());
+
+        FSparseSdfGIConstants Constants = {};
+        Constants.Enabled = bEnabled ? 1u : 0u;
+        Constants.SdfBuildMode = static_cast<uint32_t>(SdfBuildMode);
+        Constants.UseHierarchicalTrace = bUseHierarchicalTrace ? 1u : 0u;
+        if (!BindSparseConstants(Owner, CommandList, &Constants, sizeof(Constants)))
+        {
+            return;
+        }
+
+        const FSparseSdfGIBuildTraceHierarchyBottomBindlessConstants Bindless =
+        {
+            GraphPtr->GetBufferSrvBindlessIndex(Data.BrickMapHandle),
+            GraphPtr->GetBufferSrvBindlessIndex(Data.BrickMetadataHandle),
+            GraphPtr->GetBufferUavBindlessIndex(Data.BottomHandle)
+        };
+        static_assert(sizeof(FSparseSdfGIBuildTraceHierarchyBottomBindlessConstants) / sizeof(uint32_t) <= kSparseSdfGIMaxBindlessDwordCount);
+        if (!AreAllBindlessIndicesValid(Bindless.CascadeBrickMapSrvIndex, Bindless.BrickMetadataSrvIndex, Bindless.TraceHierarchyBottomUavIndex))
+        {
+            return;
+        }
+
+        CommandList->SetComputeRoot32BitConstants(2, sizeof(FSparseSdfGIBuildTraceHierarchyBottomBindlessConstants) / sizeof(uint32_t), &Bindless, 0);
+        CommandList->Dispatch(AlignDispatch(GetTraceHierarchyBottomNodeCount(), 64u), 1u, 1u);
+    });
+
+    struct FBuildTopPassData
+    {
+        bool bEnabled = false;
+        FRGBufferHandle BottomHandle{};
+        FRGBufferHandle TopHandle{};
+    };
+
+    Graph.AddPass<FBuildTopPassData>("SparseSdfGI Build Trace Hierarchy Top", [this, BottomHandle, TopHandle](FBuildTopPassData& Data, FRGPassBuilder& Builder)
+    {
+        Builder.SetPixGroup("SparseSdfGI");
+        Data.BottomHandle = BottomHandle;
+        Data.TopHandle = TopHandle;
+        Data.bEnabled = bEnabled
+            && bPersistentInputsValid
+            && BuildTraceHierarchyTopPipeline
+            && static_cast<bool>(Data.BottomHandle)
+            && static_cast<bool>(Data.TopHandle);
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        Builder.ReadBuffer(Data.BottomHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.WriteBuffer(Data.TopHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.UavBarrier(Data.TopHandle);
+    }, [this, OwnerPtr, GraphPtr](const FBuildTopPassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        FDeferredRenderer& Owner = *OwnerPtr;
+        ID3D12GraphicsCommandList* CommandList = Cmd.GetCommandList();
+        ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
+        CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        CommandList->SetComputeRootSignature(RootSignature.Get());
+        CommandList->SetPipelineState(BuildTraceHierarchyTopPipeline.Get());
+        CommandList->SetComputeRootConstantBufferView(0, Owner.GetSceneConstantBufferAddress());
+
+        FSparseSdfGIConstants Constants = {};
+        Constants.Enabled = bEnabled ? 1u : 0u;
+        Constants.SdfBuildMode = static_cast<uint32_t>(SdfBuildMode);
+        Constants.UseHierarchicalTrace = bUseHierarchicalTrace ? 1u : 0u;
+        if (!BindSparseConstants(Owner, CommandList, &Constants, sizeof(Constants)))
+        {
+            return;
+        }
+
+        const FSparseSdfGIBuildTraceHierarchyTopBindlessConstants Bindless =
+        {
+            GraphPtr->GetBufferSrvBindlessIndex(Data.BottomHandle),
+            GraphPtr->GetBufferUavBindlessIndex(Data.TopHandle)
+        };
+        static_assert(sizeof(FSparseSdfGIBuildTraceHierarchyTopBindlessConstants) / sizeof(uint32_t) <= kSparseSdfGIMaxBindlessDwordCount);
+        if (!AreAllBindlessIndicesValid(Bindless.TraceHierarchyBottomSrvIndex, Bindless.TraceHierarchyTopUavIndex))
+        {
+            return;
+        }
+
+        CommandList->SetComputeRoot32BitConstants(2, sizeof(FSparseSdfGIBuildTraceHierarchyTopBindlessConstants) / sizeof(uint32_t), &Bindless, 0);
+        CommandList->Dispatch(AlignDispatch(GetTraceHierarchyTopNodeCount(), 64u), 1u, 1u);
+    });
+}
+
+void FSparseSdfGI::AddReferenceStatsPresentPass(FDeferredPassContext& Context) const
+{
+    FRenderGraph& Graph = Context.Graph;
+    const FRGBufferHandle ReferenceStatsHandle = Context.Resources.SparseSdfGI.ReferenceCounterStatsHandle;
+
+    struct FReferenceStatsPresentPassData
+    {
+        bool bEnabled = false;
+        FRGBufferHandle ReferenceStatsHandle{};
+        uint32_t DebugPrintStatsUavIndex = UINT32_MAX;
+    };
+
+    Graph.AddPass<FReferenceStatsPresentPassData>("SparseSdfGI Reference Stats Present", [&, ReferenceStatsHandle](FReferenceStatsPresentPassData& Data, FRGPassBuilder& Builder)
+    {
+        Builder.SetPixGroup("SparseSdfGI");
+        Data.ReferenceStatsHandle = ReferenceStatsHandle;
+        Data.DebugPrintStatsUavIndex = Context.Owner.GpuDebugState.IsPrintEnabled()
+            ? Context.Owner.GpuDebugState.GetPrintStatsUavBindlessIndex()
+            : UINT32_MAX;
+        Data.bEnabled = bEnabled
+            && bPersistentInputsValid
+            && ReferenceStatsPresentPipeline
+            && static_cast<bool>(Data.ReferenceStatsHandle)
+            && IsValidBindlessIndex(Data.DebugPrintStatsUavIndex);
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        Builder.ReadBuffer(Data.ReferenceStatsHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    }, [this, &Context](const FReferenceStatsPresentPassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        FDeferredRenderer& Owner = Context.Owner;
+        ID3D12GraphicsCommandList* CommandList = Cmd.GetCommandList();
+        ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
+        CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        CommandList->SetComputeRootSignature(RootSignature.Get());
+        CommandList->SetPipelineState(ReferenceStatsPresentPipeline.Get());
+
+        const FSparseSdfGIReferenceStatsPresentBindlessConstants Bindless =
+        {
+            Context.Graph.GetBufferSrvBindlessIndex(Data.ReferenceStatsHandle),
+            Data.DebugPrintStatsUavIndex
+        };
+        static_assert(sizeof(FSparseSdfGIReferenceStatsPresentBindlessConstants) / sizeof(uint32_t) <= kSparseSdfGIMaxBindlessDwordCount);
+        if (!AreAllBindlessIndicesValid(Bindless.ReferenceStatsSrvIndex, Bindless.DebugPrintStatsUavIndex))
+        {
+            return;
+        }
+
+        CommandList->SetComputeRoot32BitConstants(2, sizeof(FSparseSdfGIReferenceStatsPresentBindlessConstants) / sizeof(uint32_t), &Bindless, 0);
+        CommandList->Dispatch(1u, 1u, 1u);
     });
 }
 
@@ -1515,14 +1984,11 @@ void FSparseSdfGI::AddRadianceCachePasses(FDeferredPassContext& Context) const
     const FDeferredGBufferHandles GBufferHandles = Context.Resources.GBufferHandles;
     const FRGResourceHandle DepthHandle = Context.Resources.DepthHandle;
     const FRGResourceHandle ShadowMaskHandle = Context.Resources.RayTracingShadow.ShadowMaskHandle;
-    // Multi-bounce reads the world-space brick irradiance cache (previous frame's resolved GI per
-    // brick). The read slot is only valid once a previous frame's accumulate+resolve has committed.
+
     const FRGBufferHandle ImportedBrickIrradianceReadHandle = Context.Resources.SparseSdfGI.BrickIrradianceReadHandle;
     const bool bIrradianceReadSlotValid = CurrentBrickIrradianceReadSlot < BrickIrradianceHistoryValid.size() && BrickIrradianceHistoryValid[CurrentBrickIrradianceReadSlot];
     const bool bMultiBounceReady = bMultiBounce && bIrradianceReadSlotValid && static_cast<bool>(ImportedBrickIrradianceReadHandle);
-    // Only feed the brick irradiance cache back once a previous frame's accumulate+resolve has
-    // committed it; an empty handle makes the inject pass skip multi-bounce (first frame, resize,
-    // SDF rebuild, toggle).
+
     const FRGBufferHandle BrickIrradianceReadHandle = bMultiBounceReady ? ImportedBrickIrradianceReadHandle : FRGBufferHandle{};
     const FRGBufferHandle BrickRadianceReadHandle = Context.Resources.SparseSdfGI.BrickRadianceReadHandle;
     const FRGBufferHandle BrickRadianceWriteHandle = Context.Resources.SparseSdfGI.BrickRadianceWriteHandle;
@@ -1578,9 +2044,12 @@ void FSparseSdfGI::AddRadianceCachePasses(FDeferredPassContext& Context) const
         Constants.AtlasResolution = kSparseSdfGIAtlasResolution;
         Constants.BrickGridResolution = kSparseSdfGIBrickGridResolution;
         Constants.BrickVoxelResolution = kSparseSdfGIBrickVoxelResolution;
-        Constants.CascadeCount = CascadeCount;
+        Constants.SdfBuildMode = static_cast<uint32_t>(SdfBuildMode);
         Constants.Enabled = bEnabled ? 1u : 0u;
-        CommandList->SetComputeRoot32BitConstants(1, sizeof(FSparseSdfGIConstants) / sizeof(uint32_t), &Constants, 0);
+        if (!BindSparseConstants(Owner, CommandList, &Constants, sizeof(Constants)))
+        {
+            return;
+        }
 
         const FSparseSdfGIRadianceClearBindlessConstants Bindless =
         {
@@ -1678,16 +2147,17 @@ void FSparseSdfGI::AddRadianceCachePasses(FDeferredPassContext& Context) const
         Constants.AtlasResolution = kSparseSdfGIAtlasResolution;
         Constants.BrickGridResolution = kSparseSdfGIBrickGridResolution;
         Constants.BrickVoxelResolution = kSparseSdfGIBrickVoxelResolution;
-        Constants.CascadeCount = CascadeCount;
+        Constants.SdfBuildMode = static_cast<uint32_t>(SdfBuildMode);
         Constants.FrameIndex = static_cast<uint32_t>(Owner.GetFrameNumber());
         Constants.Enabled = bEnabled ? 1u : 0u;
         Constants.CascadeMin = Bounds.Min;
         Constants.VoxelSize = Bounds.VoxelSize;
         Constants.CascadeExtent = Bounds.Extent;
-        // Reuse the unused-by-inject BounceStrength field to carry the multi-bounce feedback gain
-        // (0 = direct-only single bounce).
         Constants.BounceStrength = bUseMultiBounce ? MultiBounceStrength : 0.0f;
-        CommandList->SetComputeRoot32BitConstants(1, sizeof(FSparseSdfGIConstants) / sizeof(uint32_t), &Constants, 0);
+        if (!BindSparseConstants(Owner, CommandList, &Constants, sizeof(Constants)))
+        {
+            return;
+        }
 
         const FSparseSdfGIRadianceInjectBindlessConstants Bindless =
         {
@@ -1768,9 +2238,12 @@ void FSparseSdfGI::AddRadianceCachePasses(FDeferredPassContext& Context) const
         Constants.AtlasResolution = kSparseSdfGIAtlasResolution;
         Constants.BrickGridResolution = kSparseSdfGIBrickGridResolution;
         Constants.BrickVoxelResolution = kSparseSdfGIBrickVoxelResolution;
-        Constants.CascadeCount = CascadeCount;
+        Constants.SdfBuildMode = static_cast<uint32_t>(SdfBuildMode);
         Constants.Enabled = bEnabled ? 1u : 0u;
-        CommandList->SetComputeRoot32BitConstants(1, sizeof(FSparseSdfGIConstants) / sizeof(uint32_t), &Constants, 0);
+        if (!BindSparseConstants(Owner, CommandList, &Constants, sizeof(Constants)))
+        {
+            return;
+        }
 
         const FSparseSdfGIRadianceResolveBindlessConstants Bindless =
         {
@@ -1854,9 +2327,12 @@ void FSparseSdfGI::AddIrradianceCacheUpdatePasses(FDeferredPassContext& Context)
         Constants.AtlasResolution = kSparseSdfGIAtlasResolution;
         Constants.BrickGridResolution = kSparseSdfGIBrickGridResolution;
         Constants.BrickVoxelResolution = kSparseSdfGIBrickVoxelResolution;
-        Constants.CascadeCount = CascadeCount;
+        Constants.SdfBuildMode = static_cast<uint32_t>(SdfBuildMode);
         Constants.Enabled = bEnabled ? 1u : 0u;
-        CommandList->SetComputeRoot32BitConstants(1, sizeof(FSparseSdfGIConstants) / sizeof(uint32_t), &Constants, 0);
+        if (!BindSparseConstants(Owner, CommandList, &Constants, sizeof(Constants)))
+        {
+            return;
+        }
         const FSparseSdfGIRadianceClearBindlessConstants Bindless = { AccumUavIndex };
         static_assert(sizeof(FSparseSdfGIRadianceClearBindlessConstants) / sizeof(uint32_t) <= kSparseSdfGIMaxBindlessDwordCount);
         CommandList->SetComputeRoot32BitConstants(2, sizeof(FSparseSdfGIRadianceClearBindlessConstants) / sizeof(uint32_t), &Bindless, 0);
@@ -1909,13 +2385,16 @@ void FSparseSdfGI::AddIrradianceCacheUpdatePasses(FDeferredPassContext& Context)
         Constants.AtlasResolution = kSparseSdfGIAtlasResolution;
         Constants.BrickGridResolution = kSparseSdfGIBrickGridResolution;
         Constants.BrickVoxelResolution = kSparseSdfGIBrickVoxelResolution;
-        Constants.CascadeCount = CascadeCount;
+        Constants.SdfBuildMode = static_cast<uint32_t>(SdfBuildMode);
         Constants.FrameIndex = static_cast<uint32_t>(Owner.GetFrameNumber());
         Constants.Enabled = bEnabled ? 1u : 0u;
         Constants.CascadeMin = Bounds.Min;
         Constants.VoxelSize = Bounds.VoxelSize;
         Constants.CascadeExtent = Bounds.Extent;
-        CommandList->SetComputeRoot32BitConstants(1, sizeof(FSparseSdfGIConstants) / sizeof(uint32_t), &Constants, 0);
+        if (!BindSparseConstants(Owner, CommandList, &Constants, sizeof(Constants)))
+        {
+            return;
+        }
         const FSparseSdfGIIrradianceAccumulateBindlessConstants Bindless = { DepthBindlessIndex, DiffuseGIIndex, AccumUavIndex };
         static_assert(sizeof(FSparseSdfGIIrradianceAccumulateBindlessConstants) / sizeof(uint32_t) <= kSparseSdfGIMaxBindlessDwordCount);
         CommandList->SetComputeRoot32BitConstants(2, sizeof(FSparseSdfGIIrradianceAccumulateBindlessConstants) / sizeof(uint32_t), &Bindless, 0);
@@ -1979,9 +2458,12 @@ void FSparseSdfGI::AddIrradianceCacheUpdatePasses(FDeferredPassContext& Context)
         Constants.AtlasResolution = kSparseSdfGIAtlasResolution;
         Constants.BrickGridResolution = kSparseSdfGIBrickGridResolution;
         Constants.BrickVoxelResolution = kSparseSdfGIBrickVoxelResolution;
-        Constants.CascadeCount = CascadeCount;
+        Constants.SdfBuildMode = static_cast<uint32_t>(SdfBuildMode);
         Constants.Enabled = bEnabled ? 1u : 0u;
-        CommandList->SetComputeRoot32BitConstants(1, sizeof(FSparseSdfGIConstants) / sizeof(uint32_t), &Constants, 0);
+        if (!BindSparseConstants(Owner, CommandList, &Constants, sizeof(Constants)))
+        {
+            return;
+        }
         const FSparseSdfGIRadianceResolveBindlessConstants Bindless =
         {
             AccumSrvIndex,
@@ -2011,6 +2493,8 @@ void FSparseSdfGI::AddScreenProbeGITracePasses(FDeferredPassContext& Context, FR
     const FRGResourceHandle SdfAtlasHandle = Context.Resources.SparseSdfGI.SdfAtlasHandle;
     const FRGBufferHandle BrickMapHandle = Context.Resources.SparseSdfGI.CascadeBrickMapHandle;
     const FRGBufferHandle BrickMetadataHandle = Context.Resources.SparseSdfGI.BrickMetadataHandle;
+    const FRGBufferHandle TraceHierarchyBottomHandle = Context.Resources.SparseSdfGI.TraceHierarchyBottomHandle;
+    const FRGBufferHandle TraceHierarchyTopHandle = Context.Resources.SparseSdfGI.TraceHierarchyTopHandle;
     const FRGResourceHandle DiffuseHandle = Context.Resources.SparseSdfGI.DiffuseGIHandle;
     const uint32_t FullWidth = static_cast<uint32_t>(Owner.Viewport.Width);
     const uint32_t FullHeight = static_cast<uint32_t>(Owner.Viewport.Height);
@@ -2083,7 +2567,10 @@ void FSparseSdfGI::AddScreenProbeGITracePasses(FDeferredPassContext& Context, FR
         Constants.ProbeCountY = ProbeCountY;
         Constants.ProbeRaysPerProbe = ProbeRaysPerProbe;
         Constants.ProbeDebugMode = ProbeDebugMode;
-        CommandList->SetComputeRoot32BitConstants(1, sizeof(FSparseSdfGIConstants) / sizeof(uint32_t), &Constants, 0);
+        if (!BindSparseConstants(Owner, CommandList, &Constants, sizeof(Constants)))
+        {
+            return;
+        }
 
         const FSparseSdfGIProbeSpawnBindlessConstants Bindless =
         {
@@ -2107,6 +2594,8 @@ void FSparseSdfGI::AddScreenProbeGITracePasses(FDeferredPassContext& Context, FR
         FRGBufferHandle ProbeSHHandle{};
         FRGBufferHandle ProbeVarianceHandle{};
         FRGBufferHandle BrickRadianceHandle{};
+        FRGBufferHandle TraceHierarchyBottomHandle{};
+        FRGBufferHandle TraceHierarchyTopHandle{};
         FRGBufferHandle ProbeHistoryReadHandle{};
         FRGBufferHandle ProbeHistoryWriteHandle{};
         bool bHistoryValid = false;
@@ -2117,15 +2606,18 @@ void FSparseSdfGI::AddScreenProbeGITracePasses(FDeferredPassContext& Context, FR
     const bool bProbeReadSlotValid = CurrentProbeHistoryReadSlot < ProbeHistoryValid.size() && ProbeHistoryValid[CurrentProbeHistoryReadSlot];
     const bool bProbeHistoryValidForTrace = bProbeTemporalReuse && bProbeReadSlotValid;
 
-    Graph.AddPass<FProbeTracePassData>("SparseSdfGI Probe Trace", [&, SdfAtlasHandle, BrickMapHandle, BrickMetadataHandle, BrickRadianceHandle, ProbeHistoryReadHandle, ProbeHistoryWriteHandle, bProbeHistoryValidForTrace](FProbeTracePassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FProbeTracePassData>("SparseSdfGI Probe Trace", [&, SdfAtlasHandle, BrickMapHandle, BrickMetadataHandle, TraceHierarchyBottomHandle, TraceHierarchyTopHandle, BrickRadianceHandle, ProbeHistoryReadHandle, ProbeHistoryWriteHandle, bProbeHistoryValidForTrace](FProbeTracePassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("SparseSdfGI");
         Data.ProbeHeaderHandle = ProbeHeaderHandle;
         Data.BrickRadianceHandle = BrickRadianceHandle;
+        Data.TraceHierarchyBottomHandle = TraceHierarchyBottomHandle;
+        Data.TraceHierarchyTopHandle = TraceHierarchyTopHandle;
         Data.ProbeHistoryReadHandle = ProbeHistoryReadHandle;
         Data.ProbeHistoryWriteHandle = ProbeHistoryWriteHandle;
         Data.bHistoryValid = bProbeHistoryValidForTrace;
-        Data.bEnabled = bEnabled && bPersistentInputsValid && ProbeTracePipeline && Data.ProbeHeaderHandle && SdfAtlasHandle && BrickMapHandle && BrickMetadataHandle && BrickRadianceHandle && ProbeHistoryReadHandle && ProbeHistoryWriteHandle;
+        const bool bTracePipelineReady = bProbeDirectionalSH ? (ProbeTraceDirectionalPipeline != nullptr) : (ProbeTracePipeline != nullptr);
+        Data.bEnabled = bEnabled && bPersistentInputsValid && bTracePipelineReady && Data.ProbeHeaderHandle && SdfAtlasHandle && BrickMapHandle && BrickMetadataHandle && TraceHierarchyBottomHandle && TraceHierarchyTopHandle && BrickRadianceHandle && ProbeHistoryReadHandle && ProbeHistoryWriteHandle;
         if (!Data.bEnabled)
         {
             return;
@@ -2138,6 +2630,8 @@ void FSparseSdfGI::AddScreenProbeGITracePasses(FDeferredPassContext& Context, FR
         Builder.ReadTexture(SdfAtlasHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadBuffer(BrickMapHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadBuffer(BrickMetadataHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadBuffer(Data.TraceHierarchyBottomHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadBuffer(Data.TraceHierarchyTopHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadBuffer(BrickRadianceHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadBuffer(Data.ProbeHeaderHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadBuffer(Data.ProbeHistoryReadHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -2158,6 +2652,8 @@ void FSparseSdfGI::AddScreenProbeGITracePasses(FDeferredPassContext& Context, FR
         const uint32_t BrickRadianceSrvIndex = Context.Graph.GetBufferSrvBindlessIndex(Data.BrickRadianceHandle);
         const uint32_t ProbeHistoryReadSrvIndex = Context.Graph.GetBufferSrvBindlessIndex(Data.ProbeHistoryReadHandle);
         const uint32_t ProbeHistoryWriteUavIndex = Context.Graph.GetBufferUavBindlessIndex(Data.ProbeHistoryWriteHandle);
+        const uint32_t TraceHierarchyBottomSrvIndex = Context.Graph.GetBufferSrvBindlessIndex(Data.TraceHierarchyBottomHandle);
+        const uint32_t TraceHierarchyTopSrvIndex = Context.Graph.GetBufferSrvBindlessIndex(Data.TraceHierarchyTopHandle);
         const uint32_t EnvironmentCubeIndex = Owner.GetEnvironmentCubeSrvIndex();
         const uint32_t LinearClampSamplerIndex = Owner.Device->GetLinearClampSamplerIndex();
         const uint32_t BlueNoiseSobolIndex = Owner.BlueNoiseSobolTexture.SrvBindlessIndex;
@@ -2174,6 +2670,8 @@ void FSparseSdfGI::AddScreenProbeGITracePasses(FDeferredPassContext& Context, FR
             ProbeVarianceUavIndex,
             ProbeHistoryReadSrvIndex,
             ProbeHistoryWriteUavIndex,
+            TraceHierarchyBottomSrvIndex,
+            TraceHierarchyTopSrvIndex,
             BlueNoiseSobolIndex,
             BlueNoiseScramblingIndex))
         {
@@ -2184,19 +2682,19 @@ void FSparseSdfGI::AddScreenProbeGITracePasses(FDeferredPassContext& Context, FR
         ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
         CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
         CommandList->SetComputeRootSignature(RootSignature.Get());
-        CommandList->SetPipelineState(ProbeTracePipeline.Get());
+        CommandList->SetPipelineState((bProbeDirectionalSH ? ProbeTraceDirectionalPipeline : ProbeTracePipeline).Get());
         CommandList->SetComputeRootConstantBufferView(0, Owner.GetSceneConstantBufferAddress());
 
         const FCascadeBounds Bounds = ComputeCascadeBounds(Owner);
         FSparseSdfGIConstants Constants = {};
         Constants.OutputWidth = static_cast<uint32_t>(Owner.Viewport.Width);
         Constants.OutputHeight = static_cast<uint32_t>(Owner.Viewport.Height);
-        Constants.CascadeCount = CascadeCount;
+        Constants.SdfBuildMode = static_cast<uint32_t>(SdfBuildMode);
         Constants.FrameIndex = static_cast<uint32_t>(Owner.GetFrameNumber());
         Constants.Enabled = bEnabled ? 1u : 0u;
         Constants.Intensity = Intensity;
         Constants.BounceStrength = BounceStrength;
-        Constants.MaxTraceDistance = Bounds.VoxelSize * static_cast<float>(kSparseSdfGIAtlasResolution);
+        Constants.MaxTraceDistance = Bounds.Extent.x;
         Constants.CascadeMin = Bounds.Min;
         Constants.VoxelSize = Bounds.VoxelSize;
         Constants.CascadeExtent = Bounds.Extent;
@@ -2206,9 +2704,14 @@ void FSparseSdfGI::AddScreenProbeGITracePasses(FDeferredPassContext& Context, FR
         Constants.ProbeRaysPerProbe = std::clamp(ProbeRaysPerProbe, 4u, 64u);
         Constants.ProbeDebugMode = ProbeDebugMode;
         Constants.ProbeHistoryValid = Data.bHistoryValid ? 1u : 0u;
+        Constants.SurfaceHitThresholdVoxels = SurfaceHitThresholdVoxels;
+        Constants.UseHierarchicalTrace = bUseHierarchicalTrace ? 1u : 0u;
         Constants.TrianglePoolCapacity = BlueNoiseSobolIndex;
         Constants.BuildWorkOffset = BlueNoiseScramblingIndex;
-        CommandList->SetComputeRoot32BitConstants(1, sizeof(FSparseSdfGIConstants) / sizeof(uint32_t), &Constants, 0);
+        if (!BindSparseConstants(Owner, CommandList, &Constants, sizeof(Constants)))
+        {
+            return;
+        }
 
         const FSparseSdfGIProbeTraceBindlessConstants Bindless =
         {
@@ -2222,7 +2725,9 @@ void FSparseSdfGI::AddScreenProbeGITracePasses(FDeferredPassContext& Context, FR
             ProbeSHUavIndex,
             ProbeVarianceUavIndex,
             ProbeHistoryReadSrvIndex,
-            ProbeHistoryWriteUavIndex
+            ProbeHistoryWriteUavIndex,
+            TraceHierarchyBottomSrvIndex,
+            TraceHierarchyTopSrvIndex
         };
         static_assert(sizeof(FSparseSdfGIProbeTraceBindlessConstants) / sizeof(uint32_t) <= kSparseSdfGIMaxBindlessDwordCount);
         CommandList->SetComputeRoot32BitConstants(2, sizeof(FSparseSdfGIProbeTraceBindlessConstants) / sizeof(uint32_t), &Bindless, 0);
@@ -2319,7 +2824,10 @@ void FSparseSdfGI::AddScreenProbeGITracePasses(FDeferredPassContext& Context, FR
         Constants.ProbeCountY = ProbeCountY;
         Constants.ProbeRaysPerProbe = std::clamp(ProbeRaysPerProbe, 4u, 64u);
         Constants.ProbeDebugMode = ProbeDebugMode;
-        CommandList->SetComputeRoot32BitConstants(1, sizeof(FSparseSdfGIConstants) / sizeof(uint32_t), &Constants, 0);
+        if (!BindSparseConstants(Owner, CommandList, &Constants, sizeof(Constants)))
+        {
+            return;
+        }
 
         const FSparseSdfGIProbeInterpolateBindlessConstants Bindless =
         {
@@ -2354,6 +2862,8 @@ void FSparseSdfGI::DispatchOutputPass(FDeferredPassContext& Context, FDX12Comman
     const uint32_t BrickRadianceSrvIndex = Context.Graph.GetBufferSrvBindlessIndex(BrickRadianceHandle);
     const uint32_t BlueNoiseSobolIndex = Owner.BlueNoiseSobolTexture.SrvBindlessIndex;
     const uint32_t BlueNoiseScramblingIndex = Owner.BlueNoiseScramblingRanking1SPPTexture.SrvBindlessIndex;
+    const uint32_t TraceHierarchyBottomSrvIndex = Context.Graph.GetBufferSrvBindlessIndex(Context.Resources.SparseSdfGI.TraceHierarchyBottomHandle);
+    const uint32_t TraceHierarchyTopSrvIndex = Context.Graph.GetBufferSrvBindlessIndex(Context.Resources.SparseSdfGI.TraceHierarchyTopHandle);
     const bool bInputsValid = AreAllBindlessIndicesValid(
         DepthBindlessIndex,
         Owner.GBufferA.SrvBindlessIndex,
@@ -2365,7 +2875,9 @@ void FSparseSdfGI::DispatchOutputPass(FDeferredPassContext& Context, FDX12Comman
         BrickRadianceSrvIndex,
         DiffuseGI.UavBindlessIndex,
         BlueNoiseSobolIndex,
-        BlueNoiseScramblingIndex);
+        BlueNoiseScramblingIndex,
+        TraceHierarchyBottomSrvIndex,
+        TraceHierarchyTopSrvIndex);
     const bool bDenoiserOutputsValid = (DebugMode != ESparseSdfGIDebugMode::Off) || AreAllBindlessIndicesValid(InputSHUavIndex, VarianceUavIndex);
     if (!bInputsValid)
     {
@@ -2388,23 +2900,26 @@ void FSparseSdfGI::DispatchOutputPass(FDeferredPassContext& Context, FDX12Comman
     FSparseSdfGIConstants Constants = {};
     Constants.OutputWidth = static_cast<uint32_t>(Owner.Viewport.Width);
     Constants.OutputHeight = static_cast<uint32_t>(Owner.Viewport.Height);
-    Constants.CascadeCount = CascadeCount;
+    Constants.SdfBuildMode = static_cast<uint32_t>(SdfBuildMode);
     Constants.FrameIndex = static_cast<uint32_t>(Owner.GetFrameNumber());
     Constants.DebugMode = static_cast<uint32_t>(DebugMode);
     Constants.Enabled = bEnabled ? 1u : 0u;
     Constants.TraceHalfResolution = bTraceHalfResolution ? 1u : 0u;
-    Constants.BaseVoxelSize = Bounds.VoxelSize;
-    Constants.CascadeScale = CascadeScale;
+    Constants.UseHierarchicalTrace = bUseHierarchicalTrace ? 1u : 0u;
     Constants.Intensity = Intensity;
     Constants.BounceStrength = BounceStrength;
-    Constants.MaxTraceDistance = Bounds.VoxelSize * static_cast<float>(kSparseSdfGIAtlasResolution);
+    Constants.MaxTraceDistance = Bounds.Extent.x;
     Constants.CascadeMin = Bounds.Min;
     Constants.VoxelSize = Bounds.VoxelSize;
     Constants.CascadeExtent = Bounds.Extent;
     Constants.SurfaceThicknessVoxels = kSparseSdfGISurfaceThicknessVoxels;
+    Constants.SurfaceHitThresholdVoxels = SurfaceHitThresholdVoxels;
     Constants.TrianglePoolCapacity = BlueNoiseSobolIndex;
     Constants.BuildWorkOffset = BlueNoiseScramblingIndex;
-    CommandList->SetComputeRoot32BitConstants(1, sizeof(FSparseSdfGIConstants) / sizeof(uint32_t), &Constants, 0);
+    if (!BindSparseConstants(Owner, CommandList, &Constants, sizeof(Constants)))
+    {
+        return;
+    }
 
     const FSparseSdfGITraceBindlessConstants Bindless =
     {
@@ -2418,7 +2933,9 @@ void FSparseSdfGI::DispatchOutputPass(FDeferredPassContext& Context, FDX12Comman
         LinearClampSamplerIndex,
         BrickRadianceSrvIndex,
         InputSHUavIndex,
-        VarianceUavIndex
+        VarianceUavIndex,
+        TraceHierarchyBottomSrvIndex,
+        TraceHierarchyTopSrvIndex
     };
     static_assert(sizeof(FSparseSdfGITraceBindlessConstants) / sizeof(uint32_t) <= kSparseSdfGIMaxBindlessDwordCount);
     CommandList->SetComputeRoot32BitConstants(2, sizeof(FSparseSdfGITraceBindlessConstants) / sizeof(uint32_t), &Bindless, 0);

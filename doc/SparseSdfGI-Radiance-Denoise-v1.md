@@ -50,6 +50,8 @@ probe path는 SparseSdfGI debug mode가 `Off`일 때만 활성화된다. 기존 
 
 `bSparseSdfGIProbeSpawnJitter`(ImGui "Probe Spawn Jitter")를 켜면 대표 픽셀을 프레임마다 tile 내부로 jitter해 coverage를 보완한다. jitter는 probe 앵커를 매 프레임 흔들기 때문에 **probe temporal과 함께 쓸 때만** 의미가 있다(temporal이 jitter된 샘플을 tile 단위로 누적). temporal 없이 jitter만 켜면 interpolation 패턴이 매 프레임 이동해 **떨리는 얼룩**으로 보이므로 기본값은 off다.
 
+현재 invalid center fallback은 tile 내부 valid depth를 deterministic scan으로 찾는다. 이는 유효 픽셀을 놓치지 않는 안정적인 경로지만, 후속 최적화로 BrixelizerGI처럼 tile 내부에서 8회 정도 Hammersley/blue-noise 후보를 샘플해 valid depth를 찾는 방식으로 바꿀 수 있다. 그 방식은 spawn 비용을 더 예측 가능하게 만들지만 얇은 geometry를 놓칠 수 있으므로, probe validity와 edge leak을 함께 비교한 뒤 전환한다.
+
 ### Probe Trace
 
 각 probe는 기존 SDF / brick-radiance path를 통해 여러 개의 cosine-hemisphere ray를 trace한다. probe trace는 `CSDiffuseTrace`와 같은 hit shading helper를 공유한다.

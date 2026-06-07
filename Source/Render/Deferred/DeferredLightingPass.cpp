@@ -845,12 +845,13 @@ void FDeferredLightingPass::AddCompositeLightPass(FDeferredPassContext& Context,
             uint32_t Enabled = 0;
             float SsrRoughnessCutoff = 0.0f;
             uint32_t VisualizationMode = 0;
-            uint32_t Padding0 = 0;
+            uint32_t SparseSdfGIDebugActive = 0;
             uint32_t Padding1 = 0;
             uint32_t Padding2 = 0;
         };
 
         const float EffectiveRestirGIIntensity = (std::max)(0.0f, Owner.RestirGI->GetIntensity());
+        const uint32_t SparseSdfGIDebugActive = (bUsesSparseSdfDiffuse && Owner.GetSparseSdfGI() && Owner.GetSparseSdfGI()->IsDebugVisualizationActive()) ? 1u : 0u;
 
         const FDeferredLightingConstants DeferredLightingConstants =
         {
@@ -858,7 +859,7 @@ void FDeferredLightingPass::AddCompositeLightPass(FDeferredPassContext& Context,
             Owner.RestirGI->IsEnabled() ? 1u : 0u,
             (Owner.Ssr != nullptr) ? Owner.Ssr->GetRoughnessCutoff() : 0.0f,
             static_cast<uint32_t>(VisualizationMode),
-            0u,
+            SparseSdfGIDebugActive,
             0u,
             0u
         };

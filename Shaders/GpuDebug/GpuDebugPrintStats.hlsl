@@ -63,9 +63,9 @@ void PrintLabel(uint2 position, uint color, uint c0, uint c1, uint c2, uint c3, 
 void PrintUInt(uint2 position, uint value, uint color)
 {
     uint2 cursor = position;
-    uint divisor = 10000u;
+    uint divisor = 1000000000u;
     bool started = false;
-    for (uint i = 0; i < 5; ++i)
+    for (uint i = 0; i < 10; ++i)
     {
         uint digit = value / divisor;
         value -= digit * divisor;
@@ -101,6 +101,11 @@ void GpuDebugPrintStatsCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     uint clusterDagExpandedOverflow = StatsBuffer.Load(4 * kDebugPrintStatsClusterDagExpandedOverflowIndex);
     uint clusterDagIterationOverflow = StatsBuffer.Load(4 * kDebugPrintStatsClusterDagIterationOverflowIndex);
     uint clusterDagPersistentOverflow = StatsBuffer.Load(4 * kDebugPrintStatsClusterDagPersistentOverflowIndex);
+    uint sparseSdfGITriangle = StatsBuffer.Load(4 * kDebugPrintStatsSparseSdfGITriangleIndex);
+    uint sparseSdfGIReference = StatsBuffer.Load(4 * kDebugPrintStatsSparseSdfGIReferenceIndex);
+    uint sparseSdfGIOccupiedBrick = StatsBuffer.Load(4 * kDebugPrintStatsSparseSdfGIOccupiedBrickIndex);
+    uint sparseSdfGITriangleOverflow = StatsBuffer.Load(4 * kDebugPrintStatsSparseSdfGITriangleOverflowIndex);
+    uint sparseSdfGIReferenceOverflow = StatsBuffer.Load(4 * kDebugPrintStatsSparseSdfGIReferenceOverflowIndex);
     uint clusterDagStreamingRequest = StatsBuffer.Load(4 * kClusterDagStreamingRequestStatIndex);
     uint clusterDagStreamingFallback = StatsBuffer.Load(4 * kClusterDagStreamingFallbackStatIndex);
     uint clusterDagStreamingRequestOverflow = StatsBuffer.Load(4 * kClusterDagStreamingRequestOverflowStatIndex);
@@ -171,6 +176,26 @@ void GpuDebugPrintStatsCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     pos = uint2(144, 148);
     PrintLabel(pos, textColor, 'S', 'T', 'D', 'R', 'O', 'P', ' ', ' ');
     PrintUInt(uint2(144 + 8 * 8, 148), clusterDagStreamingRequestOverflow, textColor);
+
+    pos = uint2(144, 164);
+    PrintLabel(pos, textColor, 'S', 'D', 'F', 'T', 'R', 'I', ' ', ' ');
+    PrintUInt(uint2(144 + 8 * 8, 164), sparseSdfGITriangle, textColor);
+
+    pos = uint2(144, 180);
+    PrintLabel(pos, textColor, 'S', 'D', 'F', 'R', 'E', 'F', ' ', ' ');
+    PrintUInt(uint2(144 + 8 * 8, 180), sparseSdfGIReference, textColor);
+
+    pos = uint2(144, 196);
+    PrintLabel(pos, textColor, 'S', 'D', 'F', 'O', 'C', 'C', ' ', ' ');
+    PrintUInt(uint2(144 + 8 * 8, 196), sparseSdfGIOccupiedBrick, textColor);
+
+    pos = uint2(144, 212);
+    PrintLabel(pos, textColor, 'T', 'R', 'I', 'O', 'V', 'F', ' ', ' ');
+    PrintUInt(uint2(144 + 8 * 8, 212), sparseSdfGITriangleOverflow, textColor);
+
+    pos = uint2(144, 228);
+    PrintLabel(pos, textColor, 'R', 'E', 'F', 'O', 'V', 'F', ' ', ' ');
+    PrintUInt(uint2(144 + 8 * 8, 228), sparseSdfGIReferenceOverflow, textColor);
 
     uint histogramStartY = 180u;
 
