@@ -1,6 +1,7 @@
 #include "RendererConfig.h"
 
 #include "Logger.h"
+#include "../../Shaders/SparseSdfGI/SparseSdfGIShared.h"
 #include <algorithm>
 #include <cctype>
 #include <fstream>
@@ -253,7 +254,7 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableCas, { "EnableCas", "Cas" });
     ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::CasSharpness, { "CasSharpness" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableAutoExposure, { "EnableAutoExposure", "AutoExposure" });
-    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIDebugMode, 0u, 9u, { "SparseSdfGIDebugMode" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIDebugMode, SPARSE_SDF_GI_DEBUG_MODE_OFF, SPARSE_SDF_GI_DEBUG_MODE_MAX, { "SparseSdfGIDebugMode" });
     ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGICascadeCount, 1u, 4u, { "SparseSdfGICascadeCount" });
     ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGISdfAtlasFormat, 0u, 2u, { "SparseSdfGISdfAtlasFormat" });
     ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIMaxBrickTriangleReferences, 1024u * 1024u, 32u * 1024u * 1024u, { "SparseSdfGIMaxBrickTriangleReferences" });
@@ -262,13 +263,14 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGICascadeScale, 1.01f, { "SparseSdfGICascadeScale" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGITraceHalfResolution, { "SparseSdfGITraceHalfResolution" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIUseHierarchicalTrace, { "SparseSdfGIUseHierarchicalTrace" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIEikonalEnabled, { "SparseSdfGIEikonalEnabled" });
     ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIIntensity, 0.0f, { "SparseSdfGIIntensity" });
     ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIBounceStrength, 0.0f, { "SparseSdfGIBounceStrength" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIEnableRadianceTemporalReuse, { "SparseSdfGIRadianceTemporalReuse", "SparseSdfGIEnableRadianceTemporalReuse" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIUseScreenProbes, { "SparseSdfGIUseScreenProbes" });
     ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIProbeTileSize, 4u, 16u, { "SparseSdfGIProbeTileSize" });
     ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIProbeRaysPerProbe, 4u, 64u, { "SparseSdfGIProbeRaysPerProbe" });
-    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIProbeDebugMode, 0u, 6u, { "SparseSdfGIProbeDebugMode" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIProbeDebugMode, SPARSE_SDF_GI_PROBE_DEBUG_MODE_OFF, SPARSE_SDF_GI_PROBE_DEBUG_MODE_MAX, { "SparseSdfGIProbeDebugMode" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIProbeTemporalReuse, { "SparseSdfGIProbeTemporalReuse" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIProbeDirectionalSH, { "SparseSdfGIProbeDirectionalSH" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIProbeSpawnJitter, { "SparseSdfGIProbeSpawnJitter" });

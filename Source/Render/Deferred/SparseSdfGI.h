@@ -9,6 +9,7 @@
 #include "../GpuResource.h"
 #include "../RenderGraph.h"
 #include "../../Core/RendererConfig.h"
+#include "../../../Shaders/SparseSdfGI/SparseSdfGIShared.h"
 
 class FDeferredRenderer;
 struct FDeferredPassContext;
@@ -19,15 +20,16 @@ class FObject;
 
 enum class ESparseSdfGIDebugMode : uint32_t
 {
-    Off = 0,
-    RayTrace = 1,
-    CascadeSlice = 2,
-    Gradient = 3,
-    StepCount = 4,
-    SharedSampleMismatch = 5,
-    BrickLocalGradient = 6,
-    HitUVW = 7,
-    BrickID = 8
+    Off = SPARSE_SDF_GI_DEBUG_MODE_OFF,
+    RayTrace = SPARSE_SDF_GI_DEBUG_MODE_RAY_TRACE,
+    CascadeSlice = SPARSE_SDF_GI_DEBUG_MODE_CASCADE_SLICE,
+    Gradient = SPARSE_SDF_GI_DEBUG_MODE_GRADIENT,
+    StepCount = SPARSE_SDF_GI_DEBUG_MODE_STEP_COUNT,
+    SharedSampleMismatch = SPARSE_SDF_GI_DEBUG_MODE_SHARED_SAMPLE_MISMATCH,
+    BrickLocalGradient = SPARSE_SDF_GI_DEBUG_MODE_BRICK_LOCAL_GRADIENT,
+    HitUVW = SPARSE_SDF_GI_DEBUG_MODE_HIT_UVW,
+    BrickID = SPARSE_SDF_GI_DEBUG_MODE_BRICK_ID,
+    BrickLocalGradientRounded = SPARSE_SDF_GI_DEBUG_MODE_BRICK_LOCAL_GRADIENT_ROUNDED
 };
 
 struct FSparseSdfGIFrameResources
@@ -96,7 +98,7 @@ private:
     struct FCascadeDataGpu
     {
         DirectX::XMFLOAT4 MinVoxelSize{};
-        DirectX::XMFLOAT4 ExtentPhysicalBase{};
+        DirectX::XMFLOAT4 Extent{};
         DirectX::XMUINT4 Offsets{};
     };
 
@@ -132,6 +134,7 @@ private:
     float CascadeScale = 2.0f;
     bool bTraceHalfResolution = false;
     bool bUseHierarchicalTrace = true;
+    bool bEikonalEnabled = true;
     float Intensity = 1.0f;
     float BounceStrength = 1.0f;
     bool bEnableRadianceTemporalReuse = true;
@@ -184,6 +187,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ScatterBuildBrickArgsPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ScatterClearBrickStoragePipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ScatterSdfSamplesPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> ScatterEikonalPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ScatterFinalizeBricksPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> BuildTraceHierarchyBottomPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> BuildTraceHierarchyTopPipeline;

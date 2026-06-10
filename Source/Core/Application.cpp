@@ -22,6 +22,7 @@
 #include "../Scene/Camera.h"
 #include "../Scene/SceneJsonLoader.h"
 #include "../../Shaders/PathTracing/PathTracingShared.h"
+#include "../../Shaders/SparseSdfGI/SparseSdfGIShared.h"
 #include "RendererConfig.h"
 #include <dxgi1_6.h>
 #include <commdlg.h>
@@ -2037,7 +2038,8 @@ void FApplication::RenderUI()
         if (RendererConfig.DiffuseGISource == EDiffuseGISource::SparseSdfGI)
         {
             static const char* SparseSdfGIDebugModeItems[] = { "Off", "Ray Trace", "Cascade Slice", "Gradient", "Step Count", "Shared Sample Mismatch", "Brick Local Gradient", "Hit UVW", "Brick ID", "Brick Local Gradient (FFX Rounded)" };
-            int SparseSdfGIDebugModeIndex = static_cast<int>(std::clamp(RendererConfig.SparseSdfGIDebugMode, 0u, 9u));
+            static_assert(IM_ARRAYSIZE(SparseSdfGIDebugModeItems) == SPARSE_SDF_GI_DEBUG_MODE_MAX + 1);
+            int SparseSdfGIDebugModeIndex = static_cast<int>(std::clamp<uint32_t>(RendererConfig.SparseSdfGIDebugMode, SPARSE_SDF_GI_DEBUG_MODE_OFF, SPARSE_SDF_GI_DEBUG_MODE_MAX));
             ImGui::SetNextItemWidth(160.0f);
             if (ImGui::Combo("SDF GI Debug Mode", &SparseSdfGIDebugModeIndex, SparseSdfGIDebugModeItems, IM_ARRAYSIZE(SparseSdfGIDebugModeItems)))
             {
@@ -2049,6 +2051,12 @@ void FApplication::RenderUI()
             if (ImGui::Checkbox("SDF Hierarchical Trace", &RendererConfig.bSparseSdfGIUseHierarchicalTrace))
             {
                 UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIUseHierarchicalTrace", RendererConfig.bSparseSdfGIUseHierarchicalTrace ? "true" : "false");
+                SyncDeferredSparseSdfGIConfig();
+            }
+
+            if (ImGui::Checkbox("SDF Eikonal Propagation", &RendererConfig.bSparseSdfGIEikonalEnabled))
+            {
+                UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIEikonalEnabled", RendererConfig.bSparseSdfGIEikonalEnabled ? "true" : "false");
                 SyncDeferredSparseSdfGIConfig();
             }
 
@@ -2175,7 +2183,8 @@ void FApplication::RenderUI()
                 }
 
                 static const char* ProbeDebugItems[] = { "Off", "Placement", "Validity", "Hit Ratio", "Variance", "Confidence", "Irradiance" };
-                int ProbeDebugMode = static_cast<int>(std::clamp(RendererConfig.SparseSdfGIProbeDebugMode, 0u, 6u));
+                static_assert(IM_ARRAYSIZE(ProbeDebugItems) == SPARSE_SDF_GI_PROBE_DEBUG_MODE_MAX + 1);
+                int ProbeDebugMode = static_cast<int>(std::clamp<uint32_t>(RendererConfig.SparseSdfGIProbeDebugMode, SPARSE_SDF_GI_PROBE_DEBUG_MODE_OFF, SPARSE_SDF_GI_PROBE_DEBUG_MODE_MAX));
                 ImGui::SetNextItemWidth(160.0f);
                 if (ImGui::Combo("Probe Debug", &ProbeDebugMode, ProbeDebugItems, IM_ARRAYSIZE(ProbeDebugItems)))
                 {

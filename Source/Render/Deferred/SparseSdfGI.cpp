@@ -455,6 +455,11 @@ namespace
         uint32_t ScatterCountersSrvIndex = UINT32_MAX;
     };
 
+    struct FSparseSdfGIScatterEikonalBindlessConstants
+    {
+        uint32_t ScatterBrickSdfUavIndex = UINT32_MAX;
+    };
+
     struct FSparseSdfGIScatterFinalizeBindlessConstants
     {
         uint32_t SdfAtlasUavIndex = UINT32_MAX;
@@ -553,11 +558,15 @@ namespace
         uint32_t GBufferBIndex = UINT32_MAX;
         uint32_t GBufferCIndex = UINT32_MAX;
         uint32_t BrickRadianceAccumUavIndex = UINT32_MAX;
-        uint32_t ShadowMaskIndex = UINT32_MAX;
-        uint32_t ShadowMaskEnabled = 0u;
+        uint32_t ShadowTextureIndex = UINT32_MAX;
+        uint32_t ShadowMode = 0u;
         uint32_t CascadeBrickMapSrvIndex = UINT32_MAX;
         uint32_t BrickIrradianceReadIndex = UINT32_MAX;
     };
+
+    constexpr uint32_t kSparseSdfGIShadowModeOff = 0u;
+    constexpr uint32_t kSparseSdfGIShadowModeScreenMask = 1u;
+    constexpr uint32_t kSparseSdfGIShadowModeShadowMap = 2u;
 
     struct FSparseSdfGIIrradianceAccumulateBindlessConstants
     {
@@ -606,6 +615,7 @@ bool FSparseSdfGI::InitializePipelines(FDeferredRenderer& Owner, FDX12Device* De
         ScatterBuildBrickArgsPipeline.Reset();
         ScatterClearBrickStoragePipeline.Reset();
         ScatterSdfSamplesPipeline.Reset();
+        ScatterEikonalPipeline.Reset();
         ScatterFinalizeBricksPipeline.Reset();
         BuildTraceHierarchyBottomPipeline.Reset();
         BuildTraceHierarchyTopPipeline.Reset();
@@ -666,19 +676,20 @@ void FSparseSdfGI::ApplyConfig(const FRendererConfig& Config)
         EffectiveMaxScatterBricks != NewEffectiveMaxScatterBricks;
 
     bEnabled = Config.DiffuseGISource == EDiffuseGISource::SparseSdfGI;
-    DebugMode = static_cast<ESparseSdfGIDebugMode>(std::clamp(Config.SparseSdfGIDebugMode, 0u, 9u));
+    DebugMode = static_cast<ESparseSdfGIDebugMode>(std::clamp<uint32_t>(Config.SparseSdfGIDebugMode, SPARSE_SDF_GI_DEBUG_MODE_OFF, SPARSE_SDF_GI_DEBUG_MODE_MAX));
     CascadeCount = NewCascadeCount;
     BaseVoxelSize = NewBaseVoxelSize;
     CascadeScale = NewCascadeScale;
     bTraceHalfResolution = Config.bSparseSdfGITraceHalfResolution;
     bUseHierarchicalTrace = Config.bSparseSdfGIUseHierarchicalTrace;
+    bEikonalEnabled = Config.bSparseSdfGIEikonalEnabled;
     Intensity = (std::max)(0.0f, Config.SparseSdfGIIntensity);
     BounceStrength = (std::max)(0.0f, Config.SparseSdfGIBounceStrength);
     bEnableRadianceTemporalReuse = Config.bSparseSdfGIEnableRadianceTemporalReuse;
     bUseScreenProbes = Config.bSparseSdfGIUseScreenProbes;
     ProbeTileSize = std::clamp(Config.SparseSdfGIProbeTileSize, 4u, 16u);
     ProbeRaysPerProbe = std::clamp(Config.SparseSdfGIProbeRaysPerProbe, 4u, 64u);
-    ProbeDebugMode = std::clamp(Config.SparseSdfGIProbeDebugMode, 0u, 6u);
+    ProbeDebugMode = std::clamp<uint32_t>(Config.SparseSdfGIProbeDebugMode, SPARSE_SDF_GI_PROBE_DEBUG_MODE_OFF, SPARSE_SDF_GI_PROBE_DEBUG_MODE_MAX);
     bProbeTemporalReuse = Config.bSparseSdfGIProbeTemporalReuse;
     bProbeDirectionalSH = Config.bSparseSdfGIProbeDirectionalSH;
     bProbeSpawnJitter = Config.bSparseSdfGIProbeSpawnJitter;
@@ -1100,6 +1111,7 @@ bool FSparseSdfGI::CreatePipelines(FDX12Device* Device)
     std::vector<uint8_t> ScatterBuildBrickArgsByteCode;
     std::vector<uint8_t> ScatterClearBrickStorageByteCode;
     std::vector<uint8_t> ScatterSdfSamplesByteCode;
+    std::vector<uint8_t> ScatterEikonalByteCode;
     std::vector<uint8_t> ScatterFinalizeBricksByteCode;
     std::vector<uint8_t> BuildTraceHierarchyBottomByteCode;
     std::vector<uint8_t> BuildTraceHierarchyTopByteCode;
@@ -1128,6 +1140,7 @@ bool FSparseSdfGI::CreatePipelines(FDX12Device* Device)
     if (!RendererUtils::CompileComputeShader(Compiler, Device, ShaderPath, L"CSBuildScatterBrickArgs", ScatterBuildBrickArgsByteCode, { L"SPARSE_SDF_GI_SCATTER_BUILD_BRICK_ARGS_SHADER=1" })) { return false; }
     if (!RendererUtils::CompileComputeShader(Compiler, Device, ShaderPath, L"CSClearScatterBrickStorage", ScatterClearBrickStorageByteCode, { L"SPARSE_SDF_GI_SCATTER_CLEAR_BRICK_STORAGE_SHADER=1" })) { return false; }
     if (!RendererUtils::CompileComputeShader(Compiler, Device, ShaderPath, L"CSScatterSdfSamples", ScatterSdfSamplesByteCode, { L"SPARSE_SDF_GI_SCATTER_SDF_SAMPLES_SHADER=1" })) { return false; }
+    if (!RendererUtils::CompileComputeShader(Compiler, Device, ShaderPath, L"CSEikonalScatterBricks", ScatterEikonalByteCode, { L"SPARSE_SDF_GI_SCATTER_EIKONAL_SHADER=1" })) { return false; }
     if (!RendererUtils::CompileComputeShader(Compiler, Device, ShaderPath, L"CSFinalizeScatterBricks", ScatterFinalizeBricksByteCode, { L"SPARSE_SDF_GI_SCATTER_FINALIZE_BRICKS_SHADER=1" })) { return false; }
     if (!RendererUtils::CompileComputeShader(Compiler, Device, ShaderPath, L"CSBuildTraceHierarchyBottom", BuildTraceHierarchyBottomByteCode, { L"SPARSE_SDF_GI_BUILD_TRACE_HIERARCHY_BOTTOM_SHADER=1" }))
     {
@@ -1211,6 +1224,7 @@ bool FSparseSdfGI::CreatePipelines(FDX12Device* Device)
         && CreateComputePso(ScatterBuildBrickArgsByteCode, ScatterBuildBrickArgsPipeline, "CSBuildScatterBrickArgs")
         && CreateComputePso(ScatterClearBrickStorageByteCode, ScatterClearBrickStoragePipeline, "CSClearScatterBrickStorage")
         && CreateComputePso(ScatterSdfSamplesByteCode, ScatterSdfSamplesPipeline, "CSScatterSdfSamples")
+        && CreateComputePso(ScatterEikonalByteCode, ScatterEikonalPipeline, "CSEikonalScatterBricks")
         && CreateComputePso(ScatterFinalizeBricksByteCode, ScatterFinalizeBricksPipeline, "CSFinalizeScatterBricks")
         && CreateComputePso(BuildTraceHierarchyBottomByteCode, BuildTraceHierarchyBottomPipeline, "CSBuildTraceHierarchyBottom")
         && CreateComputePso(BuildTraceHierarchyTopByteCode, BuildTraceHierarchyTopPipeline, "CSBuildTraceHierarchyTop")
@@ -1417,6 +1431,7 @@ bool FSparseSdfGI::RefreshPersistentInputValidation()
         ScatterBuildBrickArgsPipeline &&
         ScatterClearBrickStoragePipeline &&
         ScatterSdfSamplesPipeline &&
+        ScatterEikonalPipeline &&
         ScatterFinalizeBricksPipeline &&
         BuildTraceHierarchyBottomPipeline &&
         BuildTraceHierarchyTopPipeline &&
@@ -1517,9 +1532,8 @@ void FSparseSdfGI::UpdateCascadeData(const FCascadeBounds& BaseBounds) const
     for (uint32_t CascadeIndex = 0u; CascadeIndex < kSparseSdfGIMaxCascadeCount; ++CascadeIndex)
     {
         const FCascadeBounds Bounds = ComputeCascadeBounds(BaseBounds, CascadeIndex);
-        const uint32_t PhysicalBase = CascadeIndex * EffectiveMaxScatterBricks;
         Data[CascadeIndex].MinVoxelSize = DirectX::XMFLOAT4(Bounds.Min.x, Bounds.Min.y, Bounds.Min.z, Bounds.VoxelSize);
-        Data[CascadeIndex].ExtentPhysicalBase = DirectX::XMFLOAT4(Bounds.Extent.x, Bounds.Extent.y, Bounds.Extent.z, static_cast<float>(PhysicalBase));
+        Data[CascadeIndex].Extent = DirectX::XMFLOAT4(Bounds.Extent.x, Bounds.Extent.y, Bounds.Extent.z, 0.0f);
         Data[CascadeIndex].Offsets = DirectX::XMUINT4(
             CascadeIndex * GetBrickMapElementCount(),
             CascadeIndex * GetTraceHierarchyBottomNodeCount(),
@@ -1542,6 +1556,7 @@ uint64_t FSparseSdfGI::ComputeBuildSettingsSignature(const FCascadeBounds& Bound
     HashValue(Hash, MaxBrickTriangleReferences);
     HashValue(Hash, MaxScatterBricks);
     HashValue(Hash, EffectiveMaxScatterBricks);
+    HashValue(Hash, bEikonalEnabled ? 1u : 0u);
     HashFloat3(Hash, Bounds.Min);
     HashFloat3(Hash, Bounds.Extent);
     HashValue(Hash, Bounds.VoxelSize);
@@ -2350,6 +2365,38 @@ void FSparseSdfGI::AddDistributedScatterPasses(FDeferredPassContext& Context, ui
         }
     });
 
+    Graph.AddPass<FScatterDirectPassData>("SparseSdfGI Eikonal Scatter Bricks", [this, BrickSdfHandle, BrickArgsHandle](FScatterDirectPassData& Data, FRGPassBuilder& Builder)
+    {
+        Builder.SetPixGroup("SparseSdfGI");
+        Data.bEnabled = bEnabled && bPersistentInputsValid && bEikonalEnabled;
+        Data.A = BrickSdfHandle;
+        Data.B = BrickArgsHandle;
+        if (!Data.bEnabled) { return; }
+        Builder.WriteBuffer(Data.A, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.ReadBuffer(Data.B, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
+        Builder.UavBarrier(Data.A);
+    }, [this, OwnerPtr, GraphPtr, FillCommonConstants, MaxJobCount](const FScatterDirectPassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!Data.bEnabled) { return; }
+        FDeferredRenderer& Owner = *OwnerPtr;
+        ID3D12GraphicsCommandList* CommandList = Cmd.GetCommandList();
+        ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
+        CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        CommandList->SetComputeRootSignature(RootSignature.Get());
+        CommandList->SetPipelineState(ScatterEikonalPipeline.Get());
+        CommandList->SetComputeRootConstantBufferView(0, Owner.GetSceneConstantBufferAddress());
+        FSparseSdfGIConstants Constants = FillCommonConstants(Owner, MaxJobCount);
+        if (!BindSparseConstants(Owner, CommandList, &Constants, sizeof(Constants))) { return; }
+        const FSparseSdfGIScatterEikonalBindlessConstants Bindless = { GraphPtr->GetBufferUavBindlessIndex(Data.A) };
+        if (!AreAllBindlessIndicesValid(Bindless.ScatterBrickSdfUavIndex)) { return; }
+        CommandList->SetComputeRoot32BitConstants(2, sizeof(FSparseSdfGIScatterEikonalBindlessConstants) / sizeof(uint32_t), &Bindless, 0);
+        ID3D12Resource* Args = GraphPtr->GetBufferResource(Data.B);
+        if (Args)
+        {
+            CommandList->ExecuteIndirect(DispatchCommandSignature.Get(), 1u, Args, 0u, nullptr, 0u);
+        }
+    });
+
     Graph.AddPass<FScatterDirectPassData>("SparseSdfGI Finalize Scatter Bricks", [this, SdfAtlasHandle, BrickMetadataHandle, BrickListHandle, BrickSdfHandle, CountersHandle, ReferenceStatsHandle, BrickArgsHandle](FScatterDirectPassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("SparseSdfGI");
@@ -2642,6 +2689,7 @@ void FSparseSdfGI::AddRadianceCachePasses(FDeferredPassContext& Context) const
     const FDeferredGBufferHandles GBufferHandles = Context.Resources.GBufferHandles;
     const FRGResourceHandle DepthHandle = Context.Resources.DepthHandle;
     const FRGResourceHandle ShadowMaskHandle = Context.Resources.RayTracingShadow.ShadowMaskHandle;
+    const FRGResourceHandle ShadowMapHandle = Context.Resources.ShadowHandle;
     const FRGBufferHandle BrickMapHandle = Context.Resources.SparseSdfGI.CascadeBrickMapHandle;
     const FRGBufferHandle CascadeDataHandle = Context.Resources.SparseSdfGI.CascadeDataHandle;
 
@@ -2728,16 +2776,18 @@ void FSparseSdfGI::AddRadianceCachePasses(FDeferredPassContext& Context) const
         bool bEnabled = false;
         FRGBufferHandle BrickRadianceAccumHandle{};
         FRGResourceHandle ShadowMaskHandle{};
+        FRGResourceHandle ShadowMapHandle{};
         FRGBufferHandle BrickIrradianceReadHandle{};
         FRGBufferHandle BrickMapHandle{};
         FRGBufferHandle CascadeDataHandle{};
     };
 
-    Graph.AddPass<FRadianceInjectPassData>("SparseSdfGI Radiance Inject", [&, DepthHandle, ShadowMaskHandle, GBufferHandles, BrickIrradianceReadHandle, BrickMapHandle, CascadeDataHandle](FRadianceInjectPassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FRadianceInjectPassData>("SparseSdfGI Radiance Inject", [&, DepthHandle, ShadowMaskHandle, ShadowMapHandle, GBufferHandles, BrickIrradianceReadHandle, BrickMapHandle, CascadeDataHandle](FRadianceInjectPassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("SparseSdfGI");
         Data.BrickRadianceAccumHandle = Context.Resources.SparseSdfGI.BrickRadianceAccumHandle;
         Data.ShadowMaskHandle = ShadowMaskHandle;
+        Data.ShadowMapHandle = Context.FrameState.bRenderShadows ? ShadowMapHandle : FRGResourceHandle{};
         Data.BrickIrradianceReadHandle = BrickIrradianceReadHandle;
         Data.BrickMapHandle = BrickMapHandle;
         Data.CascadeDataHandle = CascadeDataHandle;
@@ -2766,6 +2816,10 @@ void FSparseSdfGI::AddRadianceCachePasses(FDeferredPassContext& Context) const
         {
             Builder.ReadTexture(Data.ShadowMaskHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         }
+        if (Data.ShadowMapHandle)
+        {
+            Builder.ReadTexture(Data.ShadowMapHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        }
         if (Data.BrickIrradianceReadHandle)
         {
             Builder.ReadBuffer(Data.BrickIrradianceReadHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -2782,10 +2836,20 @@ void FSparseSdfGI::AddRadianceCachePasses(FDeferredPassContext& Context) const
         FDeferredRenderer& Owner = Context.Owner;
         const uint32_t DepthBindlessIndex = Owner.GetCurrentDepthSrvBindlessIndex();
         const uint32_t ShadowMaskBindlessIndex = Data.ShadowMaskHandle ? Context.Graph.GetTextureSrvBindlessIndex(Data.ShadowMaskHandle) : UINT32_MAX;
+        const uint32_t ShadowMapBindlessIndex = Data.ShadowMapHandle ? Context.Graph.GetTextureSrvBindlessIndex(Data.ShadowMapHandle) : UINT32_MAX;
         const bool bUseShadowMask = Owner.bShadowsEnabled
             && Owner.bRayTracedShadowsEnabled
             && Owner.GetRayTracingRuntime().bRayTracingPipelineReady
             && IsValidBindlessIndex(ShadowMaskBindlessIndex);
+        const bool bUseShadowMap = !bUseShadowMask
+            && Owner.bShadowsEnabled
+            && IsValidBindlessIndex(ShadowMapBindlessIndex);
+        const uint32_t ShadowMode = bUseShadowMask
+            ? kSparseSdfGIShadowModeScreenMask
+            : (bUseShadowMap ? kSparseSdfGIShadowModeShadowMap : kSparseSdfGIShadowModeOff);
+        const uint32_t ShadowTextureIndex = bUseShadowMask
+            ? ShadowMaskBindlessIndex
+            : (bUseShadowMap ? ShadowMapBindlessIndex : UINT32_MAX);
         const uint32_t BrickRadianceAccumUavIndex = Context.Graph.GetBufferUavBindlessIndex(Data.BrickRadianceAccumHandle);
         const uint32_t BrickMapSrvIndex = Context.Graph.GetBufferSrvBindlessIndex(Data.BrickMapHandle);
         if (!AreAllBindlessIndicesValid(
@@ -2840,8 +2904,8 @@ void FSparseSdfGI::AddRadianceCachePasses(FDeferredPassContext& Context) const
             Owner.GBufferB.SrvBindlessIndex,
             Owner.GBufferC.SrvBindlessIndex,
             BrickRadianceAccumUavIndex,
-            bUseShadowMask ? ShadowMaskBindlessIndex : UINT32_MAX,
-            bUseShadowMask ? 1u : 0u,
+            ShadowTextureIndex,
+            ShadowMode,
             BrickMapSrvIndex,
             bUseMultiBounce ? BrickIrradianceReadBufferIndex : UINT32_MAX
         };
@@ -3455,7 +3519,7 @@ void FSparseSdfGI::AddScreenProbeGITracePasses(FDeferredPassContext& Context, FR
 
         Data.InputSHHandle = Builder.CreateTexture("SparseSdfGI Probe Input SH", { FullWidth, FullHeight, DXGI_FORMAT_R32G32B32A32_UINT });
         Data.VarianceHandle = Builder.CreateTexture("SparseSdfGI Probe Variance FullRes", { FullWidth, FullHeight, DXGI_FORMAT_R8_UNORM });
-        if (ProbeDebugMode == 0u)
+        if (ProbeDebugMode == SPARSE_SDF_GI_PROBE_DEBUG_MODE_OFF)
         {
             Context.Resources.SparseSdfGI.DiffuseGIInputSHHandle = Data.InputSHHandle;
             Context.Resources.SparseSdfGI.DiffuseGIVarianceHandle = Data.VarianceHandle;

@@ -20,16 +20,21 @@ cbuffer RestirGiSpdConstants : register(b0)
 groupshared AF4 SpdIntermediate[16][16];
 groupshared AU1 SpdCounter;
 
+AF4 MakeWeightedDepth(float Depth)
+{
+    return AF4(Depth, (Depth > 0.0f) ? 1.0f : 0.0f, 0.0f, 0.0f);
+}
+
 AF4 SpdLoadSourceImage(ASU2 Texel, AU1 Slice)
 {
     Texture2D<float> InputDepth = ResourceDescriptorHeap[InputSrvIndex];
-    return AF4(InputDepth[uint2(Texel)], 0.0f, 0.0f, 0.0f);
+    return MakeWeightedDepth(InputDepth[uint2(Texel)]);
 }
 
 AF4 SpdLoad(ASU2 Texel, AU1 Slice)
 {
     globallycoherent RWTexture2D<float> Mip3 = ResourceDescriptorHeap[OutputUavMip3];
-    return AF4(Mip3[uint2(Texel)], 0.0f, 0.0f, 0.0f);
+    return MakeWeightedDepth(Mip3[uint2(Texel)]);
 }
 
 void SpdStore(ASU2 Pixel, AF4 Value, AU1 Mip, AU1 Slice)
@@ -72,7 +77,10 @@ void SpdStoreIntermediate(AU1 X, AU1 Y, AF4 Value)
 
 AF4 SpdReduce4(AF4 V0, AF4 V1, AF4 V2, AF4 V3)
 {
-    return (V0 + V1 + V2 + V3) * 0.25f;
+    const float ValidWeightSum = V0.y + V1.y + V2.y + V3.y;
+    const float ValidAverageDepth =
+        (V0.x * V0.y + V1.x * V1.y + V2.x * V2.y + V3.x * V3.y) / max(ValidWeightSum, 1e-5f);
+    return AF4(ValidAverageDepth, ValidWeightSum * 0.25f, 0.0f, 0.0f);
 }
 
 #include "../ffx_spd.h"

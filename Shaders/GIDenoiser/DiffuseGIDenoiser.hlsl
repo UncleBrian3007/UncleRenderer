@@ -295,73 +295,6 @@ void CSTemporalAccumulation(uint3 DispatchThreadId : SV_DispatchThreadID)
 }
 
 [numthreads(8, 8, 1)]
-void CSGenerateShMips(uint3 DispatchThreadId : SV_DispatchThreadID)
-{
-    const uint2 Pixel = DispatchThreadId.xy;
-    if (Pixel.x >= Width || Pixel.y >= Height)
-    {
-        return;
-    }
-
-    Texture2D<uint4> SourceSH = ResourceDescriptorHeap[TemporalSHIndex];
-    RWTexture2D<uint4> OutShMip = ResourceDescriptorHeap[AuxiliaryIndex];
-
-    uint OutWidth = 0;
-    uint OutHeight = 0;
-    OutShMip.GetDimensions(OutWidth, OutHeight);
-    if (Pixel.x >= OutWidth || Pixel.y >= OutHeight)
-    {
-        return;
-    }
-
-    const uint Scale = 1u << (MipLevel + 1u);
-    const uint2 Base = Pixel * Scale;
-    const uint2 S0 = min(Base, uint2(Width - 1u, Height - 1u));
-    const uint2 S1 = min(Base + uint2(Scale, 0u), uint2(Width - 1u, Height - 1u));
-    const uint2 S2 = min(Base + uint2(0u, Scale), uint2(Width - 1u, Height - 1u));
-    const uint2 S3 = min(Base + uint2(Scale, Scale), uint2(Width - 1u, Height - 1u));
-
-    FPackedSh Sh0 = LoadPackedSh(SourceSH, S0);
-    FPackedSh Sh1 = LoadPackedSh(SourceSH, S1);
-    FPackedSh Sh2 = LoadPackedSh(SourceSH, S2);
-    FPackedSh Sh3 = LoadPackedSh(SourceSH, S3);
-
-    FPackedSh OutSh = ScaleSh(
-        AddSh(AddSh(Sh0, Sh1), AddSh(Sh2, Sh3)),
-        0.25f);
-    OutShMip[Pixel] = PackSh(OutSh);
-}
-
-[numthreads(8, 8, 1)]
-void CSGenerateLinearDepthMips(uint3 DispatchThreadId : SV_DispatchThreadID)
-{
-    const uint2 Pixel = DispatchThreadId.xy;
-    if (Pixel.x >= Width || Pixel.y >= Height)
-    {
-        return;
-    }
-
-    Texture2D<float> CurrentLinearDepthTexture = ResourceDescriptorHeap[CurrentLinearDepthIndex];
-    RWTexture2D<float> OutDepthMip = ResourceDescriptorHeap[AuxiliaryIndex];
-
-    uint OutWidth = 0;
-    uint OutHeight = 0;
-    OutDepthMip.GetDimensions(OutWidth, OutHeight);
-    if (Pixel.x >= OutWidth || Pixel.y >= OutHeight)
-    {
-        return;
-    }
-
-    const uint Scale = 1u << (MipLevel + 1u);
-    const uint2 Base = Pixel * Scale;
-    const uint2 S0 = min(Base, uint2(Width - 1u, Height - 1u));
-    const uint2 S1 = min(Base + uint2(Scale, 0u), uint2(Width - 1u, Height - 1u));
-    const uint2 S2 = min(Base + uint2(0u, Scale), uint2(Width - 1u, Height - 1u));
-    const uint2 S3 = min(Base + uint2(Scale, Scale), uint2(Width - 1u, Height - 1u));
-    OutDepthMip[Pixel] = (CurrentLinearDepthTexture[S0] + CurrentLinearDepthTexture[S1] + CurrentLinearDepthTexture[S2] + CurrentLinearDepthTexture[S3]) * 0.25f;
-}
-
-[numthreads(8, 8, 1)]
 void CSHistoryReconstruction(uint3 DispatchThreadId : SV_DispatchThreadID)
 {
     const uint2 Pixel = DispatchThreadId.xy;
@@ -407,7 +340,10 @@ void CSHistoryReconstruction(uint3 DispatchThreadId : SV_DispatchThreadID)
     const float W01 = (1.0f - Frac.x) * Frac.y;
     const float W11 = Frac.x * Frac.y;
 
-    FPackedSh AccumSh = ScaleSh(UnpackSh(ShMip.Load(uint3(uint2(Tap00), ComputedMip))), 0.0f);
+    FPackedSh AccumSh;
+    AccumSh.ShY = 0.0f.xxxx;
+    AccumSh.Co = 0.0f;
+    AccumSh.Cg = 0.0f;
     float Total = 0.0f;
 
     const float D00 = DepthMip.Load(uint3(uint2(Tap00), ComputedMip));
@@ -415,12 +351,13 @@ void CSHistoryReconstruction(uint3 DispatchThreadId : SV_DispatchThreadID)
     const float D01 = DepthMip.Load(uint3(uint2(Tap01), ComputedMip));
     const float D11 = DepthMip.Load(uint3(uint2(Tap11), ComputedMip));
 
+    const float DepthSigma = max(CurrentDepth * 0.1f, 1e-3f);
     const float4 BilinearWeights = float4(W00, W10, W01, W11);
     const float4 GeometryWeights = float4(
-        exp(-abs(CurrentDepth - D00)),
-        exp(-abs(CurrentDepth - D10)),
-        exp(-abs(CurrentDepth - D01)),
-        exp(-abs(CurrentDepth - D11)));
+        exp(-abs(CurrentDepth - D00) / DepthSigma),
+        exp(-abs(CurrentDepth - D10) / DepthSigma),
+        exp(-abs(CurrentDepth - D01) / DepthSigma),
+        exp(-abs(CurrentDepth - D11) / DepthSigma));
 
     const float4 FinalWeights = BilinearWeights * GeometryWeights;
     AccumSh = AddSh(AccumSh, ScaleSh(UnpackSh(ShMip.Load(uint3(uint2(Tap00), ComputedMip))), FinalWeights.x));
@@ -429,8 +366,15 @@ void CSHistoryReconstruction(uint3 DispatchThreadId : SV_DispatchThreadID)
     AccumSh = AddSh(AccumSh, ScaleSh(UnpackSh(ShMip.Load(uint3(uint2(Tap11), ComputedMip))), FinalWeights.w));
     Total += FinalWeights.x + FinalWeights.y + FinalWeights.z + FinalWeights.w;
 
-    FPackedSh Reconstructed = ScaleSh(AccumSh, rcp(max(1e-5f, Total)));
-    TemporalSH[Pixel] = PackSh(Reconstructed);
+    if (Total <= 1e-4f)
+    {
+        return;
+    }
+
+    const FPackedSh Reconstructed = ScaleSh(AccumSh, rcp(Total));
+    const FPackedSh CurrentTemporal = LoadPackedSh(TemporalSH, Pixel);
+    const float ReconstructAmount = saturate(1.0f - CountRatio) * saturate(Total * 4.0f);
+    TemporalSH[Pixel] = PackSh(LerpSh(CurrentTemporal, Reconstructed, ReconstructAmount));
 }
 
 [numthreads(8, 8, 1)]

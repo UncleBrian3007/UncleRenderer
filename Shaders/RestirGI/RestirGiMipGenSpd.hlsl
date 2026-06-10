@@ -4,8 +4,15 @@
 #define A_GPU
 #define A_HLSL
 #include "../ffx_a.h"
+
+struct FWeightedSh
+{
+    FPackedSh Sh;
+    float Weight;
+};
+
 #undef AF4
-#define AF4 FPackedSh
+#define AF4 FWeightedSh
 
 cbuffer RestirGiSpdConstants : register(b0)
 {
@@ -23,16 +30,24 @@ cbuffer RestirGiSpdConstants : register(b0)
 groupshared AF4 SpdIntermediate[16][16];
 groupshared AU1 SpdCounter;
 
+AF4 MakeWeightedSh(uint4 Packed)
+{
+    AF4 Value;
+    Value.Sh = UnpackSh(Packed);
+    Value.Weight = any(Packed != 0u.xxxx) ? 1.0f : 0.0f;
+    return Value;
+}
+
 AF4 SpdLoadSourceImage(ASU2 Texel, AU1 Slice)
 {
     Texture2D<uint4> InputSh = ResourceDescriptorHeap[InputSrvIndex];
-    return UnpackSh(InputSh[uint2(Texel)]);
+    return MakeWeightedSh(InputSh[uint2(Texel)]);
 }
 
 AF4 SpdLoad(ASU2 Texel, AU1 Slice)
 {
     globallycoherent RWTexture2D<uint4> Mip3 = ResourceDescriptorHeap[OutputUavMip3];
-    return UnpackSh(Mip3[uint2(Texel)]);
+    return MakeWeightedSh(Mip3[uint2(Texel)]);
 }
 
 void SpdStore(ASU2 Pixel, AF4 Value, AU1 Mip, AU1 Slice)
@@ -43,7 +58,7 @@ void SpdStore(ASU2 Pixel, AF4 Value, AU1 Mip, AU1 Slice)
     else if (Mip >= 3u) { TargetIndex = OutputUavMip3; }
 
     RWTexture2D<uint4> OutputMip = ResourceDescriptorHeap[TargetIndex];
-    OutputMip[uint2(Pixel)] = PackSh(Value);
+    OutputMip[uint2(Pixel)] = PackSh(Value.Sh);
 }
 
 void SpdIncreaseAtomicCounter(AU1 Slice)
@@ -75,7 +90,15 @@ void SpdStoreIntermediate(AU1 X, AU1 Y, AF4 Value)
 
 AF4 SpdReduce4(AF4 V0, AF4 V1, AF4 V2, AF4 V3)
 {
-    return ScaleSh(AddSh(AddSh(V0, V1), AddSh(V2, V3)), 0.25f);
+    const float ValidWeightSum = V0.Weight + V1.Weight + V2.Weight + V3.Weight;
+    AF4 Value;
+    Value.Sh = ScaleSh(
+        AddSh(
+            AddSh(ScaleSh(V0.Sh, V0.Weight), ScaleSh(V1.Sh, V1.Weight)),
+            AddSh(ScaleSh(V2.Sh, V2.Weight), ScaleSh(V3.Sh, V3.Weight))),
+        rcp(max(ValidWeightSum, 1e-5f)));
+    Value.Weight = ValidWeightSum * 0.25f;
+    return Value;
 }
 
 #define SPD_NO_WAVE_OPERATIONS

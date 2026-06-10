@@ -128,6 +128,7 @@ struct FRendererConfig
     float SparseSdfGICascadeScale = 2.0f;
     bool bSparseSdfGITraceHalfResolution = false;
     bool bSparseSdfGIUseHierarchicalTrace = true;
+    bool bSparseSdfGIEikonalEnabled = true;
     float SparseSdfGIIntensity = 1.0f;
     float SparseSdfGIBounceStrength = 1.0f;
     bool bSparseSdfGIEnableRadianceTemporalReuse = true;

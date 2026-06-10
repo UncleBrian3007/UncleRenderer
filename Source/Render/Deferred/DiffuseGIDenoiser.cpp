@@ -206,7 +206,7 @@ void FDiffuseGIDenoiser::AddShMipGenPass(FDeferredRenderer& Owner, FRenderGraph&
     };
     Graph.AddPass<FPassData>("Denoiser SH Mip SPD", [this, &Owner, SourceHandle, &DestinationHandle, &AtomicCounterHandle](FPassData& Data, FRGPassBuilder& Builder)
     {
-        Builder.SetPixGroup("RestirGI Denoiser");
+        Builder.SetPixGroup("Diffuse GI Denoiser");
         Data.bEnabled = IsEnabled();
         if (!Data.bEnabled)
         {
@@ -306,7 +306,7 @@ void FDiffuseGIDenoiser::AddLinearDepthMipGenPass(FDeferredRenderer& Owner, FRen
     };
     Graph.AddPass<FPassData>("Denoiser Depth Mip SPD", [this, &Owner, SourceHandle, &DestinationHandle, &AtomicCounterHandle](FPassData& Data, FRGPassBuilder& Builder)
     {
-        Builder.SetPixGroup("RestirGI Denoiser");
+        Builder.SetPixGroup("Diffuse GI Denoiser");
         Data.bEnabled = IsEnabled();
         if (!Data.bEnabled)
         {
@@ -407,7 +407,7 @@ void FDiffuseGIDenoiser::AddHistoryReconstructionPass(FDeferredRenderer& Owner, 
     };
     Graph.AddPass<FPassData>("Denoiser HistoryBlur", [this, &Owner, GBufferHandles, LinearDepthHandle, InputSHHandle, VarianceHandle, HistorySHHandle, HistoryCountHandle, TemporalSHHandle, ShMipHandle, DepthMipHandle](FPassData& Data, FRGPassBuilder& Builder)
     {
-        Builder.SetPixGroup("RestirGI Denoiser");
+        Builder.SetPixGroup("Diffuse GI Denoiser");
         Data.bEnabled = IsEnabled();
         if (!Data.bEnabled)
         {
@@ -505,7 +505,7 @@ void FDiffuseGIDenoiser::AddFinalBlurPass(FDeferredRenderer& Owner, FRenderGraph
     };
     Graph.AddPass<FPassData>("Denoiser FinalBlur", [this, &Owner, GBufferHandles, LinearDepthHandle, InputSHHandle, VarianceHandle, TemporalSHHandle, HistoryIrradianceHandle, HistorySHHandle, HistoryCountHandle](FPassData& Data, FRGPassBuilder& Builder)
     {
-        Builder.SetPixGroup("RestirGI Denoiser");
+        Builder.SetPixGroup("Diffuse GI Denoiser");
         Data.bEnabled = IsEnabled();
         if (!Data.bEnabled)
         {
@@ -599,7 +599,7 @@ void FDiffuseGIDenoiser::AddPreBlurPass(FDeferredRenderer& Owner, FRenderGraph& 
     };
     Graph.AddPass<FPassData>("Denoiser PreBlur", [this, &Owner, GBufferHandles, LinearDepthHandle, InputSHHandle, VarianceHandle, &PreBlurSHHandle](FPassData& Data, FRGPassBuilder& Builder)
     {
-        Builder.SetPixGroup("RestirGI Denoiser");
+        Builder.SetPixGroup("Diffuse GI Denoiser");
         Data.bEnabled = IsEnabled();
         if (!Data.bEnabled)
         {
@@ -691,7 +691,7 @@ void FDiffuseGIDenoiser::AddTemporalAccumulationPass(FDeferredRenderer& Owner, F
     };
     Graph.AddPass<FPassData>("Denoiser TemporalAccum", [this, &Owner, GBufferHandles, DepthHandle, VelocityHandle, LinearDepthHandle, InputSHHandle, VarianceHandle, PreBlurSHHandle, HistorySHReadHandle, HistoryCountReadHandle, &TemporalSHHandle, HistoryCountWriteHandle, PrevLinearDepthReadHandle, PrevLinearDepthWriteHandle, PrevNormalReadHandle, PrevNormalWriteHandle](FPassData& Data, FRGPassBuilder& Builder)
     {
-        Builder.SetPixGroup("RestirGI Denoiser");
+        Builder.SetPixGroup("Diffuse GI Denoiser");
         Data.bEnabled = IsEnabled();
         if (!Data.bEnabled)
         {
