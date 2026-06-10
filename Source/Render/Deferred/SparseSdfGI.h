@@ -36,6 +36,7 @@ struct FSparseSdfGIFrameResources
     FRGBufferHandle CascadeBrickMapHandle{};
     FRGBufferHandle BrickMetadataHandle{};
     FRGBufferHandle ReferenceCounterStatsHandle{};
+    FRGBufferHandle CascadeDataHandle{};
     FRGBufferHandle TraceHierarchyBottomHandle{};
     FRGBufferHandle TraceHierarchyTopHandle{};
     FRGBufferHandle ScatterJobsHandle{};
@@ -92,19 +93,28 @@ private:
         float VoxelSize = 0.25f;
     };
 
+    struct FCascadeDataGpu
+    {
+        DirectX::XMFLOAT4 MinVoxelSize{};
+        DirectX::XMFLOAT4 ExtentPhysicalBase{};
+        DirectX::XMUINT4 Offsets{};
+    };
+
     bool CreateRootSignature(FDX12Device* Device);
     bool CreateDispatchCommandSignature(FDX12Device* Device);
     bool CreatePipelines(FDX12Device* Device);
     bool CreateResources(FDX12Device* Device, uint32_t Width, uint32_t Height, uint32_t FramesInFlight);
     bool RefreshPersistentInputValidation();
-    FCascadeBounds ComputeCascadeBounds(const FDeferredRenderer& Owner) const;
+    FCascadeBounds ComputeBaseCascadeBounds(const FDeferredRenderer& Owner) const;
+    FCascadeBounds ComputeCascadeBounds(const FCascadeBounds& BaseBounds, uint32_t CascadeIndex) const;
+    void UpdateCascadeData(const FCascadeBounds& BaseBounds) const;
     uint64_t ComputeBuildSettingsSignature(const FCascadeBounds& Bounds) const;
     uint64_t ComputeStaticSceneSignature(const FDeferredRenderer& Owner, uint32_t& OutStaticCandidateCount) const;
     void InvalidateCache() const;
-    void AddDistributedScatterInitPass(FDeferredPassContext& Context, uint32_t MaxStaticTriangleCount) const;
-    void AddSectionDistributedScatterPreparePass(FDeferredPassContext& Context, const FObject& Object, FMeshSection& Section, uint32_t DrawSectionIndex) const;
-    void AddDistributedScatterPasses(FDeferredPassContext& Context, uint32_t MaxStaticTriangleCount) const;
-    void AddBuildTraceHierarchyPasses(FDeferredPassContext& Context) const;
+    void AddDistributedScatterInitPass(FDeferredPassContext& Context, uint32_t MaxStaticTriangleCount, const FCascadeBounds& Bounds, uint32_t CascadeIndex) const;
+    void AddSectionDistributedScatterPreparePass(FDeferredPassContext& Context, const FObject& Object, FMeshSection& Section, uint32_t DrawSectionIndex, uint32_t MaxStaticTriangleCount, const FCascadeBounds& Bounds, uint32_t CascadeIndex) const;
+    void AddDistributedScatterPasses(FDeferredPassContext& Context, uint32_t MaxStaticTriangleCount, const FCascadeBounds& Bounds, uint32_t CascadeIndex) const;
+    void AddBuildTraceHierarchyPasses(FDeferredPassContext& Context, const FCascadeBounds& Bounds, uint32_t CascadeIndex) const;
     void AddReferenceStatsPresentPass(FDeferredPassContext& Context) const;
     void AddRadianceCachePasses(FDeferredPassContext& Context) const;
     void AddIrradianceCacheUpdatePasses(FDeferredPassContext& Context) const;
@@ -138,6 +148,8 @@ private:
     float SurfaceHitThresholdVoxels = 0.75f;
     uint32_t MaxBrickTriangleReferences = 8u * 1024u * 1024u;
     uint32_t MaxScatterBricks = 64u * 1024u;
+    uint32_t EffectiveMaxScatterBricks = 64u * 1024u;
+    uint32_t SdfAtlasFormat = 0;
     bool bPersistentInputsValid = false;
     mutable bool bSdfCacheValid = false;
     mutable uint64_t CachedSceneSignature = 0;
@@ -190,6 +202,10 @@ private:
     FBindlessTexture SdfAtlas;
     FBindlessBuffer CascadeBrickMap;
     FBindlessBuffer BrickMetadata;
+    std::vector<FBindlessBuffer> CascadeDataBuffers;
+    std::vector<void*> CascadeDataMapped;
+    mutable uint32_t CurrentCascadeDataSlot = 0;
+    mutable uint32_t CurrentCascadeDataSrvIndex = UINT32_MAX;
     FBindlessBuffer TraceHierarchyBottom;
     FBindlessBuffer TraceHierarchyTop;
     FBindlessBuffer ReferenceCounterStats;

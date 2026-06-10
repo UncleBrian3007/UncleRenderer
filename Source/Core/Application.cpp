@@ -2070,6 +2070,25 @@ void FApplication::RenderUI()
                 ImGui::Text("  Cascade Extent: %.3f", DeferredRenderer->GetSparseSdfGI()->GetEffectiveCascadeExtent());
             }
 
+            int SparseSdfGICascadeCount = static_cast<int>(std::clamp(RendererConfig.SparseSdfGICascadeCount, 1u, 4u));
+            ImGui::SetNextItemWidth(160.0f);
+            if (ImGui::SliderInt("Cascade Count", &SparseSdfGICascadeCount, 1, 4))
+            {
+                RendererConfig.SparseSdfGICascadeCount = static_cast<uint32_t>(std::clamp(SparseSdfGICascadeCount, 1, 4));
+                UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGICascadeCount", std::to_string(RendererConfig.SparseSdfGICascadeCount));
+                SyncDeferredSparseSdfGIConfig();
+            }
+
+            static const char* SparseSdfGIAtlasFormatItems[] = { "Auto", "R8", "R16" };
+            int SparseSdfGIAtlasFormatIndex = static_cast<int>(std::clamp(RendererConfig.SparseSdfGISdfAtlasFormat, 0u, 2u));
+            ImGui::SetNextItemWidth(160.0f);
+            if (ImGui::Combo("SDF Atlas Format (Restart)", &SparseSdfGIAtlasFormatIndex, SparseSdfGIAtlasFormatItems, IM_ARRAYSIZE(SparseSdfGIAtlasFormatItems)))
+            {
+                RendererConfig.SparseSdfGISdfAtlasFormat = static_cast<uint32_t>(std::clamp(SparseSdfGIAtlasFormatIndex, 0, 2));
+                UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGISdfAtlasFormat", std::to_string(RendererConfig.SparseSdfGISdfAtlasFormat));
+                SyncDeferredSparseSdfGIConfig();
+            }
+
             int SparseSdfGIMaxBrickRefsM = static_cast<int>(std::clamp(
                 RendererConfig.SparseSdfGIMaxBrickTriangleReferences / (1024u * 1024u),
                 1u,

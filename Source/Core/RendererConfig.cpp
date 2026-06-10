@@ -254,7 +254,8 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::CasSharpness, { "CasSharpness" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableAutoExposure, { "EnableAutoExposure", "AutoExposure" });
     ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIDebugMode, 0u, 9u, { "SparseSdfGIDebugMode" });
-    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGICascadeCount, 1u, 1u, { "SparseSdfGICascadeCount" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGICascadeCount, 1u, 4u, { "SparseSdfGICascadeCount" });
+    ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGISdfAtlasFormat, 0u, 2u, { "SparseSdfGISdfAtlasFormat" });
     ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIMaxBrickTriangleReferences, 1024u * 1024u, 32u * 1024u * 1024u, { "SparseSdfGIMaxBrickTriangleReferences" });
     ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIMaxScatterBricks, 4096u, 64u * 64u * 64u, { "SparseSdfGIMaxScatterBricks" });
     ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIBaseVoxelSize, { "SparseSdfGIBaseVoxelSize" });

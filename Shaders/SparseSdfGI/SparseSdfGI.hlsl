@@ -11,7 +11,7 @@ cbuffer SparseSdfGIConstants : register(b1)
     uint AtlasResolution;
     uint BrickGridResolution;
     uint BrickVoxelResolution;
-    uint Reserved0;
+    uint CascadeIndex;
     uint FrameIndex;
     uint DebugMode;
     uint Enabled;
@@ -38,6 +38,11 @@ cbuffer SparseSdfGIConstants : register(b1)
     uint TrianglePoolCapacity;
     uint BuildWorkOffset;
     uint UseHierarchicalTrace;
+    uint CascadeCount;
+    float CascadeScale;
+    uint PhysicalBrickBase;
+    uint ScatterBrickCapacity;
+    uint CascadeDataSrvIndex;
 };
 
 #if defined(SPARSE_SDF_GI_SCATTER_INIT_SHADER)
@@ -168,6 +173,7 @@ cbuffer SparseSdfGIRadianceInjectBindlessConstants : register(b2)
     uint BrickRadianceAccumUavIndex;
     uint ShadowMaskIndex;
     uint ShadowMaskEnabled;
+    uint CascadeBrickMapSrvIndex;
     uint BrickIrradianceReadIndex;
 };
 #elif defined(SPARSE_SDF_GI_IRRADIANCE_ACCUM_SHADER)
@@ -176,6 +182,7 @@ cbuffer SparseSdfGIIrradianceAccumulateBindlessConstants : register(b2)
     uint DepthIndex;
     uint DiffuseGIIndex;
     uint BrickIrradianceAccumUavIndex;
+    uint CascadeBrickMapSrvIndex;
 };
 #elif defined(SPARSE_SDF_GI_RADIANCE_RESOLVE_SHADER)
 cbuffer SparseSdfGIRadianceResolveBindlessConstants : register(b2)
@@ -289,7 +296,7 @@ static const uint SPARSE_SDF_GI_TRACE_HIERARCHY_BOTTOM_RESOLUTION = 16u;
 static const uint SPARSE_SDF_GI_TRACE_HIERARCHY_TOP_RESOLUTION = 4u;
 static const uint SPARSE_SDF_GI_TRACE_HIERARCHY_BOTTOM_CELL_SIZE = 4u;
 static const uint SPARSE_SDF_GI_TRACE_HIERARCHY_TOP_CELL_SIZE = 16u;
-static const uint SPARSE_SDF_GI_TRACE_HIERARCHY_ITER_LIMIT = 64u;
+static const uint SPARSE_SDF_GI_TRACE_HIERARCHY_ITER_LIMIT = 32u;
 static const uint SPARSE_SDF_GI_TRACE_HIERARCHY_INNER_STEPS = 8u;
 static const float SPARSE_SDF_GI_BRICK_AABB_MARGIN_VOXELS = 1.0f;
 // Metadata stays at the maximum tunable hit threshold so AABB skip remains conservative while
@@ -319,6 +326,34 @@ struct FSparseSdfGITraceHierarchyNode
     uint Flags;
     uint Reserved;
 };
+
+struct FSparseSdfGICascadeData
+{
+    float4 MinVoxelSize;
+    float4 ExtentPhysicalBase;
+    uint4 Offsets;
+};
+
+FSparseSdfGICascadeData LoadSparseSdfGICascadeData(uint cascadeIndex)
+{
+    StructuredBuffer<FSparseSdfGICascadeData> cascadeData = ResourceDescriptorHeap[CascadeDataSrvIndex];
+    return cascadeData[min(cascadeIndex, max(CascadeCount, 1u) - 1u)];
+}
+
+float3 GetCascadeMin(FSparseSdfGICascadeData cascade)
+{
+    return cascade.MinVoxelSize.xyz;
+}
+
+float GetCascadeVoxelSize(FSparseSdfGICascadeData cascade)
+{
+    return cascade.MinVoxelSize.w;
+}
+
+float3 GetCascadeExtent(FSparseSdfGICascadeData cascade)
+{
+    return cascade.ExtentPhysicalBase.xyz;
+}
 
 struct FSparseSdfGIScatterJob
 {
@@ -531,6 +566,32 @@ uint LinearizeBrickCoord(uint3 brickCoord)
         + brickCoord.z * BrickGridResolution * BrickGridResolution;
 }
 
+uint GetBrickMapOffsetForCascade(uint cascadeIndex)
+{
+    return cascadeIndex * BrickGridResolution * BrickGridResolution * BrickGridResolution;
+}
+
+uint GetCurrentBrickMapOffset()
+{
+    return GetBrickMapOffsetForCascade(CascadeIndex);
+}
+
+uint GetTraceHierarchyBottomOffsetForCascade(uint cascadeIndex)
+{
+    return cascadeIndex
+        * SPARSE_SDF_GI_TRACE_HIERARCHY_BOTTOM_RESOLUTION
+        * SPARSE_SDF_GI_TRACE_HIERARCHY_BOTTOM_RESOLUTION
+        * SPARSE_SDF_GI_TRACE_HIERARCHY_BOTTOM_RESOLUTION;
+}
+
+uint GetTraceHierarchyTopOffsetForCascade(uint cascadeIndex)
+{
+    return cascadeIndex
+        * SPARSE_SDF_GI_TRACE_HIERARCHY_TOP_RESOLUTION
+        * SPARSE_SDF_GI_TRACE_HIERARCHY_TOP_RESOLUTION
+        * SPARSE_SDF_GI_TRACE_HIERARCHY_TOP_RESOLUTION;
+}
+
 uint3 BrickIdToBrickCoord(uint brickId)
 {
     return uint3(
@@ -561,7 +622,12 @@ uint GetSparseSdfGIBrickCapacity()
 
 uint GetScatterBrickCapacity()
 {
-    return MaxBrickTriangleReferences;
+    return ScatterBrickCapacity;
+}
+
+uint GetPhysicalBrickId(uint localPhysicalBrick)
+{
+    return PhysicalBrickBase + localPhysicalBrick;
 }
 
 uint GetScatterPairForFirstLogicalSample(uint logicalSample)
@@ -710,7 +776,7 @@ float LoadSdfBrickLocal(Texture3D<float> sdfAtlas, StructuredBuffer<uint> cascad
         return 1.0f;
     }
 
-    const uint brickId = cascadeBrickMap[brickMapIndex];
+    const uint brickId = cascadeBrickMap[GetCurrentBrickMapOffset() + brickMapIndex];
     if (brickId == SPARSE_SDF_GI_INVALID_BRICK_ID || brickId >= brickCount)
     {
         return 1.0f;
@@ -1043,8 +1109,8 @@ bool TryGetLeafAabb(
 
     const uint brickIndex = LinearizeBrickCoord(brickCoord);
     const uint brickCount = GetSparseSdfGIBrickCapacity();
-    const uint brickId = cascadeBrickMap[brickIndex];
-    const uint4 metadata = brickMetadata[brickIndex];
+    const uint brickId = cascadeBrickMap[GetCurrentBrickMapOffset() + brickIndex];
+    const uint4 metadata = (brickId < brickCount) ? brickMetadata[brickId] : uint4(0u, 0u, 0u, 0u);
     if (brickId >= brickCount || (metadata.y & SPARSE_SDF_GI_BRICK_METADATA_OCCUPIED) == 0u)
     {
         return false;
@@ -1153,6 +1219,268 @@ bool TryTraceHierarchyLeaf(
     return false;
 }
 
+uint3 BrickIdToAtlasBrickCoord(uint brickId)
+{
+    return uint3(
+        brickId % BrickGridResolution,
+        (brickId / BrickGridResolution) % BrickGridResolution,
+        brickId / (BrickGridResolution * BrickGridResolution));
+}
+
+bool TryGetBrickCoordFromWorldCascade(FSparseSdfGICascadeData cascade, float3 worldPosition, out uint3 brickCoord)
+{
+    const float intervalResolution = (float)GetBrickIntervalResolution();
+    const float3 logical = (worldPosition - GetCascadeMin(cascade)) / max(GetCascadeVoxelSize(cascade), 1e-5f);
+    if (any(logical < 0.0f.xxx) || any(logical >= (float)BrickGridResolution * intervalResolution))
+    {
+        brickCoord = 0u.xxx;
+        return false;
+    }
+
+    brickCoord = min((uint3)(logical / intervalResolution), (BrickGridResolution - 1u).xxx);
+    return true;
+}
+
+bool TryGetPhysicalBrickIdFromWorld(StructuredBuffer<uint> cascadeBrickMap, float3 worldPosition, out uint brickId)
+{
+    const uint activeCascadeCount = clamp(CascadeCount, 1u, 4u);
+    [loop]
+    for (uint cascadeIndex = 0u; cascadeIndex < activeCascadeCount; ++cascadeIndex)
+    {
+        const FSparseSdfGICascadeData cascade = LoadSparseSdfGICascadeData(cascadeIndex);
+        uint3 brickCoord = 0u.xxx;
+        if (!TryGetBrickCoordFromWorldCascade(cascade, worldPosition, brickCoord))
+        {
+            continue;
+        }
+
+        brickId = cascadeBrickMap[cascade.Offsets.x + LinearizeBrickCoord(brickCoord)];
+        if (brickId != SPARSE_SDF_GI_INVALID_BRICK_ID && brickId < GetSparseSdfGIBrickCapacity())
+        {
+            return true;
+        }
+    }
+
+    brickId = 0u;
+    return false;
+}
+
+void GetBrickWorldBoundsCascade(FSparseSdfGICascadeData cascade, uint3 brickCoord, out float3 brickMin, out float3 brickMax)
+{
+    const uint intervalResolution = GetBrickIntervalResolution();
+    const uint3 globalMin = brickCoord * intervalResolution;
+    const uint3 globalMax = globalMin + intervalResolution.xxx;
+    brickMin = GetCascadeMin(cascade) + (float3)globalMin * GetCascadeVoxelSize(cascade);
+    brickMax = GetCascadeMin(cascade) + (float3)globalMax * GetCascadeVoxelSize(cascade);
+}
+
+uint LinearizeTraceHierarchyCoordOffset(uint3 coord, uint resolution, uint offset)
+{
+    return offset + LinearizeTraceHierarchyCoord(coord, resolution);
+}
+
+bool TryGetTraceHierarchyCoordCascade(FSparseSdfGICascadeData cascade, float3 worldPosition, uint cellSizeBricks, uint resolution, out uint3 cellCoord)
+{
+    uint3 brickCoord = 0u.xxx;
+    if (!TryGetBrickCoordFromWorldCascade(cascade, worldPosition, brickCoord))
+    {
+        cellCoord = 0u.xxx;
+        return false;
+    }
+
+    cellCoord = brickCoord / cellSizeBricks;
+    return all(cellCoord < resolution.xxx);
+}
+
+void GetTraceHierarchyCellWorldBoundsCascade(FSparseSdfGICascadeData cascade, uint3 cellCoord, uint cellSizeBricks, out float3 cellMin, out float3 cellMax)
+{
+    const uint intervalResolution = GetBrickIntervalResolution();
+    const uint3 brickMinCoord = cellCoord * cellSizeBricks;
+    const uint3 brickMaxCoord = min(brickMinCoord + cellSizeBricks, BrickGridResolution.xxx);
+    cellMin = GetCascadeMin(cascade) + (float3)(brickMinCoord * intervalResolution) * GetCascadeVoxelSize(cascade);
+    cellMax = GetCascadeMin(cascade) + (float3)(brickMaxCoord * intervalResolution) * GetCascadeVoxelSize(cascade);
+}
+
+void GetTraceHierarchyNodeWorldBoundsCascade(FSparseSdfGICascadeData cascade, FSparseSdfGITraceHierarchyNode node, out float3 nodeMin, out float3 nodeMax)
+{
+    float3 unused = 0.0f.xxx;
+    GetBrickWorldBoundsCascade(cascade, UnpackTraceHierarchyCoord(node.MinPacked), nodeMin, unused);
+    GetBrickWorldBoundsCascade(cascade, UnpackTraceHierarchyCoord(node.MaxPacked), unused, nodeMax);
+}
+
+float LoadSdfBrickLocalCascade(Texture3D<float> sdfAtlas, StructuredBuffer<uint> cascadeBrickMap, FSparseSdfGICascadeData cascade, uint3 brickCoord, uint3 localCoord)
+{
+    if (any(brickCoord >= BrickGridResolution.xxx) || any(localCoord >= BrickVoxelResolution.xxx))
+    {
+        return 1.0f;
+    }
+
+    const uint brickMapIndex = cascade.Offsets.x + LinearizeBrickCoord(brickCoord);
+    const uint brickId = cascadeBrickMap[brickMapIndex];
+    if (brickId == SPARSE_SDF_GI_INVALID_BRICK_ID || brickId >= GetSparseSdfGIBrickCapacity())
+    {
+        return 1.0f;
+    }
+
+    const uint3 atlasCoord = BrickIdToAtlasBrickCoord(brickId) * BrickVoxelResolution + localCoord;
+    return any(atlasCoord >= AtlasResolution.xxx) ? 1.0f : sdfAtlas.Load(int4((int3)atlasCoord, 0)).r;
+}
+
+void GetExactSharedBorderCellCascade(FSparseSdfGICascadeData cascade, float3 worldPosition, out uint3 brickCoord, out uint3 localCoord, out float3 fracCoord, out bool valid)
+{
+    const float intervalCount = (float)(BrickGridResolution * SPARSE_SDF_GI_BRICK_INTERVAL_DIM_EXACT);
+    const float3 logicalFloat = (worldPosition - GetCascadeMin(cascade)) / GetCascadeVoxelSize(cascade);
+    valid = !any(logicalFloat < 0.0f.xxx) && !any(logicalFloat > intervalCount.xxx);
+    const float3 clampedLogical = min(logicalFloat, (intervalCount - 1e-4f).xxx);
+    const int3 baseLogical = (int3)floor(clampedLogical);
+    fracCoord = saturate(clampedLogical - (float3)baseLogical);
+    brickCoord = (uint3)baseLogical / SPARSE_SDF_GI_BRICK_INTERVAL_DIM_EXACT;
+    localCoord = (uint3)baseLogical - brickCoord * SPARSE_SDF_GI_BRICK_INTERVAL_DIM_EXACT;
+    valid = valid && all(brickCoord < BrickGridResolution.xxx) && all(localCoord < SPARSE_SDF_GI_BRICK_INTERVAL_DIM_EXACT.xxx);
+}
+
+float SampleSdfAtlasCascade(Texture3D<float> sdfAtlas, StructuredBuffer<uint> cascadeBrickMap, FSparseSdfGICascadeData cascade, float3 worldPosition, bool pointSample)
+{
+    if (pointSample)
+    {
+        const float intervalCount = (float)(BrickGridResolution * SPARSE_SDF_GI_BRICK_INTERVAL_DIM_EXACT);
+        const float3 logicalFloat = (worldPosition - GetCascadeMin(cascade)) / GetCascadeVoxelSize(cascade);
+        if (any(logicalFloat < 0.0f.xxx) || any(logicalFloat > intervalCount.xxx))
+        {
+            return 1.0f;
+        }
+
+        const int3 roundedLogical = (int3)floor(min(logicalFloat + 0.5f.xxx, intervalCount.xxx));
+        const uint3 brickCoord = min((uint3)roundedLogical / SPARSE_SDF_GI_BRICK_INTERVAL_DIM_EXACT, (BrickGridResolution - 1u).xxx);
+        const uint3 localCoord = min((uint3)roundedLogical - brickCoord * SPARSE_SDF_GI_BRICK_INTERVAL_DIM_EXACT, (BrickVoxelResolution - 1u).xxx);
+        return LoadSdfBrickLocalCascade(sdfAtlas, cascadeBrickMap, cascade, brickCoord, localCoord);
+    }
+
+    uint3 brickCoord = 0u.xxx;
+    uint3 localCoord = 0u.xxx;
+    float3 fracCoord = 0.0f.xxx;
+    bool valid = false;
+    GetExactSharedBorderCellCascade(cascade, worldPosition, brickCoord, localCoord, fracCoord, valid);
+    if (!valid)
+    {
+        return 1.0f;
+    }
+
+    const float c000 = LoadSdfBrickLocalCascade(sdfAtlas, cascadeBrickMap, cascade, brickCoord, localCoord + uint3(0u, 0u, 0u));
+    const float c100 = LoadSdfBrickLocalCascade(sdfAtlas, cascadeBrickMap, cascade, brickCoord, localCoord + uint3(1u, 0u, 0u));
+    const float c010 = LoadSdfBrickLocalCascade(sdfAtlas, cascadeBrickMap, cascade, brickCoord, localCoord + uint3(0u, 1u, 0u));
+    const float c110 = LoadSdfBrickLocalCascade(sdfAtlas, cascadeBrickMap, cascade, brickCoord, localCoord + uint3(1u, 1u, 0u));
+    const float c001 = LoadSdfBrickLocalCascade(sdfAtlas, cascadeBrickMap, cascade, brickCoord, localCoord + uint3(0u, 0u, 1u));
+    const float c101 = LoadSdfBrickLocalCascade(sdfAtlas, cascadeBrickMap, cascade, brickCoord, localCoord + uint3(1u, 0u, 1u));
+    const float c011 = LoadSdfBrickLocalCascade(sdfAtlas, cascadeBrickMap, cascade, brickCoord, localCoord + uint3(0u, 1u, 1u));
+    const float c111 = LoadSdfBrickLocalCascade(sdfAtlas, cascadeBrickMap, cascade, brickCoord, localCoord + uint3(1u, 1u, 1u));
+    const float c00 = lerp(c000, c100, fracCoord.x);
+    const float c10 = lerp(c010, c110, fracCoord.x);
+    const float c01 = lerp(c001, c101, fracCoord.x);
+    const float c11 = lerp(c011, c111, fracCoord.x);
+    return lerp(lerp(c00, c10, fracCoord.y), lerp(c01, c11, fracCoord.y), fracCoord.z);
+}
+
+float SampleTraceSdfCascade(Texture3D<float> sdfAtlas, StructuredBuffer<uint> cascadeBrickMap, FSparseSdfGICascadeData cascade, float3 worldPosition, bool debugSurface)
+{
+    const float linearSdf = SampleSdfAtlasCascade(sdfAtlas, cascadeBrickMap, cascade, worldPosition, false);
+    return debugSurface ? min(linearSdf, SampleSdfAtlasCascade(sdfAtlas, cascadeBrickMap, cascade, worldPosition, true)) : linearSdf;
+}
+
+bool TryGetLeafAabbCascade(
+    StructuredBuffer<uint> cascadeBrickMap,
+    StructuredBuffer<uint4> brickMetadata,
+    FSparseSdfGICascadeData cascade,
+    uint3 brickCoord,
+    out float3 aabbMin,
+    out float3 aabbMax)
+{
+    aabbMin = 0.0f.xxx;
+    aabbMax = 0.0f.xxx;
+
+    const uint brickId = cascadeBrickMap[cascade.Offsets.x + LinearizeBrickCoord(brickCoord)];
+    const uint4 metadata = (brickId < GetSparseSdfGIBrickCapacity()) ? brickMetadata[brickId] : uint4(0u, 0u, 0u, 0u);
+    if (brickId >= GetSparseSdfGIBrickCapacity() || (metadata.y & SPARSE_SDF_GI_BRICK_METADATA_OCCUPIED) == 0u)
+    {
+        return false;
+    }
+
+    const uint3 localMin = UnpackBrickLocalAabbMin(metadata.x);
+    const uint3 localMax = UnpackBrickLocalAabbMax(metadata.x);
+    const uint intervalResolution = GetBrickIntervalResolution();
+    const uint3 globalMin = brickCoord * intervalResolution + localMin;
+    const uint3 globalMax = brickCoord * intervalResolution + localMax + uint3(1u, 1u, 1u);
+    const float margin = SPARSE_SDF_GI_BRICK_AABB_MARGIN_VOXELS * GetCascadeVoxelSize(cascade);
+    aabbMin = max(GetCascadeMin(cascade), GetCascadeMin(cascade) + (float3)globalMin * GetCascadeVoxelSize(cascade) - margin.xxx);
+    aabbMax = min(GetCascadeMin(cascade) + GetCascadeExtent(cascade), GetCascadeMin(cascade) + (float3)globalMax * GetCascadeVoxelSize(cascade) + margin.xxx);
+    return true;
+}
+
+void StoreTraceHitCellCascade(FSparseSdfGICascadeData cascade, float3 hitPosition, uint3 brickCoord, out uint3 hitBrickCoord, out uint3 hitLocalCoord, out float3 hitFracCoord)
+{
+    const float intervalDim = (float)GetBrickIntervalResolution();
+    const float3 logical = (hitPosition - GetCascadeMin(cascade)) / GetCascadeVoxelSize(cascade);
+    const float3 localPos = clamp(logical - (float3)brickCoord * intervalDim, 0.0f.xxx, intervalDim.xxx);
+    const float3 baseLocal = floor(min(localPos, (intervalDim - 1e-4f).xxx));
+    hitBrickCoord = brickCoord;
+    hitLocalCoord = (uint3)baseLocal;
+    hitFracCoord = saturate(localPos - baseLocal);
+}
+
+bool TryTraceHierarchyLeafCascade(
+    Texture3D<float> sdfAtlas,
+    StructuredBuffer<uint> cascadeBrickMap,
+    StructuredBuffer<uint4> brickMetadata,
+    FSparseSdfGICascadeData cascade,
+    float3 rayOrigin,
+    float3 rayDirection,
+    uint3 brickCoord,
+    float leafExit,
+    bool debugSurface,
+    inout float travel,
+    inout uint stepCount,
+    out uint3 hitBrickCoord,
+    out uint3 hitLocalCoord,
+    out float3 hitFracCoord)
+{
+    float3 leafAabbMin = 0.0f.xxx;
+    float3 leafAabbMax = 0.0f.xxx;
+    if (!TryGetLeafAabbCascade(cascadeBrickMap, brickMetadata, cascade, brickCoord, leafAabbMin, leafAabbMax))
+    {
+        return false;
+    }
+
+    float leafAabbEnter = 0.0f;
+    float leafAabbExit = 0.0f;
+    if (!RayAabbIntersectRange(rayOrigin, rayDirection, leafAabbMin, leafAabbMax, leafAabbEnter, leafAabbExit) || leafAabbExit < travel || leafAabbEnter > leafExit)
+    {
+        return false;
+    }
+
+    const float voxelSize = GetCascadeVoxelSize(cascade);
+    const float hitThreshold = voxelSize * max(SurfaceHitThresholdVoxels, 0.01f);
+    const float minStepDistance = max(voxelSize * 0.25f, 1e-4f);
+    const float maxStepDistance = max(voxelSize * 2.0f, minStepDistance);
+    float innerTravel = max(travel, leafAabbEnter);
+
+    [loop]
+    for (uint innerIndex = 0u; innerIndex < SPARSE_SDF_GI_TRACE_HIERARCHY_INNER_STEPS && innerTravel <= min(leafAabbExit, leafExit); ++innerIndex)
+    {
+        const float3 samplePosition = rayOrigin + rayDirection * innerTravel;
+        const float decodedDistance = SampleTraceSdfCascade(sdfAtlas, cascadeBrickMap, cascade, samplePosition, debugSurface) * GetBrickIntervalResolution() * voxelSize;
+        ++stepCount;
+        if (decodedDistance <= hitThreshold)
+        {
+            travel = innerTravel;
+            StoreTraceHitCellCascade(cascade, samplePosition, brickCoord, hitBrickCoord, hitLocalCoord, hitFracCoord);
+            return true;
+        }
+        innerTravel += clamp(decodedDistance, minStepDistance, maxStepDistance);
+    }
+
+    return false;
+}
+
 bool TrySkipCurrentBrick(
     StructuredBuffer<uint> cascadeBrickMap,
     StructuredBuffer<uint4> brickMetadata,
@@ -1189,8 +1517,8 @@ bool TrySkipCurrentBrick(
     }
 
     const float epsilon = max(VoxelSize * 0.01f, 1e-4f);
-    const uint brickId = cascadeBrickMap[brickMapIndex];
-    const uint4 metadata = brickMetadata[brickMapIndex];
+    const uint brickId = cascadeBrickMap[GetCurrentBrickMapOffset() + brickMapIndex];
+    const uint4 metadata = (brickId < brickCount) ? brickMetadata[brickId] : uint4(0u, 0u, 0u, 0u);
     bool shouldSkip = brickId == SPARSE_SDF_GI_INVALID_BRICK_ID || brickId >= brickCount || (metadata.y & SPARSE_SDF_GI_BRICK_METADATA_OCCUPIED) == 0u;
 
     if (!shouldSkip)
@@ -1228,7 +1556,7 @@ bool TrySkipCurrentBrick(
     return true;
 }
 
-bool TraceSdfHierarchicalRaw(
+bool TraceSdfHierarchicalRawMulti(
     Texture3D<float> sdfAtlas,
     StructuredBuffer<uint> cascadeBrickMap,
     StructuredBuffer<uint4> brickMetadata,
@@ -1242,7 +1570,8 @@ bool TraceSdfHierarchicalRaw(
     out uint traceStatus,
     out uint3 hitBrickCoord,
     out uint3 hitLocalCoord,
-    out float3 hitFracCoord)
+    out float3 hitFracCoord,
+    out uint hitCascadeIndex)
 {
     hitTravel = 0.0f;
     stepCount = 0u;
@@ -1250,153 +1579,174 @@ bool TraceSdfHierarchicalRaw(
     hitBrickCoord = 0u.xxx;
     hitLocalCoord = 0u.xxx;
     hitFracCoord = 0.0f.xxx;
+    hitCascadeIndex = 0u;
 
-    float cascadeEnter = 0.0f;
-    float cascadeExit = 0.0f;
-    if (!RayAabbIntersectRange(rayOrigin, rayDirection, CascadeMin, CascadeMin + CascadeExtent, cascadeEnter, cascadeExit))
-    {
-        return false;
-    }
-
-    const float epsilon = max(VoxelSize * 0.01f, 1e-4f);
-    const float endT = min(cascadeExit, MaxTraceDistance);
-    traceStatus = (endT < cascadeExit) ? SPARSE_SDF_GI_TRACE_STATUS_MAX_DISTANCE : SPARSE_SDF_GI_TRACE_STATUS_CASCADE_EXIT;
-    float travel = max(cascadeEnter, 0.0f);
-    uint traversalIter = 0u;
-
+    float rayT = 0.0f;
+    const uint activeCascadeCount = clamp(CascadeCount, 1u, 4u);
+    const uint cascadeIterLimit = (activeCascadeCount <= 1u) ? 64u : SPARSE_SDF_GI_TRACE_HIERARCHY_ITER_LIMIT;
     [loop]
-    while (traversalIter < SPARSE_SDF_GI_TRACE_HIERARCHY_ITER_LIMIT && travel <= endT)
+    for (uint cascadeIndex = 0u; cascadeIndex < activeCascadeCount; ++cascadeIndex)
     {
-        ++traversalIter;
-        ++stepCount;
-        const float3 samplePosition = rayOrigin + rayDirection * travel;
-        uint3 topCoord = 0u.xxx;
-        if (!TryGetTraceHierarchyCoord(samplePosition, SPARSE_SDF_GI_TRACE_HIERARCHY_TOP_CELL_SIZE, SPARSE_SDF_GI_TRACE_HIERARCHY_TOP_RESOLUTION, topCoord))
-        {
-            traceStatus = SPARSE_SDF_GI_TRACE_STATUS_ATLAS_OUTSIDE;
-            break;
-        }
+        const FSparseSdfGICascadeData cascade = LoadSparseSdfGICascadeData(cascadeIndex);
+        const float3 cascadeMin = GetCascadeMin(cascade);
+        const float3 cascadeMax = cascadeMin + GetCascadeExtent(cascade);
+        const float voxelSize = GetCascadeVoxelSize(cascade);
+        const float epsilon = max(voxelSize * 0.01f, 1e-4f);
 
-        float3 topCellMin = 0.0f.xxx;
-        float3 topCellMax = 0.0f.xxx;
-        GetTraceHierarchyCellWorldBounds(topCoord, SPARSE_SDF_GI_TRACE_HIERARCHY_TOP_CELL_SIZE, topCellMin, topCellMax);
-        float topCellEnter = 0.0f;
-        float topCellExit = 0.0f;
-        RayAabbIntersectRange(rayOrigin, rayDirection, topCellMin, topCellMax, topCellEnter, topCellExit);
-        topCellExit = min(topCellExit, endT);
-
-        const FSparseSdfGITraceHierarchyNode topNode = hierarchyTop[LinearizeTraceHierarchyCoord(topCoord, SPARSE_SDF_GI_TRACE_HIERARCHY_TOP_RESOLUTION)];
-        float3 topNodeMin = 0.0f.xxx;
-        float3 topNodeMax = 0.0f.xxx;
-        float topNodeEnter = 0.0f;
-        float topNodeExit = 0.0f;
-        if ((topNode.Flags & SPARSE_SDF_GI_TRACE_HIERARCHY_OCCUPIED) == 0u)
+        float cascadeEnter = 0.0f;
+        float cascadeExit = 0.0f;
+        if (!RayAabbIntersectRange(rayOrigin, rayDirection, cascadeMin, cascadeMax, cascadeEnter, cascadeExit))
         {
-            travel = topCellExit + epsilon;
-            continue;
-        }
-        GetTraceHierarchyNodeWorldBounds(topNode, topNodeMin, topNodeMax);
-        if (!RayAabbIntersectRange(rayOrigin, rayDirection, topNodeMin, topNodeMax, topNodeEnter, topNodeExit) || topNodeExit < travel || topNodeEnter > topCellExit)
-        {
-            travel = topCellExit + epsilon;
             continue;
         }
 
-        bool advancedInsideTop = false;
+        const float endT = min(cascadeExit, MaxTraceDistance);
+        if (rayT > endT)
+        {
+            continue;
+        }
+
+        float travel = max(rayT, max(cascadeEnter, 0.0f));
+        uint traversalIter = 0u;
+        bool cascadeLimited = false;
         [loop]
-        while (traversalIter < SPARSE_SDF_GI_TRACE_HIERARCHY_ITER_LIMIT && travel <= min(topCellExit, endT))
+        while (traversalIter < cascadeIterLimit && travel <= endT)
         {
-            uint3 bottomCoord = 0u.xxx;
-            if (!TryGetTraceHierarchyCoord(rayOrigin + rayDirection * travel, SPARSE_SDF_GI_TRACE_HIERARCHY_BOTTOM_CELL_SIZE, SPARSE_SDF_GI_TRACE_HIERARCHY_BOTTOM_RESOLUTION, bottomCoord))
+            ++traversalIter;
+            ++stepCount;
+            const float3 samplePosition = rayOrigin + rayDirection * travel;
+            uint3 topCoord = 0u.xxx;
+            if (!TryGetTraceHierarchyCoordCascade(cascade, samplePosition, SPARSE_SDF_GI_TRACE_HIERARCHY_TOP_CELL_SIZE, SPARSE_SDF_GI_TRACE_HIERARCHY_TOP_RESOLUTION, topCoord))
             {
-                traceStatus = SPARSE_SDF_GI_TRACE_STATUS_ATLAS_OUTSIDE;
-                travel = endT + epsilon;
                 break;
             }
 
-            ++traversalIter;
-            ++stepCount;
-            float3 bottomCellMin = 0.0f.xxx;
-            float3 bottomCellMax = 0.0f.xxx;
-            GetTraceHierarchyCellWorldBounds(bottomCoord, SPARSE_SDF_GI_TRACE_HIERARCHY_BOTTOM_CELL_SIZE, bottomCellMin, bottomCellMax);
-            float bottomCellEnter = 0.0f;
-            float bottomCellExit = 0.0f;
-            RayAabbIntersectRange(rayOrigin, rayDirection, bottomCellMin, bottomCellMax, bottomCellEnter, bottomCellExit);
-            bottomCellExit = min(bottomCellExit, min(topCellExit, endT));
+            float3 topCellMin = 0.0f.xxx;
+            float3 topCellMax = 0.0f.xxx;
+            GetTraceHierarchyCellWorldBoundsCascade(cascade, topCoord, SPARSE_SDF_GI_TRACE_HIERARCHY_TOP_CELL_SIZE, topCellMin, topCellMax);
+            float topCellEnter = 0.0f;
+            float topCellExit = 0.0f;
+            RayAabbIntersectRange(rayOrigin, rayDirection, topCellMin, topCellMax, topCellEnter, topCellExit);
+            topCellExit = min(topCellExit, endT);
 
-            const FSparseSdfGITraceHierarchyNode bottomNode = hierarchyBottom[LinearizeTraceHierarchyCoord(bottomCoord, SPARSE_SDF_GI_TRACE_HIERARCHY_BOTTOM_RESOLUTION)];
-            float3 bottomNodeMin = 0.0f.xxx;
-            float3 bottomNodeMax = 0.0f.xxx;
-            float bottomNodeEnter = 0.0f;
-            float bottomNodeExit = 0.0f;
-            if ((bottomNode.Flags & SPARSE_SDF_GI_TRACE_HIERARCHY_OCCUPIED) == 0u)
+            const FSparseSdfGITraceHierarchyNode topNode = hierarchyTop[LinearizeTraceHierarchyCoordOffset(topCoord, SPARSE_SDF_GI_TRACE_HIERARCHY_TOP_RESOLUTION, cascade.Offsets.z)];
+            float3 topNodeMin = 0.0f.xxx;
+            float3 topNodeMax = 0.0f.xxx;
+            float topNodeEnter = 0.0f;
+            float topNodeExit = 0.0f;
+            if ((topNode.Flags & SPARSE_SDF_GI_TRACE_HIERARCHY_OCCUPIED) == 0u)
             {
-                travel = bottomCellExit + epsilon;
-                advancedInsideTop = true;
+                travel = topCellExit + epsilon;
                 continue;
             }
-            GetTraceHierarchyNodeWorldBounds(bottomNode, bottomNodeMin, bottomNodeMax);
-            if (!RayAabbIntersectRange(rayOrigin, rayDirection, bottomNodeMin, bottomNodeMax, bottomNodeEnter, bottomNodeExit) || bottomNodeExit < travel || bottomNodeEnter > bottomCellExit)
+            GetTraceHierarchyNodeWorldBoundsCascade(cascade, topNode, topNodeMin, topNodeMax);
+            if (!RayAabbIntersectRange(rayOrigin, rayDirection, topNodeMin, topNodeMax, topNodeEnter, topNodeExit) || topNodeExit < travel || topNodeEnter > topCellExit)
             {
-                travel = bottomCellExit + epsilon;
-                advancedInsideTop = true;
+                travel = topCellExit + epsilon;
                 continue;
             }
 
+            bool advancedInsideTop = false;
             [loop]
-            while (traversalIter < SPARSE_SDF_GI_TRACE_HIERARCHY_ITER_LIMIT && travel <= min(bottomCellExit, endT))
+            while (traversalIter < cascadeIterLimit && travel <= min(topCellExit, endT))
             {
-                uint3 brickCoord = 0u.xxx;
-                if (!TryGetBrickCoordFromWorld(rayOrigin + rayDirection * travel, brickCoord))
+                ++traversalIter;
+                ++stepCount;
+                uint3 bottomCoord = 0u.xxx;
+                if (!TryGetTraceHierarchyCoordCascade(cascade, rayOrigin + rayDirection * travel, SPARSE_SDF_GI_TRACE_HIERARCHY_BOTTOM_CELL_SIZE, SPARSE_SDF_GI_TRACE_HIERARCHY_BOTTOM_RESOLUTION, bottomCoord))
                 {
-                    traceStatus = SPARSE_SDF_GI_TRACE_STATUS_ATLAS_OUTSIDE;
                     travel = endT + epsilon;
                     break;
                 }
 
-                ++traversalIter;
-                ++stepCount;
-                float3 brickMin = 0.0f.xxx;
-                float3 brickMax = 0.0f.xxx;
-                GetBrickWorldBounds(brickCoord, brickMin, brickMax);
-                float brickEnter = 0.0f;
-                float brickExit = 0.0f;
-                RayAabbIntersectRange(rayOrigin, rayDirection, brickMin, brickMax, brickEnter, brickExit);
-                brickExit = min(brickExit, min(bottomCellExit, endT));
+                float3 bottomCellMin = 0.0f.xxx;
+                float3 bottomCellMax = 0.0f.xxx;
+                GetTraceHierarchyCellWorldBoundsCascade(cascade, bottomCoord, SPARSE_SDF_GI_TRACE_HIERARCHY_BOTTOM_CELL_SIZE, bottomCellMin, bottomCellMax);
+                float bottomCellEnter = 0.0f;
+                float bottomCellExit = 0.0f;
+                RayAabbIntersectRange(rayOrigin, rayDirection, bottomCellMin, bottomCellMax, bottomCellEnter, bottomCellExit);
+                bottomCellExit = min(bottomCellExit, min(topCellExit, endT));
 
-                if (TryTraceHierarchyLeaf(sdfAtlas, cascadeBrickMap, brickMetadata, rayOrigin, rayDirection, brickCoord, brickExit, debugSurface, travel, stepCount, hitBrickCoord, hitLocalCoord, hitFracCoord))
+                const FSparseSdfGITraceHierarchyNode bottomNode = hierarchyBottom[LinearizeTraceHierarchyCoordOffset(bottomCoord, SPARSE_SDF_GI_TRACE_HIERARCHY_BOTTOM_RESOLUTION, cascade.Offsets.y)];
+                float3 bottomNodeMin = 0.0f.xxx;
+                float3 bottomNodeMax = 0.0f.xxx;
+                float bottomNodeEnter = 0.0f;
+                float bottomNodeExit = 0.0f;
+                if ((bottomNode.Flags & SPARSE_SDF_GI_TRACE_HIERARCHY_OCCUPIED) == 0u)
                 {
-                    hitTravel = travel;
-                    traceStatus = SPARSE_SDF_GI_TRACE_STATUS_HIT;
-                    return true;
+                    travel = bottomCellExit + epsilon;
+                    advancedInsideTop = true;
+                    continue;
+                }
+                GetTraceHierarchyNodeWorldBoundsCascade(cascade, bottomNode, bottomNodeMin, bottomNodeMax);
+                if (!RayAabbIntersectRange(rayOrigin, rayDirection, bottomNodeMin, bottomNodeMax, bottomNodeEnter, bottomNodeExit) || bottomNodeExit < travel || bottomNodeEnter > bottomCellExit)
+                {
+                    travel = bottomCellExit + epsilon;
+                    advancedInsideTop = true;
+                    continue;
                 }
 
-                travel = brickExit + epsilon;
-                advancedInsideTop = true;
+                [loop]
+                while (traversalIter < cascadeIterLimit && travel <= min(bottomCellExit, endT))
+                {
+                    ++traversalIter;
+                    ++stepCount;
+                    uint3 brickCoord = 0u.xxx;
+                    if (!TryGetBrickCoordFromWorldCascade(cascade, rayOrigin + rayDirection * travel, brickCoord))
+                    {
+                        travel = endT + epsilon;
+                        break;
+                    }
+
+                    float3 brickMin = 0.0f.xxx;
+                    float3 brickMax = 0.0f.xxx;
+                    GetBrickWorldBoundsCascade(cascade, brickCoord, brickMin, brickMax);
+                    float brickEnter = 0.0f;
+                    float brickExit = 0.0f;
+                    RayAabbIntersectRange(rayOrigin, rayDirection, brickMin, brickMax, brickEnter, brickExit);
+                    brickExit = min(brickExit, min(bottomCellExit, endT));
+
+                    if (TryTraceHierarchyLeafCascade(sdfAtlas, cascadeBrickMap, brickMetadata, cascade, rayOrigin, rayDirection, brickCoord, brickExit, debugSurface, travel, stepCount, hitBrickCoord, hitLocalCoord, hitFracCoord))
+                    {
+                        hitTravel = travel;
+                        hitCascadeIndex = cascadeIndex;
+                        traceStatus = SPARSE_SDF_GI_TRACE_STATUS_HIT;
+                        return true;
+                    }
+
+                    travel = brickExit + epsilon;
+                    advancedInsideTop = true;
+                }
             }
 
-            if (traversalIter >= SPARSE_SDF_GI_TRACE_HIERARCHY_ITER_LIMIT)
+            if (!advancedInsideTop && travel <= endT)
             {
-                break;
+                travel = topCellExit + epsilon;
             }
         }
 
-        if (traversalIter >= SPARSE_SDF_GI_TRACE_HIERARCHY_ITER_LIMIT)
+        cascadeLimited = traversalIter >= cascadeIterLimit && travel <= endT;
+        if (cascadeLimited)
+        {
+            rayT = max(max(cascadeEnter, 0.0f), travel - voxelSize);
+            if (cascadeIndex + 1u == activeCascadeCount)
+            {
+                traceStatus = SPARSE_SDF_GI_TRACE_STATUS_ITER_LIMIT;
+                hitTravel = rayT;
+                return false;
+            }
+            continue;
+        }
+
+        rayT = max(rayT, endT);
+        traceStatus = (endT < cascadeExit) ? SPARSE_SDF_GI_TRACE_STATUS_MAX_DISTANCE : SPARSE_SDF_GI_TRACE_STATUS_CASCADE_EXIT;
+        if (rayT >= MaxTraceDistance)
         {
             break;
         }
-
-        if (!advancedInsideTop && travel <= endT)
-        {
-            travel = topCellExit + epsilon;
-        }
     }
 
-    if (travel <= endT)
-    {
-        traceStatus = SPARSE_SDF_GI_TRACE_STATUS_ITER_LIMIT;
-    }
-    hitTravel = travel;
+    hitTravel = rayT;
     return false;
 }
 
@@ -1419,7 +1769,8 @@ bool TraceSdfVisibility(
         uint3 hitBrickCoord = 0u.xxx;
         uint3 hitLocalCoord = 0u.xxx;
         float3 hitFracCoord = 0.0f.xxx;
-        return TraceSdfHierarchicalRaw(
+        uint hitCascadeIndex = 0u;
+        return TraceSdfHierarchicalRawMulti(
             sdfAtlas,
             cascadeBrickMap,
             brickMetadata,
@@ -1433,7 +1784,8 @@ bool TraceSdfVisibility(
             traceStatus,
             hitBrickCoord,
             hitLocalCoord,
-            hitFracCoord);
+            hitFracCoord,
+            hitCascadeIndex);
     }
 
     [loop]
@@ -1512,14 +1864,20 @@ void CSInitDistributedScatterBuild(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     if (all(dispatchThreadId < AtlasResolution.xxx))
     {
-        sdfAtlas[dispatchThreadId] = 1.0f;
+        if (CascadeIndex == 0u)
+        {
+            sdfAtlas[dispatchThreadId] = 1.0f;
+        }
     }
 
     if (all(dispatchThreadId < BrickGridResolution.xxx))
     {
         const uint brickIndex = LinearizeBrickCoord(dispatchThreadId);
-        cascadeBrickMap[brickIndex] = SPARSE_SDF_GI_INVALID_BRICK_ID;
-        brickMetadata[brickIndex] = uint4(0u, 0u, 0u, 0u);
+        cascadeBrickMap[GetCurrentBrickMapOffset() + brickIndex] = SPARSE_SDF_GI_INVALID_BRICK_ID;
+        if (CascadeIndex == 0u)
+        {
+            brickMetadata[brickIndex] = uint4(0u, 0u, 0u, 0u);
+        }
         touchedBricks[brickIndex] = 0u;
     }
 
@@ -1531,11 +1889,14 @@ void CSInitDistributedScatterBuild(uint3 dispatchThreadId : SV_DispatchThreadID)
             counters[i] = 0u;
         }
 
-        referenceStats[SPARSE_SDF_GI_REF_COUNTER_TRIANGLE] = 0u;
-        referenceStats[SPARSE_SDF_GI_REF_COUNTER_REFERENCE] = 0u;
-        referenceStats[SPARSE_SDF_GI_REF_COUNTER_TRIANGLE_OVERFLOW] = 0u;
-        referenceStats[SPARSE_SDF_GI_REF_COUNTER_REFERENCE_OVERFLOW] = 0u;
-        referenceStats[SPARSE_SDF_GI_REF_COUNTER_OCCUPIED_BRICK] = 0u;
+        if (CascadeIndex == 0u)
+        {
+            referenceStats[SPARSE_SDF_GI_REF_COUNTER_TRIANGLE] = 0u;
+            referenceStats[SPARSE_SDF_GI_REF_COUNTER_REFERENCE] = 0u;
+            referenceStats[SPARSE_SDF_GI_REF_COUNTER_TRIANGLE_OVERFLOW] = 0u;
+            referenceStats[SPARSE_SDF_GI_REF_COUNTER_REFERENCE_OVERFLOW] = 0u;
+            referenceStats[SPARSE_SDF_GI_REF_COUNTER_OCCUPIED_BRICK] = 0u;
+        }
     }
 }
 #endif
@@ -1812,7 +2173,8 @@ void CSAllocateScatterBricks(uint3 dispatchThreadId : SV_DispatchThreadID)
         return;
     }
 
-    cascadeBrickMap[logicalBrick] = physicalBrick;
+    const uint physicalBrickId = GetPhysicalBrickId(physicalBrick);
+    cascadeBrickMap[GetCurrentBrickMapOffset() + logicalBrick] = physicalBrickId;
     brickList[physicalBrick] = logicalBrick;
 }
 #endif
@@ -1871,11 +2233,12 @@ void CSScatterSdfSamples(uint3 groupId : SV_GroupID, uint groupThreadIndex : SV_
         return;
     }
 
-    const uint physicalBrick = cascadeBrickMap[LinearizeBrickCoord(brickCoord)];
-    if (physicalBrick >= GetScatterBrickCapacity())
+    const uint physicalBrickId = cascadeBrickMap[GetCurrentBrickMapOffset() + LinearizeBrickCoord(brickCoord)];
+    if (physicalBrickId < PhysicalBrickBase || physicalBrickId >= PhysicalBrickBase + GetScatterBrickCapacity())
     {
         return;
     }
+    const uint physicalBrick = physicalBrickId - PhysicalBrickBase;
 
     const uint encoded = EncodeScatterDistanceUint(distanceToTriangle);
     InterlockedMin(brickSdf[physicalBrick * SPARSE_SDF_GI_SCATTER_BRICK_GROUP_SIZE + FlattenBrickLocalCoord(localCoord)], encoded);
@@ -1894,14 +2257,15 @@ void CSFinalizeScatterBricks(uint3 groupId : SV_GroupID, uint groupThreadIndex :
     RWStructuredBuffer<uint> referenceStats = ResourceDescriptorHeap[ReferenceStatsUavIndex];
 
     const uint physicalBrick = groupId.x + groupId.y * SPARSE_SDF_GI_SCATTER_DISPATCH_GROUP_LIMIT;
+    const uint physicalBrickId = GetPhysicalBrickId(physicalBrick);
     const uint allocatedBrickCount = min(counters[SPARSE_SDF_GI_SCATTER_COUNTER_ALLOCATED_BRICK], GetScatterBrickCapacity());
     if (physicalBrick == 0u && groupThreadIndex == 0u)
     {
-        referenceStats[SPARSE_SDF_GI_REF_COUNTER_TRIANGLE] = min(counters[SPARSE_SDF_GI_SCATTER_COUNTER_JOB], TrianglePoolCapacity);
-        referenceStats[SPARSE_SDF_GI_REF_COUNTER_REFERENCE] = counters[SPARSE_SDF_GI_SCATTER_COUNTER_SAMPLE];
-        referenceStats[SPARSE_SDF_GI_REF_COUNTER_TRIANGLE_OVERFLOW] = counters[SPARSE_SDF_GI_SCATTER_COUNTER_JOB_OVERFLOW];
-        referenceStats[SPARSE_SDF_GI_REF_COUNTER_REFERENCE_OVERFLOW] = counters[SPARSE_SDF_GI_SCATTER_COUNTER_BRICK_OVERFLOW];
-        referenceStats[SPARSE_SDF_GI_REF_COUNTER_OCCUPIED_BRICK] = allocatedBrickCount;
+        InterlockedAdd(referenceStats[SPARSE_SDF_GI_REF_COUNTER_TRIANGLE], min(counters[SPARSE_SDF_GI_SCATTER_COUNTER_JOB], TrianglePoolCapacity));
+        InterlockedAdd(referenceStats[SPARSE_SDF_GI_REF_COUNTER_REFERENCE], counters[SPARSE_SDF_GI_SCATTER_COUNTER_SAMPLE]);
+        InterlockedAdd(referenceStats[SPARSE_SDF_GI_REF_COUNTER_TRIANGLE_OVERFLOW], counters[SPARSE_SDF_GI_SCATTER_COUNTER_JOB_OVERFLOW]);
+        InterlockedAdd(referenceStats[SPARSE_SDF_GI_REF_COUNTER_REFERENCE_OVERFLOW], counters[SPARSE_SDF_GI_SCATTER_COUNTER_BRICK_OVERFLOW]);
+        InterlockedAdd(referenceStats[SPARSE_SDF_GI_REF_COUNTER_OCCUPIED_BRICK], allocatedBrickCount);
     }
 
     if (physicalBrick >= allocatedBrickCount || groupThreadIndex >= SPARSE_SDF_GI_SCATTER_BRICK_GROUP_SIZE)
@@ -1911,7 +2275,7 @@ void CSFinalizeScatterBricks(uint3 groupId : SV_GroupID, uint groupThreadIndex :
 
     const uint logicalBrick = brickList[physicalBrick];
     const uint3 logicalBrickCoord = BrickIdToBrickCoord(logicalBrick);
-    const uint3 physicalBrickCoord = BrickIdToBrickCoord(physicalBrick);
+    const uint3 physicalBrickCoord = BrickIdToBrickCoord(physicalBrickId);
     const uint3 localCoord = UnflattenBrickLocalCoord(groupThreadIndex);
     const uint encoded = brickSdf[physicalBrick * SPARSE_SDF_GI_SCATTER_BRICK_GROUP_SIZE + groupThreadIndex];
     const float finalSdf = DecodeScatterDistanceUint(encoded);
@@ -1948,13 +2312,13 @@ void CSFinalizeScatterBricks(uint3 groupId : SV_GroupID, uint groupThreadIndex :
     {
         if (gs_MetadataOccupied[0] == 0u)
         {
-            brickMetadata[logicalBrick] = uint4(0u, 0u, 0u, 0u);
+            brickMetadata[physicalBrickId] = uint4(0u, 0u, 0u, 0u);
             return;
         }
 
         const uint3 localMin = uint3(gs_MetadataMinX[0], gs_MetadataMinY[0], gs_MetadataMinZ[0]);
         const uint3 localMax = uint3(gs_MetadataMaxX[0], gs_MetadataMaxY[0], gs_MetadataMaxZ[0]);
-        brickMetadata[logicalBrick] = uint4(PackBrickLocalAabb(localMin, localMax), SPARSE_SDF_GI_BRICK_METADATA_OCCUPIED, 0u, 0u);
+        brickMetadata[physicalBrickId] = uint4(PackBrickLocalAabb(localMin, localMax), SPARSE_SDF_GI_BRICK_METADATA_OCCUPIED, 0u, 0u);
     }
 }
 #endif
@@ -2001,8 +2365,8 @@ void CSBuildTraceHierarchyBottom(uint3 dispatchThreadId : SV_DispatchThreadID)
                 }
 
                 const uint brickIndex = LinearizeBrickCoord(brickCoord);
-                const uint brickId = cascadeBrickMap[brickIndex];
-                const uint4 metadata = brickMetadata[brickIndex];
+                const uint brickId = cascadeBrickMap[GetCurrentBrickMapOffset() + brickIndex];
+                const uint4 metadata = (brickId < GetSparseSdfGIBrickCapacity()) ? brickMetadata[brickId] : uint4(0u, 0u, 0u, 0u);
                 if (brickId < GetSparseSdfGIBrickCapacity() && (metadata.y & SPARSE_SDF_GI_BRICK_METADATA_OCCUPIED) != 0u)
                 {
                     occupied = true;
@@ -2018,7 +2382,7 @@ void CSBuildTraceHierarchyBottom(uint3 dispatchThreadId : SV_DispatchThreadID)
     node.MaxPacked = occupied ? PackTraceHierarchyCoord(maxCoord) : 0u;
     node.Flags = occupied ? SPARSE_SDF_GI_TRACE_HIERARCHY_OCCUPIED : 0u;
     node.Reserved = 0u;
-    hierarchyBottom[nodeIndex] = node;
+    hierarchyBottom[GetTraceHierarchyBottomOffsetForCascade(CascadeIndex) + nodeIndex] = node;
 }
 #endif
 
@@ -2058,7 +2422,7 @@ void CSBuildTraceHierarchyTop(uint3 dispatchThreadId : SV_DispatchThreadID)
                 const uint bottomIndex = bottomCoord.x
                     + bottomCoord.y * SPARSE_SDF_GI_TRACE_HIERARCHY_BOTTOM_RESOLUTION
                     + bottomCoord.z * SPARSE_SDF_GI_TRACE_HIERARCHY_BOTTOM_RESOLUTION * SPARSE_SDF_GI_TRACE_HIERARCHY_BOTTOM_RESOLUTION;
-                const FSparseSdfGITraceHierarchyNode child = hierarchyBottom[bottomIndex];
+                const FSparseSdfGITraceHierarchyNode child = hierarchyBottom[GetTraceHierarchyBottomOffsetForCascade(CascadeIndex) + bottomIndex];
                 if ((child.Flags & SPARSE_SDF_GI_TRACE_HIERARCHY_OCCUPIED) != 0u)
                 {
                     occupied = true;
@@ -2074,7 +2438,7 @@ void CSBuildTraceHierarchyTop(uint3 dispatchThreadId : SV_DispatchThreadID)
     node.MaxPacked = occupied ? PackTraceHierarchyCoord(maxCoord) : 0u;
     node.Flags = occupied ? SPARSE_SDF_GI_TRACE_HIERARCHY_OCCUPIED : 0u;
     node.Reserved = 0u;
-    hierarchyTop[nodeIndex] = node;
+    hierarchyTop[GetTraceHierarchyTopOffsetForCascade(CascadeIndex) + nodeIndex] = node;
 }
 #endif
 
@@ -2106,6 +2470,7 @@ void CSInjectBrickRadiance(uint3 dispatchThreadId : SV_DispatchThreadID)
     Texture2D gbufferA = ResourceDescriptorHeap[GBufferAIndex];
     Texture2D gbufferB = ResourceDescriptorHeap[GBufferBIndex];
     Texture2D gbufferC = ResourceDescriptorHeap[GBufferCIndex];
+    StructuredBuffer<uint> cascadeBrickMap = ResourceDescriptorHeap[CascadeBrickMapSrvIndex];
     RWStructuredBuffer<uint4> brickRadianceAccum = ResourceDescriptorHeap[BrickRadianceAccumUavIndex];
 
     const uint2 pixel = dispatchThreadId.xy;
@@ -2120,7 +2485,7 @@ void CSInjectBrickRadiance(uint3 dispatchThreadId : SV_DispatchThreadID)
     const float3 worldPosition = mul(float4(viewPosition, 1.0f), ViewInverse).xyz;
 
     uint brickIndex = 0u;
-    if (!TryGetBrickIndexFromWorld(worldPosition, brickIndex))
+    if (!TryGetPhysicalBrickIdFromWorld(cascadeBrickMap, worldPosition, brickIndex))
     {
         return;
     }
@@ -2167,6 +2532,7 @@ void CSAccumulateBrickIrradiance(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     Texture2D depthTexture = ResourceDescriptorHeap[DepthIndex];
     Texture2D<float4> diffuseGI = ResourceDescriptorHeap[DiffuseGIIndex];
+    StructuredBuffer<uint> cascadeBrickMap = ResourceDescriptorHeap[CascadeBrickMapSrvIndex];
     RWStructuredBuffer<uint4> brickIrradianceAccum = ResourceDescriptorHeap[BrickIrradianceAccumUavIndex];
 
     const uint2 pixel = dispatchThreadId.xy;
@@ -2181,7 +2547,7 @@ void CSAccumulateBrickIrradiance(uint3 dispatchThreadId : SV_DispatchThreadID)
     const float3 worldPosition = mul(float4(viewPosition, 1.0f), ViewInverse).xyz;
 
     uint brickIndex = 0u;
-    if (!TryGetBrickIndexFromWorld(worldPosition, brickIndex))
+    if (!TryGetPhysicalBrickIdFromWorld(cascadeBrickMap, worldPosition, brickIndex))
     {
         return;
     }
@@ -2270,7 +2636,8 @@ bool TraceSdfDebugSurface(
     out uint traceStatus,
     out uint3 hitBrickCoord,
     out uint3 hitLocalCoord,
-    out float3 hitFracCoord)
+    out float3 hitFracCoord,
+    out uint hitCascadeIndex)
 {
     hitTravel = 0.0f;
     stepCount = 0u;
@@ -2278,9 +2645,10 @@ bool TraceSdfDebugSurface(
     hitBrickCoord = 0u.xxx;
     hitLocalCoord = 0u.xxx;
     hitFracCoord = 0.0f.xxx;
+    hitCascadeIndex = 0u;
     if (UseHierarchicalTrace != 0u)
     {
-        return TraceSdfHierarchicalRaw(
+        return TraceSdfHierarchicalRawMulti(
             sdfAtlas,
             cascadeBrickMap,
             brickMetadata,
@@ -2294,7 +2662,8 @@ bool TraceSdfDebugSurface(
             traceStatus,
             hitBrickCoord,
             hitLocalCoord,
-            hitFracCoord);
+            hitFracCoord,
+            hitCascadeIndex);
     }
 
     float tEnter = 0.0f;
@@ -2395,11 +2764,11 @@ float3 ComputeSdfNormal(Texture3D<float> sdfAtlas, StructuredBuffer<uint> cascad
     return (gradientLengthSq > 1e-8f) ? gradient * rsqrt(gradientLengthSq) : 0.0f.xxx;
 }
 
-bool TrySampleBrickRadiance(StructuredBuffer<float4> brickRadiance, float3 worldPosition, out float3 radiance)
+bool TrySampleBrickRadiance(StructuredBuffer<uint> cascadeBrickMap, StructuredBuffer<float4> brickRadiance, float3 worldPosition, out float3 radiance)
 {
     radiance = 0.0f.xxx;
     uint brickIndex = 0u;
-    if (!TryGetBrickIndexFromWorld(worldPosition, brickIndex))
+    if (!TryGetPhysicalBrickIdFromWorld(cascadeBrickMap, worldPosition, brickIndex))
     {
         return false;
     }
@@ -2454,7 +2823,7 @@ float3 EvaluateSparseSdfGIRayRadiance(
     const float lightVisibility = TraceSdfVisibility(lightRayOrigin, lightDirection, sdfAtlas, cascadeBrickMap, brickMetadata, hierarchyBottom, hierarchyTop, lightStepCount, lightTravel) ? 0.0f : 1.0f;
     const float3 directBounce = LightColor * LightIntensity * saturate(dot(hitNormal, lightDirection)) * lightVisibility;
     float3 cachedRadiance = 0.0f.xxx;
-    return TrySampleBrickRadiance(brickRadiance, hitPosition, cachedRadiance) ? cachedRadiance : directBounce;
+    return TrySampleBrickRadiance(cascadeBrickMap, brickRadiance, hitPosition, cachedRadiance) ? cachedRadiance : directBounce;
 }
 #endif
 
@@ -2529,7 +2898,8 @@ float3 DebugTraceModeColor(
     uint3 hitBrickCoord = 0u.xxx;
     uint3 hitLocalCoord = 0u.xxx;
     float3 hitFracCoord = 0.0f.xxx;
-    const bool hit = TraceSdfDebugSurface(sdfAtlas, cascadeBrickMap, brickMetadata, hierarchyBottom, hierarchyTop, CameraPosition, rayDirection, hitTravel, stepCount, traceStatus, hitBrickCoord, hitLocalCoord, hitFracCoord);
+    uint hitCascadeIndex = 0u;
+    const bool hit = TraceSdfDebugSurface(sdfAtlas, cascadeBrickMap, brickMetadata, hierarchyBottom, hierarchyTop, CameraPosition, rayDirection, hitTravel, stepCount, traceStatus, hitBrickCoord, hitLocalCoord, hitFracCoord, hitCascadeIndex);
 
     if (DebugMode == 4u)
     {
@@ -2577,9 +2947,11 @@ float3 DebugTraceModeColor(
         {
             return 0.0f.xxx;
         }
-        const uint brickMapIndex = LinearizeBrickCoord(hitBrickCoord);
+        const FSparseSdfGICascadeData cascade = LoadSparseSdfGICascadeData(hitCascadeIndex);
+        const uint brickMapIndex = cascade.Offsets.x + LinearizeBrickCoord(hitBrickCoord);
         const uint brickCount = GetSparseSdfGIBrickCapacity();
-        if (brickMapIndex >= brickCount)
+        const uint brickMapCapacity = BrickGridResolution * BrickGridResolution * BrickGridResolution * max(CascadeCount, 1u);
+        if (brickMapIndex >= brickMapCapacity)
         {
             return 0.0f.xxx;
         }
