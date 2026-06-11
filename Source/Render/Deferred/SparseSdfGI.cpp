@@ -228,27 +228,32 @@ namespace
         return CreateRWStructuredBufferDesc<FTraceHierarchyNodeGpu>(GetTraceHierarchyTopNodeCount() * kSparseSdfGIMaxCascadeCount);
     }
 
-    struct FBrickRadianceGpu
+    struct FBrickShGpu
     {
-        DirectX::XMFLOAT4 Radiance{ 0.0f, 0.0f, 0.0f, 0.0f };
+        DirectX::XMUINT4 PackedSH{};
+        float SampleCount = 0.0f;
+        DirectX::XMFLOAT3 Reserved{};
     };
 
-    struct FBrickRadianceAccumGpu
+    struct FBrickShAccumGpu
     {
-        uint32_t X = 0;
-        uint32_t Y = 0;
-        uint32_t Z = 0;
-        uint32_t W = 0;
+        DirectX::XMINT4 ShY{};
+        int32_t Co = 0;
+        int32_t Cg = 0;
+        uint32_t SampleCount = 0;
+        uint32_t Reserved = 0;
     };
+    static_assert(sizeof(FBrickShGpu) == 32u);
+    static_assert(sizeof(FBrickShAccumGpu) == 32u);
 
     FRGBufferDesc CreateBrickRadianceDesc()
     {
-        return CreateRWStructuredBufferDesc<FBrickRadianceGpu>(GetBrickMapElementCount());
+        return CreateRWStructuredBufferDesc<FBrickShGpu>(GetBrickMapElementCount());
     }
 
     FRGBufferDesc CreateBrickRadianceAccumDesc()
     {
-        return CreateRWStructuredBufferDesc<FBrickRadianceAccumGpu>(GetBrickMapElementCount());
+        return CreateRWStructuredBufferDesc<FBrickShAccumGpu>(GetBrickMapElementCount());
     }
 
     struct FScreenProbeHeaderGpu
@@ -584,6 +589,13 @@ namespace
         uint32_t RadianceHistoryValid = 0u;
     };
 
+    struct FSparseSdfGIBrickShPropagateBindlessConstants
+    {
+        uint32_t CascadeBrickMapSrvIndex = UINT32_MAX;
+        uint32_t BrickShSourceSrvIndex = UINT32_MAX;
+        uint32_t BrickShDestUavIndex = UINT32_MAX;
+    };
+
     struct FBrickMetadataGpu
     {
         uint32_t X = 0;
@@ -624,6 +636,7 @@ bool FSparseSdfGI::InitializePipelines(FDeferredRenderer& Owner, FDX12Device* De
         RadianceInjectPipeline.Reset();
         IrradianceAccumulatePipeline.Reset();
         RadianceResolvePipeline.Reset();
+        BrickShPropagatePipeline.Reset();
         ProbeSpawnPipeline.Reset();
         ProbeTracePipeline.Reset();
         ProbeTraceDirectionalPipeline.Reset();
@@ -858,6 +871,8 @@ void FSparseSdfGI::ImportPersistentResources(FDeferredPassContext& Context)
     Resources.TraceHierarchyTopHandle = ImportBindlessBuffer(Graph, "SparseSdfGI Trace Hierarchy Top", TraceHierarchyTop);
     Resources.BrickRadianceAccumHandle = {};
     Resources.BrickIrradianceAccumHandle = {};
+    Resources.BrickRadianceResolvedHandle = {};
+    Resources.BrickIrradianceResolvedHandle = {};
     Resources.DiffuseGIInputSHHandle = {};
     Resources.DiffuseGIVarianceHandle = {};
     Resources.CascadeBrickMapHandle = ImportBindlessBuffer(Graph, "SparseSdfGI Cascade Brick Map", CascadeBrickMap);
@@ -1120,6 +1135,7 @@ bool FSparseSdfGI::CreatePipelines(FDX12Device* Device)
     std::vector<uint8_t> RadianceInjectByteCode;
     std::vector<uint8_t> IrradianceAccumulateByteCode;
     std::vector<uint8_t> RadianceResolveByteCode;
+    std::vector<uint8_t> BrickShPropagateByteCode;
     std::vector<uint8_t> ProbeSpawnByteCode;
     std::vector<uint8_t> ProbeTraceByteCode;
     std::vector<uint8_t> ProbeTraceDirectionalByteCode;
@@ -1167,6 +1183,10 @@ bool FSparseSdfGI::CreatePipelines(FDX12Device* Device)
         return false;
     }
     if (!RendererUtils::CompileComputeShader(Compiler, Device, ShaderPath, L"CSResolveBrickRadianceTemporal", RadianceResolveByteCode, { L"SPARSE_SDF_GI_RADIANCE_RESOLVE_SHADER=1" }))
+    {
+        return false;
+    }
+    if (!RendererUtils::CompileComputeShader(Compiler, Device, ShaderPath, L"CSPropagateBrickSH", BrickShPropagateByteCode, { L"SPARSE_SDF_GI_BRICK_SH_PROPAGATE_SHADER=1" }))
     {
         return false;
     }
@@ -1233,6 +1253,7 @@ bool FSparseSdfGI::CreatePipelines(FDX12Device* Device)
         && CreateComputePso(RadianceInjectByteCode, RadianceInjectPipeline, "CSInjectBrickRadiance")
         && CreateComputePso(IrradianceAccumulateByteCode, IrradianceAccumulatePipeline, "CSAccumulateBrickIrradiance")
         && CreateComputePso(RadianceResolveByteCode, RadianceResolvePipeline, "CSResolveBrickRadianceTemporal")
+        && CreateComputePso(BrickShPropagateByteCode, BrickShPropagatePipeline, "CSPropagateBrickSH")
         && CreateComputePso(ProbeSpawnByteCode, ProbeSpawnPipeline, "CSSpawnScreenProbes")
         && CreateComputePso(ProbeTraceByteCode, ProbeTracePipeline, "CSTraceScreenProbes")
         && CreateComputePso(ProbeTraceDirectionalByteCode, ProbeTraceDirectionalPipeline, "CSTraceScreenProbes DirectionalSH")
@@ -1440,6 +1461,7 @@ bool FSparseSdfGI::RefreshPersistentInputValidation()
         RadianceInjectPipeline &&
         IrradianceAccumulatePipeline &&
         RadianceResolvePipeline &&
+        BrickShPropagatePipeline &&
         ProbeSpawnPipeline &&
         ProbeTracePipeline &&
         ProbeTraceDirectionalPipeline &&
@@ -2683,6 +2705,82 @@ void FSparseSdfGI::AddReferenceStatsPresentPass(FDeferredPassContext& Context) c
     });
 }
 
+void FSparseSdfGI::AddBrickShPropagatePass(FDeferredPassContext& Context, const char* PassName, FRGBufferHandle SourceHandle, FRGBufferHandle DestHandle, FRGBufferHandle BrickMapHandle) const
+{
+    FRenderGraph& Graph = Context.Graph;
+
+    struct FBrickShPropagatePassData
+    {
+        bool bEnabled = false;
+        FRGBufferHandle SourceHandle{};
+        FRGBufferHandle DestHandle{};
+        FRGBufferHandle BrickMapHandle{};
+    };
+
+    Graph.AddPass<FBrickShPropagatePassData>(PassName, [SourceHandle, DestHandle, BrickMapHandle](FBrickShPropagatePassData& Data, FRGPassBuilder& Builder)
+    {
+        Builder.SetPixGroup("SparseSdfGI");
+        Data.SourceHandle = SourceHandle;
+        Data.DestHandle = DestHandle;
+        Data.BrickMapHandle = BrickMapHandle;
+        Data.bEnabled = static_cast<bool>(Data.SourceHandle) && static_cast<bool>(Data.DestHandle) && static_cast<bool>(Data.BrickMapHandle);
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        Builder.ReadBuffer(Data.SourceHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadBuffer(Data.BrickMapHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.WriteBuffer(Data.DestHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.UavBarrier(Data.DestHandle);
+    }, [this, &Context](const FBrickShPropagatePassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        FDeferredRenderer& Owner = Context.Owner;
+        const uint32_t BrickMapSrvIndex = Context.Graph.GetBufferSrvBindlessIndex(Data.BrickMapHandle);
+        const uint32_t SourceSrvIndex = Context.Graph.GetBufferSrvBindlessIndex(Data.SourceHandle);
+        const uint32_t DestUavIndex = Context.Graph.GetBufferUavBindlessIndex(Data.DestHandle);
+        if (!AreAllBindlessIndicesValid(BrickMapSrvIndex, SourceSrvIndex, DestUavIndex))
+        {
+            return;
+        }
+
+        ID3D12GraphicsCommandList* CommandList = Cmd.GetCommandList();
+        ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
+        CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        CommandList->SetComputeRootSignature(RootSignature.Get());
+        CommandList->SetPipelineState(BrickShPropagatePipeline.Get());
+        CommandList->SetComputeRootConstantBufferView(0, Owner.GetSceneConstantBufferAddress());
+
+        FSparseSdfGIConstants Constants = {};
+        Constants.OutputWidth = static_cast<uint32_t>(Owner.Viewport.Width);
+        Constants.OutputHeight = static_cast<uint32_t>(Owner.Viewport.Height);
+        Constants.AtlasResolution = kSparseSdfGIAtlasResolution;
+        Constants.BrickGridResolution = kSparseSdfGIBrickGridResolution;
+        Constants.BrickVoxelResolution = kSparseSdfGIBrickVoxelResolution;
+        Constants.Enabled = bEnabled ? 1u : 0u;
+        Constants.CascadeCount = CascadeCount;
+        if (!BindSparseConstants(Owner, CommandList, &Constants, sizeof(Constants)))
+        {
+            return;
+        }
+
+        const FSparseSdfGIBrickShPropagateBindlessConstants Bindless =
+        {
+            BrickMapSrvIndex,
+            SourceSrvIndex,
+            DestUavIndex
+        };
+        static_assert(sizeof(FSparseSdfGIBrickShPropagateBindlessConstants) / sizeof(uint32_t) <= kSparseSdfGIMaxBindlessDwordCount);
+        CommandList->SetComputeRoot32BitConstants(2, sizeof(FSparseSdfGIBrickShPropagateBindlessConstants) / sizeof(uint32_t), &Bindless, 0);
+        CommandList->Dispatch(AlignDispatch(GetCascadeBrickMapElementCount(CascadeCount), 64u), 1u, 1u);
+    });
+}
+
 void FSparseSdfGI::AddRadianceCachePasses(FDeferredPassContext& Context) const
 {
     FRenderGraph& Graph = Context.Graph;
@@ -2923,31 +3021,29 @@ void FSparseSdfGI::AddRadianceCachePasses(FDeferredPassContext& Context) const
         bool bHistoryValid = false;
         FRGBufferHandle BrickRadianceAccumHandle{};
         FRGBufferHandle BrickRadianceReadHandle{};
-        FRGBufferHandle BrickRadianceWriteHandle{};
+        FRGBufferHandle BrickRadianceResolvedHandle{};
     };
 
-    Graph.AddPass<FRadianceResolvePassData>("SparseSdfGI Radiance Resolve", [&, BrickRadianceReadHandle, BrickRadianceWriteHandle, bHistoryValidForResolve](FRadianceResolvePassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FRadianceResolvePassData>("SparseSdfGI Radiance Resolve", [&, BrickRadianceReadHandle, bHistoryValidForResolve, bRadianceCacheWillUpdate](FRadianceResolvePassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("SparseSdfGI");
         Data.BrickRadianceAccumHandle = Context.Resources.SparseSdfGI.BrickRadianceAccumHandle;
         Data.BrickRadianceReadHandle = BrickRadianceReadHandle;
-        Data.BrickRadianceWriteHandle = BrickRadianceWriteHandle;
         Data.bHistoryValid = bHistoryValidForResolve;
-        Data.bEnabled = bEnabled
-            && bPersistentInputsValid
-            && DebugMode == ESparseSdfGIDebugMode::Off
+        Data.bEnabled = bRadianceCacheWillUpdate
             && static_cast<bool>(Data.BrickRadianceAccumHandle)
-            && static_cast<bool>(Data.BrickRadianceReadHandle)
-            && static_cast<bool>(Data.BrickRadianceWriteHandle);
+            && static_cast<bool>(Data.BrickRadianceReadHandle);
         if (!Data.bEnabled)
         {
             return;
         }
+        Data.BrickRadianceResolvedHandle = Builder.CreateBuffer("SparseSdfGI Brick Radiance Resolve", CreateBrickRadianceDesc());
+        Context.Resources.SparseSdfGI.BrickRadianceResolvedHandle = Data.BrickRadianceResolvedHandle;
 
         Builder.ReadBuffer(Data.BrickRadianceAccumHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadBuffer(Data.BrickRadianceReadHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        Builder.WriteBuffer(Data.BrickRadianceWriteHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        Builder.UavBarrier(Data.BrickRadianceWriteHandle);
+        Builder.WriteBuffer(Data.BrickRadianceResolvedHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.UavBarrier(Data.BrickRadianceResolvedHandle);
     }, [this, &Context](const FRadianceResolvePassData& Data, FDX12CommandContext& Cmd)
     {
         if (!Data.bEnabled)
@@ -2958,7 +3054,7 @@ void FSparseSdfGI::AddRadianceCachePasses(FDeferredPassContext& Context) const
         FDeferredRenderer& Owner = Context.Owner;
         const uint32_t BrickRadianceAccumSrvIndex = Context.Graph.GetBufferSrvBindlessIndex(Data.BrickRadianceAccumHandle);
         const uint32_t BrickRadianceHistorySrvIndex = Context.Graph.GetBufferSrvBindlessIndex(Data.BrickRadianceReadHandle);
-        const uint32_t BrickRadianceUavIndex = Context.Graph.GetBufferUavBindlessIndex(Data.BrickRadianceWriteHandle);
+        const uint32_t BrickRadianceUavIndex = Context.Graph.GetBufferUavBindlessIndex(Data.BrickRadianceResolvedHandle);
         if (!AreAllBindlessIndicesValid(BrickRadianceAccumSrvIndex, BrickRadianceHistorySrvIndex, BrickRadianceUavIndex))
         {
             return;
@@ -2994,6 +3090,13 @@ void FSparseSdfGI::AddRadianceCachePasses(FDeferredPassContext& Context) const
         CommandList->SetComputeRoot32BitConstants(2, sizeof(FSparseSdfGIRadianceResolveBindlessConstants) / sizeof(uint32_t), &Bindless, 0);
         CommandList->Dispatch(AlignDispatch(GetBrickMapElementCount(), 64u), 1u, 1u);
     });
+
+    AddBrickShPropagatePass(
+        Context,
+        "SparseSdfGI Radiance Propagate",
+        Context.Resources.SparseSdfGI.BrickRadianceResolvedHandle,
+        BrickRadianceWriteHandle,
+        BrickMapHandle);
 
     if (bRadianceCacheWillUpdate && CurrentBrickRadianceWriteSlot < PendingBrickRadianceWrite.size())
     {
@@ -3160,28 +3263,28 @@ void FSparseSdfGI::AddIrradianceCacheUpdatePasses(FDeferredPassContext& Context)
         bool bHistoryValid = false;
         FRGBufferHandle AccumHandle{};
         FRGBufferHandle ReadHandle{};
-        FRGBufferHandle WriteHandle{};
+        FRGBufferHandle ResolvedHandle{};
     };
 
-    Graph.AddPass<FIrradianceResolvePassData>("SparseSdfGI Irradiance Resolve", [&, BrickIrradianceReadHandle, BrickIrradianceWriteHandle, bReadSlotValid, bWillUpdate](FIrradianceResolvePassData& Data, FRGPassBuilder& Builder)
+    Graph.AddPass<FIrradianceResolvePassData>("SparseSdfGI Irradiance Resolve", [&, BrickIrradianceReadHandle, bReadSlotValid, bWillUpdate](FIrradianceResolvePassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("SparseSdfGI");
         Data.AccumHandle = Context.Resources.SparseSdfGI.BrickIrradianceAccumHandle;
         Data.ReadHandle = BrickIrradianceReadHandle;
-        Data.WriteHandle = BrickIrradianceWriteHandle;
         Data.bHistoryValid = bReadSlotValid;
         Data.bEnabled = bWillUpdate
             && static_cast<bool>(Data.AccumHandle)
-            && static_cast<bool>(Data.ReadHandle)
-            && static_cast<bool>(Data.WriteHandle);
+            && static_cast<bool>(Data.ReadHandle);
         if (!Data.bEnabled)
         {
             return;
         }
+        Data.ResolvedHandle = Builder.CreateBuffer("SparseSdfGI Brick Irradiance Resolve", CreateBrickRadianceDesc());
+        Context.Resources.SparseSdfGI.BrickIrradianceResolvedHandle = Data.ResolvedHandle;
         Builder.ReadBuffer(Data.AccumHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadBuffer(Data.ReadHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        Builder.WriteBuffer(Data.WriteHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        Builder.UavBarrier(Data.WriteHandle);
+        Builder.WriteBuffer(Data.ResolvedHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.UavBarrier(Data.ResolvedHandle);
     }, [this, &Context](const FIrradianceResolvePassData& Data, FDX12CommandContext& Cmd)
     {
         if (!Data.bEnabled)
@@ -3191,7 +3294,7 @@ void FSparseSdfGI::AddIrradianceCacheUpdatePasses(FDeferredPassContext& Context)
         FDeferredRenderer& Owner = Context.Owner;
         const uint32_t AccumSrvIndex = Context.Graph.GetBufferSrvBindlessIndex(Data.AccumHandle);
         const uint32_t HistorySrvIndex = Context.Graph.GetBufferSrvBindlessIndex(Data.ReadHandle);
-        const uint32_t UavIndex = Context.Graph.GetBufferUavBindlessIndex(Data.WriteHandle);
+        const uint32_t UavIndex = Context.Graph.GetBufferUavBindlessIndex(Data.ResolvedHandle);
         if (!AreAllBindlessIndicesValid(AccumSrvIndex, HistorySrvIndex, UavIndex))
         {
             return;
@@ -3224,6 +3327,13 @@ void FSparseSdfGI::AddIrradianceCacheUpdatePasses(FDeferredPassContext& Context)
         CommandList->SetComputeRoot32BitConstants(2, sizeof(FSparseSdfGIRadianceResolveBindlessConstants) / sizeof(uint32_t), &Bindless, 0);
         CommandList->Dispatch(AlignDispatch(GetBrickMapElementCount(), 64u), 1u, 1u);
     });
+
+    AddBrickShPropagatePass(
+        Context,
+        "SparseSdfGI Irradiance Propagate",
+        Context.Resources.SparseSdfGI.BrickIrradianceResolvedHandle,
+        BrickIrradianceWriteHandle,
+        BrickMapHandle);
 
     if (bWillUpdate && CurrentBrickIrradianceWriteSlot < PendingBrickIrradianceWrite.size())
     {

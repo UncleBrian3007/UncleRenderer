@@ -56,9 +56,11 @@ struct FSparseSdfGIFrameResources
     FRGBufferHandle BrickRadianceReadHandle{};
     FRGBufferHandle BrickRadianceWriteHandle{};
     FRGBufferHandle BrickRadianceAccumHandle{};
+    FRGBufferHandle BrickRadianceResolvedHandle{};
     FRGBufferHandle BrickIrradianceReadHandle{};
     FRGBufferHandle BrickIrradianceWriteHandle{};
     FRGBufferHandle BrickIrradianceAccumHandle{};
+    FRGBufferHandle BrickIrradianceResolvedHandle{};
     FRGBufferHandle ProbeHistoryReadHandle{};
     FRGBufferHandle ProbeHistoryWriteHandle{};
     FRGResourceHandle DiffuseGIHandle{};
@@ -120,6 +122,7 @@ private:
     void AddReferenceStatsPresentPass(FDeferredPassContext& Context) const;
     void AddRadianceCachePasses(FDeferredPassContext& Context) const;
     void AddIrradianceCacheUpdatePasses(FDeferredPassContext& Context) const;
+    void AddBrickShPropagatePass(FDeferredPassContext& Context, const char* PassName, FRGBufferHandle SourceHandle, FRGBufferHandle DestHandle, FRGBufferHandle BrickMapHandle) const;
     void AddScreenProbeGITracePasses(FDeferredPassContext& Context, FRGBufferHandle BrickRadianceHandle) const;
     void DispatchOutputPass(FDeferredPassContext& Context, FDX12CommandContext& Cmd, ID3D12PipelineState* PipelineState, bool bPassEnabled, FRGBufferHandle BrickRadianceHandle, FRGResourceHandle InputSHHandle, FRGResourceHandle VarianceHandle) const;
     bool BindSparseConstants(FDeferredRenderer& Owner, ID3D12GraphicsCommandList* CommandList, const void* Constants, size_t ConstantsSize) const;
@@ -195,6 +198,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RadianceClearPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RadianceInjectPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> RadianceResolvePipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> BrickShPropagatePipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> IrradianceAccumulatePipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ProbeSpawnPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ProbeTracePipeline;

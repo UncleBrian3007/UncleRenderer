@@ -202,6 +202,13 @@ cbuffer SparseSdfGIRadianceResolveBindlessConstants : register(b2)
     uint BrickRadianceUavIndex;
     uint RadianceHistoryValid;
 };
+#elif defined(SPARSE_SDF_GI_BRICK_SH_PROPAGATE_SHADER)
+cbuffer SparseSdfGIBrickShPropagateBindlessConstants : register(b2)
+{
+    uint CascadeBrickMapSrvIndex;
+    uint BrickShSourceSrvIndex;
+    uint BrickShDestUavIndex;
+};
 #elif defined(SPARSE_SDF_GI_TRACE_SHADER)
 cbuffer SparseSdfGITraceBindlessConstants : register(b2)
 {
@@ -318,6 +325,8 @@ static const float SPARSE_SDF_GI_RADIANCE_ACCUM_SCALE = 16.0f;
 static const float SPARSE_SDF_GI_RADIANCE_MAX_SAMPLE = 32.0f;
 static const float SPARSE_SDF_GI_RADIANCE_HISTORY_DECAY = 0.985f;
 static const float SPARSE_SDF_GI_RADIANCE_CONFIDENCE_THRESHOLD = 0.05f;
+static const float SPARSE_SDF_GI_BRICK_SH_MAX_SAMPLE_COUNT = 64.0f;
+static const float SPARSE_SDF_GI_BRICK_SH_DIRECTIONALITY_THRESHOLD = 0.05f;
 static const float SPARSE_SDF_GI_PROBE_MIN_VARIANCE = 0.05f;
 static const uint SPARSE_SDF_GI_PROBE_MAX_RAYS = 64u;
 
@@ -335,6 +344,22 @@ struct FSparseSdfGITraceHierarchyNode
     uint MinPacked;
     uint MaxPacked;
     uint Flags;
+    uint Reserved;
+};
+
+struct FBrickShSample
+{
+    uint4 PackedSH;
+    float SampleCount;
+    float3 Reserved;
+};
+
+struct FBrickShAccum
+{
+    int4 ShY;
+    int Co;
+    int Cg;
+    uint SampleCount;
     uint Reserved;
 };
 
@@ -639,6 +664,78 @@ uint GetScatterBrickCapacity()
 uint GetPhysicalBrickId(uint localPhysicalBrick)
 {
     return PhysicalBrickBase + localPhysicalBrick;
+}
+
+float GetBrickShConfidence(float sampleCount)
+{
+    return saturate(sampleCount / SPARSE_SDF_GI_BRICK_SH_MAX_SAMPLE_COUNT);
+}
+
+bool IsBrickShSampleValid(FBrickShSample sample)
+{
+    return GetBrickShConfidence(sample.SampleCount) >= SPARSE_SDF_GI_RADIANCE_CONFIDENCE_THRESHOLD;
+}
+
+FBrickShSample MakeInvalidBrickShSample()
+{
+    FBrickShSample sample;
+    sample.PackedSH = uint4(0u, 0u, 0u, 0u);
+    sample.SampleCount = 0.0f;
+    sample.Reserved = 0.0f.xxx;
+    return sample;
+}
+
+int QuantizeBrickShCoeff(float value)
+{
+    return (int)round(clamp(value, -SPARSE_SDF_GI_RADIANCE_MAX_SAMPLE, SPARSE_SDF_GI_RADIANCE_MAX_SAMPLE) * SPARSE_SDF_GI_RADIANCE_ACCUM_SCALE);
+}
+
+float DequantizeBrickShCoeff(int value, float invWeight)
+{
+    return (float)value * invWeight;
+}
+
+void AccumulateBrickSH(RWStructuredBuffer<FBrickShAccum> brickAccum, uint brickIndex, FPackedSh sh)
+{
+    InterlockedAdd(brickAccum[brickIndex].ShY.x, QuantizeBrickShCoeff(sh.ShY.x));
+    InterlockedAdd(brickAccum[brickIndex].ShY.y, QuantizeBrickShCoeff(sh.ShY.y));
+    InterlockedAdd(brickAccum[brickIndex].ShY.z, QuantizeBrickShCoeff(sh.ShY.z));
+    InterlockedAdd(brickAccum[brickIndex].ShY.w, QuantizeBrickShCoeff(sh.ShY.w));
+    InterlockedAdd(brickAccum[brickIndex].Co, QuantizeBrickShCoeff(sh.Co));
+    InterlockedAdd(brickAccum[brickIndex].Cg, QuantizeBrickShCoeff(sh.Cg));
+    InterlockedAdd(brickAccum[brickIndex].SampleCount, 1u);
+}
+
+FPackedSh DecodeBrickShSample(FBrickShSample sample)
+{
+    return UnpackSh(sample.PackedSH);
+}
+
+FBrickShSample EncodeBrickShSample(FPackedSh sh, float sampleCount)
+{
+    FBrickShSample sample;
+    sample.PackedSH = PackSh(sh);
+    sample.SampleCount = min(sampleCount, SPARSE_SDF_GI_BRICK_SH_MAX_SAMPLE_COUNT);
+    sample.Reserved = 0.0f.xxx;
+    return sample;
+}
+
+float GetBrickShDirectionality(FPackedSh sh)
+{
+    return saturate(length(sh.ShY.yzw) / max(abs(sh.ShY.x), 1e-5f));
+}
+
+float3 GetBrickShDominantDirection(FPackedSh sh)
+{
+    const float3 direction = float3(-sh.ShY.w, -sh.ShY.y, sh.ShY.z);
+    const float lengthSq = dot(direction, direction);
+    return (lengthSq > 1e-8f) ? direction * rsqrt(lengthSq) : 0.0f.xxx;
+}
+
+float3 EvaluateBrickShSample(FBrickShSample sample, float3 normal, bool normalReliable)
+{
+    const FPackedSh sh = DecodeBrickShSample(sample);
+    return normalReliable ? UnprojectIrradiance(sh, normal) : ApproxRadiance(sh);
 }
 
 uint GetScatterPairForFirstLogicalSample(uint logicalSample)
@@ -2312,8 +2409,14 @@ void CSClearBrickRadianceAccum(uint3 dispatchThreadId : SV_DispatchThreadID)
         return;
     }
 
-    RWStructuredBuffer<uint4> brickRadianceAccum = ResourceDescriptorHeap[BrickRadianceAccumUavIndex];
-    brickRadianceAccum[brickIndex] = uint4(0u, 0u, 0u, 0u);
+    RWStructuredBuffer<FBrickShAccum> brickRadianceAccum = ResourceDescriptorHeap[BrickRadianceAccumUavIndex];
+    FBrickShAccum accum;
+    accum.ShY = int4(0, 0, 0, 0);
+    accum.Co = 0;
+    accum.Cg = 0;
+    accum.SampleCount = 0u;
+    accum.Reserved = 0u;
+    brickRadianceAccum[brickIndex] = accum;
 }
 #endif
 
@@ -2358,7 +2461,7 @@ void CSInjectBrickRadiance(uint3 dispatchThreadId : SV_DispatchThreadID)
     Texture2D gbufferB = ResourceDescriptorHeap[GBufferBIndex];
     Texture2D gbufferC = ResourceDescriptorHeap[GBufferCIndex];
     StructuredBuffer<uint> cascadeBrickMap = ResourceDescriptorHeap[CascadeBrickMapSrvIndex];
-    RWStructuredBuffer<uint4> brickRadianceAccum = ResourceDescriptorHeap[BrickRadianceAccumUavIndex];
+    RWStructuredBuffer<FBrickShAccum> brickRadianceAccum = ResourceDescriptorHeap[BrickRadianceAccumUavIndex];
 
     const uint2 pixel = dispatchThreadId.xy;
     const float depth = depthTexture.Load(int3(pixel, 0)).r;
@@ -2397,19 +2500,18 @@ void CSInjectBrickRadiance(uint3 dispatchThreadId : SV_DispatchThreadID)
     float3 indirectIrradiance = 0.0f.xxx;
     if (BounceStrength > 0.0f && BrickIrradianceReadIndex != 0xFFFFFFFFu)
     {
-        StructuredBuffer<float4> brickIrradiance = ResourceDescriptorHeap[BrickIrradianceReadIndex];
-        indirectIrradiance = max(brickIrradiance[brickIndex].rgb, 0.0f.xxx) * BounceStrength;
+        StructuredBuffer<FBrickShSample> brickIrradiance = ResourceDescriptorHeap[BrickIrradianceReadIndex];
+        const FBrickShSample irradianceSample = brickIrradiance[brickIndex];
+        if (IsBrickShSampleValid(irradianceSample))
+        {
+            indirectIrradiance = EvaluateBrickShSample(irradianceSample, normal, true) * BounceStrength;
+        }
     }
 
     const float3 directIrradiance = LightColor * LightIntensity * directNdotL * saturate(shadowVisibility);
     const float3 sourceRadiance = saturate(albedo) * (1.0f - metallic) * (directIrradiance + indirectIrradiance);
     const float3 clampedRadiance = min(sourceRadiance, SPARSE_SDF_GI_RADIANCE_MAX_SAMPLE.xxx);
-    const uint3 quantizedRadiance = (uint3)round(clampedRadiance * SPARSE_SDF_GI_RADIANCE_ACCUM_SCALE);
-
-    InterlockedAdd(brickRadianceAccum[brickIndex].x, quantizedRadiance.x);
-    InterlockedAdd(brickRadianceAccum[brickIndex].y, quantizedRadiance.y);
-    InterlockedAdd(brickRadianceAccum[brickIndex].z, quantizedRadiance.z);
-    InterlockedAdd(brickRadianceAccum[brickIndex].w, 1u);
+    AccumulateBrickSH(brickRadianceAccum, brickIndex, ProjectSh(clampedRadiance, normal));
 }
 #endif
 
@@ -2425,7 +2527,7 @@ void CSAccumulateBrickIrradiance(uint3 dispatchThreadId : SV_DispatchThreadID)
     Texture2D depthTexture = ResourceDescriptorHeap[DepthIndex];
     Texture2D<float4> diffuseGI = ResourceDescriptorHeap[DiffuseGIIndex];
     StructuredBuffer<uint> cascadeBrickMap = ResourceDescriptorHeap[CascadeBrickMapSrvIndex];
-    RWStructuredBuffer<uint4> brickIrradianceAccum = ResourceDescriptorHeap[BrickIrradianceAccumUavIndex];
+    RWStructuredBuffer<FBrickShAccum> brickIrradianceAccum = ResourceDescriptorHeap[BrickIrradianceAccumUavIndex];
 
     const uint2 pixel = dispatchThreadId.xy;
     const float depth = depthTexture.Load(int3(pixel, 0)).r;
@@ -2444,16 +2546,9 @@ void CSAccumulateBrickIrradiance(uint3 dispatchThreadId : SV_DispatchThreadID)
         return;
     }
 
-    // Accumulate this frame's diffuse GI irradiance per brick. Quantization matches the radiance inject
-    // so the shared CSResolveBrickRadianceTemporal pass dequantizes / averages it identically.
     const float3 irradiance = max(diffuseGI.Load(int3(pixel, 0)).rgb, 0.0f.xxx);
     const float3 clampedIrradiance = min(irradiance, SPARSE_SDF_GI_RADIANCE_MAX_SAMPLE.xxx);
-    const uint3 quantized = (uint3)round(clampedIrradiance * SPARSE_SDF_GI_RADIANCE_ACCUM_SCALE);
-
-    InterlockedAdd(brickIrradianceAccum[brickIndex].x, quantized.x);
-    InterlockedAdd(brickIrradianceAccum[brickIndex].y, quantized.y);
-    InterlockedAdd(brickIrradianceAccum[brickIndex].z, quantized.z);
-    InterlockedAdd(brickIrradianceAccum[brickIndex].w, 1u);
+    AccumulateBrickSH(brickIrradianceAccum, brickIndex, ProjectIrradianceSh(clampedIrradiance));
 }
 #endif
 
@@ -2467,26 +2562,139 @@ void CSResolveBrickRadianceTemporal(uint3 dispatchThreadId : SV_DispatchThreadID
         return;
     }
 
-    StructuredBuffer<uint4> brickRadianceAccum = ResourceDescriptorHeap[BrickRadianceAccumSrvIndex];
-    StructuredBuffer<float4> brickRadianceHistory = ResourceDescriptorHeap[BrickRadianceHistorySrvIndex];
-    RWStructuredBuffer<float4> brickRadiance = ResourceDescriptorHeap[BrickRadianceUavIndex];
-    const uint4 accum = brickRadianceAccum[brickIndex];
-    if (accum.w == 0u)
+    StructuredBuffer<FBrickShAccum> brickRadianceAccum = ResourceDescriptorHeap[BrickRadianceAccumSrvIndex];
+    StructuredBuffer<FBrickShSample> brickRadianceHistory = ResourceDescriptorHeap[BrickRadianceHistorySrvIndex];
+    RWStructuredBuffer<FBrickShSample> brickRadiance = ResourceDescriptorHeap[BrickRadianceUavIndex];
+    const FBrickShAccum accum = brickRadianceAccum[brickIndex];
+    if (accum.SampleCount == 0u)
     {
-        const float4 history = brickRadianceHistory[brickIndex];
-        if (RadianceHistoryValid != 0u && history.a >= SPARSE_SDF_GI_RADIANCE_CONFIDENCE_THRESHOLD)
+        const FBrickShSample history = brickRadianceHistory[brickIndex];
+        if (RadianceHistoryValid != 0u && IsBrickShSampleValid(history))
         {
-            brickRadiance[brickIndex] = float4(history.rgb * SPARSE_SDF_GI_RADIANCE_HISTORY_DECAY, history.a * SPARSE_SDF_GI_RADIANCE_HISTORY_DECAY);
+            const FPackedSh decayed = ScaleSh(DecodeBrickShSample(history), SPARSE_SDF_GI_RADIANCE_HISTORY_DECAY);
+            brickRadiance[brickIndex] = EncodeBrickShSample(decayed, history.SampleCount * SPARSE_SDF_GI_RADIANCE_HISTORY_DECAY);
         }
         else
         {
-            brickRadiance[brickIndex] = 0.0f.xxxx;
+            brickRadiance[brickIndex] = MakeInvalidBrickShSample();
         }
         return;
     }
 
-    const float invWeight = 1.0f / (SPARSE_SDF_GI_RADIANCE_ACCUM_SCALE * (float)accum.w);
-    brickRadiance[brickIndex] = float4(float3(accum.x, accum.y, accum.z) * invWeight, 1.0f);
+    const float invWeight = 1.0f / (SPARSE_SDF_GI_RADIANCE_ACCUM_SCALE * (float)accum.SampleCount);
+    FPackedSh sh;
+    sh.ShY = float4(
+        DequantizeBrickShCoeff(accum.ShY.x, invWeight),
+        DequantizeBrickShCoeff(accum.ShY.y, invWeight),
+        DequantizeBrickShCoeff(accum.ShY.z, invWeight),
+        DequantizeBrickShCoeff(accum.ShY.w, invWeight));
+    sh.Co = DequantizeBrickShCoeff(accum.Co, invWeight);
+    sh.Cg = DequantizeBrickShCoeff(accum.Cg, invWeight);
+    brickRadiance[brickIndex] = EncodeBrickShSample(sh, (float)accum.SampleCount);
+}
+#endif
+
+#if defined(SPARSE_SDF_GI_BRICK_SH_PROPAGATE_SHADER)
+[numthreads(64, 1, 1)]
+void CSPropagateBrickSH(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    const uint logicalBrickCount = GetSparseSdfGIBrickCapacity();
+    const uint totalLogicalBrickCount = logicalBrickCount * max(CascadeCount, 1u);
+    const uint logicalIndex = dispatchThreadId.x;
+    if (logicalIndex >= totalLogicalBrickCount)
+    {
+        return;
+    }
+
+    StructuredBuffer<uint> cascadeBrickMap = ResourceDescriptorHeap[CascadeBrickMapSrvIndex];
+    StructuredBuffer<FBrickShSample> source = ResourceDescriptorHeap[BrickShSourceSrvIndex];
+    RWStructuredBuffer<FBrickShSample> dest = ResourceDescriptorHeap[BrickShDestUavIndex];
+
+    const uint basePhysicalBrick = cascadeBrickMap[logicalIndex];
+    if (basePhysicalBrick == SPARSE_SDF_GI_INVALID_BRICK_ID || basePhysicalBrick >= GetSparseSdfGIBrickCapacity())
+    {
+        return;
+    }
+
+    const uint cascadeIndex = logicalIndex / logicalBrickCount;
+    const uint cascadeLogicalOffset = cascadeIndex * logicalBrickCount;
+    const uint localLogicalIndex = logicalIndex - cascadeLogicalOffset;
+    const uint3 brickCoord = BrickIdToBrickCoord(localLogicalIndex);
+
+    const FBrickShSample baseSample = source[basePhysicalBrick];
+    const FPackedSh baseSh = DecodeBrickShSample(baseSample);
+    const float baseWeight = baseSample.SampleCount * baseSample.SampleCount;
+    FPackedSh accumSh = ScaleSh(baseSh, baseWeight);
+    float weightSum = baseWeight;
+    float sampleCountAccum = baseSample.SampleCount * baseWeight;
+    const float baseDirectionality = GetBrickShDirectionality(baseSh);
+    const float3 baseDirection = GetBrickShDominantDirection(baseSh);
+
+    [unroll]
+    for (int z = -1; z <= 1; ++z)
+    {
+        [unroll]
+        for (int y = -1; y <= 1; ++y)
+        {
+            [unroll]
+            for (int x = -1; x <= 1; ++x)
+            {
+                if (x == 0 && y == 0 && z == 0)
+                {
+                    continue;
+                }
+
+                const int3 neighborCoordInt = (int3)brickCoord + int3(x, y, z);
+                if (any(neighborCoordInt < 0) || any(neighborCoordInt >= (int)BrickGridResolution))
+                {
+                    continue;
+                }
+
+                const uint3 neighborCoord = (uint3)neighborCoordInt;
+                const uint neighborLogicalIndex = cascadeLogicalOffset
+                    + neighborCoord.x
+                    + neighborCoord.y * BrickGridResolution
+                    + neighborCoord.z * BrickGridResolution * BrickGridResolution;
+                const uint neighborPhysicalBrick = cascadeBrickMap[neighborLogicalIndex];
+                if (neighborPhysicalBrick == SPARSE_SDF_GI_INVALID_BRICK_ID || neighborPhysicalBrick >= GetSparseSdfGIBrickCapacity())
+                {
+                    continue;
+                }
+
+                const FBrickShSample neighborSample = source[neighborPhysicalBrick];
+                if (!IsBrickShSampleValid(neighborSample))
+                {
+                    continue;
+                }
+
+                const FPackedSh neighborSh = DecodeBrickShSample(neighborSample);
+                const float neighborDirectionality = GetBrickShDirectionality(neighborSh);
+                if (baseDirectionality >= SPARSE_SDF_GI_BRICK_SH_DIRECTIONALITY_THRESHOLD
+                    && neighborDirectionality >= SPARSE_SDF_GI_BRICK_SH_DIRECTIONALITY_THRESHOLD)
+                {
+                    const float3 neighborDirection = GetBrickShDominantDirection(neighborSh);
+                    if (dot(baseDirection, neighborDirection) < 0.0f)
+                    {
+                        continue;
+                    }
+                }
+
+                const float distanceSq = (float)(x * x + y * y + z * z);
+                const float weight = 1.0f / max(distanceSq, 1.0f);
+                accumSh = AddSh(accumSh, ScaleSh(neighborSh, weight));
+                sampleCountAccum += neighborSample.SampleCount * weight;
+                weightSum += weight;
+            }
+        }
+    }
+
+    if (weightSum <= 0.0f)
+    {
+        dest[basePhysicalBrick] = baseSample;
+        return;
+    }
+
+    dest[basePhysicalBrick] = EncodeBrickShSample(ScaleSh(accumSh, rcp(weightSum)), sampleCountAccum / weightSum);
 }
 #endif
 
@@ -2671,7 +2879,13 @@ float3 ComputeSdfNormalCascade(Texture3D<float> sdfAtlas, StructuredBuffer<uint>
     return (gradientLengthSq > 1e-8f) ? gradient * rsqrt(gradientLengthSq) : 0.0f.xxx;
 }
 
-bool TrySampleBrickRadiance(StructuredBuffer<uint> cascadeBrickMap, StructuredBuffer<float4> brickRadiance, float3 worldPosition, out float3 radiance)
+bool TrySampleBrickRadiance(
+    StructuredBuffer<uint> cascadeBrickMap,
+    StructuredBuffer<FBrickShSample> brickRadiance,
+    float3 worldPosition,
+    float3 hitNormal,
+    bool normalReliable,
+    out float3 radiance)
 {
     radiance = 0.0f.xxx;
     uint brickIndex = 0u;
@@ -2680,13 +2894,13 @@ bool TrySampleBrickRadiance(StructuredBuffer<uint> cascadeBrickMap, StructuredBu
         return false;
     }
 
-    const float4 sample = brickRadiance[brickIndex];
-    if (sample.a < SPARSE_SDF_GI_RADIANCE_CONFIDENCE_THRESHOLD)
+    const FBrickShSample sample = brickRadiance[brickIndex];
+    if (!IsBrickShSampleValid(sample))
     {
         return false;
     }
 
-    radiance = sample.rgb;
+    radiance = EvaluateBrickShSample(sample, hitNormal, normalReliable);
     return true;
 }
 
@@ -2697,7 +2911,7 @@ float3 EvaluateSparseSdfGIRayRadiance(
     StructuredBuffer<uint4> brickMetadata,
     StructuredBuffer<FSparseSdfGITraceHierarchyNode> hierarchyBottom,
     StructuredBuffer<FSparseSdfGITraceHierarchyNode> hierarchyTop,
-    StructuredBuffer<float4> brickRadiance,
+    StructuredBuffer<FBrickShSample> brickRadiance,
     float3 rayOrigin,
     float3 traceDirection,
     out bool hit)
@@ -2714,7 +2928,8 @@ float3 EvaluateSparseSdfGIRayRadiance(
 
     const float3 hitPosition = rayOrigin + traceDirection * travel;
     float3 hitNormal = ComputeSdfNormal(sdfAtlas, cascadeBrickMap, hitPosition);
-    if (dot(hitNormal, hitNormal) <= 1e-8f)
+    const bool bHitNormalReliable = dot(hitNormal, hitNormal) > 1e-8f;
+    if (!bHitNormalReliable)
     {
         hitNormal = -traceDirection;
     }
@@ -2730,7 +2945,7 @@ float3 EvaluateSparseSdfGIRayRadiance(
     const float lightVisibility = TraceSdfVisibility(lightRayOrigin, lightDirection, sdfAtlas, cascadeBrickMap, brickMetadata, hierarchyBottom, hierarchyTop, lightStepCount, lightTravel) ? 0.0f : 1.0f;
     const float3 directBounce = LightColor * LightIntensity * saturate(dot(hitNormal, lightDirection)) * lightVisibility;
     float3 cachedRadiance = 0.0f.xxx;
-    return TrySampleBrickRadiance(cascadeBrickMap, brickRadiance, hitPosition, cachedRadiance) ? cachedRadiance : directBounce;
+    return TrySampleBrickRadiance(cascadeBrickMap, brickRadiance, hitPosition, hitNormal, bHitNormalReliable, cachedRadiance) ? cachedRadiance : directBounce;
 }
 #endif
 
@@ -2963,7 +3178,7 @@ void CSDiffuseTrace(uint3 dispatchThreadId : SV_DispatchThreadID)
     StructuredBuffer<uint4> brickMetadata = ResourceDescriptorHeap[BrickMetadataSrvIndex];
     StructuredBuffer<FSparseSdfGITraceHierarchyNode> hierarchyBottom = ResourceDescriptorHeap[TraceHierarchyBottomSrvIndex];
     StructuredBuffer<FSparseSdfGITraceHierarchyNode> hierarchyTop = ResourceDescriptorHeap[TraceHierarchyTopSrvIndex];
-    StructuredBuffer<float4> brickRadiance = ResourceDescriptorHeap[BrickRadianceSrvIndex];
+    StructuredBuffer<FBrickShSample> brickRadiance = ResourceDescriptorHeap[BrickRadianceSrvIndex];
     RWTexture2D<float4> outputTexture = ResourceDescriptorHeap[DiffuseGIUavIndex];
     RWTexture2D<uint4> inputSHOut = ResourceDescriptorHeap[InputSHUavIndex];
     RWTexture2D<float> varianceOut = ResourceDescriptorHeap[VarianceUavIndex];
@@ -3166,7 +3381,7 @@ void CSTraceScreenProbes(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_Gr
         StructuredBuffer<uint4> brickMetadata = ResourceDescriptorHeap[BrickMetadataSrvIndex];
         StructuredBuffer<FSparseSdfGITraceHierarchyNode> hierarchyBottom = ResourceDescriptorHeap[TraceHierarchyBottomSrvIndex];
         StructuredBuffer<FSparseSdfGITraceHierarchyNode> hierarchyTop = ResourceDescriptorHeap[TraceHierarchyTopSrvIndex];
-        StructuredBuffer<float4> brickRadiance = ResourceDescriptorHeap[BrickRadianceSrvIndex];
+        StructuredBuffer<FBrickShSample> brickRadiance = ResourceDescriptorHeap[BrickRadianceSrvIndex];
         const float3 normal = normalize(header.NormalValid.xyz);
         const float3 rayOrigin = header.WorldPositionDepth.xyz + normal * (VoxelSize * 2.0f);
         FBlueNoiseSobolSampler raySampler = BlueNoiseSobolSamplerCreate(header.Pixel, uint2(max(OutputWidth, 1u), max(OutputHeight, 1u)), FrameIndex);
