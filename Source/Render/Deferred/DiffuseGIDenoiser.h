@@ -47,6 +47,8 @@ public:
     void SetEnabled(bool bInEnabled) { bEnabled = bInEnabled; }
     bool IsEnabled() const { return bEnabled; }
 
+    void SetSeparableFinalBlur(bool bInSeparableFinalBlur) { bSeparableFinalBlur = bInSeparableFinalBlur; }
+
     void SetFreezeHistoryResetPeriod(uint32_t InPeriod) { FreezeHistoryResetPeriod = InPeriod; }
     uint32_t GetFreezeHistoryResetPeriod() const { return FreezeHistoryResetPeriod; }
 
@@ -69,10 +71,12 @@ private:
     void AddLinearDepthMipGenPass(FDeferredRenderer& Owner, FRenderGraph& Graph, FRGResourceHandle SourceHandle, FRGResourceHandle& DestinationHandle, FRGBufferHandle& AtomicCounterHandle) const;
     void AddHistoryReconstructionPass(FDeferredRenderer& Owner, FRenderGraph& Graph, const std::array<FRGResourceHandle, kDeferredGBufferCount>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle InputSHHandle, FRGResourceHandle VarianceHandle, FRGResourceHandle HistorySHHandle, FRGResourceHandle HistoryCountHandle, FRGResourceHandle TemporalSHHandle, FRGResourceHandle ShMipHandle, FRGResourceHandle DepthMipHandle) const;
     void AddFinalBlurPass(FDeferredRenderer& Owner, FRenderGraph& Graph, const std::array<FRGResourceHandle, kDeferredGBufferCount>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle InputSHHandle, FRGResourceHandle VarianceHandle, FRGResourceHandle TemporalSHHandle, FRGResourceHandle HistoryIrradianceHandle, FRGResourceHandle HistorySHHandle, FRGResourceHandle HistoryCountHandle) const;
+    void AddSeparableFinalBlurPass(FDeferredRenderer& Owner, FRenderGraph& Graph, const std::array<FRGResourceHandle, kDeferredGBufferCount>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle SourceSHHandle, FRGResourceHandle& InOutDestSHHandle, FRGResourceHandle HistoryIrradianceHandle, FRGResourceHandle HistoryCountHandle, bool bDirectionY) const;
     uint32_t GetFrameSlot(uint32_t FrameIndex) const;
 
 private:
     bool bEnabled = true;
+    bool bSeparableFinalBlur = true;
     uint32_t FreezeHistoryResetPeriod = 3;
     mutable bool bHistoryValid = false;
     mutable bool bPassesSubmittedThisFrame = false;
@@ -87,6 +91,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> GenerateLinearDepthMipsPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> HistoryReconstructionPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> FinalBlurPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> SeparableFinalBlurPipeline;
 
     std::vector<FBindlessTexture> HistoryIrradiance;
     std::vector<FBindlessTexture> HistorySH;

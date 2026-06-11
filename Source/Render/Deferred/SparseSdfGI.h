@@ -138,6 +138,7 @@ private:
     bool bTraceHalfResolution = false;
     bool bUseHierarchicalTrace = true;
     bool bEikonalEnabled = true;
+    bool bPropagateBrickSH = true;
     float Intensity = 1.0f;
     float BounceStrength = 1.0f;
     bool bEnableRadianceTemporalReuse = true;
@@ -201,11 +202,15 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> BrickShPropagatePipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> IrradianceAccumulatePipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ProbeSpawnPipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> ProbeTracePipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> ProbeTraceDirectionalPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> ProbeTraceFlatPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> ProbeTraceHierarchicalPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> ProbeTraceDirectionalFlatPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> ProbeTraceDirectionalHierarchicalPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ProbeInterpolatePipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> DebugTracePipeline;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> DiffuseTracePipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> DebugTraceFlatPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> DebugTraceHierarchicalPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> DiffuseTraceFlatPipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> DiffuseTraceHierarchicalPipeline;
 
     FBindlessTexture SdfAtlas;
     FBindlessBuffer CascadeBrickMap;

@@ -27,7 +27,7 @@ struct FDiffuseGIDenoiserConstants
     float    NormalThreshold  = 0.9f;
     float    BlendStrength    = 1.0f;
     uint32_t MipLevel         = 0;
-    float    Padding1         = 0.0f;
+    uint32_t BlurDirectionY   = 0;
     float    Padding2         = 0.0f;
 };
 static_assert(sizeof(FDiffuseGIDenoiserConstants) / sizeof(uint32_t) <= kDiffuseGIDenoiserConstantsDwordCount);
@@ -127,7 +127,8 @@ bool FDiffuseGIDenoiser::InitializePipelines(FDeferredRenderer& Owner, FDX12Devi
         || !CreateDenoiserPso(L"Shaders/RestirGI/RestirGiMipGenSpd.hlsl", L"CSGenerateShMipsSpd", GenerateShMipsPipeline)
         || !CreateDenoiserPso(L"Shaders/RestirGI/RestirGiLinearDepthMipGenSpd.hlsl", L"CSGenerateLinearDepthMipsSpd", GenerateLinearDepthMipsPipeline)
         || !CreateDenoiserPso(L"Shaders/GIDenoiser/DiffuseGIDenoiser.hlsl", L"CSHistoryReconstruction", HistoryReconstructionPipeline)
-        || !CreateDenoiserPso(L"Shaders/GIDenoiser/DiffuseGIDenoiser.hlsl", L"CSFinalBlur", FinalBlurPipeline))
+        || !CreateDenoiserPso(L"Shaders/GIDenoiser/DiffuseGIDenoiser.hlsl", L"CSFinalBlur", FinalBlurPipeline)
+        || !CreateDenoiserPso(L"Shaders/GIDenoiser/DiffuseGIDenoiser.hlsl", L"CSSeparableFinalBlur", SeparableFinalBlurPipeline))
     {
         return false;
     }
@@ -189,11 +190,27 @@ void FDiffuseGIDenoiser::AddPasses(FDeferredPassContext& Context, FRGResourceHan
         LinearDepthHandle, InputSHHandle, VarianceHandle,
         HistorySHReadHandle, HistoryCountWriteHandle, TemporalSHHandle,
         ShMipHandle, LinearDepthMipHandle);
-    AddFinalBlurPass(
-        Owner, Graph, GBufferHandles,
-        LinearDepthHandle, InputSHHandle, VarianceHandle,
-        TemporalSHHandle, HistoryIrradianceHandle,
-        HistorySHWriteHandle, HistoryCountWriteHandle);
+    if (bSeparableFinalBlur)
+    {
+        FRGResourceHandle BlurXSHHandle{};
+        AddSeparableFinalBlurPass(
+            Owner, Graph, GBufferHandles,
+            LinearDepthHandle, TemporalSHHandle, BlurXSHHandle,
+            FRGResourceHandle{}, HistoryCountWriteHandle, false);
+        FRGResourceHandle FinalSHHandle = HistorySHWriteHandle;
+        AddSeparableFinalBlurPass(
+            Owner, Graph, GBufferHandles,
+            LinearDepthHandle, BlurXSHHandle, FinalSHHandle,
+            HistoryIrradianceHandle, HistoryCountWriteHandle, true);
+    }
+    else
+    {
+        AddFinalBlurPass(
+            Owner, Graph, GBufferHandles,
+            LinearDepthHandle, InputSHHandle, VarianceHandle,
+            TemporalSHHandle, HistoryIrradianceHandle,
+            HistorySHWriteHandle, HistoryCountWriteHandle);
+    }
 }
 
 void FDiffuseGIDenoiser::AddShMipGenPass(FDeferredRenderer& Owner, FRenderGraph& Graph, FRGResourceHandle SourceHandle, FRGResourceHandle& DestinationHandle, FRGBufferHandle& AtomicCounterHandle) const
@@ -584,6 +601,98 @@ void FDiffuseGIDenoiser::AddFinalBlurPass(FDeferredRenderer& Owner, FRenderGraph
         LocalCommandList->SetComputeRootSignature(RootSignature.Get());
         LocalCommandList->SetComputeRootConstantBufferView(2, Owner.GetSceneConstantBufferAddress());
         LocalCommandList->SetPipelineState(FinalBlurPipeline.Get());
+        LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(FDiffuseGIDenoiserConstants) / sizeof(uint32_t), &Constants, 0);
+        LocalCommandList->SetComputeRoot32BitConstants(1, _countof(Bindless), Bindless, 0);
+        LocalCommandList->Dispatch((Constants.Width + 7u) / 8u, (Constants.Height + 7u) / 8u, 1);
+    });
+}
+
+void FDiffuseGIDenoiser::AddSeparableFinalBlurPass(FDeferredRenderer& Owner, FRenderGraph& Graph, const std::array<FRGResourceHandle, kDeferredGBufferCount>& GBufferHandles, FRGResourceHandle LinearDepthHandle, FRGResourceHandle SourceSHHandle, FRGResourceHandle& InOutDestSHHandle, FRGResourceHandle HistoryIrradianceHandle, FRGResourceHandle HistoryCountHandle, bool bDirectionY) const
+{
+    struct FPassData
+    {
+        bool bEnabled = false;
+        FRGResourceHandle DestSHHandle{};
+    };
+    Graph.AddPass<FPassData>(bDirectionY ? "Denoiser SeparableBlur Y" : "Denoiser SeparableBlur X", [this, &Owner, GBufferHandles, LinearDepthHandle, SourceSHHandle, &InOutDestSHHandle, HistoryIrradianceHandle, HistoryCountHandle](FPassData& Data, FRGPassBuilder& Builder)
+    {
+        Builder.SetPixGroup("Diffuse GI Denoiser");
+        Data.bEnabled = IsEnabled() && static_cast<bool>(SourceSHHandle);
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+        if (!InOutDestSHHandle)
+        {
+            const uint32_t FullWidth = static_cast<uint32_t>(Owner.Viewport.Width);
+            const uint32_t FullHeight = static_cast<uint32_t>(Owner.Viewport.Height);
+            InOutDestSHHandle = Builder.CreateTexture("Denoiser Separable Blur SH", { FullWidth, FullHeight, DXGI_FORMAT_R32G32B32A32_UINT });
+        }
+        Data.DestSHHandle = InOutDestSHHandle;
+        Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(LinearDepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(SourceSHHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(HistoryCountHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.WriteTexture(Data.DestSHHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        if (HistoryIrradianceHandle)
+        {
+            Builder.WriteTexture(HistoryIrradianceHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        }
+    }, [this, &Owner, &Graph, SourceSHHandle, HistoryIrradianceHandle, HistoryCountHandle, bDirectionY](const FPassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+        ID3D12GraphicsCommandList* LocalCommandList = Cmd.GetCommandList();
+        const uint32_t SourceShSrvBindlessIndex = Graph.GetTextureSrvBindlessIndex(SourceSHHandle);
+        const uint32_t DestShUavBindlessIndex = Graph.GetTextureUavBindlessIndex(Data.DestSHHandle);
+        const uint32_t HistoryIrradianceUavBindlessIndex = HistoryIrradianceHandle ? Graph.GetTextureUavBindlessIndex(HistoryIrradianceHandle) : UINT32_MAX;
+        const uint32_t HistoryCountSrvBindlessIndex = Graph.GetTextureSrvBindlessIndex(HistoryCountHandle);
+
+        const bool bInputsValid = AreAllBindlessIndicesValid(
+            SourceShSrvBindlessIndex,
+            DestShUavBindlessIndex,
+            HistoryCountSrvBindlessIndex,
+            Owner.LinearDepthTexture.SrvBindlessIndex,
+            Owner.GBufferA.SrvBindlessIndex)
+            && (!HistoryIrradianceHandle || IsValidBindlessIndex(HistoryIrradianceUavBindlessIndex));
+        if (!bInputsValid)
+        {
+            return;
+        }
+
+        FDiffuseGIDenoiserConstants Constants = {};
+        Constants.Width  = static_cast<uint32_t>(Owner.Viewport.Width);
+        Constants.Height = static_cast<uint32_t>(Owner.Viewport.Height);
+        Constants.PassIndex = 5u;
+        Constants.BlurDirectionY = bDirectionY ? 1u : 0u;
+
+        const uint32_t Bindless[kDiffuseGIDenoiserBindlessDwordCount] =
+        {
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            Owner.LinearDepthTexture.SrvBindlessIndex,
+            UINT32_MAX,
+            Owner.GBufferA.SrvBindlessIndex,
+            UINT32_MAX,
+            UINT32_MAX,
+            HistoryCountSrvBindlessIndex,
+            SourceShSrvBindlessIndex,
+            HistoryIrradianceUavBindlessIndex,
+            DestShUavBindlessIndex,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX,
+            UINT32_MAX
+        };
+
+        ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
+        LocalCommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        LocalCommandList->SetComputeRootSignature(RootSignature.Get());
+        LocalCommandList->SetComputeRootConstantBufferView(2, Owner.GetSceneConstantBufferAddress());
+        LocalCommandList->SetPipelineState(SeparableFinalBlurPipeline.Get());
         LocalCommandList->SetComputeRoot32BitConstants(0, sizeof(FDiffuseGIDenoiserConstants) / sizeof(uint32_t), &Constants, 0);
         LocalCommandList->SetComputeRoot32BitConstants(1, _countof(Bindless), Bindless, 0);
         LocalCommandList->Dispatch((Constants.Width + 7u) / 8u, (Constants.Height + 7u) / 8u, 1);

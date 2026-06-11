@@ -264,6 +264,7 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGITraceHalfResolution, { "SparseSdfGITraceHalfResolution" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIUseHierarchicalTrace, { "SparseSdfGIUseHierarchicalTrace" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIEikonalEnabled, { "SparseSdfGIEikonalEnabled" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIPropagateBrickSH, { "SparseSdfGIPropagateBrickSH" });
     ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIIntensity, 0.0f, { "SparseSdfGIIntensity" });
     ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIBounceStrength, 0.0f, { "SparseSdfGIBounceStrength" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIEnableRadianceTemporalReuse, { "SparseSdfGIRadianceTemporalReuse", "SparseSdfGIEnableRadianceTemporalReuse" });
@@ -351,6 +352,7 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
             OutConfig.DiffuseGISource = EDiffuseGISource::Off;
     }
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableDiffuseGIDenoiser, { "DiffuseGIDenoiser", "EnableDiffuseGIDenoiser", "RestirGIDenoiser", "EnableRestirGIDenoiser" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bDiffuseGIDenoiserSeparableBlur, { "DiffuseGIDenoiserSeparableBlur" });
     ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::RestirGISamplesPerPixel, 1u, 32u, { "RestirGISamplesPerPixel" });
     ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::RestirGIIntensity, 0.0f, { "RestirGIIntensity" });
     ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::RestirGIRayLength, 0.1f, { "RestirGIRayLength" });

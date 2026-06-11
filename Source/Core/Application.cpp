@@ -1938,6 +1938,16 @@ void FApplication::RenderUI()
             SyncDeferredRestirGIConfig();
         }
 
+        if (RendererConfig.bEnableDiffuseGIDenoiser)
+        {
+            ImGui::SameLine();
+            if (ImGui::Checkbox("Separable Blur", &RendererConfig.bDiffuseGIDenoiserSeparableBlur))
+            {
+                UpsertConfigValue(GetRendererConfigPath(), "DiffuseGIDenoiserSeparableBlur", RendererConfig.bDiffuseGIDenoiserSeparableBlur ? "true" : "false");
+                SyncDeferredRestirGIConfig();
+            }
+        }
+
         static const char* DiffuseGISourceItems[] = { "Off", "Sparse SDF GI", "ReSTIR GI" };
         int DiffuseGISourceIndex = static_cast<int>(RendererConfig.DiffuseGISource);
         ImGui::SetNextItemWidth(160.0f);
@@ -2057,6 +2067,12 @@ void FApplication::RenderUI()
             if (ImGui::Checkbox("SDF Eikonal Propagation", &RendererConfig.bSparseSdfGIEikonalEnabled))
             {
                 UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIEikonalEnabled", RendererConfig.bSparseSdfGIEikonalEnabled ? "true" : "false");
+                SyncDeferredSparseSdfGIConfig();
+            }
+
+            if (ImGui::Checkbox("SDF GI Propagate Brick SH", &RendererConfig.bSparseSdfGIPropagateBrickSH))
+            {
+                UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIPropagateBrickSH", RendererConfig.bSparseSdfGIPropagateBrickSH ? "true" : "false");
                 SyncDeferredSparseSdfGIConfig();
             }
 

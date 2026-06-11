@@ -38,7 +38,6 @@ cbuffer SparseSdfGIConstants : register(b1)
     float SurfaceHitThresholdVoxels;
     uint TrianglePoolCapacity;
     uint BuildWorkOffset;
-    uint UseHierarchicalTrace;
     uint CascadeCount;
     float CascadeScale;
     uint PhysicalBrickBase;
@@ -327,6 +326,8 @@ static const float SPARSE_SDF_GI_RADIANCE_HISTORY_DECAY = 0.985f;
 static const float SPARSE_SDF_GI_RADIANCE_CONFIDENCE_THRESHOLD = 0.05f;
 static const float SPARSE_SDF_GI_BRICK_SH_MAX_SAMPLE_COUNT = 64.0f;
 static const float SPARSE_SDF_GI_BRICK_SH_DIRECTIONALITY_THRESHOLD = 0.05f;
+static const float SPARSE_SDF_GI_BRICK_SH_MAX_COEFF = SPARSE_SDF_GI_RADIANCE_MAX_SAMPLE * 4.0f;
+static const float SPARSE_SDF_GI_BRICK_SH_PROPAGATION_DECAY = 0.9f;
 static const float SPARSE_SDF_GI_PROBE_MIN_VARIANCE = 0.05f;
 static const uint SPARSE_SDF_GI_PROBE_MAX_RAYS = 64u;
 
@@ -687,7 +688,7 @@ FBrickShSample MakeInvalidBrickShSample()
 
 int QuantizeBrickShCoeff(float value)
 {
-    return (int)round(clamp(value, -SPARSE_SDF_GI_RADIANCE_MAX_SAMPLE, SPARSE_SDF_GI_RADIANCE_MAX_SAMPLE) * SPARSE_SDF_GI_RADIANCE_ACCUM_SCALE);
+    return (int)round(clamp(value, -SPARSE_SDF_GI_BRICK_SH_MAX_COEFF, SPARSE_SDF_GI_BRICK_SH_MAX_COEFF) * SPARSE_SDF_GI_RADIANCE_ACCUM_SCALE);
 }
 
 float DequantizeBrickShCoeff(int value, float invWeight)
@@ -1682,31 +1683,30 @@ bool TraceSdfVisibility(
 {
     stepCount = 0u;
     travel = 0.0f;
-    if (UseHierarchicalTrace != 0u)
-    {
-        uint traceStatus = SPARSE_SDF_GI_TRACE_STATUS_CASCADE_MISS;
-        uint3 hitBrickCoord = 0u.xxx;
-        uint3 hitLocalCoord = 0u.xxx;
-        float3 hitFracCoord = 0.0f.xxx;
-        uint hitCascadeIndex = 0u;
-        return TraceSdfHierarchicalRawMulti(
-            sdfAtlas,
-            cascadeBrickMap,
-            brickMetadata,
-            hierarchyBottom,
-            hierarchyTop,
-            rayOrigin,
-            rayDirection,
-            false,
-            travel,
-            stepCount,
-            traceStatus,
-            hitBrickCoord,
-            hitLocalCoord,
-            hitFracCoord,
-            hitCascadeIndex);
-    }
 
+#if defined(SPARSE_SDF_GI_USE_HIERARCHICAL_TRACE)
+    uint traceStatus = SPARSE_SDF_GI_TRACE_STATUS_CASCADE_MISS;
+    uint3 hitBrickCoord = 0u.xxx;
+    uint3 hitLocalCoord = 0u.xxx;
+    float3 hitFracCoord = 0.0f.xxx;
+    uint hitCascadeIndex = 0u;
+    return TraceSdfHierarchicalRawMulti(
+        sdfAtlas,
+        cascadeBrickMap,
+        brickMetadata,
+        hierarchyBottom,
+        hierarchyTop,
+        rayOrigin,
+        rayDirection,
+        false,
+        travel,
+        stepCount,
+        traceStatus,
+        hitBrickCoord,
+        hitLocalCoord,
+        hitFracCoord,
+        hitCascadeIndex);
+#else
     [loop]
     for (uint stepIndex = 0u; stepIndex < 128u; ++stepIndex)
     {
@@ -1748,6 +1748,7 @@ bool TraceSdfVisibility(
     }
 
     return false;
+#endif
 }
 
 
@@ -2622,6 +2623,12 @@ void CSPropagateBrickSH(uint3 dispatchThreadId : SV_DispatchThreadID)
     const uint3 brickCoord = BrickIdToBrickCoord(localLogicalIndex);
 
     const FBrickShSample baseSample = source[basePhysicalBrick];
+    if (!IsBrickShSampleValid(baseSample))
+    {
+        dest[basePhysicalBrick] = baseSample;
+        return;
+    }
+
     const FPackedSh baseSh = DecodeBrickShSample(baseSample);
     const float baseWeight = baseSample.SampleCount * baseSample.SampleCount;
     FPackedSh accumSh = ScaleSh(baseSh, baseWeight);
@@ -2682,7 +2689,7 @@ void CSPropagateBrickSH(uint3 dispatchThreadId : SV_DispatchThreadID)
                 const float distanceSq = (float)(x * x + y * y + z * z);
                 const float weight = 1.0f / max(distanceSq, 1.0f);
                 accumSh = AddSh(accumSh, ScaleSh(neighborSh, weight));
-                sampleCountAccum += neighborSample.SampleCount * weight;
+                sampleCountAccum += neighborSample.SampleCount * weight * SPARSE_SDF_GI_BRICK_SH_PROPAGATION_DECAY;
                 weightSum += weight;
             }
         }
@@ -2746,26 +2753,25 @@ bool TraceSdfDebugSurface(
     hitLocalCoord = 0u.xxx;
     hitFracCoord = 0.0f.xxx;
     hitCascadeIndex = 0u;
-    if (UseHierarchicalTrace != 0u)
-    {
-        return TraceSdfHierarchicalRawMulti(
-            sdfAtlas,
-            cascadeBrickMap,
-            brickMetadata,
-            hierarchyBottom,
-            hierarchyTop,
-            rayOrigin,
-            rayDirection,
-            true,
-            hitTravel,
-            stepCount,
-            traceStatus,
-            hitBrickCoord,
-            hitLocalCoord,
-            hitFracCoord,
-            hitCascadeIndex);
-    }
 
+#if defined(SPARSE_SDF_GI_USE_HIERARCHICAL_TRACE)
+    return TraceSdfHierarchicalRawMulti(
+        sdfAtlas,
+        cascadeBrickMap,
+        brickMetadata,
+        hierarchyBottom,
+        hierarchyTop,
+        rayOrigin,
+        rayDirection,
+        true,
+        hitTravel,
+        stepCount,
+        traceStatus,
+        hitBrickCoord,
+        hitLocalCoord,
+        hitFracCoord,
+        hitCascadeIndex);
+#else
     float tEnter = 0.0f;
     float tExit = 0.0f;
     if (!RayBoxIntersect(rayOrigin, rayDirection, tEnter, tExit))
@@ -2847,6 +2853,7 @@ bool TraceSdfDebugSurface(
     }
 
     return false;
+#endif
 }
 
 float3 ComputeSdfNormal(Texture3D<float> sdfAtlas, StructuredBuffer<uint> cascadeBrickMap, float3 worldPosition)

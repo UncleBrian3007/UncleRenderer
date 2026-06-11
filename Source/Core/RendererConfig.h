@@ -102,6 +102,7 @@ struct FRendererConfig
     EDeferredLightingVisualizationMode DeferredLightingVisualizationMode = EDeferredLightingVisualizationMode::Off;
     EDiffuseGISource DiffuseGISource = EDiffuseGISource::Off;
     bool bEnableDiffuseGIDenoiser = true;
+    bool bDiffuseGIDenoiserSeparableBlur = true;
     uint32_t RestirGISamplesPerPixel = 2;
     float RestirGIIntensity = 1.0f;
     float RestirGIRayLength = 1000.0f;
@@ -129,6 +130,7 @@ struct FRendererConfig
     bool bSparseSdfGITraceHalfResolution = false;
     bool bSparseSdfGIUseHierarchicalTrace = true;
     bool bSparseSdfGIEikonalEnabled = true;
+    bool bSparseSdfGIPropagateBrickSH = true;
     float SparseSdfGIIntensity = 1.0f;
     float SparseSdfGIBounceStrength = 1.0f;
     bool bSparseSdfGIEnableRadianceTemporalReuse = true;

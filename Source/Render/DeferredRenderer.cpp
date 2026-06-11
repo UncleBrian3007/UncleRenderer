@@ -311,6 +311,7 @@ void FDeferredRenderer::ApplyRestirGIConfig(const FRendererConfig& Config)
         DiffuseGIDenoiser->SetEnabled(Config.bEnableDiffuseGIDenoiser);
         DiffuseGIDenoiser->InvalidateHistory();
     }
+    DiffuseGIDenoiser->SetSeparableFinalBlur(Config.bDiffuseGIDenoiserSeparableBlur);
 
     RestirGI->SetEnabled(Config.DiffuseGISource == EDiffuseGISource::RestirGI);
     RestirGI->SetSamplesPerPixel(std::clamp(Config.RestirGISamplesPerPixel, 1u, 32u));

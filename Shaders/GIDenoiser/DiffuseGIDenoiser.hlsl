@@ -11,7 +11,7 @@ cbuffer DiffuseGIDenoiserConstants : register(b0)
     float NormalThreshold;
     float BlendStrength;
     uint MipLevel;
-    float DenoiserPadding1;
+    uint BlurDirectionY;
     float DenoiserPadding2;
 };
 
@@ -450,4 +450,88 @@ void CSFinalBlur(uint3 DispatchThreadId : SV_DispatchThreadID)
     FPackedSh OutSh = ScaleSh(AccumSh, rcp(max(1e-5f, Total)));
     OutHistoryIrradiance[Pixel] = UnprojectIrradiance(OutSh, CenterNormal);
     OutHistorySH[Pixel] = PackSh(OutSh);
+}
+
+[numthreads(8, 8, 1)]
+void CSSeparableFinalBlur(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+    const uint2 Pixel = DispatchThreadId.xy;
+    if (Pixel.x >= Width || Pixel.y >= Height)
+    {
+        return;
+    }
+
+    Texture2D<uint4> SourceSH = ResourceDescriptorHeap[TemporalSHIndex];
+    Texture2D<uint> HistoryCount = ResourceDescriptorHeap[HistoryCountIndex];
+    Texture2D<float> LinearDepthTexture = ResourceDescriptorHeap[CurrentLinearDepthIndex];
+    Texture2D<float4> GBufferA = ResourceDescriptorHeap[GBufferAIndex];
+    RWTexture2D<uint4> OutSH = ResourceDescriptorHeap[OutHistorySHIndex];
+
+    const bool bFinalDirection = OutHistoryIrradianceIndex != 0xffffffffu;
+    const FPackedSh CenterSh = LoadPackedSh(SourceSH, Pixel);
+    const float CenterDepth = LinearDepthTexture[Pixel];
+    if (CenterDepth <= 0.0f)
+    {
+        OutSH[Pixel] = uint4(0u, 0u, 0u, 0u);
+        if (bFinalDirection)
+        {
+            RWTexture2D<float3> OutHistoryIrradiance = ResourceDescriptorHeap[OutHistoryIrradianceIndex];
+            OutHistoryIrradiance[Pixel] = 0.0f.xxx;
+        }
+        return;
+    }
+
+    const float3 CenterNormal = DecodeNormalFromGBufferA(GBufferA[Pixel]);
+    const float Convergence = saturate((float)HistoryCount[Pixel] / 32.0f);
+    const float Radius = 8.0f * smoothstep(0.0f, 1.0f, 1.0f - Convergence);
+
+    FPackedSh OutShValue = CenterSh;
+    if (Radius >= 0.5f)
+    {
+        const int2 StepAxis = (BlurDirectionY != 0u) ? int2(0, 1) : int2(1, 0);
+        const float StepSize = Radius * 0.5f;
+        const float DepthSigma = max(CenterDepth * 0.1f, 1e-3f);
+        const int2 MaxPixel = int2((int)Width - 1, (int)Height - 1);
+
+        FPackedSh AccumSh = CenterSh;
+        float Total = 1.0f;
+        [unroll]
+        for (int TapIndex = -2; TapIndex <= 2; ++TapIndex)
+        {
+            if (TapIndex == 0)
+            {
+                continue;
+            }
+
+            const int2 SamplePixelInt = (int2)Pixel + StepAxis * (int)round((float)TapIndex * StepSize);
+            if (any(SamplePixelInt < int2(0, 0)) || any(SamplePixelInt > MaxPixel))
+            {
+                continue;
+            }
+
+            const uint2 SamplePixel = (uint2)SamplePixelInt;
+            const float SampleDepth = LinearDepthTexture[SamplePixel];
+            if (SampleDepth <= 0.0f)
+            {
+                continue;
+            }
+
+            const float3 SampleNormal = DecodeNormalFromGBufferA(GBufferA[SamplePixel]);
+            const float GaussianWeight = exp(-0.5f * (float)(TapIndex * TapIndex));
+            const float DepthWeight = exp(-abs(CenterDepth - SampleDepth) / DepthSigma);
+            const float NormalWeight = pow(saturate(dot(CenterNormal, SampleNormal)), 32.0f);
+            const float Weight = GaussianWeight * DepthWeight * NormalWeight;
+            AccumSh = AddSh(AccumSh, ScaleSh(LoadPackedSh(SourceSH, SamplePixel), Weight));
+            Total += Weight;
+        }
+
+        OutShValue = ScaleSh(AccumSh, rcp(Total));
+    }
+
+    OutSH[Pixel] = PackSh(OutShValue);
+    if (bFinalDirection)
+    {
+        RWTexture2D<float3> OutHistoryIrradiance = ResourceDescriptorHeap[OutHistoryIrradianceIndex];
+        OutHistoryIrradiance[Pixel] = UnprojectIrradiance(OutShValue, CenterNormal);
+    }
 }
