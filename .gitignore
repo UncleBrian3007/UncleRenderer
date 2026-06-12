@@ -50,7 +50,6 @@ obj
 /packages
 *.log
 *.patch
-*.vmesh
 /.claude
 *.code-workspace
 *.wpix

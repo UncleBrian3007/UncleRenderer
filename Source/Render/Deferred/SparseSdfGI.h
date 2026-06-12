@@ -26,10 +26,8 @@ enum class ESparseSdfGIDebugMode : uint32_t
     Gradient = SPARSE_SDF_GI_DEBUG_MODE_GRADIENT,
     StepCount = SPARSE_SDF_GI_DEBUG_MODE_STEP_COUNT,
     SharedSampleMismatch = SPARSE_SDF_GI_DEBUG_MODE_SHARED_SAMPLE_MISMATCH,
-    BrickLocalGradient = SPARSE_SDF_GI_DEBUG_MODE_BRICK_LOCAL_GRADIENT,
     HitUVW = SPARSE_SDF_GI_DEBUG_MODE_HIT_UVW,
-    BrickID = SPARSE_SDF_GI_DEBUG_MODE_BRICK_ID,
-    BrickLocalGradientRounded = SPARSE_SDF_GI_DEBUG_MODE_BRICK_LOCAL_GRADIENT_ROUNDED
+    BrickID = SPARSE_SDF_GI_DEBUG_MODE_BRICK_ID
 };
 
 struct FSparseSdfGIFrameResources
@@ -66,6 +64,9 @@ struct FSparseSdfGIFrameResources
     FRGResourceHandle DiffuseGIHandle{};
     FRGResourceHandle DiffuseGIInputSHHandle{};
     FRGResourceHandle DiffuseGIVarianceHandle{};
+    FRGResourceHandle InternalDiffuseGIHandle{};
+    FRGResourceHandle InternalDiffuseGIInputSHHandle{};
+    FRGResourceHandle InternalDiffuseGIVarianceHandle{};
 };
 
 class FSparseSdfGI
@@ -124,7 +125,8 @@ private:
     void AddIrradianceCacheUpdatePasses(FDeferredPassContext& Context) const;
     void AddBrickShPropagatePass(FDeferredPassContext& Context, const char* PassName, FRGBufferHandle SourceHandle, FRGBufferHandle DestHandle, FRGBufferHandle BrickMapHandle) const;
     void AddScreenProbeGITracePasses(FDeferredPassContext& Context, FRGBufferHandle BrickRadianceHandle) const;
-    void DispatchOutputPass(FDeferredPassContext& Context, FDX12CommandContext& Cmd, ID3D12PipelineState* PipelineState, bool bPassEnabled, FRGBufferHandle BrickRadianceHandle, FRGResourceHandle InputSHHandle, FRGResourceHandle VarianceHandle) const;
+    void AddUpsampleGIPass(FDeferredPassContext& Context) const;
+    void DispatchOutputPass(FDeferredPassContext& Context, FDX12CommandContext& Cmd, ID3D12PipelineState* PipelineState, bool bPassEnabled, FRGBufferHandle BrickRadianceHandle, FRGResourceHandle InternalDiffuseHandle, FRGResourceHandle InputSHHandle, FRGResourceHandle VarianceHandle) const;
     bool BindSparseConstants(FDeferredRenderer& Owner, ID3D12GraphicsCommandList* CommandList, const void* Constants, size_t ConstantsSize) const;
     void ResetSparseConstantCursor(uint32_t FrameIndex) const;
 
@@ -135,7 +137,7 @@ private:
     float BaseVoxelSize = 0.0f;
     mutable float CachedEffectiveVoxelSize = 0.0f;
     float CascadeScale = 2.0f;
-    bool bTraceHalfResolution = false;
+    bool bInternalHalfResolution = false;
     bool bUseHierarchicalTrace = true;
     bool bEikonalEnabled = true;
     bool bPropagateBrickSH = true;
@@ -207,6 +209,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ProbeTraceDirectionalFlatPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ProbeTraceDirectionalHierarchicalPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> ProbeInterpolatePipeline;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> UpsamplePipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> DebugTraceFlatPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> DebugTraceHierarchicalPipeline;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> DiffuseTraceFlatPipeline;

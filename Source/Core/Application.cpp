@@ -1941,9 +1941,9 @@ void FApplication::RenderUI()
         if (RendererConfig.bEnableDiffuseGIDenoiser)
         {
             ImGui::SameLine();
-            if (ImGui::Checkbox("Separable Blur", &RendererConfig.bDiffuseGIDenoiserSeparableBlur))
+            if (ImGui::Checkbox("Lightweight", &RendererConfig.bDiffuseGIDenoiserLightweight))
             {
-                UpsertConfigValue(GetRendererConfigPath(), "DiffuseGIDenoiserSeparableBlur", RendererConfig.bDiffuseGIDenoiserSeparableBlur ? "true" : "false");
+                UpsertConfigValue(GetRendererConfigPath(), "DiffuseGIDenoiserLightweight", RendererConfig.bDiffuseGIDenoiserLightweight ? "true" : "false");
                 SyncDeferredRestirGIConfig();
             }
         }
@@ -2047,7 +2047,7 @@ void FApplication::RenderUI()
 
         if (RendererConfig.DiffuseGISource == EDiffuseGISource::SparseSdfGI)
         {
-            static const char* SparseSdfGIDebugModeItems[] = { "Off", "Ray Trace", "Cascade Slice", "Gradient", "Step Count", "Shared Sample Mismatch", "Brick Local Gradient", "Hit UVW", "Brick ID", "Brick Local Gradient (FFX Rounded)" };
+            static const char* SparseSdfGIDebugModeItems[] = { "Off", "Ray Trace", "Cascade Slice", "Gradient", "Step Count", "Shared Sample Mismatch", "Hit UVW", "Brick ID" };
             static_assert(IM_ARRAYSIZE(SparseSdfGIDebugModeItems) == SPARSE_SDF_GI_DEBUG_MODE_MAX + 1);
             int SparseSdfGIDebugModeIndex = static_cast<int>(std::clamp<uint32_t>(RendererConfig.SparseSdfGIDebugMode, SPARSE_SDF_GI_DEBUG_MODE_OFF, SPARSE_SDF_GI_DEBUG_MODE_MAX));
             ImGui::SetNextItemWidth(160.0f);
@@ -2073,6 +2073,12 @@ void FApplication::RenderUI()
             if (ImGui::Checkbox("SDF GI Propagate Brick SH", &RendererConfig.bSparseSdfGIPropagateBrickSH))
             {
                 UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIPropagateBrickSH", RendererConfig.bSparseSdfGIPropagateBrickSH ? "true" : "false");
+                SyncDeferredSparseSdfGIConfig();
+            }
+
+            if (ImGui::Checkbox("SDF GI Internal Half Resolution", &RendererConfig.bSparseSdfGIInternalHalfResolution))
+            {
+                UpsertConfigValue(GetRendererConfigPath(), "SparseSdfGIInternalHalfResolution", RendererConfig.bSparseSdfGIInternalHalfResolution ? "true" : "false");
                 SyncDeferredSparseSdfGIConfig();
             }
 

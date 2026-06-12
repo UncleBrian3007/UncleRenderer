@@ -27,7 +27,7 @@ namespace
     constexpr uint32_t kSparseSdfGIBrickVoxelResolution = 8u;
     constexpr uint32_t kSparseSdfGIExactBrickIntervalResolution = kSparseSdfGIBrickVoxelResolution - 1u;
     constexpr uint32_t kSparseSdfGIAtlasResolution = kSparseSdfGIBrickGridResolution * kSparseSdfGIBrickVoxelResolution;
-    constexpr uint32_t kSparseSdfGIConstantsDwordCount = 55u;
+    constexpr uint32_t kSparseSdfGIConstantsDwordCount = 56u;
     constexpr uint32_t kSparseSdfGIMaxBindlessDwordCount = 14u;
     constexpr uint32_t kSparseSdfGIConstantBufferSlotsPerFrame = 8192u;
     constexpr uint32_t kSparseSdfGIConstantBufferStride = 256u;
@@ -304,7 +304,7 @@ namespace
         uint32_t FrameIndex = 0;
         uint32_t DebugMode = 0;
         uint32_t Enabled = 0;
-        uint32_t TraceHalfResolution = 0;
+        uint32_t FullOutputWidth = 0;
         uint32_t ModelTriangleCount = 0;
         uint32_t ModelDrawIndexStart = 0;
         uint32_t ModelDrawIndexCount = 0;
@@ -331,6 +331,7 @@ namespace
         uint32_t PhysicalBrickBase = 0u;
         uint32_t ScatterBrickCapacity = kSparseSdfGIDefaultMaxScatterBricks;
         uint32_t CascadeDataSrvIndex = UINT32_MAX;
+        uint32_t FullOutputHeight = 0;
     };
     static_assert(offsetof(FSparseSdfGIConstants, CascadeMin) == 16u * sizeof(uint32_t));
     static_assert(offsetof(FSparseSdfGIConstants, CascadeExtent) == 20u * sizeof(uint32_t));
@@ -549,6 +550,23 @@ namespace
         uint32_t VarianceUavIndex = UINT32_MAX;
     };
 
+    struct FSparseSdfGIUpsampleBindlessConstants
+    {
+        uint32_t DepthIndex = UINT32_MAX;
+        uint32_t GBufferAIndex = UINT32_MAX;
+        uint32_t HalfDiffuseSrvIndex = UINT32_MAX;
+        uint32_t HalfInputSHSrvIndex = UINT32_MAX;
+        uint32_t HalfVarianceSrvIndex = UINT32_MAX;
+        uint32_t DiffuseGIUavIndex = UINT32_MAX;
+        uint32_t InputSHUavIndex = UINT32_MAX;
+        uint32_t VarianceUavIndex = UINT32_MAX;
+    };
+
+    uint32_t GetInternalHalfDimension(uint32_t FullDimension)
+    {
+        return (FullDimension + 1u) / 2u;
+    }
+
     struct FSparseSdfGIRadianceClearBindlessConstants
     {
         uint32_t BrickRadianceAccumUavIndex = UINT32_MAX;
@@ -641,6 +659,7 @@ bool FSparseSdfGI::InitializePipelines(FDeferredRenderer& Owner, FDX12Device* De
         ProbeTraceDirectionalFlatPipeline.Reset();
         ProbeTraceDirectionalHierarchicalPipeline.Reset();
         ProbeInterpolatePipeline.Reset();
+        UpsamplePipeline.Reset();
         DebugTraceFlatPipeline.Reset();
         DebugTraceHierarchicalPipeline.Reset();
         DiffuseTraceFlatPipeline.Reset();
@@ -695,7 +714,7 @@ void FSparseSdfGI::ApplyConfig(const FRendererConfig& Config)
     CascadeCount = NewCascadeCount;
     BaseVoxelSize = NewBaseVoxelSize;
     CascadeScale = NewCascadeScale;
-    bTraceHalfResolution = Config.bSparseSdfGITraceHalfResolution;
+    bInternalHalfResolution = Config.bSparseSdfGIInternalHalfResolution;
     bUseHierarchicalTrace = Config.bSparseSdfGIUseHierarchicalTrace;
     bEikonalEnabled = Config.bSparseSdfGIEikonalEnabled;
     bPropagateBrickSH = Config.bSparseSdfGIPropagateBrickSH;
@@ -878,6 +897,9 @@ void FSparseSdfGI::ImportPersistentResources(FDeferredPassContext& Context)
     Resources.BrickIrradianceResolvedHandle = {};
     Resources.DiffuseGIInputSHHandle = {};
     Resources.DiffuseGIVarianceHandle = {};
+    Resources.InternalDiffuseGIHandle = {};
+    Resources.InternalDiffuseGIInputSHHandle = {};
+    Resources.InternalDiffuseGIVarianceHandle = {};
     Resources.CascadeBrickMapHandle = ImportBindlessBuffer(Graph, "SparseSdfGI Cascade Brick Map", CascadeBrickMap);
     Resources.BrickMetadataHandle = ImportBindlessBuffer(Graph, "SparseSdfGI Brick Metadata", BrickMetadata);
     Resources.BrickRadianceReadHandle = {};
@@ -1006,6 +1028,7 @@ void FSparseSdfGI::AddDiffuseGITracePasses(FDeferredPassContext& Context) const
     if (bUseScreenProbes && DebugMode == ESparseSdfGIDebugMode::Off)
     {
         AddScreenProbeGITracePasses(Context, BrickRadianceHandle);
+        AddUpsampleGIPass(Context);
         AddIrradianceCacheUpdatePasses(Context);
         return;
     }
@@ -1014,11 +1037,13 @@ void FSparseSdfGI::AddDiffuseGITracePasses(FDeferredPassContext& Context) const
     {
         bool bEnabled = false;
         bool bWritesDenoiserInputs = false;
+        FRGResourceHandle InternalDiffuseHandle{};
         FRGResourceHandle InputSHHandle{};
         FRGResourceHandle VarianceHandle{};
     };
 
-    Graph.AddPass<FOutputPassData>("SparseSdfGI Trace", [&, DepthHandle, SdfAtlasHandle, BrickMapHandle, BrickMetadataHandle, CascadeDataHandle, TraceHierarchyBottomHandle, TraceHierarchyTopHandle, BrickRadianceHandle, DiffuseHandle, GBufferHandles, Pipeline, bWritesDenoiserInputs](FOutputPassData& Data, FRGPassBuilder& Builder)
+    const bool bInternalHalf = bInternalHalfResolution && DebugMode == ESparseSdfGIDebugMode::Off;
+    Graph.AddPass<FOutputPassData>("SparseSdfGI Trace", [&, DepthHandle, SdfAtlasHandle, BrickMapHandle, BrickMetadataHandle, CascadeDataHandle, TraceHierarchyBottomHandle, TraceHierarchyTopHandle, BrickRadianceHandle, DiffuseHandle, GBufferHandles, Pipeline, bWritesDenoiserInputs, bInternalHalf](FOutputPassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("SparseSdfGI");
         Data.bEnabled = bEnabled && bPersistentInputsValid;
@@ -1032,10 +1057,22 @@ void FSparseSdfGI::AddDiffuseGITracePasses(FDeferredPassContext& Context) const
         {
             const uint32_t FullWidth = static_cast<uint32_t>(Owner.Viewport.Width);
             const uint32_t FullHeight = static_cast<uint32_t>(Owner.Viewport.Height);
-            Data.InputSHHandle = Builder.CreateTexture("SparseSdfGI Input SH", { FullWidth, FullHeight, DXGI_FORMAT_R32G32B32A32_UINT });
-            Data.VarianceHandle = Builder.CreateTexture("SparseSdfGI Variance", { FullWidth, FullHeight, DXGI_FORMAT_R8_UNORM });
-            Context.Resources.SparseSdfGI.DiffuseGIInputSHHandle = Data.InputSHHandle;
-            Context.Resources.SparseSdfGI.DiffuseGIVarianceHandle = Data.VarianceHandle;
+            const uint32_t TargetWidth = bInternalHalf ? GetInternalHalfDimension(FullWidth) : FullWidth;
+            const uint32_t TargetHeight = bInternalHalf ? GetInternalHalfDimension(FullHeight) : FullHeight;
+            Data.InputSHHandle = Builder.CreateTexture("SparseSdfGI Input SH", { TargetWidth, TargetHeight, DXGI_FORMAT_R32G32B32A32_UINT });
+            Data.VarianceHandle = Builder.CreateTexture("SparseSdfGI Variance", { TargetWidth, TargetHeight, DXGI_FORMAT_R8_UNORM });
+            if (bInternalHalf)
+            {
+                Data.InternalDiffuseHandle = Builder.CreateTexture("SparseSdfGI Internal Diffuse", { TargetWidth, TargetHeight, DXGI_FORMAT_R16G16B16A16_FLOAT });
+                Context.Resources.SparseSdfGI.InternalDiffuseGIHandle = Data.InternalDiffuseHandle;
+                Context.Resources.SparseSdfGI.InternalDiffuseGIInputSHHandle = Data.InputSHHandle;
+                Context.Resources.SparseSdfGI.InternalDiffuseGIVarianceHandle = Data.VarianceHandle;
+            }
+            else
+            {
+                Context.Resources.SparseSdfGI.DiffuseGIInputSHHandle = Data.InputSHHandle;
+                Context.Resources.SparseSdfGI.DiffuseGIVarianceHandle = Data.VarianceHandle;
+            }
         }
 
         Builder.ReadTexture(DepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -1049,7 +1086,14 @@ void FSparseSdfGI::AddDiffuseGITracePasses(FDeferredPassContext& Context) const
         Builder.ReadBuffer(TraceHierarchyBottomHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadBuffer(TraceHierarchyTopHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadBuffer(BrickRadianceHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        Builder.WriteTexture(DiffuseHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        if (Data.InternalDiffuseHandle)
+        {
+            Builder.WriteTexture(Data.InternalDiffuseHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        }
+        else
+        {
+            Builder.WriteTexture(DiffuseHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        }
         if (Data.bWritesDenoiserInputs)
         {
             Builder.WriteTexture(Data.InputSHHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -1057,9 +1101,10 @@ void FSparseSdfGI::AddDiffuseGITracePasses(FDeferredPassContext& Context) const
         }
     }, [&, Pipeline, BrickRadianceHandle](const FOutputPassData& Data, FDX12CommandContext& Cmd)
     {
-        DispatchOutputPass(Context, Cmd, Pipeline, Data.bEnabled, BrickRadianceHandle, Data.InputSHHandle, Data.VarianceHandle);
+        DispatchOutputPass(Context, Cmd, Pipeline, Data.bEnabled, BrickRadianceHandle, Data.InternalDiffuseHandle, Data.InputSHHandle, Data.VarianceHandle);
     });
 
+    AddUpsampleGIPass(Context);
     AddIrradianceCacheUpdatePasses(Context);
 
     (void)Owner;
@@ -1153,6 +1198,7 @@ bool FSparseSdfGI::CreatePipelines(FDX12Device* Device)
     std::vector<uint8_t> ProbeTraceDirectionalFlatByteCode;
     std::vector<uint8_t> ProbeTraceDirectionalHierarchicalByteCode;
     std::vector<uint8_t> ProbeInterpolateByteCode;
+    std::vector<uint8_t> UpsampleByteCode;
     std::vector<uint8_t> DebugTraceFlatByteCode;
     std::vector<uint8_t> DebugTraceHierarchicalByteCode;
     std::vector<uint8_t> DiffuseTraceFlatByteCode;
@@ -1229,6 +1275,10 @@ bool FSparseSdfGI::CreatePipelines(FDX12Device* Device)
     {
         return false;
     }
+    if (!RendererUtils::CompileComputeShader(Compiler, Device, ShaderPath, L"CSUpsampleSparseSdfGI", UpsampleByteCode, { L"SPARSE_SDF_GI_UPSAMPLE_SHADER=1" }))
+    {
+        return false;
+    }
     if (!RendererUtils::CompileComputeShader(Compiler, Device, ShaderPath, L"CSDebugTrace", DebugTraceFlatByteCode, { L"SPARSE_SDF_GI_TRACE_SHADER=1" }))
     {
         return false;
@@ -1291,6 +1341,7 @@ bool FSparseSdfGI::CreatePipelines(FDX12Device* Device)
         && CreateComputePso(ProbeTraceDirectionalFlatByteCode, ProbeTraceDirectionalFlatPipeline, "CSTraceScreenProbes DirectionalSH Flat")
         && CreateComputePso(ProbeTraceDirectionalHierarchicalByteCode, ProbeTraceDirectionalHierarchicalPipeline, "CSTraceScreenProbes DirectionalSH Hierarchical")
         && CreateComputePso(ProbeInterpolateByteCode, ProbeInterpolatePipeline, "CSInterpolateScreenProbes")
+        && CreateComputePso(UpsampleByteCode, UpsamplePipeline, "CSUpsampleSparseSdfGI")
         && CreateComputePso(DebugTraceFlatByteCode, DebugTraceFlatPipeline, "CSDebugTrace Flat")
         && CreateComputePso(DebugTraceHierarchicalByteCode, DebugTraceHierarchicalPipeline, "CSDebugTrace Hierarchical")
         && CreateComputePso(DiffuseTraceFlatByteCode, DiffuseTraceFlatPipeline, "CSDiffuseTrace Flat")
@@ -1503,6 +1554,7 @@ bool FSparseSdfGI::RefreshPersistentInputValidation()
         ProbeTraceDirectionalFlatPipeline &&
         ProbeTraceDirectionalHierarchicalPipeline &&
         ProbeInterpolatePipeline &&
+        UpsamplePipeline &&
         DebugTraceFlatPipeline &&
         DebugTraceHierarchicalPipeline &&
         DiffuseTraceFlatPipeline &&
@@ -3676,11 +3728,13 @@ void FSparseSdfGI::AddScreenProbeGITracePasses(FDeferredPassContext& Context, FR
         FRGBufferHandle ProbeHeaderHandle{};
         FRGBufferHandle ProbeSHHandle{};
         FRGBufferHandle ProbeVarianceHandle{};
+        FRGResourceHandle DiffuseHandle{};
         FRGResourceHandle InputSHHandle{};
         FRGResourceHandle VarianceHandle{};
     };
 
-    Graph.AddPass<FProbeInterpolatePassData>("SparseSdfGI Probe Interpolate", [&, DepthHandle, GBufferHandles, DiffuseHandle](FProbeInterpolatePassData& Data, FRGPassBuilder& Builder)
+    const bool bInternalHalf = bInternalHalfResolution && ProbeDebugMode == SPARSE_SDF_GI_PROBE_DEBUG_MODE_OFF;
+    Graph.AddPass<FProbeInterpolatePassData>("SparseSdfGI Probe Interpolate", [&, DepthHandle, GBufferHandles, DiffuseHandle, bInternalHalf](FProbeInterpolatePassData& Data, FRGPassBuilder& Builder)
     {
         Builder.SetPixGroup("SparseSdfGI");
         Data.ProbeHeaderHandle = ProbeHeaderHandle;
@@ -3692,22 +3746,35 @@ void FSparseSdfGI::AddScreenProbeGITracePasses(FDeferredPassContext& Context, FR
             return;
         }
 
-        Data.InputSHHandle = Builder.CreateTexture("SparseSdfGI Probe Input SH", { FullWidth, FullHeight, DXGI_FORMAT_R32G32B32A32_UINT });
-        Data.VarianceHandle = Builder.CreateTexture("SparseSdfGI Probe Variance FullRes", { FullWidth, FullHeight, DXGI_FORMAT_R8_UNORM });
-        if (ProbeDebugMode == SPARSE_SDF_GI_PROBE_DEBUG_MODE_OFF)
+        const uint32_t TargetWidth = bInternalHalf ? GetInternalHalfDimension(FullWidth) : FullWidth;
+        const uint32_t TargetHeight = bInternalHalf ? GetInternalHalfDimension(FullHeight) : FullHeight;
+        Data.InputSHHandle = Builder.CreateTexture("SparseSdfGI Probe Input SH", { TargetWidth, TargetHeight, DXGI_FORMAT_R32G32B32A32_UINT });
+        Data.VarianceHandle = Builder.CreateTexture("SparseSdfGI Probe Variance FullRes", { TargetWidth, TargetHeight, DXGI_FORMAT_R8_UNORM });
+        if (bInternalHalf)
         {
-            Context.Resources.SparseSdfGI.DiffuseGIInputSHHandle = Data.InputSHHandle;
-            Context.Resources.SparseSdfGI.DiffuseGIVarianceHandle = Data.VarianceHandle;
+            Data.DiffuseHandle = Builder.CreateTexture("SparseSdfGI Internal Diffuse", { TargetWidth, TargetHeight, DXGI_FORMAT_R16G16B16A16_FLOAT });
+            Context.Resources.SparseSdfGI.InternalDiffuseGIHandle = Data.DiffuseHandle;
+            Context.Resources.SparseSdfGI.InternalDiffuseGIInputSHHandle = Data.InputSHHandle;
+            Context.Resources.SparseSdfGI.InternalDiffuseGIVarianceHandle = Data.VarianceHandle;
+        }
+        else
+        {
+            Data.DiffuseHandle = DiffuseHandle;
+            if (ProbeDebugMode == SPARSE_SDF_GI_PROBE_DEBUG_MODE_OFF)
+            {
+                Context.Resources.SparseSdfGI.DiffuseGIInputSHHandle = Data.InputSHHandle;
+                Context.Resources.SparseSdfGI.DiffuseGIVarianceHandle = Data.VarianceHandle;
+            }
         }
         Builder.ReadTexture(DepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadBuffer(Data.ProbeHeaderHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadBuffer(Data.ProbeSHHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         Builder.ReadBuffer(Data.ProbeVarianceHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        Builder.WriteTexture(DiffuseHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.WriteTexture(Data.DiffuseHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         Builder.WriteTexture(Data.InputSHHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         Builder.WriteTexture(Data.VarianceHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    }, [this, &Context, ProbeCountX, ProbeCountY, TileSize](const FProbeInterpolatePassData& Data, FDX12CommandContext& Cmd)
+    }, [this, &Context, ProbeCountX, ProbeCountY, TileSize, FullWidth, FullHeight, bInternalHalf](const FProbeInterpolatePassData& Data, FDX12CommandContext& Cmd)
     {
         if (!Data.bEnabled)
         {
@@ -3716,7 +3783,7 @@ void FSparseSdfGI::AddScreenProbeGITracePasses(FDeferredPassContext& Context, FR
 
         FDeferredRenderer& Owner = Context.Owner;
         const uint32_t DepthBindlessIndex = Owner.GetCurrentDepthSrvBindlessIndex();
-        const uint32_t DiffuseGIUavIndex = DiffuseGI.UavBindlessIndex;
+        const uint32_t DiffuseGIUavIndex = bInternalHalf ? Context.Graph.GetTextureUavBindlessIndex(Data.DiffuseHandle) : DiffuseGI.UavBindlessIndex;
         const uint32_t ProbeHeaderSrvIndex = Context.Graph.GetBufferSrvBindlessIndex(Data.ProbeHeaderHandle);
         const uint32_t ProbeSHSrvIndex = Context.Graph.GetBufferSrvBindlessIndex(Data.ProbeSHHandle);
         const uint32_t ProbeVarianceSrvIndex = Context.Graph.GetBufferSrvBindlessIndex(Data.ProbeVarianceHandle);
@@ -3735,6 +3802,9 @@ void FSparseSdfGI::AddScreenProbeGITracePasses(FDeferredPassContext& Context, FR
             return;
         }
 
+        const uint32_t TargetWidth = bInternalHalf ? GetInternalHalfDimension(FullWidth) : FullWidth;
+        const uint32_t TargetHeight = bInternalHalf ? GetInternalHalfDimension(FullHeight) : FullHeight;
+
         ID3D12GraphicsCommandList* CommandList = Cmd.GetCommandList();
         ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
         CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
@@ -3744,8 +3814,10 @@ void FSparseSdfGI::AddScreenProbeGITracePasses(FDeferredPassContext& Context, FR
 
         const FCascadeBounds Bounds = ComputeBaseCascadeBounds(Owner);
         FSparseSdfGIConstants Constants = {};
-        Constants.OutputWidth = static_cast<uint32_t>(Owner.Viewport.Width);
-        Constants.OutputHeight = static_cast<uint32_t>(Owner.Viewport.Height);
+        Constants.OutputWidth = TargetWidth;
+        Constants.OutputHeight = TargetHeight;
+        Constants.FullOutputWidth = FullWidth;
+        Constants.FullOutputHeight = FullHeight;
         Constants.FrameIndex = static_cast<uint32_t>(Owner.GetFrameNumber());
         Constants.Enabled = bEnabled ? 1u : 0u;
         Constants.VoxelSize = Bounds.VoxelSize;
@@ -3772,11 +3844,132 @@ void FSparseSdfGI::AddScreenProbeGITracePasses(FDeferredPassContext& Context, FR
         };
         static_assert(sizeof(FSparseSdfGIProbeInterpolateBindlessConstants) / sizeof(uint32_t) <= kSparseSdfGIMaxBindlessDwordCount);
         CommandList->SetComputeRoot32BitConstants(2, sizeof(FSparseSdfGIProbeInterpolateBindlessConstants) / sizeof(uint32_t), &Bindless, 0);
-        CommandList->Dispatch(AlignDispatch(static_cast<uint32_t>(Owner.Viewport.Width), kSparseSdfGIGroupSize2D), AlignDispatch(static_cast<uint32_t>(Owner.Viewport.Height), kSparseSdfGIGroupSize2D), 1u);
+        CommandList->Dispatch(AlignDispatch(TargetWidth, kSparseSdfGIGroupSize2D), AlignDispatch(TargetHeight, kSparseSdfGIGroupSize2D), 1u);
     });
 }
 
-void FSparseSdfGI::DispatchOutputPass(FDeferredPassContext& Context, FDX12CommandContext& Cmd, ID3D12PipelineState* PipelineState, bool bPassEnabled, FRGBufferHandle BrickRadianceHandle, FRGResourceHandle InputSHHandle, FRGResourceHandle VarianceHandle) const
+void FSparseSdfGI::AddUpsampleGIPass(FDeferredPassContext& Context) const
+{
+    const FRGResourceHandle HalfDiffuseHandle = Context.Resources.SparseSdfGI.InternalDiffuseGIHandle;
+    const FRGResourceHandle HalfInputSHHandle = Context.Resources.SparseSdfGI.InternalDiffuseGIInputSHHandle;
+    const FRGResourceHandle HalfVarianceHandle = Context.Resources.SparseSdfGI.InternalDiffuseGIVarianceHandle;
+    if (!HalfDiffuseHandle || !HalfInputSHHandle || !HalfVarianceHandle)
+    {
+        return;
+    }
+
+    FRenderGraph& Graph = Context.Graph;
+    const FDeferredGBufferHandles GBufferHandles = Context.Resources.GBufferHandles;
+    const FRGResourceHandle DepthHandle = Context.Resources.DepthHandle;
+    const FRGResourceHandle DiffuseHandle = Context.Resources.SparseSdfGI.DiffuseGIHandle;
+
+    struct FUpsamplePassData
+    {
+        bool bEnabled = false;
+        FRGResourceHandle HalfDiffuseHandle{};
+        FRGResourceHandle HalfInputSHHandle{};
+        FRGResourceHandle HalfVarianceHandle{};
+        FRGResourceHandle DiffuseHandle{};
+        FRGResourceHandle InputSHHandle{};
+        FRGResourceHandle VarianceHandle{};
+    };
+
+    Graph.AddPass<FUpsamplePassData>("SparseSdfGI Upsample", [&, DepthHandle, GBufferHandles, DiffuseHandle, HalfDiffuseHandle, HalfInputSHHandle, HalfVarianceHandle](FUpsamplePassData& Data, FRGPassBuilder& Builder)
+    {
+        Builder.SetPixGroup("SparseSdfGI");
+        Data.bEnabled = bEnabled && bPersistentInputsValid && UpsamplePipeline && DepthHandle && GBufferHandles[0];
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        const uint32_t FullWidth = static_cast<uint32_t>(Context.Owner.Viewport.Width);
+        const uint32_t FullHeight = static_cast<uint32_t>(Context.Owner.Viewport.Height);
+        Data.HalfDiffuseHandle = HalfDiffuseHandle;
+        Data.HalfInputSHHandle = HalfInputSHHandle;
+        Data.HalfVarianceHandle = HalfVarianceHandle;
+        Data.DiffuseHandle = DiffuseHandle;
+        Data.InputSHHandle = Builder.CreateTexture("SparseSdfGI Upsampled Input SH", { FullWidth, FullHeight, DXGI_FORMAT_R32G32B32A32_UINT });
+        Data.VarianceHandle = Builder.CreateTexture("SparseSdfGI Upsampled Variance", { FullWidth, FullHeight, DXGI_FORMAT_R8_UNORM });
+        Context.Resources.SparseSdfGI.DiffuseGIInputSHHandle = Data.InputSHHandle;
+        Context.Resources.SparseSdfGI.DiffuseGIVarianceHandle = Data.VarianceHandle;
+
+        Builder.ReadTexture(DepthHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(GBufferHandles[0], D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(Data.HalfDiffuseHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(Data.HalfInputSHHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.ReadTexture(Data.HalfVarianceHandle, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Builder.WriteTexture(Data.DiffuseHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.WriteTexture(Data.InputSHHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        Builder.WriteTexture(Data.VarianceHandle, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    }, [this, &Context](const FUpsamplePassData& Data, FDX12CommandContext& Cmd)
+    {
+        if (!Data.bEnabled)
+        {
+            return;
+        }
+
+        FDeferredRenderer& Owner = Context.Owner;
+        const uint32_t DepthBindlessIndex = Owner.GetCurrentDepthSrvBindlessIndex();
+        const uint32_t HalfDiffuseSrvIndex = Context.Graph.GetTextureSrvBindlessIndex(Data.HalfDiffuseHandle);
+        const uint32_t HalfInputSHSrvIndex = Context.Graph.GetTextureSrvBindlessIndex(Data.HalfInputSHHandle);
+        const uint32_t HalfVarianceSrvIndex = Context.Graph.GetTextureSrvBindlessIndex(Data.HalfVarianceHandle);
+        const uint32_t DiffuseGIUavIndex = DiffuseGI.UavBindlessIndex;
+        const uint32_t InputSHUavIndex = Context.Graph.GetTextureUavBindlessIndex(Data.InputSHHandle);
+        const uint32_t VarianceUavIndex = Context.Graph.GetTextureUavBindlessIndex(Data.VarianceHandle);
+        if (!AreAllBindlessIndicesValid(
+            DepthBindlessIndex,
+            Owner.GBufferA.SrvBindlessIndex,
+            HalfDiffuseSrvIndex,
+            HalfInputSHSrvIndex,
+            HalfVarianceSrvIndex,
+            DiffuseGIUavIndex,
+            InputSHUavIndex,
+            VarianceUavIndex))
+        {
+            return;
+        }
+
+        const uint32_t FullWidth = static_cast<uint32_t>(Owner.Viewport.Width);
+        const uint32_t FullHeight = static_cast<uint32_t>(Owner.Viewport.Height);
+
+        ID3D12GraphicsCommandList* CommandList = Cmd.GetCommandList();
+        ID3D12DescriptorHeap* Heaps[] = { Owner.Device->GetBindlessDescriptorHeap(), Owner.Device->GetSamplerDescriptorHeap() };
+        CommandList->SetDescriptorHeaps(_countof(Heaps), Heaps);
+        CommandList->SetComputeRootSignature(RootSignature.Get());
+        CommandList->SetPipelineState(UpsamplePipeline.Get());
+        CommandList->SetComputeRootConstantBufferView(0, Owner.GetSceneConstantBufferAddress());
+
+        FSparseSdfGIConstants Constants = {};
+        Constants.OutputWidth = FullWidth;
+        Constants.OutputHeight = FullHeight;
+        Constants.FullOutputWidth = FullWidth;
+        Constants.FullOutputHeight = FullHeight;
+        Constants.FrameIndex = static_cast<uint32_t>(Owner.GetFrameNumber());
+        Constants.Enabled = bEnabled ? 1u : 0u;
+        if (!BindSparseConstants(Owner, CommandList, &Constants, sizeof(Constants)))
+        {
+            return;
+        }
+
+        const FSparseSdfGIUpsampleBindlessConstants Bindless =
+        {
+            DepthBindlessIndex,
+            Owner.GBufferA.SrvBindlessIndex,
+            HalfDiffuseSrvIndex,
+            HalfInputSHSrvIndex,
+            HalfVarianceSrvIndex,
+            DiffuseGIUavIndex,
+            InputSHUavIndex,
+            VarianceUavIndex
+        };
+        static_assert(sizeof(FSparseSdfGIUpsampleBindlessConstants) / sizeof(uint32_t) <= kSparseSdfGIMaxBindlessDwordCount);
+        CommandList->SetComputeRoot32BitConstants(2, sizeof(FSparseSdfGIUpsampleBindlessConstants) / sizeof(uint32_t), &Bindless, 0);
+        CommandList->Dispatch(AlignDispatch(FullWidth, kSparseSdfGIGroupSize2D), AlignDispatch(FullHeight, kSparseSdfGIGroupSize2D), 1u);
+    });
+}
+
+void FSparseSdfGI::DispatchOutputPass(FDeferredPassContext& Context, FDX12CommandContext& Cmd, ID3D12PipelineState* PipelineState, bool bPassEnabled, FRGBufferHandle BrickRadianceHandle, FRGResourceHandle InternalDiffuseHandle, FRGResourceHandle InputSHHandle, FRGResourceHandle VarianceHandle) const
 {
     if (!bPassEnabled || !PipelineState)
     {
@@ -3787,6 +3980,7 @@ void FSparseSdfGI::DispatchOutputPass(FDeferredPassContext& Context, FDX12Comman
     const uint32_t DepthBindlessIndex = Owner.GetCurrentDepthSrvBindlessIndex();
     const uint32_t EnvironmentCubeIndex = Owner.GetEnvironmentCubeSrvIndex();
     const uint32_t LinearClampSamplerIndex = Owner.Device->GetLinearClampSamplerIndex();
+    const uint32_t DiffuseUavIndex = InternalDiffuseHandle ? Context.Graph.GetTextureUavBindlessIndex(InternalDiffuseHandle) : DiffuseGI.UavBindlessIndex;
     const uint32_t InputSHUavIndex = InputSHHandle ? Context.Graph.GetTextureUavBindlessIndex(InputSHHandle) : UINT32_MAX;
     const uint32_t VarianceUavIndex = VarianceHandle ? Context.Graph.GetTextureUavBindlessIndex(VarianceHandle) : UINT32_MAX;
     const uint32_t BrickRadianceSrvIndex = Context.Graph.GetBufferSrvBindlessIndex(BrickRadianceHandle);
@@ -3803,7 +3997,7 @@ void FSparseSdfGI::DispatchOutputPass(FDeferredPassContext& Context, FDX12Comman
         CascadeBrickMap.SrvBindlessIndex,
         BrickMetadata.SrvBindlessIndex,
         BrickRadianceSrvIndex,
-        DiffuseGI.UavBindlessIndex,
+        DiffuseUavIndex,
         BlueNoiseSobolIndex,
         BlueNoiseScramblingIndex,
         TraceHierarchyBottomSrvIndex,
@@ -3827,13 +4021,19 @@ void FSparseSdfGI::DispatchOutputPass(FDeferredPassContext& Context, FDX12Comman
 
     const FCascadeBounds Bounds = ComputeBaseCascadeBounds(Owner);
 
+    const uint32_t FullWidth = static_cast<uint32_t>(Owner.Viewport.Width);
+    const uint32_t FullHeight = static_cast<uint32_t>(Owner.Viewport.Height);
+    const uint32_t TargetWidth = InternalDiffuseHandle ? GetInternalHalfDimension(FullWidth) : FullWidth;
+    const uint32_t TargetHeight = InternalDiffuseHandle ? GetInternalHalfDimension(FullHeight) : FullHeight;
+
     FSparseSdfGIConstants Constants = {};
-    Constants.OutputWidth = static_cast<uint32_t>(Owner.Viewport.Width);
-    Constants.OutputHeight = static_cast<uint32_t>(Owner.Viewport.Height);
+    Constants.OutputWidth = TargetWidth;
+    Constants.OutputHeight = TargetHeight;
+    Constants.FullOutputWidth = FullWidth;
+    Constants.FullOutputHeight = FullHeight;
     Constants.FrameIndex = static_cast<uint32_t>(Owner.GetFrameNumber());
     Constants.DebugMode = static_cast<uint32_t>(DebugMode);
     Constants.Enabled = bEnabled ? 1u : 0u;
-    Constants.TraceHalfResolution = bTraceHalfResolution ? 1u : 0u;
     Constants.Intensity = Intensity;
     Constants.BounceStrength = BounceStrength;
     Constants.MaxTraceDistance = Bounds.Extent.x;
@@ -3859,7 +4059,7 @@ void FSparseSdfGI::DispatchOutputPass(FDeferredPassContext& Context, FDX12Comman
         SdfAtlas.SrvBindlessIndex,
         CascadeBrickMap.SrvBindlessIndex,
         BrickMetadata.SrvBindlessIndex,
-        DiffuseGI.UavBindlessIndex,
+        DiffuseUavIndex,
         DepthBindlessIndex,
         Owner.GBufferA.SrvBindlessIndex,
         EnvironmentCubeIndex,
@@ -3873,7 +4073,7 @@ void FSparseSdfGI::DispatchOutputPass(FDeferredPassContext& Context, FDX12Comman
     static_assert(sizeof(FSparseSdfGITraceBindlessConstants) / sizeof(uint32_t) <= kSparseSdfGIMaxBindlessDwordCount);
     CommandList->SetComputeRoot32BitConstants(2, sizeof(FSparseSdfGITraceBindlessConstants) / sizeof(uint32_t), &Bindless, 0);
     CommandList->Dispatch(
-        AlignDispatch(static_cast<uint32_t>(Owner.Viewport.Width), kSparseSdfGIGroupSize2D),
-        AlignDispatch(static_cast<uint32_t>(Owner.Viewport.Height), kSparseSdfGIGroupSize2D),
+        AlignDispatch(TargetWidth, kSparseSdfGIGroupSize2D),
+        AlignDispatch(TargetHeight, kSparseSdfGIGroupSize2D),
         1u);
 }

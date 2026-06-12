@@ -261,7 +261,7 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
     ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIMaxScatterBricks, 4096u, 64u * 64u * 64u, { "SparseSdfGIMaxScatterBricks" });
     ApplyFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGIBaseVoxelSize, { "SparseSdfGIBaseVoxelSize" });
     ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::SparseSdfGICascadeScale, 1.01f, { "SparseSdfGICascadeScale" });
-    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGITraceHalfResolution, { "SparseSdfGITraceHalfResolution" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIInternalHalfResolution, { "SparseSdfGIInternalHalfResolution", "SparseSdfGITraceHalfResolution" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIUseHierarchicalTrace, { "SparseSdfGIUseHierarchicalTrace" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIEikonalEnabled, { "SparseSdfGIEikonalEnabled" });
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bSparseSdfGIPropagateBrickSH, { "SparseSdfGIPropagateBrickSH" });
@@ -352,7 +352,7 @@ void FRendererConfigLoader::ApplyKeyValue(const std::string& Key, const std::str
             OutConfig.DiffuseGISource = EDiffuseGISource::Off;
     }
     ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bEnableDiffuseGIDenoiser, { "DiffuseGIDenoiser", "EnableDiffuseGIDenoiser", "RestirGIDenoiser", "EnableRestirGIDenoiser" });
-    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bDiffuseGIDenoiserSeparableBlur, { "DiffuseGIDenoiserSeparableBlur" });
+    ApplyBoolKey(LowerKey, LowerValue, OutConfig, &FRendererConfig::bDiffuseGIDenoiserLightweight, { "DiffuseGIDenoiserLightweight", "DiffuseGIDenoiserSeparableBlur" });
     ApplyClampedUintKey(LowerKey, Value, OutConfig, &FRendererConfig::RestirGISamplesPerPixel, 1u, 32u, { "RestirGISamplesPerPixel" });
     ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::RestirGIIntensity, 0.0f, { "RestirGIIntensity" });
     ApplyMinFloatKey(LowerKey, Value, OutConfig, &FRendererConfig::RestirGIRayLength, 0.1f, { "RestirGIRayLength" });

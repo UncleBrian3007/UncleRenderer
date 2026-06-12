@@ -47,7 +47,8 @@ public:
     void SetEnabled(bool bInEnabled) { bEnabled = bInEnabled; }
     bool IsEnabled() const { return bEnabled; }
 
-    void SetSeparableFinalBlur(bool bInSeparableFinalBlur) { bSeparableFinalBlur = bInSeparableFinalBlur; }
+    void SetLightweightMode(bool bInLightweightMode) { bLightweightMode = bInLightweightMode; }
+    bool IsLightweightMode() const { return bLightweightMode; }
 
     void SetFreezeHistoryResetPeriod(uint32_t InPeriod) { FreezeHistoryResetPeriod = InPeriod; }
     uint32_t GetFreezeHistoryResetPeriod() const { return FreezeHistoryResetPeriod; }
@@ -76,7 +77,7 @@ private:
 
 private:
     bool bEnabled = true;
-    bool bSeparableFinalBlur = true;
+    bool bLightweightMode = true;
     uint32_t FreezeHistoryResetPeriod = 3;
     mutable bool bHistoryValid = false;
     mutable bool bPassesSubmittedThisFrame = false;

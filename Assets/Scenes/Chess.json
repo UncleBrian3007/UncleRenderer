@@ -1,0 +1,20 @@
+{
+  "meta": {"name": "sample_multi_asset_scene", "version": 1},
+  "camera": {"position": [17.0, 6.0, -4.0], "rotation": [9.6, -59.6, 0.0], "fov_y": 60},
+  "models": [
+    {
+      "id": "chess",
+      "path": "Chess/scene.gltf",
+      "translate": [ 0.0, 0.0, 0.0 ],
+      "rotate_euler": [ 0.0, 0.0, 0.0 ],
+      "scale": [ 10.0, 10.0, 10.0 ]
+    }
+  ],
+  "lights": [
+    {
+      "type": "directional",
+      "rotation": [-75, 0, 0],
+      "intensity": 3.0
+    }
+  ]
+}

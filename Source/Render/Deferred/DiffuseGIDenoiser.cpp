@@ -175,6 +175,28 @@ void FDiffuseGIDenoiser::AddPasses(FDeferredPassContext& Context, FRGResourceHan
     FRGResourceHandle& LinearDepthMipHandle   = DenoiserResources.LinearDepthMipHandle   = {};
     FRGBufferHandle&   SpdAtomicCounterHandle = DenoiserResources.SpdAtomicCounterHandle = {};
 
+    if (bLightweightMode)
+    {
+        AddTemporalAccumulationPass(
+            Owner, Graph, GBufferHandles,
+            DepthHandle, VelocityHandle, LinearDepthHandle,
+            InputSHHandle, VarianceHandle, InputSHHandle, TemporalSHHandle,
+            HistorySHReadHandle, HistoryCountReadHandle, HistoryCountWriteHandle,
+            PrevLinearDepthReadHandle, PrevLinearDepthWriteHandle,
+            PrevNormalReadHandle, PrevNormalWriteHandle);
+        FRGResourceHandle BlurXSHHandle{};
+        AddSeparableFinalBlurPass(
+            Owner, Graph, GBufferHandles,
+            LinearDepthHandle, TemporalSHHandle, BlurXSHHandle,
+            FRGResourceHandle{}, HistoryCountWriteHandle, false);
+        FRGResourceHandle FinalSHHandle = HistorySHWriteHandle;
+        AddSeparableFinalBlurPass(
+            Owner, Graph, GBufferHandles,
+            LinearDepthHandle, BlurXSHHandle, FinalSHHandle,
+            HistoryIrradianceHandle, HistoryCountWriteHandle, true);
+        return;
+    }
+
     AddPreBlurPass(Owner, Graph, GBufferHandles, LinearDepthHandle, InputSHHandle, VarianceHandle, PreBlurSHHandle);
     AddTemporalAccumulationPass(
         Owner, Graph, GBufferHandles,
@@ -190,27 +212,11 @@ void FDiffuseGIDenoiser::AddPasses(FDeferredPassContext& Context, FRGResourceHan
         LinearDepthHandle, InputSHHandle, VarianceHandle,
         HistorySHReadHandle, HistoryCountWriteHandle, TemporalSHHandle,
         ShMipHandle, LinearDepthMipHandle);
-    if (bSeparableFinalBlur)
-    {
-        FRGResourceHandle BlurXSHHandle{};
-        AddSeparableFinalBlurPass(
-            Owner, Graph, GBufferHandles,
-            LinearDepthHandle, TemporalSHHandle, BlurXSHHandle,
-            FRGResourceHandle{}, HistoryCountWriteHandle, false);
-        FRGResourceHandle FinalSHHandle = HistorySHWriteHandle;
-        AddSeparableFinalBlurPass(
-            Owner, Graph, GBufferHandles,
-            LinearDepthHandle, BlurXSHHandle, FinalSHHandle,
-            HistoryIrradianceHandle, HistoryCountWriteHandle, true);
-    }
-    else
-    {
-        AddFinalBlurPass(
-            Owner, Graph, GBufferHandles,
-            LinearDepthHandle, InputSHHandle, VarianceHandle,
-            TemporalSHHandle, HistoryIrradianceHandle,
-            HistorySHWriteHandle, HistoryCountWriteHandle);
-    }
+    AddFinalBlurPass(
+        Owner, Graph, GBufferHandles,
+        LinearDepthHandle, InputSHHandle, VarianceHandle,
+        TemporalSHHandle, HistoryIrradianceHandle,
+        HistorySHWriteHandle, HistoryCountWriteHandle);
 }
 
 void FDiffuseGIDenoiser::AddShMipGenPass(FDeferredRenderer& Owner, FRenderGraph& Graph, FRGResourceHandle SourceHandle, FRGResourceHandle& DestinationHandle, FRGBufferHandle& AtomicCounterHandle) const
