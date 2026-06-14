@@ -178,8 +178,6 @@ visibility resolve가 활성화되면 legacy deferred base pass는 더 이상 `C
 
 ### Overdraw 감소
 
-현재 구현에서 가장 명확한 이득입니다.
-
 visibility pass는 가시성만 결정하고, 전체 material 평가는 resolve 단계로 지연됩니다. 따라서 가려진 `ClusterDAG` 삼각형은 base-pass 전체 material 비용을 지불하지 않습니다.
 
 그 결과 다음 항목에서 낭비 작업이 줄어듭니다.
@@ -189,6 +187,13 @@ visibility pass는 가시성만 결정하고, 전체 material 평가는 resolve 
 - metallic-roughness texture
 - emissive texture
 - sheen / clearcoat / anisotropy 분기
+
+다만 이 "material-shader overdraw 제거" 자체는 visibility buffer만의 고유 이득이 아닙니다. depth prepass 후 base pass를 `EQUAL` depth test로 돌리는 z-prepass로도 보이는 픽셀만 한 번 셰이딩되므로 동일하게 달성됩니다. 큰 삼각형 위주 장면에서는 둘이 사실상 동등합니다.
+
+이 경로가 z-prepass 대비 실제로 다른 지점은 material overdraw가 아니라 다음 두 가지입니다.
+
+- **지오메트리 1회 래스터**: z-prepass는 지오메트리를 depth pass와 base pass에서 두 번 래스터하지만, 이 경로는 vis pass에서 한 번만 래스터(색 없이 depth + visibility ID만 기록)하고 resolve는 fullscreen pass라 지오메트리를 다시 돌리지 않습니다. `ClusterDAG`처럼 삼각형 밀도가 높은 지오메트리에서는 이 vertex/raster 비용 차이가 큽니다.
+- **Micro-triangle quad 효율**: z-prepass의 base pass도 2x2 quad로 셰이딩하므로 픽셀보다 작은 삼각형에서 helper-lane이 낭비됩니다. 이 경로는 셰이딩을 래스터에서 분리해 픽셀 단위로 한 번 셰이딩하므로 그 낭비를 피할 수 있습니다(아래 Micro-triangle 효율 항목 참고).
 
 ### Micro-triangle 효율 (조건부)
 
